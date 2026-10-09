@@ -238,6 +238,8 @@ func (b *badgeWriter) set(ctx context.Context, h Herdr, seq int, title string) {
 // Close undoes what the UI reported to herdr. Call it after the program
 // exits.
 func (m *Model) Close() {
+	m.syncDraft()
+	m.flushDrafts()
 	if m.opt.Herdr == nil || m.badgeSent == "" {
 		return
 	}

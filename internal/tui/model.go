@@ -114,6 +114,12 @@ type Model struct {
 	lastKey              time.Time
 	autoAway, manualAway bool
 	awayRun              bool
+
+	drafts     map[draftKey]string // unsent input per place to type, mirrored in the cache
+	draftDirty map[draftKey]bool   // changed since the last write to the cache
+	draftTimer bool                // a debounced save is scheduled
+	draftMark  map[uint64]bool     // channels with a draft not shown in the input
+	dk         draftKey            // where the input's text belongs
 }
 
 // ---- tea messages ----
@@ -174,10 +180,12 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 		bot: func(id uint64) bool { return m.users[id].Bot }}
 	m.input = newInput(st)
 	m.line = newLine(st)
+	m.loadDrafts()
 	m.reloadAll()
 	if ch := m.defaultChannel(); ch != 0 {
 		m.openChannel(ch)
 	}
+	m.syncDraft()
 	return m
 }
 
@@ -644,7 +652,11 @@ func (m *Model) copyCmd(text string) tea.Cmd {
 // Update handles one message.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	_, cmd := m.update(msg)
+	m.syncDraft()
 	m.updatePlaceholder()
+	if t := m.draftTick(); t != nil {
+		cmd = tea.Batch(cmd, t)
+	}
 	if t := m.noticeTick(); t != nil {
 		cmd = tea.Batch(cmd, t)
 	}
@@ -663,6 +675,10 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case okMsg:
 		m.clearErr()
+		return m, nil
+	case draftSaveMsg:
+		m.draftTimer = false
+		m.flushDrafts()
 		return m, nil
 	case notifyFlushMsg:
 		return m, m.flushNote(msg)
@@ -1267,9 +1283,12 @@ func (m *Model) reactKey(k tea.KeyMsg) tea.Cmd {
 	return cmd
 }
 
+// cancelEdit ends an edit and drops its text from the input (the input was
+// empty when the edit began, so no draft is lost).
 func (m *Model) cancelEdit() {
 	if m.editing != 0 {
 		m.editing = 0
+		m.input.Reset()
 		m.clearNotice()
 	}
 }

@@ -144,6 +144,9 @@ func (m *Model) switchItems() []switchItem {
 	}
 	for i := range items {
 		items[i].order = i
+		if items[i].ch != 0 && m.hasDraft(items[i].ch) {
+			items[i].label += " ✎"
+		}
 	}
 	return items
 }

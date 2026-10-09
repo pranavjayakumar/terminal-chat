@@ -40,6 +40,8 @@ type Backend interface {
 	RetryFailed(local int64) error
 	DiscardFailed(local int64) error
 	MarkRead(ch, seq uint64) error
+	Drafts() []client.Draft
+	SetDraft(ch, thread uint64, body string) error
 
 	Edit(ctx context.Context, msg uint64, body string) error
 	Delete(ctx context.Context, msg uint64) error

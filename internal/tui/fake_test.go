@@ -33,6 +33,7 @@ type fakeClient struct {
 	histMore bool
 	calls    []string
 	aways    []bool
+	drafts   map[[2]uint64]string
 }
 
 func newFake() *fakeClient {
@@ -198,6 +199,36 @@ func (f *fakeClient) SetAway(away bool, status string) error {
 	f.aways = append(f.aways, away)
 	f.mu.Unlock()
 	return nil
+}
+
+func (f *fakeClient) Drafts() []client.Draft {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []client.Draft
+	for k, v := range f.drafts {
+		out = append(out, client.Draft{Chan: k[0], Thread: k[1], Body: v})
+	}
+	return out
+}
+
+func (f *fakeClient) SetDraft(ch, thread uint64, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.drafts == nil {
+		f.drafts = map[[2]uint64]string{}
+	}
+	if body == "" {
+		delete(f.drafts, [2]uint64{ch, thread})
+	} else {
+		f.drafts[[2]uint64{ch, thread}] = body
+	}
+	return nil
+}
+
+func (f *fakeClient) draft(ch, thread uint64) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.drafts[[2]uint64{ch, thread}]
 }
 
 func (f *fakeClient) awayCalls() []bool {
