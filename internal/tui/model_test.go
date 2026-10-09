@@ -24,7 +24,7 @@ func keyMsg(s string) tea.KeyMsg {
 		"alt+shift+down": {Type: tea.KeyShiftDown, Alt: true}, "alt+enter": {Type: tea.KeyEnter, Alt: true},
 		"backspace": {Type: tea.KeyBackspace}, "tab": {Type: tea.KeyTab},
 		"f1": {Type: tea.KeyF1}, "f2": {Type: tea.KeyF2}, "end": {Type: tea.KeyEnd},
-		"ctrl+end": {Type: tea.KeyCtrlEnd}, "home": {Type: tea.KeyHome}, "ctrl+u": {Type: tea.KeyCtrlU},
+		"ctrl+end": {Type: tea.KeyCtrlEnd}, "home": {Type: tea.KeyHome}, "ctrl+u": {Type: tea.KeyCtrlU}, "ctrl+a": {Type: tea.KeyCtrlA},
 	}
 	if k, ok := named[s]; ok {
 		if k.String() != s {

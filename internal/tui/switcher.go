@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
 )
@@ -241,17 +242,42 @@ func (m *Model) jumpTo(x proto.Message) tea.Cmd {
 		cmd = tea.Batch(cmd, m.openThread(x.Thread))
 		p = &m.thread
 	}
-	for i, y := range p.msgs {
-		if y.ID == x.ID {
-			m.mode = modeSelect
-			p.sel = i
-			m.ensureVisible(p)
-			m.updatePlaceholder()
-			return cmd
+	find := func() int {
+		for i, y := range p.msgs {
+			if y.ID == x.ID {
+				return i
+			}
 		}
+		return -1
+	}
+	i := find()
+	// A top-level message older than the loaded page: widen the page while
+	// the cache may still hold it.
+	for i < 0 && p == &m.main && x.ID != 0 && loadedReal(p.msgs) >= m.limit(x.Chan) && m.limit(x.Chan) < maxJumpLimit {
+		m.limits[x.Chan] = min(m.limit(x.Chan)*4, maxJumpLimit)
+		m.reloadPane(p)
+		i = find()
+	}
+	if i >= 0 {
+		m.mode = modeSelect
+		p.sel = i
+		m.ensureVisible(p)
+		m.updatePlaceholder()
+		return cmd
 	}
 	m.setInfo("older message — scroll up to find it")
 	return cmd
+}
+
+// loadedReal counts the acknowledged messages in a pane (not unsent ones).
+func loadedReal(ms []client.Message) int {
+	n := 0
+	for _, x := range ms {
+		if x.ID != 0 {
+			n++
+		}
+	}
+	return n
 }
 
 func fmtWhen(ms int64) string {

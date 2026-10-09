@@ -31,6 +31,7 @@ const (
 	modeReact
 	modePanePick
 	modeSharePreview
+	modeActivity
 )
 
 // pane is a scrollable message list: a channel (root 0) or a thread.
@@ -96,6 +97,7 @@ type Model struct {
 
 	sw     switcher
 	search searchState
+	act    activityState
 
 	focused    bool
 	lastTyping time.Time
@@ -792,6 +794,9 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 	}
 	if u.Reset {
 		m.reloadAll()
+		if m.mode == modeActivity {
+			m.refreshActivity()
+		}
 		cmds = append(cmds, m.markRead())
 		return tea.Batch(cmds...)
 	}
@@ -818,6 +823,9 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 		m.setNotice("message not sent: "+f.Failed, true, false, 0)
 	}
 	cmds = append(cmds, m.notifyFor(u.New))
+	if m.mode == modeActivity && (len(u.Msgs) > 0 || u.Channels || u.Users) {
+		m.refreshActivity()
+	}
 	if u.Msgs[m.active] || u.Channels {
 		cmds = append(cmds, m.markRead())
 	}
@@ -858,6 +866,8 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 		return m.switcherKey(k)
 	case modeSearch:
 		return m.searchKey(k)
+	case modeActivity:
+		return m.activityKey(k)
 	case modeHelp:
 		m.helpKey(key)
 		return nil
@@ -890,6 +900,9 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 	switch {
 	case key == kSwitcher:
 		m.openSwitcher()
+		return nil
+	case key == kActivity:
+		m.openActivity()
 		return nil
 	case key == kSidebar || key == kSidebarAlt:
 		switch {

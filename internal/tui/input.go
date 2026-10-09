@@ -250,6 +250,9 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 	case "help":
 		m.openHelp()
 		return nil, nil
+	case "activity":
+		m.openActivity()
+		return nil, nil
 	case "join":
 		if err := need(1, "/join #channel"); err != nil {
 			return nil, err

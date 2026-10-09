@@ -35,6 +35,7 @@ type fakeClient struct {
 	aways    []bool
 	drafts   map[[2]uint64]string
 	words    []string
+	activity []client.ActivityItem
 }
 
 func newFake() *fakeClient {
@@ -359,4 +360,11 @@ func (f *fakeClient) RemoveHighlight(word string) (bool, error) {
 	}
 	f.words = slices.Delete(f.words, i, i+1)
 	return true, nil
+}
+
+func (f *fakeClient) Activity(limit int) []client.ActivityItem {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "activity")
+	return slices.Clone(f.activity)
 }
