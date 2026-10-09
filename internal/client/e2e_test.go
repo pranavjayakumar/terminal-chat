@@ -821,3 +821,53 @@ func TestE2ERotateStaleRetry(t *testing.T) {
 		t.Fatalf("%d attempts, want 2", n)
 	}
 }
+
+// A bundle is invalid if EITHER the server's seq order OR its own signed
+// time puts it after a signed revoke of its rotator. The server controls seqs,
+// so a revoke it orders after the bundle must not rescue a bundle that the
+// signed times show was made after the revoke.
+func TestE2EBundleAfterRevokeBySignedTime(t *testing.T) {
+	const revokeSeqAfterBundle, revokeSeqBeforeBundle = 30, 10 // the bundle's key.epoch gets seq 21
+	cases := []struct {
+		name      string
+		revokedAt time.Duration // revoke's signed time relative to the bundle's
+		revokeSeq uint64
+		wantOK    bool
+		detail    string
+	}{
+		{"server misorders seqs, signed times say after the revoke", -time.Hour, revokeSeqAfterBundle, false,
+			"epoch 1: signed after its device was revoked"},
+		{"seq says after the revoke, signed times don't", time.Hour, revokeSeqBeforeBundle, false,
+			"epoch 1: signed by a revoked device"},
+		{"seq and signed time both before the revoke", time.Hour, revokeSeqAfterBundle, true, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fs, c := e2eClient(t)
+			run(t, c)
+			b1 := newPeer(t, bob, nil)
+			b2 := newPeer(t, bob, b1.ssh)
+			rev, err := identity.NewDeviceRevoke(b1.ssh, testSID(), bob, b2.dev.ID, time.Now().Add(tc.revokedAt))
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := startE2E(t, fs, proto.Snapshot{
+				Chans:       []proto.Channel{dmChan(0)},
+				Devs:        []proto.Device{{Cert: b1.cert}, {Cert: b2.cert}},
+				Revoked:     []proto.Signed{proto.Signed(rev)},
+				RevokedSeqs: []uint64{tc.revokeSeq},
+			}, proto.DevicesListRes{})
+			me := f.myKeys(c)
+			waitFor(t, "revoke known", func() bool { d, _, _ := c.Trust().Device(testSID(), b2.dev.ID); return d.Revoked })
+			f.keyEpoch(dm, bob, mkBundle(t, b2.dev, dm, 1, nil, []uint64{alice, bob}, newK(t), nil, me, b1.dev, b2.dev))
+			if tc.wantOK {
+				waitFor(t, "epoch 1 ok", status(c, dm, E2EOK))
+				return
+			}
+			waitFor(t, "alarm", status(c, dm, E2EAlarm))
+			if st := c.E2EStatus(dm); headOf(t, c, dm) != 0 || st.Detail != tc.detail {
+				t.Fatalf("status %+v head %d, want alarm %q and no head", st, headOf(t, c, dm), tc.detail)
+			}
+		})
+	}
+}

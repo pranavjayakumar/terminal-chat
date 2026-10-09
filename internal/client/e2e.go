@@ -492,14 +492,16 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 		}
 		d, ok, _ := ts.Device(sid, pr.Dev)
 		// Only a known device of the revoke's user: a member must not be able
-		// to pre-revoke someone else's device id.
-		if !ok || d.User != pr.User || (d.Revoked && d.RevokedSeq <= r.seq) {
+		// to pre-revoke someone else's device id. Skip a revoke if we already
+		// hold one at least as early in both seq and signed time.
+		if !ok || d.User != pr.User || (d.Revoked && d.RevokedSeq <= r.seq && d.RevokedTime != 0 && d.RevokedTime <= pr.Time) {
 			continue
 		}
 		valid := false
+		var signedAt int64
 		for _, p := range pinsOf(pr.User) {
 			if v, err := r.s.VerifyDeviceRevoke(sid, p); err == nil && v.User == pr.User && v.Dev == pr.Dev {
-				valid = true
+				valid, signedAt = true, v.Time
 				break
 			}
 		}
@@ -510,12 +512,12 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 					continue
 				}
 				if v, err := r.s.VerifyDeviceRevokeByDevice(sid, o.Ed25519[:]); err == nil && v.User == pr.User && v.Dev == pr.Dev {
-					valid = true
+					valid, signedAt = true, v.Time
 					break
 				}
 			}
 		}
-		if valid && ts.RevokeDeviceAt(sid, pr.Dev, r.seq) == nil {
+		if valid && ts.RevokeDeviceAtTime(sid, pr.Dev, r.seq, signedAt) == nil {
 			changed = true
 		}
 	}
@@ -553,8 +555,15 @@ func (c *Client) validateBundle(sid e2ecrypto.ServerID, ch proto.Channel, epoch 
 	if err != nil {
 		return eb, fmt.Errorf("epoch %d: bundle signature doesn't verify", epoch)
 	}
+	// Invalid if EITHER the server's seq order OR the bundle's own signed
+	// time puts it after a signed revoke of its device: a server can't
+	// reorder past both (docs/E2E.md step 6). A revoke whose time we don't
+	// know (0) is judged by seq alone.
 	if by.Revoked && by.RevokedSeq < cb.seq {
 		return eb, fmt.Errorf("epoch %d: signed by a revoked device", epoch)
+	}
+	if by.Revoked && by.RevokedTime != 0 && eb.Time >= by.RevokedTime {
+		return eb, fmt.Errorf("epoch %d: signed after its device was revoked", epoch)
 	}
 	if prev == nil {
 		allowed := by.User == ch.Creator

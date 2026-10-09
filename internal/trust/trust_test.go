@@ -863,6 +863,51 @@ func TestRevokeSeqKeepsEarliest(t *testing.T) {
 	}
 }
 
+func TestRevokeTimeKeepsEarliestKnown(t *testing.T) {
+	s, _ := newStore(t)
+	d := device(t, bob)
+	if err := s.PutDevice(sidA, d); err != nil {
+		t.Fatal(err)
+	}
+	for _, at := range []int64{5000, 0, 3000, 9000} { // 0 = unknown, never wins
+		if err := s.RevokeDeviceAtTime(sidA, d.ID, 40, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _, _ := s.Device(sidA, d.ID); !got.Revoked || got.RevokedSeq != 40 || got.RevokedTime != 3000 {
+		t.Fatalf("revoked %v seq %d time %d, want 40 and 3000", got.Revoked, got.RevokedSeq, got.RevokedTime)
+	}
+}
+
+// A v2 file (step 6 before revoke times) gains revoked_devices.time and
+// keeps its revokes.
+func TestMigrateV2(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "tc")
+	os.MkdirAll(home, 0o700)
+	s0 := open(t, home)
+	d := device(t, bob)
+	if err := s0.PutDevice(sidA, d); err != nil {
+		t.Fatal(err)
+	}
+	if err := s0.RevokeDeviceAt(sidA, d.ID, 7); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{`ALTER TABLE revoked_devices DROP COLUMN time`, `PRAGMA user_version = 2`} {
+		if _, err := s0.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s0.Close()
+
+	s := open(t, home)
+	if err := s.RevokeDeviceAtTime(sidA, d.ID, 7, 123); err != nil {
+		t.Fatalf("time column missing: %v", err)
+	}
+	if got, _, _ := s.Device(sidA, d.ID); !got.Revoked || got.RevokedSeq != 7 || got.RevokedTime != 123 {
+		t.Fatalf("after migration: %+v", got)
+	}
+}
+
 func TestEpochsAndKeys(t *testing.T) {
 	s, home := newStore(t)
 	const ch = 4

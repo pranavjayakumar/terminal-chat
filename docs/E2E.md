@@ -184,7 +184,7 @@ excludes e2e. Webhooks into e2e forbidden. Delete/edit scrub messages AND origin
 ### 13.6 Events
 `device.new {cert, endorse?}` (all) · `device.revoke {revoke}` (all) · `key.epoch {bundle}` (members at
 seq; after chan.join, after chan.leave) · `key.share` (members) · `msg.*`/`react.*` gain `enc?`.
-`Channel += {e2e, epoch, creator?}`; `Message += {enc?}` (body "" when enc). Snapshot += `devs`, `revoked`, `keys: [{bundle, seq}]`. A device revoke invalidates only bundles whose seq is after the revoke event's seq.
+`Channel += {e2e, epoch, creator?}`; `Message += {enc?}` (body "" when enc). Snapshot += `devs`, `revoked`, `keys: [{bundle, seq}]`. A device revoke invalidates only bundles whose seq is after the revoke event's seq, or whose signed `time` is at or after the revoke's signed `time` (a client rejects a bundle on either).
 
 ### 13.7–13.8
 Ephemeral `key.need {chan, epoch, dev}` (≤ 1/chan/30 s) → members answer with `key.share`.

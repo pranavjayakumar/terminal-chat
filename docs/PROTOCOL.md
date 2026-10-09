@@ -681,6 +681,14 @@ device); bundles at or before r stay valid, and the revoked device's
 earlier keys are expected history. Clients order the two by these seqs
 (`key.fetch` `seqs`, snapshot `keys[].seq`, event seqs).
 
+A *client* additionally rejects a bundle (an alarm, §13.3 client validity)
+whose own signed `time` is at or after the signed `time` of a verified
+`DeviceRevoke` of its `by` device, whatever the seqs say: a bundle is invalid
+if either the server's seq order or the signed times put it after the revoke,
+so a server that misorders seqs cannot rescue a bundle made after the revoke.
+With several valid revokes of one device the earliest seq and the earliest
+time apply. (Boxes to revoked devices are still judged by seq alone.)
+
 A channel's current bundle is **stale** (encrypted sends will need a
 rotation first, §13.4) when there is none yet, its roster isn't the current
 non-disabled members, or it boxes a revoked device. A newly registered
