@@ -32,6 +32,7 @@ const (
 	modePanePick
 	modeSharePreview
 	modeActivity
+	modeViewer
 )
 
 // pane is a scrollable message list: a channel (root 0) or a thread.
@@ -94,6 +95,7 @@ type Model struct {
 	ctrlC        bool
 	escAt        time.Time // first Esc on a non-empty draft
 	helpScroll   int
+	view         viewer
 
 	sw     switcher
 	search searchState
@@ -922,6 +924,12 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 	case modeHelp:
 		m.helpKey(key)
 		return nil
+	case modeViewer:
+		if key == kSelCopy {
+			return m.copyCmd(strings.Join(m.view.lines, "\n"))
+		}
+		m.viewerKey(key)
+		return nil
 	case modeConfirmDelete:
 		m.mode = modeSelect
 		m.clearNotice()
@@ -1338,6 +1346,9 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 			}
 			return infoMsg("pinned"), m.c.Pin(ctx, id)
 		}), true
+	case kSelView:
+		m.openViewer(sel)
+		return nil, true
 	}
 	return nil, false
 }
