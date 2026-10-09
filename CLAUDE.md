@@ -3,6 +3,13 @@
 A lightweight team chat that lives in the terminal (and in herdr panes).
 One Go binary is both client (`tc`) and server (`tc server`). Mac + Linux.
 
+## Product bar (from the owner)
+
+Lightweight · feature-rich but shipped iteratively (every feature lands with no known bugs) ·
+battle-tested (adversarial + chaos + live tests, not just unit tests) · seamless to use ·
+one-step onboarding · end-to-end encrypted · blazing fast. When these conflict, prefer
+correctness and speed over adding another feature.
+
 ## Principles
 
 1. **Small and fast.** Cold start < 50 ms, idle RSS < 30 MB, binary < 20 MB. No new
