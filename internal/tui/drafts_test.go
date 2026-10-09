@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -272,4 +273,26 @@ func TestEditAfterJumpKeepsTheDraft(t *testing.T) {
 			t.Fatalf("jumpTo: editing %d input %q", m.editing, m.input.Value())
 		}
 	})
+}
+
+// A failed write must not forget the draft: it stays dirty and is retried.
+func TestDraftFlushKeepsDirtyUntilSaved(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	f.setErr = errors.New("database is locked")
+	typeVia(m, "precious words")
+	m.Update(draftSaveMsg{})
+	if !m.noticeErr || !strings.Contains(m.notice, "database is locked") {
+		t.Fatalf("no error shown: %q", m.notice)
+	}
+	if !m.draftDirty[m.dk] {
+		t.Fatal("draft was marked clean although the write failed")
+	}
+	f.setErr = nil
+	m.Update(draftSaveMsg{})
+	if got := f.draft(10, 0); got != "precious words" {
+		t.Fatalf("retry didn't save: %q", got)
+	}
+	if len(m.draftDirty) != 0 {
+		t.Fatalf("still dirty after a good write: %v", m.draftDirty)
+	}
 }

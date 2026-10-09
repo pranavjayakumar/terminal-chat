@@ -35,6 +35,7 @@ type fakeClient struct {
 	aways    []bool
 	drafts   map[[2]uint64]string
 	words    []string
+	setErr   error // SetDraft fails with this
 	activity []client.ActivityItem
 }
 
@@ -216,6 +217,9 @@ func (f *fakeClient) Drafts() []client.Draft {
 func (f *fakeClient) SetDraft(ch, thread uint64, body string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.setErr != nil {
+		return f.setErr
+	}
 	if f.drafts == nil {
 		f.drafts = map[[2]uint64]string{}
 	}

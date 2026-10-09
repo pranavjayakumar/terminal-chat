@@ -91,12 +91,15 @@ func (m *Model) setDraft(key draftKey, val string) {
 	m.draftDirty[key] = true
 }
 
+// flushDrafts writes the changed drafts. A draft stays dirty until its
+// write succeeds, so the next flush retries it.
 func (m *Model) flushDrafts() {
 	for key := range m.draftDirty {
-		delete(m.draftDirty, key)
 		if err := m.c.SetDraft(key.ch, key.root, m.drafts[key]); err != nil {
 			m.setErr("", err)
+			continue
 		}
+		delete(m.draftDirty, key)
 	}
 }
 
