@@ -270,7 +270,9 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		u.New = append(u.New, m)
 	case proto.KMsgEdit:
 		var d proto.MsgEdit
-		if !decode(&d) {
+		// An empty body marks an edit the server scrubbed because a later
+		// edit or delete superseded it (PROTOCOL.md §6).
+		if !decode(&d) || d.Body == "" {
 			return nil
 		}
 		if _, err := tx.Exec(`UPDATE msgs SET body = ?, edited = ? WHERE id = ?`, d.Body, d.Edited, d.Msg); err != nil {
