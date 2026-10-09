@@ -401,8 +401,18 @@ func (r *renderer) body(m client.Message, bw int) []string {
 	if m.Deleted {
 		return []string{st.deleted.Render(truncate("message deleted", bw))}
 	}
-	text := sanitize.Text(m.Body)
+	// Encrypted channels: what can't be shown, and plaintext that may not
+	// be what its author wrote (PROTOCOL §13.4).
 	var out []string
+	switch m.Sec {
+	case client.SecWaiting:
+		return []string{st.dim.Render(truncate("🔒 waiting for key", bw))}
+	case client.SecInvalid:
+		return []string{st.failed.Render(truncate("⚠ invalid encrypted message (hidden)", bw))}
+	case client.SecInserted:
+		out = append(out, st.failed.Render(truncate("⚠ unencrypted, inserted by server", bw)))
+	}
+	text := sanitize.Text(m.Body)
 	lastCode := false
 	for _, sg := range splitFences(strings.Split(text, "\n")) {
 		if sg.code {
@@ -429,8 +439,7 @@ func (r *renderer) body(m client.Message, bw int) []string {
 	if len(out) == 0 {
 		out = []string{""}
 	}
-	if m.Edited != 0 {
-		e := st.edited.Render(truncate("(edited)", bw))
+	suffix := func(e string) {
 		if n := len(out) - 1; !lastCode && strWidth(out[n])+1+strWidth(e) <= bw {
 			if out[n] != "" {
 				out[n] += " "
@@ -439,6 +448,12 @@ func (r *renderer) body(m client.Message, bw int) []string {
 		} else {
 			out = append(out, e)
 		}
+	}
+	if m.Edited != 0 {
+		suffix(st.edited.Render(truncate("(edited)", bw)))
+	}
+	if m.Sec == client.SecLegacy {
+		suffix(st.dim.Render(truncate("unencrypted (legacy)", bw)))
 	}
 	return out
 }
@@ -561,11 +576,12 @@ type renderKey struct {
 	reacts  string
 	width   int
 	header  bool
+	sec     client.Sec // a waiting message changes when it decrypts
 }
 
 func keyFor(m client.Message, w int, header bool) renderKey {
 	k := renderKey{id: m.ID, local: m.Local, edited: m.Edited, deleted: m.Deleted, pending: m.Pending,
-		failed: m.Failed, replies: m.Replies, pinned: m.Pinned, width: w, header: header}
+		failed: m.Failed, replies: m.Replies, pinned: m.Pinned, width: w, header: header, sec: m.Sec}
 	if len(m.Reactions) > 0 {
 		keys := make([]string, 0, len(m.Reactions))
 		for e, us := range m.Reactions {

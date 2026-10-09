@@ -76,6 +76,8 @@ type Backend interface {
 	Remind(ctx context.Context, at time.Time, text string, ch uint64) (uint64, error)
 	Reminders(ctx context.Context) ([]proto.Reminder, error)
 	DeleteReminder(ctx context.Context, id uint64) error
+	// E2EStatus is an encrypted channel's key state (Off for others).
+	E2EStatus(ch uint64) client.E2EStatus
 }
 
 var _ Backend = (*client.Client)(nil)

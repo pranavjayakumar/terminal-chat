@@ -66,6 +66,7 @@ type Model struct {
 	me        proto.User
 	status    client.Status
 	chans     []client.ChannelView
+	e2e       map[uint64]client.E2EStatus // non-public channels we're in, refreshed with chans
 	users     map[uint64]proto.User
 	userList  []proto.User
 	presence  map[uint64]client.Presence
@@ -296,6 +297,14 @@ func (m *Model) reloadPresence() {
 
 func (m *Model) reloadChans() {
 	m.chans = m.c.Channels()
+	m.e2e = map[uint64]client.E2EStatus{}
+	for _, v := range m.chans {
+		if v.Member && v.Kind != proto.ChanPublic {
+			if st := m.c.E2EStatus(v.ID); st.State != client.E2EOff {
+				m.e2e[v.ID] = st
+			}
+		}
+	}
 	m.refreshHighlights()
 	m.refreshMentionNames()
 	if m.active != 0 {

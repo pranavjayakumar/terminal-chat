@@ -15,6 +15,7 @@ import (
 	"github.com/mattn/go-runewidth"
 	"github.com/rivo/uniseg"
 
+	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
 )
@@ -160,6 +161,11 @@ func (m *Model) submit() tea.Cmd {
 	p := m.focus()
 	if !p.open() {
 		m.setInfo("no channel open — Ctrl-K to pick one")
+		return nil
+	}
+	if st := m.e2e[p.ch]; st.State == client.E2EAlarm {
+		// Input kept: nothing is sent while the channel's keys are suspect.
+		m.setErr("", fmt.Errorf("not sent: this channel's encryption is in alarm (%s)", sanitize.Line(st.Detail)))
 		return nil
 	}
 	if err := m.c.Send(p.ch, body, p.root); err != nil {
