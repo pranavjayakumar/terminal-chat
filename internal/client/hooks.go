@@ -2,8 +2,12 @@ package client
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/skailama/tc/internal/proto"
 )
@@ -22,12 +26,52 @@ func migrateBots(db *sql.DB) error {
 	return nil
 }
 
-// CreateHook creates an incoming webhook posting into ch as bot user name.
-// url is secret; curl is a ready-to-run command for it.
-func (c *Client) CreateHook(ctx context.Context, ch uint64, name string) (url, curl string, err error) {
+// NewHook is a created webhook. Curl is a ready-to-paste command that the
+// client built from the validated URL and pin; it reads the URL from
+// $TC_HOOK_URL so the secret stays out of shell history and ps.
+type NewHook struct {
+	ID   uint64
+	Name string // the bot user's name
+	URL  string // secret
+	Pin  string // curl --pinnedpubkey form
+	Curl string
+}
+
+var (
+	hookURLRE = regexp.MustCompile(`^https://[A-Za-z0-9.:\[\]-]+/hooks/[a-z2-7]+$`)
+	hookPinRE = regexp.MustCompile(`^sha256//[A-Za-z0-9+/]+={0,2}$`)
+)
+
+// hookCurl builds the curl command for a hook. url and pin come from the
+// server, so they are checked to be exactly what they claim: the command
+// ends up pasted into a shell.
+func hookCurl(url, pin string) (string, error) {
+	if !hookURLRE.MatchString(url) {
+		return "", fmt.Errorf("server returned a malformed webhook URL")
+	}
+	b64, _ := strings.CutPrefix(pin, "sha256//")
+	if raw, err := base64.StdEncoding.DecodeString(b64); !hookPinRE.MatchString(pin) || err != nil || len(raw) != sha256.Size {
+		return "", fmt.Errorf("server returned a malformed webhook pin")
+	}
+	return "# export TC_HOOK_URL='" + url + "'\n" +
+		`curl -fsS -k --pinnedpubkey '` + pin + `' -H 'Content-Type: application/json' -d '{"text":"hello from a webhook"}' "$TC_HOOK_URL"` + "\n", nil
+}
+
+// CreateHook creates an incoming webhook posting into ch as a bot user
+// named after name (the server appends "-bot").
+func (c *Client) CreateHook(ctx context.Context, ch uint64, name string) (NewHook, error) {
 	var r proto.HookCreateRes
-	err = c.call(ctx, proto.OpHookCreate, proto.HookCreateArgs{Chan: ch, Name: name}, &r, nil)
-	return r.URL, r.Curl, err
+	if err := c.call(ctx, proto.OpHookCreate, proto.HookCreateArgs{Chan: ch, Name: name}, &r, nil); err != nil {
+		return NewHook{}, err
+	}
+	if !proto.ValidName(r.Name) {
+		return NewHook{}, fmt.Errorf("server returned a malformed bot name")
+	}
+	curl, err := hookCurl(r.URL, r.Pin)
+	if err != nil {
+		return NewHook{}, err
+	}
+	return NewHook{ID: r.ID, Name: r.Name, URL: r.URL, Pin: r.Pin, Curl: curl}, nil
 }
 
 // ListHooks lists webhooks in channels we belong to (all, for admins).

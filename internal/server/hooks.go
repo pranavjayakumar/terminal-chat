@@ -234,11 +234,6 @@ func ValidPublicAddr(addr string) error {
 	return nil
 }
 
-func (s *Server) hookCurl(url string) string {
-	return fmt.Sprintf(`curl -fsS -k --pinnedpubkey '%s' -H 'Content-Type: application/json' -d '{"text":"hello from a webhook"}' '%s'`,
-		s.hk.curl, url)
-}
-
 // hookOp dispatches hook.* ops; ok is false for any other op.
 func (s *Server) hookOp(ctx context.Context, u proto.User, op string, args proto.Raw) (res any, ok bool, err error) {
 	switch op {
@@ -339,7 +334,7 @@ func (s *Server) opHookCreate(ctx context.Context, u proto.User, a proto.HookCre
 		return nil, err
 	}
 	res.URL = s.hookURL(token)
-	res.Curl = s.hookCurl(res.URL)
+	res.Pin = s.hk.curl
 	return res, nil
 }
 

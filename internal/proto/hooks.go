@@ -38,11 +38,13 @@ type HookCreateArgs struct {
 	Name string `msgpack:"name"`
 }
 
+// HookCreateRes is the result of hook.create. Clients build any command
+// from URL and Pin themselves, after validating both (PROTOCOL.md §12).
 type HookCreateRes struct {
 	ID   uint64 `msgpack:"id"`
 	Name string `msgpack:"name"` // the bot user's name (with BotSuffix)
 	URL  string `msgpack:"url"`
-	Curl string `msgpack:"curl"`
+	Pin  string `msgpack:"pin"` // curl --pinnedpubkey form: "sha256//" + base64
 }
 
 // Hook describes a webhook; its secret URL is only returned by hook.create.

@@ -89,7 +89,7 @@ func (c *tclient) createHook(ch uint64, name string) proto.HookCreateRes {
 	c.t.Helper()
 	var r proto.HookCreateRes
 	c.ok(proto.OpHookCreate, proto.HookCreateArgs{Chan: ch, Name: name}, &r)
-	if r.ID == 0 || !strings.Contains(r.URL, proto.HookPath) || !strings.Contains(r.Curl, r.URL) || !strings.HasSuffix(r.Name, proto.BotSuffix) {
+	if r.ID == 0 || !strings.Contains(r.URL, proto.HookPath) || !strings.HasPrefix(r.Pin, "sha256//") || !strings.HasSuffix(r.Name, proto.BotSuffix) {
 		c.t.Fatalf("bad hook.create result %+v", r)
 	}
 	return r

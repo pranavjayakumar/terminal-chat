@@ -152,7 +152,7 @@ session **before** the RES. The `seq` in a RES is informational: clients advance
 | `invite.create` | `{user?: u64}` (admin) | `{code: str}` |
 | `user.disable` | `{user}` (admin) | `{}` — closes their sessions with BYE `revoked` |
 | `user.update` | `{display: str}` (self) | `{seq}` — emits `user.update`; unchanged → `{seq: 0}` |
-| `hook.create` | `{chan, name}` | `{id: u64, name: str, url: str, curl: str}` (cap `hooks`, §12) |
+| `hook.create` | `{chan, name}` | `{id: u64, name: str, url: str, pin: str}` (cap `hooks`, §12) |
 | `hook.list` | `{}` | `{hooks: [{id, chan, name, created_by: u64, created: i64}]}` |
 | `hook.delete` | `{id}` | `{}` |
 
@@ -340,7 +340,12 @@ macOS curl) can't verify Ed25519. The server picks it for any ClientHello that d
 offer `tc/1`. Callers pin it like tc clients pin theirs: curl
 `-k --pinnedpubkey 'sha256//<b64>'`, where `<b64>` is the SPKI SHA-256 of the HTTP
 certificate in standard base64 with padding (`-k` only skips CA/hostname checks; the pin
-is still enforced). `hook.create` returns a ready-made `curl` command.
+is still enforced). `hook.create` returns `url` and `pin` (the `sha256//<b64>` form) as
+separate fields and no command: a client that offers one builds it itself, after checking
+`url` matches `^https://[A-Za-z0-9.:\[\]-]+/hooks/[a-z2-7]+$` and `pin` is `sha256//` plus
+standard base64 of 32 bytes, so a hostile server can't smuggle shell into it. tc's command
+reads the URL from `$TC_HOOK_URL` (set by a commented `export` line) to keep the secret out
+of shell history and `ps`.
 
 **Request.** `Content-Type: application/json` → body `{"text": str}`; any other type →
 the raw body is the text. Reads at most 128 KiB (→ 413). The text must be valid UTF-8

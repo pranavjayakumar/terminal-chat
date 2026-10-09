@@ -11,14 +11,16 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
+	"github.com/skailama/tc/internal/sanitize"
 )
 
 // HookBackend is implemented by backends that support webhooks
 // (*client.Client does). It's separate from Backend so test fakes and
 // older backends needn't implement it.
 type HookBackend interface {
-	CreateHook(ctx context.Context, ch uint64, name string) (url, curl string, err error)
+	CreateHook(ctx context.Context, ch uint64, name string) (client.NewHook, error)
 	ListHooks(ctx context.Context) ([]proto.Hook, error)
 	DeleteHook(ctx context.Context, id uint64) error
 }
@@ -68,14 +70,15 @@ func (m *Model) hookCommand(c command) (cmd tea.Cmd, ok bool, err error) {
 		}
 		ch, out := m.active, m.opt.Out
 		return m.callThen("webhook", func(ctx context.Context) (tea.Msg, error) {
-			_, curl, err := be.CreateHook(ctx, ch, name)
+			h, err := be.CreateHook(ctx, ch, name)
 			if err != nil {
 				return nil, err
 			}
 			if out != nil {
-				_, _ = out.Write([]byte("\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(curl)) + "\a"))
+				_, _ = out.Write([]byte("\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(h.Curl)) + "\a"))
 			}
-			return infoMsg("webhook created; curl command copied (keep it secret): " + curl), nil
+			// Never the URL: it's the secret, and screens get shared.
+			return infoMsg("webhook " + sanitize.Line(h.Name) + " created · curl command copied"), nil
 		}), true, nil
 	case "webhooks":
 		titles := make(map[uint64]string, len(m.chans))

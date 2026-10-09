@@ -19,11 +19,14 @@ type hookFake struct {
 	deleted []uint64
 }
 
-const fakeCurl = "curl -fsS -k --pinnedpubkey 'sha256//x=' -d '{}' 'https://h:7443/hooks/abc'"
+const (
+	fakeURL  = "https://h:7443/hooks/abc"
+	fakeCurl = "# export TC_HOOK_URL='" + fakeURL + "'\ncurl -fsS -k --pinnedpubkey 'sha256//x=' -d '{}' \"$TC_HOOK_URL\"\n"
+)
 
-func (f *hookFake) CreateHook(_ context.Context, ch uint64, name string) (string, string, error) {
+func (f *hookFake) CreateHook(_ context.Context, ch uint64, name string) (client.NewHook, error) {
 	f.created = append(f.created, name)
-	return "https://h:7443/hooks/abc", fakeCurl, nil
+	return client.NewHook{ID: 1, Name: name + "-bot", URL: fakeURL, Pin: "sha256//x=", Curl: fakeCurl}, nil
 }
 
 func (f *hookFake) ListHooks(context.Context) ([]proto.Hook, error) {
@@ -61,7 +64,8 @@ func TestWebhookCommands(t *testing.T) {
 	if len(f.created) != 1 || f.created[0] != "ci" {
 		t.Fatalf("created %v", f.created)
 	}
-	if !strings.Contains(m.notice, "pinnedpubkey") {
+	// The notice never shows the secret URL (L3).
+	if m.notice != "webhook ci-bot created · curl command copied" || strings.Contains(m.View(), "/hooks/") {
 		t.Fatalf("notice %q", m.notice)
 	}
 	if !strings.Contains(m.opt.Out.(*syncBuf).String(), base64.StdEncoding.EncodeToString([]byte(fakeCurl))) {

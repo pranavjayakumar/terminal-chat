@@ -20,12 +20,15 @@ func TestWebhook(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	url, curl, err := alice.CreateHook(ctx, gen, "ci")
+	nh, err := alice.CreateHook(ctx, gen, "ci")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(url, "https://"+addr+"/hooks/") || !strings.Contains(curl, url) {
-		t.Fatalf("url %q curl %q", url, curl)
+	url := nh.URL
+	// The client-built command reads the URL from the environment (L3).
+	if !strings.HasPrefix(url, "https://"+addr+"/hooks/") || nh.Name != "ci-bot" ||
+		!strings.Contains(nh.Curl, "# export TC_HOOK_URL='"+url+"'\n") || !strings.Contains(nh.Curl, `"$TC_HOOK_URL"`) {
+		t.Fatalf("hook %+v", nh)
 	}
 
 	hc := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: transport.HTTPSConfig(s.HTTPPin())}}

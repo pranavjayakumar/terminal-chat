@@ -60,21 +60,23 @@ auto-away (0 disables). Details in [docs/TUI.md](docs/TUI.md).
 
 CI jobs, scripts and agents can post into a channel with a plain HTTPS POST — no tc
 install or SSH key needed. In the channel, run `/webhook ci` (any member can). tc
-creates a bot user `ci-bot` (bot names always end in `-bot`), adds it to the channel, and copies a ready-made curl command
-to your clipboard:
+creates a bot user `ci-bot` (bot names always end in `-bot`), adds it to the channel,
+and copies a ready-made curl command to your clipboard. The secret URL is only in the
+commented `export` line, never on screen, and the command reads it from the environment
+so it stays out of your shell history and `ps`:
 
 ```sh
-curl -fsS -k --pinnedpubkey 'sha256//BASE64PIN=' \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"deploy finished ✅"}' \
-  'https://chat.example.com:7443/hooks/abcdefghijklmnopqrstuvwxyz'
+# export TC_HOOK_URL='https://chat.example.com:7443/hooks/abcdefghijklmnopqrstuvwxyz'
+curl -fsS -k --pinnedpubkey 'sha256//BASE64PIN=' -H 'Content-Type: application/json' -d '{"text":"hello from a webhook"}' "$TC_HOOK_URL"
 ```
 
-- The URL is the secret — treat it like a password. `/webhooks` lists hooks,
-  `/webhook-delete <id>` revokes one at once.
+- The URL is the secret — treat it like a password: put it in a secret store or run the
+  `export` line yourself (without the `#`). `/webhooks` lists hooks; `/webhook-delete <id>`
+  revokes one at once (any member of its channel can). Hooks stop working when their
+  creator leaves the channel or is disabled.
 - The server's certificate is self-signed; `--pinnedpubkey` pins it (`-k` only skips the
   CA/hostname check, the pin is still enforced).
-- Any other content type posts the raw body: `make test 2>&1 | tail -50 | curl … --data-binary @- URL`.
+- Any other content type posts the raw body: `make test 2>&1 | tail -50 | curl … --data-binary @- "$TC_HOOK_URL"`.
   ANSI colors are stripped; max 64 KiB.
 - Send `Idempotency-Key: <something unique>` to make retries safe.
 - Limit: 20 messages burst, then 1/s per hook, and hook messages count against their
