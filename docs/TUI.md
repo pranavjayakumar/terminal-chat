@@ -38,8 +38,8 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 - Every user-controlled string goes through `sanitize.Text`/`sanitize.Line` before Lip Gloss.
 - Markdown-lite only: ```` ``` ```` fenced blocks (left bar `┃`, no wrap reflow, horizontal truncation
   with `…`), inline `` `code` ``, `**bold**`, `_italic_`, URLs underlined. No headings, no tables.
-- `@me` mentions highlighted; whole message line gets a subtle marker (`▎` in the gutter) when it
-  mentions me or contains one of my highlight words.
+- `@me` mentions highlighted; the message gets a marker in the gutter: `▎` when it mentions me, `*`
+  when it only contains one of my highlight words.
 - Author colors: stable hash of user id into an 8-color palette that reads on dark and light terminals.
   Respect `NO_COLOR` (no colors, keep bold/dim).
 - Width math uses display width (runewidth), never byte or rune counts.
@@ -87,7 +87,13 @@ Unknown command → inline error, input kept.
   typing pauses otherwise; a crash can lose at most that last second of typing.
 - A dim `✎` after a channel's name in the sidebar (and in `Ctrl-K`) means it has a draft that the input
   isn't showing: another channel's, or the channel's own while one of its threads is open.
-- Edit text (`e`) is never a draft; abandoning an edit (`Esc`, switching channel) discards it.
+- Edit text (`e`) is never a draft. Starting an edit puts the input's text (for instance the draft a
+  jump left there) aside; saving, cancelling (`Esc`), switching channel, `Alt-A` or a jump ends the edit
+  and brings the draft back.
+- Several `tc` processes can share one cache: the slot a switch lands in is re-read from the cache
+  unless it has unsaved changes here, and the `✎` marks follow the cache on every channel update.
+  Draft text read from the cache goes through `sanitize.Text`. A failed write keeps the draft pending
+  and is retried.
 - Leaving a channel, a login on another account or a change of server identity drops its drafts.
 
 ## Highlight words
@@ -97,9 +103,12 @@ Unknown command → inline error, input kept.
   client cache (`highlights` table), local to this machine, kept across resets.
 - A message **by a person** (not mine, not a bot's, not deleted) containing a word — case-insensitive,
   **whole word**: `deploy` matches "Deploy failed" and `deploy-prod` but not `redeploy` or `deployment` —
-  is treated exactly like an `@mention`: a `▎` gutter marker in the log, `@` instead of a count on the
-  channel's unread badge (`ChannelView.Mention`), and the notification rules below, and it appears in the
-  activity view. Bot (webhook) messages never match, whatever they say.
+  is treated like an `@mention`: a `*` gutter marker in the log (an actual `@mention` keeps `▎`), `@`
+  instead of a count on the channel's unread badge (`ChannelView.Mention`), and the notification rules
+  below, and it appears in the activity view. Bot (webhook) messages never match, whatever they say, and
+  neither does text inside a fenced code block (pasted logs would match everything).
+- The words are re-read from the cache on every channel update, so a `/highlight` made in another pane
+  takes effect here without a restart; `/highlight` and `/unhighlight` work on the fresh list.
 
 ## Activity view
 
@@ -109,25 +118,38 @@ whole list over 10k cached messages, see `client.Activity`).
 
 ```
  activity — 4 items · ↑/↓ move, Enter jumps, Esc closes
- 10:49 · #general · carol · 🎉 on: nice, the deploy is out
- 10:46 · #general · carol · ↳ thanks, merging now
- 10:45 · @bob · bob · psst
- 10:44 · #general · bob · @ hey @alice can you look?
+•🎉 10:49 · #general · carol · on: nice, the deploy is out
+ ↳  10:46 · #general · carol · thanks, merging now
+ »  10:45 · @bob · bob · psst
+ @  10:44 · #general · bob · hey @alice can you look?
 ```
+
+The reason marker comes first. A dim `•` in the first column marks items newer than the last time the
+overlay was open (the time of the newest item shown is kept in the cache's `meta` table as
+`activity_seen`; nothing is dotted the very first time). Below 60 columns rows drop the time, below 48
+the author as well, and the channel name is cut to 10 cells; the title shrinks to
+`activity N · Enter · Esc`.
 
 | Kind | Marker | What counts |
 |---|---|---|
-| mention | `@ ` | a message by a person with `@me` |
-| highlight | `* ` | a message by a person with one of my highlight words |
-| reply | `↳ ` | a reply by someone else in a thread I started, or in one I had already replied to |
-| reaction | `<emoji> on: ` | someone else reacted to my message; the preview is my message |
-| DM | | any message by someone else in a direct message |
+| mention | `@` | a message by a person with `@me` |
+| highlight | `*` | a message by a person with one of my highlight words |
+| reply | `↳` | a reply by someone else in a thread I started, or in one I had already replied to |
+| reaction | the emoji (`on: …`) | someone else reacted to my message; the preview is my message |
+| DM | `»` | any message by someone else in a direct message |
 
 A message that fits several kinds is listed once, as the first of the order above. Never listed: my own
 messages, bots, deleted messages, channels I'm not in. Keys: `↑/↓` (`Ctrl-P/N`, `k/j`) move, `PgUp/PgDn`,
-`Home/End`, `Enter` jumps, `Esc`/`Alt-A`/`q` closes. **Enter** opens the channel (widening the loaded page
-if the message is old), opens the thread when the item is a reply, and selects the message (select mode).
-Every field is sanitized and the row is truncated to the width.
+`Home/End`, the mouse wheel (3 rows a notch), `Enter` jumps, `Esc`/`Alt-A`/`q` closes. Closing and
+reopening (also `Alt-A` from select mode after a jump) keeps the selection while the list is unchanged.
+**Enter** opens the channel, opens the thread when the item is a reply, and selects the message (select
+mode). An old message widens the loaded page only while the selection needs it (Esc, moving back into a
+normal page or leaving the channel restores the old limit); a thread reply whose history is still
+loading is selected when it arrives. Every field is sanitized and the row is truncated to the width.
+
+While open the list is re-read only when a message arrives in a channel I'm in (or the channels change),
+at most once a second. The mention, reply and DM scans cover the newest 5000 messages within 30 days of
+the newest one; a non-ASCII highlight word is matched in SQL (`tc_lower`) instead of decoding every row.
 
 Limit: reactions are only known from `react.add` events this client has seen (live or replayed). A server
 snapshot carries who reacted but not when, so reactions that predate the cache can't be placed in time
