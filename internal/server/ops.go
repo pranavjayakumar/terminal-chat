@@ -257,6 +257,10 @@ func (s *Server) opEdit(ctx context.Context, u proto.User, a proto.EditArgs) (an
 		if _, err := tx.ExecContext(ctx, `UPDATE messages SET body = ?, edited = ? WHERE id = ?`, a.Body, now, m.ID); err != nil {
 			return nil, err
 		}
+		m.Body, m.Edited = a.Body, now
+		if err := scrubMessageEvents(ctx, tx, m, ev.Seq); err != nil {
+			return nil, err
+		}
 		res.Seq = ev.Seq
 		return []proto.Event{ev}, nil
 	})
@@ -287,6 +291,10 @@ func (s *Server) opDelete(ctx context.Context, u proto.User, a proto.MsgArgs) (a
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM reactions WHERE msg = ?`, m.ID); err != nil {
+			return nil, err
+		}
+		m.Body, m.Deleted = "", true
+		if err := scrubMessageEvents(ctx, tx, m, 0); err != nil {
 			return nil, err
 		}
 		res.Seq = ev.Seq

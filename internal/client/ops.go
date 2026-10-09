@@ -122,7 +122,9 @@ func (c *Client) outboxLoop(ctx context.Context, s *session) {
 			continue
 		}
 		if err == nil {
-			_, err = c.db.Exec(`UPDATE outbox SET sent = 1 WHERE id = ?`, e.id)
+			// Record where the log stood at the first send; see matchOutbox.
+			_, err = c.db.Exec(`UPDATE outbox SET sent = COALESCE((SELECT v FROM meta WHERE k = 'last_seq'), 0) + 1
+				WHERE id = ? AND sent = 0`, e.id)
 		}
 		if err == nil {
 			_, err = s.call(ctx, proto.OpSend,
@@ -151,12 +153,23 @@ func (c *Client) outboxLoop(ctx context.Context, s *session) {
 	}
 }
 
-// sentHook removes an acknowledged entry on the read goroutine, right after
-// its msg.new event was applied, so the pending copy never coexists with the
-// real one in a published state.
+// sentHook settles an entry on the read goroutine when its RES arrives,
+// right after its msg.new event was applied. Success deletes it, so the
+// pending copy never coexists with the real one in a published state. A
+// failed send created no message, so a tentative match (matchOutbox) was
+// wrong and the entry shows again.
 func (c *Client) sentHook(e outboxEntry) func(proto.Res) error {
 	return func(r proto.Res) error {
 		if !r.OK {
+			res, err := c.db.Exec(`UPDATE outbox SET msg = 0 WHERE id = ? AND msg != 0`, e.id)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n > 0 {
+				u := Update{}
+				u.msgs(e.chan_)
+				c.post(u)
+			}
 			return nil
 		}
 		if _, err := c.db.Exec(`DELETE FROM outbox WHERE id = ?`, e.id); err != nil {

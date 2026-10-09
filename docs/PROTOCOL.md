@@ -196,7 +196,7 @@ Rules:
 ## 6. Events & sync
 
 The server keeps one **global, monotonically increasing `seq`** (u64) over an
-append-only event log.
+append-only event log (see *Edited and deleted text* for the one exception).
 
 ```
 Event = {seq: u64, kind: str, chan?: u64, time: i64, actor: u64, data: map}
@@ -224,6 +224,16 @@ commits, no more events for C reach U's sessions. A new member gets the full
 Channel in their `chan.join` event and fetches older messages with `history`.
 
 Seq values a client sees are therefore **not contiguous**; gaps are normal.
+
+### Edited and deleted text
+
+Edits and deletes rewrite the log so replay never resurrects replaced text
+(events keep their seq and kind; only `data` changes):
+- the message's `msg.new` (seq = message id) always carries its **current**
+  state — latest `body` and `edited`, or `body = ""`, `deleted = true`;
+- every superseded `msg.edit` of it (all of them once it is deleted) carries
+  `body = ""`. A real edit never has an empty body, so clients ignore a
+  `msg.edit` whose `body` is empty.
 
 ### Sync algorithm
 

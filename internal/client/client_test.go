@@ -905,6 +905,194 @@ func TestCloseStopsEverything(t *testing.T) {
 	}
 }
 
+func TestScrubbedEditIgnored(t *testing.T) {
+	testEnv(t)
+	fs := newFakeServer(t)
+	c := open(t, login(t, fs))
+	run(t, c)
+	fc := fs.accept()
+	fc.bootstrap()
+	// Replay of a superseded edit (body scrubbed), then the latest one.
+	fc.event(21, proto.KMsgEdit, general, bob, proto.MsgEdit{Msg: 10, Body: "", Edited: 5})
+	waitFor(t, "scrubbed edit", func() bool { return lastSeq(t, c) == 21 })
+	if got := bodies(c.Messages(general, 50)); got != "first,mine" {
+		t.Errorf("after scrubbed edit = %q", got)
+	}
+	fc.event(22, proto.KMsgEdit, general, bob, proto.MsgEdit{Msg: 10, Body: "first!", Edited: 6})
+	waitFor(t, "edit", func() bool { return lastSeq(t, c) == 22 })
+	if got := bodies(c.Messages(general, 50)); got != "first!,mine" {
+		t.Errorf("after edit = %q", got)
+	}
+}
+
+func flush(t *testing.T, c *Client) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func outboxLen(t *testing.T, c *Client) int {
+	t.Helper()
+	var n int
+	if err := c.db.QueryRow(`SELECT COUNT(*) FROM outbox`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestIdenticalSendsEachOnce(t *testing.T) {
+	testEnv(t)
+	fs := newFakeServer(t)
+	c := open(t, login(t, fs))
+	run(t, c)
+	fc := fs.accept()
+	fc.bootstrap()
+	waitFor(t, "online", online(c))
+
+	for range 2 {
+		if err := c.Send(general, "ok", 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := bodies(c.Messages(general, 50)); got != "first,mine,ok(pending),ok(pending)" {
+		t.Fatalf("queued = %q", got)
+	}
+	var nonces [][]byte
+	for i, want := range []string{"first,mine,ok,ok(pending)", "first,mine,ok,ok"} {
+		var a proto.SendArgs
+		r := fc.expectReq(proto.OpSend, &a)
+		nonces = append(nonces, a.Nonce)
+		id := uint64(50 + i)
+		fc.event(id, proto.KMsgNew, general, alice, proto.Message{ID: id, Chan: general, Author: alice, Body: "ok"})
+		waitFor(t, "event", func() bool { return lastSeq(t, c) == id })
+		if got := bodies(c.Messages(general, 50)); got != want {
+			t.Errorf("send %d, between event and RES = %q, want %q", i, got, want)
+		}
+		fc.ok(r.ID, proto.SendRes{Msg: id})
+		waitFor(t, "RES", func() bool { return outboxLen(t, c) == 1-i })
+		if got := bodies(c.Messages(general, 50)); got != want {
+			t.Errorf("send %d, after RES = %q, want %q", i, got, want)
+		}
+	}
+	if bytes.Equal(nonces[0], nonces[1]) {
+		t.Error("identical sends share a nonce")
+	}
+	flush(t, c)
+	if got := bodies(c.Messages(general, 50)); got != "first,mine,ok,ok" {
+		t.Errorf("final = %q", got)
+	}
+}
+
+// The connection drops after the EVENT but before the RES; the retry's RES
+// (same nonce, no new event) settles it. The text repeats an older message
+// of ours, which must not interfere.
+func TestLostResRetriedShowsOnce(t *testing.T) {
+	testEnv(t)
+	fs := newFakeServer(t)
+	c := open(t, login(t, fs))
+	run(t, c)
+	fc := fs.accept()
+	fc.bootstrap()
+	waitFor(t, "online", online(c))
+
+	if err := c.Send(general, "mine", 0); err != nil {
+		t.Fatal(err)
+	}
+	var a1 proto.SendArgs
+	fc.expectReq(proto.OpSend, &a1)
+	fc.event(50, proto.KMsgNew, general, alice, proto.Message{ID: 50, Chan: general, Author: alice, Body: "mine"})
+	waitFor(t, "event", func() bool { return lastSeq(t, c) == 50 })
+	fc.conn.Close()
+	waitFor(t, "offline", func() bool { return c.Status().State != Online })
+	if got := bodies(c.Messages(general, 50)); got != "first,mine,mine" {
+		t.Errorf("offline, RES lost = %q", got)
+	}
+
+	fc2 := fs.accept()
+	r := fc2.expectReq(proto.OpSync, nil)
+	fc2.ok(r.ID, proto.SyncRes{Head: 50})
+	var a2 proto.SendArgs
+	r = fc2.expectReq(proto.OpSend, &a2)
+	if !bytes.Equal(a1.Nonce, a2.Nonce) {
+		t.Fatal("retry used a new nonce")
+	}
+	if got := bodies(c.Messages(general, 50)); got != "first,mine,mine" {
+		t.Errorf("while retrying = %q", got)
+	}
+	fc2.ok(r.ID, proto.SendRes{Msg: 50})
+	flush(t, c)
+	if n := outboxLen(t, c); n != 0 {
+		t.Errorf("outbox has %d entries", n)
+	}
+	if got := bodies(c.Messages(general, 50)); got != "first,mine,mine" {
+		t.Errorf("after retry = %q", got)
+	}
+}
+
+// The connection drops before the EVENT too; sync replays it, and the
+// pending copy must already be hidden when the retry goes out.
+func TestLostEventReplayedShowsOnce(t *testing.T) {
+	testEnv(t)
+	fs := newFakeServer(t)
+	c := open(t, login(t, fs))
+	run(t, c)
+	fc := fs.accept()
+	fc.bootstrap()
+	waitFor(t, "online", online(c))
+
+	if err := c.Send(general, "hi", 0); err != nil {
+		t.Fatal(err)
+	}
+	fc.expectReq(proto.OpSend, nil)
+	fc.conn.Close()
+
+	fc2 := fs.accept()
+	r := fc2.expectReq(proto.OpSync, nil)
+	fc2.event(50, proto.KMsgNew, general, alice, proto.Message{ID: 50, Chan: general, Author: alice, Body: "hi"})
+	fc2.ok(r.ID, proto.SyncRes{Head: 50})
+	r = fc2.expectReq(proto.OpSend, nil)
+	if got := bodies(c.Messages(general, 50)); got != "first,mine,hi" {
+		t.Errorf("after replay = %q", got)
+	}
+	fc2.ok(r.ID, proto.SendRes{Msg: 50})
+	flush(t, c)
+	if got := bodies(c.Messages(general, 50)); got != "first,mine,hi" || outboxLen(t, c) != 0 {
+		t.Errorf("after retry = %q, outbox %d", got, outboxLen(t, c))
+	}
+}
+
+// A message of ours from elsewhere can tentatively hide the in-flight entry,
+// but a failed RES shows it again.
+func TestWrongMatchUndoneByFailedRes(t *testing.T) {
+	testEnv(t)
+	fs := newFakeServer(t)
+	c := open(t, login(t, fs))
+	run(t, c)
+	fc := fs.accept()
+	fc.bootstrap()
+	waitFor(t, "online", online(c))
+
+	if err := c.Send(general, "a", 0); err != nil {
+		t.Fatal(err)
+	}
+	r := fc.expectReq(proto.OpSend, nil)
+	fc.event(50, proto.KMsgNew, general, alice, proto.Message{ID: 50, Chan: general, Author: alice, Body: "other device"})
+	fc.fail(r.ID, proto.ErrRateLimited)
+	waitFor(t, "unhidden", func() bool {
+		return bodies(c.Messages(general, 50)) == "first,mine,other device,a(pending)"
+	})
+	r = fc.expectReq(proto.OpSend, nil)
+	fc.event(51, proto.KMsgNew, general, alice, proto.Message{ID: 51, Chan: general, Author: alice, Body: "a"})
+	fc.ok(r.ID, proto.SendRes{Msg: 51})
+	flush(t, c)
+	if got := bodies(c.Messages(general, 50)); got != "first,mine,other device,a" {
+		t.Errorf("final = %q", got)
+	}
+}
+
 // TestBotMessagesNeverMention: a webhook bot's @mention or DM counts as
 // unread, never as a mention (L5).
 func TestBotMessagesNeverMention(t *testing.T) {
