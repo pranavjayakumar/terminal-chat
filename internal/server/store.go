@@ -361,7 +361,7 @@ func visibleChannels(ctx context.Context, q querier, u uint64) ([]proto.Channel,
 	return out, nil
 }
 
-const msgCols = `id, chan, author, body, thread, time, edited, deleted`
+const msgCols = `id, chan, author, body, thread, time, edited, deleted, enc`
 
 func scanMessages(ctx context.Context, q querier, query string, args ...any) ([]proto.Message, error) {
 	rows, err := q.QueryContext(ctx, query, args...)
@@ -371,7 +371,7 @@ func scanMessages(ctx context.Context, q querier, query string, args ...any) ([]
 	var out []proto.Message
 	for rows.Next() {
 		var m proto.Message
-		if err := rows.Scan(&m.ID, &m.Chan, &m.Author, &m.Body, &m.Thread, &m.Time, &m.Edited, &m.Deleted); err != nil {
+		if err := rows.Scan(&m.ID, &m.Chan, &m.Author, &m.Body, &m.Thread, &m.Time, &m.Edited, &m.Deleted, &m.Enc); err != nil {
 			rows.Close()
 			return nil, err
 		}

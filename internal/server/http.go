@@ -148,6 +148,10 @@ func (s *Server) hookHandler() http.Handler {
 				hookFail(w, http.StatusInternalServerError, proto.ErrInternal, "")
 				return
 			}
+			if pe == errHookE2E { // the hook is live, so this reveals nothing
+				hookFail(w, http.StatusForbidden, pe.Code, pe.Msg)
+				return
+			}
 			switch pe.Code {
 			case proto.ErrTooLarge:
 				hookFail(w, http.StatusRequestEntityTooLarge, pe.Code, "")

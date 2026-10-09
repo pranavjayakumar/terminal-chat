@@ -60,6 +60,7 @@ func migrateEpochs(db *sql.DB) error {
 		{"epochs", "seq", `INTEGER NOT NULL DEFAULT 0`},
 		{"epochs", "state", `BLOB`},
 		{"devices", "revoked_seq", `INTEGER`},
+		{"messages", "enc", `BLOB`}, // §13.4; never in msg_fts (body is "" then)
 	} {
 		if err := addColumn(db, c[0], c[1], c[2]); err != nil {
 			return err
@@ -540,6 +541,45 @@ func epochStale(ctx context.Context, q querier, ch uint64) (bool, error) {
 	var revoked int
 	err = q.QueryRowContext(ctx, revokedBoxesQuery(len(devs)), args...).Scan(&revoked)
 	return revoked > 0, err
+}
+
+// errHookE2E: webhooks can't post into encrypted channels (their text
+// comes from outside, and only members' devices can encrypt).
+var errHookE2E = proto.Errf(proto.ErrForbidden, "webhooks can't post into end-to-end encrypted channels")
+
+// checkEnc applies the encrypted-send rules (§13.5) that follow the
+// idempotency lookup: stale_epoch if enc isn't for the channel's current
+// epoch or that epoch's bundle is stale, then enc must be signed by an
+// active device of the caller. The server can't check anything inside it.
+func checkEnc(ctx context.Context, tx *sql.Tx, sid e2ecrypto.ServerID, user uint64, a proto.SendArgs,
+	e e2ecrypto.Enc, head epochHead) error {
+	if head.epoch == 0 || e.Epoch != head.epoch {
+		return staleEpoch(fmt.Sprintf("channel is at epoch %d", head.epoch))
+	}
+	stale, err := epochStale(ctx, tx, a.Chan)
+	if err != nil {
+		return err
+	}
+	if stale {
+		return staleEpoch("the channel's key must be rotated first")
+	}
+	if !bytes.Equal(e.EH[:], head.hash[:min(len(head.hash), e2ecrypto.IDSize)]) {
+		return badRequest("enc names another bundle of this epoch")
+	}
+	var owner uint64
+	var edPub, revoked []byte
+	err = tx.QueryRowContext(ctx, `SELECT user, ed25519, revoked FROM devices WHERE dev = ?`, e.Dev[:]).
+		Scan(&owner, &edPub, &revoked)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && (owner != user || revoked != nil)) {
+		return badRequest("enc is not from one of your active devices")
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := e2ecrypto.VerifyEnc(ed25519.PublicKey(edPub), sid, a.Chan, a.Enc); err != nil {
+		return badRequest("enc signature does not verify")
+	}
+	return nil
 }
 
 // revokedBoxesQuery counts the revoked devices among n bound ids: n point

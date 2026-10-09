@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
 )
@@ -206,9 +208,25 @@ func (s *Server) send(ctx context.Context, u proto.User, a proto.SendArgs, hook 
 	if len(a.Nonce) != 16 {
 		return nil, badRequest("nonce must be 16 bytes")
 	}
-	if err := validBody(a.Body); err != nil {
+	var encHdr e2ecrypto.Enc
+	if a.Enc != nil {
+		// Exactly one of body and enc (§13.4). Framing is checked before
+		// anything else: a malformed enc was never stored, so it can't be
+		// an idempotent retry.
+		if a.Body != "" {
+			return nil, badRequest("send has both body and enc")
+		}
+		if len(a.Enc) > proto.MaxEnc {
+			return nil, proto.Errf(proto.ErrTooLarge, "encrypted message too long")
+		}
+		var err error
+		if encHdr, err = e2ecrypto.ParseEnc(a.Enc); err != nil {
+			return nil, badRequest("malformed enc")
+		}
+	} else if err := validBody(a.Body); err != nil {
 		return nil, err
 	}
+	sid := s.sid()
 	var res proto.SendRes
 	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
 		if hook != nil {
@@ -216,15 +234,18 @@ func (s *Server) send(ctx context.Context, u proto.User, a proto.SendArgs, hook 
 				return nil, err
 			}
 		}
-		// Idempotent retry: same (author, nonce) returns the original message.
+		// Idempotent retry: same (author, nonce) returns the original
+		// message. This comes first, before any epoch check: a resend of an
+		// enc that was stored under an older epoch must still find it.
 		var id, ch, thread uint64
 		var body string
+		var enc []byte
 		var edited int64
 		var deleted bool
-		err := tx.QueryRowContext(ctx, `SELECT id, chan, thread, body, edited, deleted FROM messages WHERE author = ? AND nonce = ?`,
-			u.ID, a.Nonce).Scan(&id, &ch, &thread, &body, &edited, &deleted)
+		err := tx.QueryRowContext(ctx, `SELECT id, chan, thread, body, enc, edited, deleted FROM messages WHERE author = ? AND nonce = ?`,
+			u.ID, a.Nonce).Scan(&id, &ch, &thread, &body, &enc, &edited, &deleted)
 		if err == nil {
-			if ch != a.Chan || thread != a.Thread || (edited == 0 && !deleted && body != a.Body) {
+			if ch != a.Chan || thread != a.Thread || (edited == 0 && !deleted && (body != a.Body || !bytes.Equal(enc, a.Enc))) {
 				return nil, proto.Errf(proto.ErrConflict, "nonce reused for a different message")
 			}
 			res.Msg = id
@@ -235,6 +256,22 @@ func (s *Server) send(ctx context.Context, u proto.User, a proto.SendArgs, hook 
 		}
 		if !s.members[a.Chan][u.ID] {
 			return nil, errForbidden
+		}
+		head, err := chanEpoch(ctx, tx, a.Chan)
+		if err != nil {
+			return nil, err
+		}
+		switch {
+		case head.e2e && hook != nil:
+			return nil, errHookE2E
+		case head.e2e && a.Enc == nil:
+			return nil, badRequest("this channel is end-to-end encrypted — upgrade tc")
+		case !head.e2e && a.Enc != nil:
+			return nil, badRequest("channel is not encrypted")
+		case a.Enc != nil:
+			if err := checkEnc(ctx, tx, sid, u.ID, a, encHdr, head); err != nil {
+				return nil, err
+			}
 		}
 		if a.Thread != 0 {
 			var root uint64
@@ -252,7 +289,7 @@ func (s *Server) send(ctx context.Context, u proto.User, a proto.SendArgs, hook 
 			return nil, proto.Errf(proto.ErrRateLimited, "slow down")
 		}
 		now := s.now()
-		m := proto.Message{Chan: a.Chan, Author: u.ID, Body: a.Body, Thread: a.Thread, Time: now}
+		m := proto.Message{Chan: a.Chan, Author: u.ID, Body: a.Body, Thread: a.Thread, Time: now, Enc: a.Enc}
 		ev, err := appendEvent(ctx, tx, proto.KMsgNew, a.Chan, u.ID, 0, now, m)
 		if err != nil {
 			return nil, err
@@ -261,8 +298,8 @@ func (s *Server) send(ctx context.Context, u proto.User, a proto.SendArgs, hook 
 		if err := patchEventData(ctx, tx, &ev, m); err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO messages (id, chan, author, body, thread, time, nonce) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			m.ID, m.Chan, m.Author, m.Body, m.Thread, m.Time, a.Nonce); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO messages (id, chan, author, body, thread, time, nonce, enc) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			m.ID, m.Chan, m.Author, m.Body, m.Thread, m.Time, a.Nonce, a.Enc); err != nil {
 			return nil, err
 		}
 		res.Msg = m.ID
@@ -283,6 +320,13 @@ func (s *Server) opEdit(ctx context.Context, u proto.User, a proto.EditArgs) (an
 		}
 		if m.Author != u.ID {
 			return nil, errForbidden
+		}
+		// Plaintext must never land in an encrypted channel; encrypted
+		// edits are step 8 (docs/E2E.md).
+		if head, err := chanEpoch(ctx, tx, m.Chan); err != nil {
+			return nil, err
+		} else if head.e2e || m.Enc != nil {
+			return nil, badRequest("this channel is end-to-end encrypted — upgrade tc")
 		}
 		if m.Body == a.Body {
 			return nil, nil
@@ -325,7 +369,7 @@ func (s *Server) opDelete(ctx context.Context, u proto.User, a proto.MsgArgs) (a
 		if err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE messages SET body = '', deleted = 1 WHERE id = ?`, m.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE messages SET body = '', enc = NULL, deleted = 1 WHERE id = ?`, m.ID); err != nil {
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM reactions WHERE msg = ?`, m.ID); err != nil {
@@ -337,7 +381,7 @@ func (s *Server) opDelete(ctx context.Context, u proto.User, a proto.MsgArgs) (a
 			return nil, err
 		}
 		evs = append(evs, unpin...)
-		m.Body, m.Deleted = "", true
+		m.Body, m.Enc, m.Deleted = "", nil, true
 		if err := scrubMessageEvents(ctx, tx, m, 0); err != nil {
 			return nil, err
 		}
@@ -450,7 +494,7 @@ func (s *Server) opSearch(ctx context.Context, u proto.User, a proto.SearchArgs)
 	}
 	query := `SELECT ` + prefixCols("m.", msgCols) + ` FROM msg_fts f JOIN messages m ON m.id = f.rowid
 		JOIN channels c ON c.id = m.chan
-		WHERE msg_fts MATCH ? AND m.deleted = 0
+		WHERE msg_fts MATCH ? AND m.deleted = 0 AND c.e2e = 0
 		AND (c.kind = 'public' OR EXISTS (SELECT 1 FROM membership x WHERE x.chan = m.chan AND x.user = ? AND x.leave_seq IS NULL))`
 	args := []any{q, u.ID}
 	if a.Chan != 0 {
