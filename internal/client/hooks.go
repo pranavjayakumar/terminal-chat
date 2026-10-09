@@ -50,6 +50,11 @@ func migrateE2E(db *sql.DB) error {
 		{"chans", "epoch", "INTEGER NOT NULL DEFAULT 0"},
 		{"chans", "creator", "INTEGER NOT NULL DEFAULT 0"},
 		{"device_revokes", "seq", "INTEGER NOT NULL DEFAULT 0"},
+		{"msgs", "enc", "BLOB"},
+		{"msgs", "sec", "INTEGER NOT NULL DEFAULT 0"},
+		{"msgs", "mid", "BLOB"},
+		{"outbox", "enc", "BLOB"},
+		{"outbox", "encnonce", "BLOB"},
 	} {
 		var n int
 		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, c[0], c[1]).Scan(&n); err != nil {
@@ -66,6 +71,10 @@ func migrateE2E(db *sql.DB) error {
 				return fmt.Errorf("migrating cache: %w", err)
 			}
 		}
+	}
+	// Replays are found by mid (encmsg.go).
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS msgs_mid ON msgs (mid) WHERE mid IS NOT NULL`); err != nil {
+		return fmt.Errorf("migrating cache: %w", err)
 	}
 	return nil
 }

@@ -18,6 +18,10 @@ type Message struct {
 	Pending bool
 	Failed  string
 	Local   int64
+	// Sec says whether an encrypted channel's message was decrypted and
+	// verified, is waiting for a key, is invalid, or is plaintext (legacy
+	// or inserted by the server). Body is "" unless the text can be shown.
+	Sec Sec
 }
 
 // ChannelView is a channel plus per-user state. Display is the name to show:
@@ -57,18 +61,20 @@ func (c *Client) Channels() []ChannelView {
 	// Bot (webhook) messages count as unread but never as mentions: their
 	// text comes from outside (e.g. a branch named "fix-@priya").
 	human := c.uintMap(`SELECT m.chan, COUNT(*) FROM msgs m LEFT JOIN reads r ON r.chan = m.chan
-		WHERE m.id > COALESCE(r.seq, 0) AND m.author != ? AND m.deleted = 0
-		AND m.author NOT IN (SELECT id FROM users WHERE bot = 1) GROUP BY m.chan`, me.ID)
+		WHERE m.id > COALESCE(r.seq, 0) AND m.author != ? AND m.deleted = 0 AND m.sec != ?
+		AND m.author NOT IN (SELECT id FROM users WHERE bot = 1) GROUP BY m.chan`, me.ID, SecInserted)
 	// A mention is @me or one of my highlight keywords. The SQL narrows the
 	// rows; Go applies the exact whole-word rules.
 	words := c.Highlights()
 	names := c.MentionNames()
 	mention := map[uint64]bool{}
 	filter, fargs := highlightFilter("m.body", names, words)
+	// Text the server may have inserted into an encrypted channel never
+	// counts as a mention.
 	if mrows, err := c.db.Query(`SELECT m.chan, m.body FROM msgs m LEFT JOIN reads r ON r.chan = m.chan
-		WHERE m.id > COALESCE(r.seq, 0) AND m.author != ? AND m.deleted = 0 AND `+filter+`
+		WHERE m.id > COALESCE(r.seq, 0) AND m.author != ? AND m.deleted = 0 AND m.sec != ? AND `+filter+`
 		AND m.author NOT IN (SELECT id FROM users WHERE bot = 1)`,
-		append([]any{me.ID}, fargs...)...); err == nil {
+		append([]any{me.ID, SecInserted}, fargs...)...); err == nil {
 		for mrows.Next() {
 			var ch uint64
 			var body string
@@ -185,7 +191,7 @@ func (c *Client) Messages(ch uint64, limit int) []Message {
 	if limit <= 0 {
 		limit = 100
 	}
-	out := c.queryMsgs(`SELECT `+msgCols+`, (SELECT COUNT(*) FROM msgs r WHERE r.thread = m.id)
+	out := c.queryMsgs(`SELECT `+msgCols+`, sec, (SELECT COUNT(*) FROM msgs r WHERE r.thread = m.id)
 		FROM (SELECT * FROM msgs WHERE chan = ? AND thread = 0 ORDER BY id DESC LIMIT ?) m ORDER BY id`, ch, limit)
 	c.markPinned(out)
 	return append(out, c.outboxMsgs(`chan = ? AND thread = 0`, ch)...)
@@ -193,9 +199,9 @@ func (c *Client) Messages(ch uint64, limit int) []Message {
 
 // Thread returns the root message, its replies, then our unsent replies.
 func (c *Client) Thread(root uint64) []Message {
-	out := c.queryMsgs(`SELECT `+msgCols+`, (SELECT COUNT(*) FROM msgs r WHERE r.thread = m.id)
+	out := c.queryMsgs(`SELECT `+msgCols+`, sec, (SELECT COUNT(*) FROM msgs r WHERE r.thread = m.id)
 		FROM msgs m WHERE id = ?`, root)
-	out = append(out, c.queryMsgs(`SELECT `+msgCols+`, 0 FROM msgs WHERE thread = ? ORDER BY id`, root)...)
+	out = append(out, c.queryMsgs(`SELECT `+msgCols+`, sec, 0 FROM msgs WHERE thread = ? ORDER BY id`, root)...)
 	c.markPinned(out)
 	return append(out, c.outboxMsgs(`thread = ?`, root)...)
 }
@@ -209,7 +215,7 @@ func (c *Client) queryMsgs(q string, args ...any) []Message {
 	var out []Message
 	for rows.Next() {
 		var m Message
-		pm, err := scanMsg(rows, &m.Replies)
+		pm, err := scanMsg(rows, &m.Sec, &m.Replies)
 		if err != nil {
 			return out
 		}

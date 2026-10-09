@@ -31,7 +31,15 @@ func newMsg(id, ch, author uint64, body string) proto.Message {
 }
 
 func deliver(m *Model, xs ...proto.Message) {
-	run(m, m.applyUpdate(client.Update{New: xs}))
+	run(m, m.applyUpdate(client.Update{New: news(xs...)}))
+}
+
+func news(xs ...proto.Message) []client.Message {
+	out := make([]client.Message, len(xs))
+	for i, x := range xs {
+		out[i] = client.Message{Message: x}
+	}
+	return out
 }
 
 func TestNotifyRules(t *testing.T) {

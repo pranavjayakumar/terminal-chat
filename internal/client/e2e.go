@@ -301,7 +301,11 @@ func (c *Client) e2ePass(ctx context.Context, s *session, sid e2ecrypto.ServerID
 		if c.syncChannel(ctx, s, sid, ch) {
 			changed = true
 		}
+		if c.e2eStatus(sid, ch).State == E2EOK {
+			c.requeueNoKey(ch.ID)
+		}
 	}
+	c.reopenMsgs(sid, chans)
 	if changed {
 		c.post(Update{Channels: true})
 	}

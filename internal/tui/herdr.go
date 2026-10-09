@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/notify"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
@@ -115,14 +116,16 @@ func firstNonEmptyLine(s string) string {
 	return ""
 }
 
-func (m *Model) notifyFor(news []proto.Message) tea.Cmd {
+func (m *Model) notifyFor(news []client.Message) tea.Cmd {
 	if m.opt.Notifier == nil {
 		return nil
 	}
 	var cmds []tea.Cmd
 	for _, x := range news {
-		if m.shouldNotify(x) {
-			cmds = append(cmds, m.queueNote(x))
+		// Text that isn't verifiably its author's (inserted by the server,
+		// invalid) never notifies.
+		if x.Sec.Trusted() && m.shouldNotify(x.Message) {
+			cmds = append(cmds, m.queueNote(x.Message))
 		}
 	}
 	return tea.Batch(cmds...)

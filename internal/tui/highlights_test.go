@@ -158,7 +158,7 @@ func TestHighlightNotifications(t *testing.T) {
 		return proto.Message{ID: id, Chan: ch, Author: author, Body: body}
 	}
 	// Another channel than the active #general (10): #backend (11).
-	run(m, m.applyUpdate(client.Update{New: []proto.Message{msg(500, 2, 11, "Deploy finished? ")}}))
+	run(m, m.applyUpdate(client.Update{New: news(msg(500, 2, 11, "Deploy finished? "))}))
 	got := nt.got()
 	if len(got) != 1 || got[0][0] != "#backend · bob" || got[0][1] != "Deploy finished?" {
 		t.Fatalf("keyword from a person: %v", got)

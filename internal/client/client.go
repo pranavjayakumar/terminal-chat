@@ -203,6 +203,7 @@ type timing struct {
 	backoffMin, backoffMax        time.Duration
 	dial, handshake, retry, type_ time.Duration
 	keyNeed, autoEpoch            time.Duration // §13.7: ≤ 1 key.need per channel per keyNeed
+	devWait                       time.Duration // how long an encrypted send waits for device registration
 }
 
 var defaultTiming = timing{
@@ -210,6 +211,7 @@ var defaultTiming = timing{
 	backoffMin: 250 * time.Millisecond, backoffMax: 30 * time.Second,
 	dial: 15 * time.Second, handshake: 30 * time.Second, retry: 2 * time.Second,
 	type_: 6 * time.Second, keyNeed: 30 * time.Second, autoEpoch: time.Minute,
+	devWait: 15 * time.Second,
 }
 
 // DefaultHome is $TC_HOME, else ~/.config/tc.
@@ -352,7 +354,10 @@ type Update struct {
 	Typing   map[uint64]bool // channels whose typing set changed
 	// New lists messages that arrived via msg.new (replay or live, own
 	// included), oldest first, at most maxNew. For notifications and `tc tail`.
-	New []proto.Message
+	// Encrypted messages carry their decrypted body; one that can't be
+	// opened yet is listed when it can (if still unread). Check Sec before
+	// trusting the text.
+	New []Message
 	// Failed lists outbox messages that the server permanently rejected.
 	Failed []Message
 }
@@ -388,7 +393,7 @@ func (u Update) merge(v Update) Update {
 	}
 	u.New = append(u.New, v.New...)
 	if len(u.New) > maxNew {
-		u.New = append([]proto.Message(nil), u.New[len(u.New)-maxNew:]...)
+		u.New = append([]Message(nil), u.New[len(u.New)-maxNew:]...)
 	}
 	u.Failed = append(u.Failed, v.Failed...)
 	if len(u.Failed) > maxNew {

@@ -222,11 +222,13 @@ func cmdTail(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Encrypted messages arrive decrypted; one still waiting for its key is
+	// printed once it opens (it comes again in Updates().New).
 	seen := map[uint64]bool{}
 	for _, m := range c.Messages(ch, 20) {
 		if m.ID != 0 {
-			seen[m.ID] = true
-			printMsg(c, m.Message)
+			seen[m.ID] = m.Sec != client.SecWaiting
+			printMsg(c, m)
 		}
 	}
 	for {
@@ -250,12 +252,21 @@ func cmdTail(args []string) error {
 	}
 }
 
-func printMsg(c *client.Client, m proto.Message) {
+func printMsg(c *client.Client, m client.Message) {
 	t := time.UnixMilli(m.Time).Format("15:04")
 	name := sanitize.Line(c.User(m.Author).Name)
 	body := sanitize.Text(m.Body)
-	if m.Deleted {
+	switch {
+	case m.Deleted:
 		body = "(deleted)"
+	case m.Sec == client.SecWaiting:
+		body = "🔒 waiting for key"
+	case m.Sec == client.SecInvalid:
+		body = "⚠ invalid encrypted message (not shown)"
+	case m.Sec == client.SecInserted:
+		body = "⚠ unencrypted, inserted by server: " + body
+	case m.Sec == client.SecLegacy:
+		body = "(unencrypted, legacy) " + body
 	}
 	if m.Thread != 0 {
 		name += " ↳"
