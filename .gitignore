@@ -1,0 +1,6 @@
+bin/
+dev-data/
+*.db
+*.db-*
+/tmp/
+.DS_Store
