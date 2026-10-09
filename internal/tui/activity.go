@@ -99,6 +99,9 @@ func (m *Model) activityLines(w, h int) []string {
 	a := &m.act
 	n := len(a.items)
 	title := fmt.Sprintf("activity — %d %s · ↑/↓ move, Enter jumps, Esc closes", n, plural(n, "item", "items"))
+	if w < wideRows {
+		title = fmt.Sprintf("activity %d · Enter · Esc", n)
+	}
 	out := []string{fit(m.st.overlayTitle.Render(truncate(title, w)), w)}
 	if n == 0 {
 		out = append(out, fit(m.st.dim.Render(truncate(" nothing yet — mentions, replies, reactions and DMs show up here", w)), w))
@@ -110,39 +113,80 @@ func (m *Model) activityLines(w, h int) []string {
 	return padLines(out, w, h)
 }
 
-// activityRow is "time · #chan · author · preview", one line of exactly w
-// cells. Everything from the cache goes through sanitize.
+// Row layout by width. The reason marker always comes first; narrow
+// terminals lose the time, then the author, and shorten the channel name so
+// the preview keeps the room.
+const (
+	wideRows   = 60 // below: no time, channel name cut to narrowChan
+	mediumRows = 48 // below: no author either
+	narrowChan = 10
+)
+
+// activityRow is "marker time · #chan · author · preview", one line of
+// exactly w cells. Everything from the cache goes through sanitize.
 func (m *Model) activityRow(it client.ActivityItem, w int, selected bool) string {
-	when := fmtWhen(it.Time)
 	where := m.chanTitle(it.Chan)
-	who := m.r.userName(it.Author)
-	text := activityPreview(it)
+	if w < wideRows {
+		where = truncate(where, narrowChan)
+	}
+	type part struct{ plain, styled string }
+	parts := []part{}
+	if w >= wideRows {
+		when := fmtWhen(it.Time)
+		parts = append(parts, part{when, m.st.time.Render(when)})
+	}
+	parts = append(parts, part{where, where})
+	if w >= mediumRows {
+		who := m.r.userName(it.Author)
+		parts = append(parts, part{who, m.st.author(it.Author).Render(who)})
+	}
+	text := activityText(it)
+	parts = append(parts, part{text, text})
+
+	head := " " + activityMarker(it) + " "
 	if selected {
-		l := " " + when + " · " + where + " · " + who + " · " + text
+		var plain []string
+		for _, p := range parts {
+			plain = append(plain, p.plain)
+		}
+		l := head + strings.Join(plain, " · ")
 		return fit(m.st.overlaySel.Render(fit(truncate(l, w), w)), w)
 	}
 	sep := m.st.dim.Render(" · ")
-	l := " " + m.st.time.Render(when) + sep + where + sep + m.st.author(it.Author).Render(who) + sep + text
-	return fit(truncate(l, w), w)
+	var styled []string
+	for _, p := range parts {
+		styled = append(styled, p.styled)
+	}
+	return fit(truncate(head+strings.Join(styled, sep), w), w)
 }
 
-// activityPreview is the one-line text of an item with a marker for why it
-// is there: @ mention, * highlight word, ↳ reply, the emoji for a reaction.
-func activityPreview(it client.ActivityItem) string {
-	p := sanitize.Line(it.Preview)
+// activityMarker is the two-cell reason for an item: @ mention, * highlight
+// word, ↳ reply, » direct message, the emoji for a reaction.
+func activityMarker(it client.ActivityItem) string {
+	mark := "  "
 	switch it.Kind {
 	case client.ActMention:
-		return "@ " + p
+		mark = "@ "
 	case client.ActHighlight:
-		return "* " + p
+		mark = "* "
 	case client.ActReply:
-		return "↳ " + p
+		mark = "↳ "
+	case client.ActDM:
+		mark = "» "
 	case client.ActReaction:
-		e := strings.TrimSpace(sanitize.Line(it.Emoji))
-		if e == "" {
-			e = "reacted"
+		mark = truncate(strings.TrimSpace(sanitize.Line(it.Emoji)), 2)
+		if strWidth(mark) == 0 {
+			mark = "+"
 		}
-		return e + " on: " + p
+	}
+	return fit(mark, 2)
+}
+
+// activityText is the item's one-line text.
+func activityText(it client.ActivityItem) string {
+	p := sanitize.Line(it.Preview)
+	if it.Kind == client.ActReaction {
+		return "on: " + p
 	}
 	return p
 }

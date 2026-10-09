@@ -6,7 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/skailama/tc/internal/client"
+	"github.com/skailama/tc/internal/proto"
 )
 
 var actBase = time.Date(2026, 10, 8, 10, 40, 0, 0, time.Local).UnixMilli()
@@ -32,14 +35,14 @@ func TestActivityOpenAndClose(t *testing.T) {
 		t.Fatalf("Alt-A: mode %v", m.mode)
 	}
 	v := checkView(t, m, "activity")
-	for _, want := range []string{"activity — 6 items", "· #general · carol · 🎉 on: 👍 nice", "· @bob · bob · psst",
-		"· #general · bob · @ hey @alice can you look?", "· #general · bob · * also bold", "· #general · carol · ↳ reply two"} {
+	for _, want := range []string{"activity — 6 items", "🎉 8 Oct · #general · carol · on: 👍 nice", "» ", " 8 Oct · @bob · bob · psst",
+		"@  8 Oct · #general · bob · hey @alice can you look?", "*  8 Oct · #general · bob · also bold", "↳  8 Oct · #general · carol · reply two"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("missing %q in\n%s", want, v)
 		}
 	}
 	// Newest first, as given.
-	if strings.Index(v, "🎉 on") > strings.Index(v, "psst") || strings.Index(v, "psst") > strings.Index(v, "hey @alice") {
+	if strings.Index(v, "on: 👍") > strings.Index(v, "psst") || strings.Index(v, "psst") > strings.Index(v, "hey @alice") {
 		t.Errorf("not in order:\n%s", v)
 	}
 	press(m, "esc")
@@ -257,5 +260,61 @@ func TestCtrlAIsLineStartNotActivity(t *testing.T) {
 		return
 	}(), "\n"), "Alt-A") {
 		t.Fatal("help doesn't mention Alt-A")
+	}
+}
+
+func TestActivityRowsAdaptToWidth(t *testing.T) {
+	m, f := newTestModelFake(t, 100, 30)
+	activityFake(f)
+	m.chans = append(m.chans, client.ChannelView{Channel: proto.Channel{ID: 14, Name: "infrastructure-alerts",
+		Kind: proto.ChanPublic, Members: []uint64{1}}, Display: "infrastructure-alerts", Member: true})
+	mention := client.ActivityItem{Kind: client.ActMention, Time: actBase, Chan: 14, Msg: 1, Author: 2, Preview: "page me"}
+	react := client.ActivityItem{Kind: client.ActReaction, Time: actBase, Chan: 14, Msg: 1, Author: 2, Emoji: "🎉", Preview: "page me"}
+	row := func(it client.ActivityItem, w int) string {
+		r := ansi.Strip(m.activityRow(it, w, false))
+		if sw := strWidth(r); sw != w {
+			t.Fatalf("w=%d: row is %d cells: %q", w, sw, r)
+		}
+		return strings.TrimRight(r, " ")
+	}
+	for _, w := range []int{120, 80, 60} {
+		r := row(mention, w)
+		for _, want := range []string{"8 Oct", "#infrastructure-alerts", "bob", "page me"} {
+			if !strings.Contains(r, want) {
+				t.Errorf("w=%d: missing %q in %q", w, want, r)
+			}
+		}
+	}
+	for _, w := range []int{59, 50, 48} {
+		r := row(mention, w)
+		if strings.Contains(r, "8 Oct") || !strings.Contains(r, "bob") || !strings.Contains(r, "#infrastr…") || strings.Contains(r, "#infrastru") {
+			t.Errorf("w=%d: want no time, the author, a 10-cell channel: %q", w, r)
+		}
+	}
+	for _, w := range []int{47, 30, 20} {
+		r := row(mention, w)
+		if strings.Contains(r, "8 Oct") || strings.Contains(r, "bob") || !strings.Contains(r, "#infrastr…") {
+			t.Errorf("w=%d: want neither time nor author: %q", w, r)
+		}
+	}
+	if r := row(mention, 40); !strings.Contains(r, "page me") {
+		t.Errorf("the preview should survive at 40 cells: %q", r)
+	}
+	// The reason marker is the first thing on every row.
+	for _, w := range []int{120, 59, 40} {
+		if r := row(mention, w); !strings.HasPrefix(r, " @ ") {
+			t.Errorf("w=%d: mention row starts %q", w, r)
+		}
+		if r := row(react, w); !strings.HasPrefix(r, " 🎉 ") {
+			t.Errorf("w=%d: reaction row starts %q", w, r)
+		}
+	}
+	// Short title when narrow.
+	m.act.items = f.activity
+	if got := ansi.Strip(m.activityLines(59, 5)[0]); !strings.HasPrefix(got, "activity 6 · Enter · Esc") {
+		t.Errorf("narrow title %q", got)
+	}
+	if got := ansi.Strip(m.activityLines(80, 5)[0]); !strings.HasPrefix(got, "activity — 6 items") {
+		t.Errorf("wide title %q", got)
 	}
 }
