@@ -1,6 +1,6 @@
 # Status & handoff
 
-Last updated: 2026-10-10 (end of session 1). Read this first when resuming.
+Last updated: 2026-10-10 (end of session 1; branch `m2-activity` adds drafts, highlights, activity view). Read this first when resuming.
 
 ## Where we are
 
@@ -31,8 +31,7 @@ Release tag: `v0.1.0` = M1. No newer tag yet.
    Each protocol step: update PROTOCOL.md §13 + protocol-guardian review.
 3. **Finish M2** (TUI/client gaps): `/name` command (server op `user.update` exists), thread view fetching
    older replies (`client.ThreadHistory` exists), `?` on empty input steals messages starting with `?`
-   (make help F1 / `/help` only), long-code-line viewer, activity view (Ctrl-A), per-channel drafts, keyword
-   highlights, `/pin` `/pins`, `/remind`, user groups `@team`, diff and `file:line` snippets.
+   (make help F1 / `/help` only), long-code-line viewer, `/pin` `/pins`, `/remind`, user groups `@team`, diff and `file:line` snippets.
 4. **Deploy**: waiting on the user's DigitalOcean droplet IP → follow `docs/DEPLOY.md`, then a real-network
    test (QUIC over the internet, TCP fallback behind UDP-blocking networks, webhooks via real curl).
 5. **M4 onboarding** (install-command invites, `tc join`, brew, `tc update`, goreleaser, multi-use team

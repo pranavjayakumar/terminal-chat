@@ -38,7 +38,8 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 - Every user-controlled string goes through `sanitize.Text`/`sanitize.Line` before Lip Gloss.
 - Markdown-lite only: ```` ``` ```` fenced blocks (left bar `┃`, no wrap reflow, horizontal truncation
   with `…`), inline `` `code` ``, `**bold**`, `_italic_`, URLs underlined. No headings, no tables.
-- `@me` mentions highlighted; whole message line gets a subtle marker when it mentions me.
+- `@me` mentions highlighted; whole message line gets a subtle marker (`▎` in the gutter) when it
+  mentions me or contains one of my highlight words.
 - Author colors: stable hash of user id into an 8-color palette that reads on dark and light terminals.
   Respect `NO_COLOR` (no colors, keep bold/dim).
 - Width math uses display width (runewidth), never byte or rune counts.
@@ -49,6 +50,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 |---|---|
 | `Enter` | send |
 | `Ctrl-K` | quick switcher (fuzzy over channels + people; Enter opens; DMs created on demand) |
+| `Ctrl-A` | activity view (also `/activity`); shadows the textarea's "line start", use `Home` |
 | `Alt-↑/↓` or `Ctrl-P/N` | previous / next channel |
 | `Alt-Shift-↑/↓` | previous / next unread channel |
 | `PgUp/PgDn`, mouse wheel | scroll history (fetches older via History at top) |
@@ -62,7 +64,8 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 
 `/join #x`, `/leave`, `/create #x [--private]`, `/add @user`, `/topic text`, `/dm @a @b`,
 `/invite` (admin; prints code), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps),
-`/share-pane [pane]` (herdr only), `/quit`. Unknown command → inline error, input kept.
+`/activity`, `/highlight [word…]`, `/unhighlight word…`, `/share-pane [pane]` (herdr only), `/quit`.
+Unknown command → inline error, input kept.
 
 ## Behavior
 
@@ -74,9 +77,65 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 - Never block the UI on network: all client calls run in `tea.Cmd`s.
 - Startup renders from cache immediately, before connecting.
 
+## Drafts
+
+- The input keeps its text per place to type: each channel, and each thread of it. Switching channel,
+  opening a thread (`r`, a search or activity jump) or closing it saves what is in the input and
+  restores the target's draft. A draft is cleared by sending it (or `Ctrl-U`, or `Esc` twice).
+- Drafts live in the client cache (`drafts` table, local only, never sent anywhere) and survive restarts
+  and snapshot resets. They are written at once on a switch, on clear/send and on quit, and 1 s after
+  typing pauses otherwise; a crash can lose at most that last second of typing.
+- A dim `✎` after a channel's name in the sidebar (and in `Ctrl-K`) means it has a draft that the input
+  isn't showing: another channel's, or the channel's own while one of its threads is open.
+- Edit text (`e`) is never a draft; abandoning an edit (`Esc`, switching channel) discards it.
+- Leaving a channel, a login on another account or a change of server identity drops its drafts.
+
+## Highlight words
+
+- `/highlight deploy oncall` adds words; `/highlight` alone lists them; `/unhighlight deploy` removes one.
+  Words are lowercase, a single word (no spaces), at most 64 bytes, at most 50 in all. Stored in the
+  client cache (`highlights` table), local to this machine, kept across resets.
+- A message **by a person** (not mine, not a bot's, not deleted) containing a word — case-insensitive,
+  **whole word**: `deploy` matches "Deploy failed" and `deploy-prod` but not `redeploy` or `deployment` —
+  is treated exactly like an `@mention`: a `▎` gutter marker in the log, `@` instead of a count on the
+  channel's unread badge (`ChannelView.Mention`), and the notification rules below, and it appears in the
+  activity view. Bot (webhook) messages never match, whatever they say.
+
+## Activity view
+
+`Ctrl-A` or `/activity` opens an overlay over the log with the last 100 things that concern me, newest
+first, across all channels I'm in. Everything comes from the local cache (works offline; ~13 ms for the
+whole list over 10k cached messages, see `client.Activity`).
+
+```
+ activity — 4 items · ↑/↓ move, Enter jumps, Esc closes
+ 10:49 · #general · carol · 🎉 on: nice, the deploy is out
+ 10:46 · #general · carol · ↳ thanks, merging now
+ 10:45 · @bob · bob · psst
+ 10:44 · #general · bob · @ hey @alice can you look?
+```
+
+| Kind | Marker | What counts |
+|---|---|---|
+| mention | `@ ` | a message by a person with `@me` |
+| highlight | `* ` | a message by a person with one of my highlight words |
+| reply | `↳ ` | a reply by someone else in a thread I started, or in one I had already replied to |
+| reaction | `<emoji> on: ` | someone else reacted to my message; the preview is my message |
+| DM | | any message by someone else in a direct message |
+
+A message that fits several kinds is listed once, as the first of the order above. Never listed: my own
+messages, bots, deleted messages, channels I'm not in. Keys: `↑/↓` (`Ctrl-P/N`, `k/j`) move, `PgUp/PgDn`,
+`Home/End`, `Enter` jumps, `Esc`/`Ctrl-A`/`q` closes. **Enter** opens the channel (widening the loaded page
+if the message is old), opens the thread when the item is a reply, and selects the message (select mode).
+Every field is sanitized and the row is truncated to the width.
+
+Limit: reactions are only known from `react.add` events this client has seen (live or replayed). A server
+snapshot carries who reacted but not when, so reactions that predate the cache can't be placed in time
+and are not listed; they appear in the log as usual. Rows are kept for the newest 1000 reactions to me.
+
 ## Notifications & herdr
 
-- **When**: a DM or a message that @mentions me, not my own and not from a webhook bot
+- **When**: a DM or a message that @mentions me or contains one of my highlight words, not my own and not from a webhook bot
   (bot messages count as unread but never as mentions — their text comes from outside),
   and either the terminal is blurred (focus reporting) or the message is in a channel that
   isn't the active one.
