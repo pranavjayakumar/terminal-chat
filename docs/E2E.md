@@ -188,7 +188,7 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
 3. Client trust store `e2e.db`: survives reset; concurrent processes.
 4. Proto+server devices: `e2e1`, device ops/events, snapshot `devs`, limits (protocol-guardian).
 5. Server epochs: `key.rotate` CAS/roster/staleness, `key.fetch`, `key.epoch`, ordering, rate cap.
-6. Client bundle logic: verify chain/kc/backlinks, lazy decrypt queue, `key.need/share`.
+6. Client bundle logic: verify chain/kc/backlinks, lazy decrypt queue, `key.need/share`; reject bundles with duplicate recipient X25519 keys (one ephemeral + zero nonce per box means a duplicate would reuse key+nonce).
 7. Encrypted send e2e: outbox stores enc once, stale_epoch retry same nonce, DMs epoch 1, self-DM.
 8. Encrypted edit/delete/react, thread_ref, HMAC emoji, local FTS.
 9. `chan.add{bundle}`, `chan.remove`, `chan.encrypt`, disable → rotate; history via backlinks.
