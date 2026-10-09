@@ -460,8 +460,27 @@ func (c *Client) sealEntry(ctx context.Context, s *session, e outboxEntry, prev 
 			prevEpoch = h.Epoch
 		}
 	}
-	c.verifyDevices(sid, s.sshPub, me)
+	// Events keep arriving while we look (a rival's first bundle, a device
+	// it was signed by): when the chain is behind what the cache shows,
+	// catch up again a few times before calling it "no key".
+	const attempts = 4
+	behind := func(attempt int) error {
+		if attempt == attempts-1 {
+			return failErr{noKeyReason}
+		}
+		t := time.NewTimer(time.Duration(attempt+1) * 25 * time.Millisecond)
+		defer t.Stop()
+		select {
+		case <-t.C:
+			return nil
+		case <-s.done:
+			return ErrOffline
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	for attempt := 0; ; attempt++ {
+		c.verifyDevices(sid, s.sshPub, me)
 		ch, ok, err := getChan(c.db, e.chan_)
 		if err != nil {
 			return nil, err
@@ -484,17 +503,18 @@ func (c *Client) sealEntry(ctx context.Context, s *session, e outboxEntry, prev 
 		latest := max(ch.Epoch, c.cachedMaxEpoch(ch.ID))
 		rotate := false
 		switch {
-		case !hasHead && latest > 0:
-			return nil, failErr{noKeyReason} // a chain we can't verify (yet)
+		case latest > head.Epoch: // a chain we can't verify (yet)
+			if err := behind(attempt); err != nil {
+				return nil, err
+			}
+			continue
 		case !hasHead:
 			rotate = true
-		case latest > head.Epoch:
-			return nil, failErr{noKeyReason}
 		default:
 			cur, _, _ := c.trust.Epoch(sid, ch.ID, head.Epoch)
 			rotate = !slices.Equal(cur.Roster, c.rosterNow(ch)) || (prev != nil && head.Epoch == prevEpoch)
 		}
-		if rotate && attempt < 2 {
+		if rotate && attempt < attempts-1 {
 			err := c.rotateOnce(ctx, s, sid, ch.ID)
 			var pe *proto.Error
 			var unv *UnverifiedMembersError
@@ -510,12 +530,13 @@ func (c *Client) sealEntry(ctx context.Context, s *session, e outboxEntry, prev 
 				return nil, failErr{sanitize.Line(err.Error())}
 			case errors.Is(err, ErrOffline) || ctx.Err() != nil:
 				return nil, ErrOffline
-			case attempt == 0:
-				// Typically someone's bundle arrived meanwhile ("chain isn't
-				// verified yet"): catch up and look again.
-				continue
 			default:
-				return nil, failErr{noKeyReason}
+				// Typically someone's bundle arrived meanwhile ("chain isn't
+				// verified yet"), or we may not make epoch 1: look again.
+				if err := behind(attempt); err != nil {
+					return nil, err
+				}
+				continue
 			}
 		}
 		if !hasHead {
