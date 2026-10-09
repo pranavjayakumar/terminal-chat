@@ -60,7 +60,7 @@ auto-away (0 disables). Details in [docs/TUI.md](docs/TUI.md).
 
 CI jobs, scripts and agents can post into a channel with a plain HTTPS POST — no tc
 install or SSH key needed. In the channel, run `/webhook ci` (any member can). tc
-creates a bot user `ci`, adds it to the channel, and copies a ready-made curl command
+creates a bot user `ci-bot` (bot names always end in `-bot`), adds it to the channel, and copies a ready-made curl command
 to your clipboard:
 
 ```sh

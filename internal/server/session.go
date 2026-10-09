@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -161,6 +162,9 @@ func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp str
 		} else {
 			if !proto.ValidName(a.Name) {
 				return nil, fail(proto.ByeProtocolError, "name must match ^[a-z0-9][a-z0-9_-]{0,31}$")
+			}
+			if strings.HasSuffix(a.Name, proto.BotSuffix) {
+				return nil, fail(proto.ByeProtocolError, `names ending in "-bot" are reserved for webhook bots`)
 			}
 			var n int
 			tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE name = ?`, a.Name).Scan(&n)

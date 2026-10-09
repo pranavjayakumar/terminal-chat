@@ -77,7 +77,7 @@ func (c *tclient) createHook(ch uint64, name string) proto.HookCreateRes {
 	c.t.Helper()
 	var r proto.HookCreateRes
 	c.ok(proto.OpHookCreate, proto.HookCreateArgs{Chan: ch, Name: name}, &r)
-	if r.ID == 0 || !strings.Contains(r.URL, proto.HookPath) || !strings.Contains(r.Curl, r.URL) {
+	if r.ID == 0 || !strings.Contains(r.URL, proto.HookPath) || !strings.Contains(r.Curl, r.URL) || !strings.HasSuffix(r.Name, proto.BotSuffix) {
 		c.t.Fatalf("bad hook.create result %+v", r)
 	}
 	return r
@@ -129,7 +129,7 @@ func TestHookPost(t *testing.T) {
 	ev := bob.event(proto.KUserNew)
 	var bot proto.User
 	proto.Unmarshal(ev.Data, &bot)
-	if !bot.Bot || bot.Name != "ci" {
+	if !bot.Bot || bot.Name != "ci-bot" || h.Name != "ci-bot" {
 		t.Fatalf("bot user %+v", bot)
 	}
 	bob.event(proto.KChanJoin)
@@ -250,12 +250,19 @@ func TestHookOpsPermissions(t *testing.T) {
 	ph := alice.createHook(priv.Chan.ID, "secret-bot")
 	gh := alice.createHook(gen, "ci")
 
-	// Bot reused for the same name; a person's name conflicts; bad names, DMs, non-members rejected.
-	if again := alice.createHook(gen, "ci"); again.ID == gh.ID || again.URL == gh.URL {
+	// Bot reused for the same name; bot names get "-bot" so a person's name
+	// is never taken; bad or too long names, DMs, non-members rejected.
+	if again := alice.createHook(gen, "ci"); again.ID == gh.ID || again.URL == gh.URL || again.Name != "ci-bot" {
 		t.Fatal("hook not distinct")
 	}
-	alice.fail(proto.OpHookCreate, proto.HookCreateArgs{Chan: gen, Name: "bob"}, proto.ErrConflict)
+	if bh := alice.createHook(gen, "bob"); bh.Name != "bob-bot" {
+		t.Fatalf("bot name %q", bh.Name)
+	}
+	if ph.Name != "secret-bot" {
+		t.Fatalf("suffix doubled: %q", ph.Name)
+	}
 	alice.fail(proto.OpHookCreate, proto.HookCreateArgs{Chan: gen, Name: "Bad Name"}, proto.ErrBadRequest)
+	alice.fail(proto.OpHookCreate, proto.HookCreateArgs{Chan: gen, Name: strings.Repeat("x", 29)}, proto.ErrBadRequest)
 	bob.fail(proto.OpHookCreate, proto.HookCreateArgs{Chan: priv.Chan.ID, Name: "x"}, proto.ErrForbidden)
 	alice.fail(proto.OpHookCreate, proto.HookCreateArgs{Chan: 9999, Name: "x"}, proto.ErrNotFound)
 	var dm proto.ChanRes
@@ -368,7 +375,7 @@ func TestBotCannotLogIn(t *testing.T) {
 	admin.ok(proto.OpUsersList, proto.Empty{}, &users)
 	var botID uint64
 	for _, u := range users.Users {
-		if u.Name == "ci" && u.Bot {
+		if u.Name == "ci-bot" && u.Bot {
 			botID = u.ID
 		}
 	}
@@ -385,12 +392,16 @@ func TestBotCannotLogIn(t *testing.T) {
 	if _, bye := ts.connect(t, newKey(t), inv.Token, ""); bye != proto.ByeInviteInvalid {
 		t.Fatalf("bot add-key invite: BYE %q", bye)
 	}
-	// A new user can't take the bot's name either.
-	code, _ = ts.CreateInvite(context.Background(), false, 0)
-	inv, _ = proto.ParseInvite(code)
-	if _, bye := ts.connect(t, newKey(t), inv.Token, "ci"); bye != proto.ByeNameTaken {
-		t.Fatalf("bot name: BYE %q", bye)
+	// People can't take bot names, or any name in the bot namespace, but
+	// the hook's own name stays free for a person.
+	for _, name := range []string{"ci-bot", "deploy-bot"} {
+		code, _ = ts.CreateInvite(context.Background(), false, 0)
+		inv, _ = proto.ParseInvite(code)
+		if _, bye := ts.connect(t, newKey(t), inv.Token, name); bye != proto.ByeProtocolError {
+			t.Fatalf("%s: BYE %q", name, bye)
+		}
 	}
+	ts.register(t, "ci", false)
 }
 
 func TestHookText(t *testing.T) {

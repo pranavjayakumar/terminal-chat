@@ -43,14 +43,14 @@ func TestWebhook(t *testing.T) {
 		for _, m := range bob.Messages(gen, 50) {
 			if m.Body == "build #7 passed" {
 				a := bob.User(m.Author)
-				return a.Name == "ci" && a.Bot
+				return a.Name == "ci-bot" && a.Bot
 			}
 		}
 		return false
 	})
 
 	hooks, err := bob.ListHooks(ctx)
-	if err != nil || len(hooks) != 1 || hooks[0].Name != "ci" {
+	if err != nil || len(hooks) != 1 || hooks[0].Name != "ci-bot" {
 		t.Fatalf("ListHooks: %v %+v", err, hooks)
 	}
 	// Any member of the channel may revoke it.

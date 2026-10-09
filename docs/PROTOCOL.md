@@ -110,7 +110,9 @@ constant time. `pin` = base64url (no padding) SHA-256 SPKI pin.
 
 Kinds:
 - **new user**: requires `name`; `--admin` invites (CLI only) create admins.
-  Admin rights come from the invite, never from registration order.
+  Admin rights come from the invite, never from registration order. Names ending in
+  `-bot` are reserved for webhook bots (§5 `hook.create`) → BYE `protocol_error`; a name
+  that exists → BYE `name_taken`.
 - **add key** (`invite.create {user}`): attaches `pubkey` to an existing user
   (new laptop). `name` is ignored.
 
@@ -150,7 +152,7 @@ session **before** the RES. The `seq` in a RES is informational: clients advance
 | `invite.create` | `{user?: u64}` (admin) | `{code: str}` |
 | `user.disable` | `{user}` (admin) | `{}` — closes their sessions with BYE `revoked` |
 | `user.update` | `{display: str}` (self) | `{seq}` — emits `user.update`; unchanged → `{seq: 0}` |
-| `hook.create` | `{chan, name}` | `{id: u64, url: str, curl: str}` (cap `hooks`, §12) |
+| `hook.create` | `{chan, name}` | `{id: u64, name: str, url: str, curl: str}` (cap `hooks`, §12) |
 | `hook.list` | `{}` | `{hooks: [{id, chan, name, created_by: u64, created: i64}]}` |
 | `hook.delete` | `{id}` | `{}` |
 
@@ -172,9 +174,13 @@ Rules:
   **chan.add**: any member of a public channel; members of a private channel.
   DMs can't be joined, added to, or left.
 - **hook.create**: caller must be a member of `chan` (else `forbidden`); DMs → `bad_request`.
-  `name` follows the user-name rule (§9) and names the hook's **bot user**: an existing bot
+  `name` names the hook's **bot user**. Bot names always end in `-bot`: the server appends
+  it unless `name` already ends in it (`ci` → `ci-bot`); the result must follow the
+  user-name rule (§9, so at most 32 bytes including `-bot`) or → `bad_request`. People can't
+  register names ending in `-bot` (§4), so bots never squat a person's name. An existing bot
   with that name is reused, otherwise one is created (`user.new`); a human with that name →
   `conflict`. If the bot isn't a member of `chan` it is added (`chan.join`, actor = caller).
+  The result's `name` is the bot's name.
   `url` is secret and returned only here. **hook.list** returns hooks in channels the caller
   currently belongs to (admins: all). **hook.delete**: the creator, an admin, or any current
   member of the hook's channel (anyone else → `not_found`); the URL stops working at once. The

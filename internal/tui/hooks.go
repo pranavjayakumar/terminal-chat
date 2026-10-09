@@ -60,8 +60,8 @@ func (m *Model) hookCommand(c command) (cmd tea.Cmd, ok bool, err error) {
 			return nil, true, errors.New("usage: /webhook name")
 		}
 		name := strings.ToLower(strings.TrimPrefix(c.args[0], "@"))
-		if !proto.ValidName(name) {
-			return nil, true, errors.New("webhook names are 1-32 of a-z 0-9 _ - (lowercase)")
+		if _, ok := proto.BotName(name); !ok {
+			return nil, true, errors.New(`webhook names are a-z 0-9 _ - (lowercase), at most 32 with "-bot" added`)
 		}
 		if m.active == 0 {
 			return nil, true, errors.New("no channel open")

@@ -1,5 +1,7 @@
 package proto
 
+import "strings"
+
 // Incoming webhooks (PROTOCOL.md §5, §12).
 
 // CapHooks is advertised in WELCOME when the server supports hook.* ops
@@ -16,6 +18,21 @@ const (
 // HookPath is the URL path prefix of the HTTP endpoint: POST /hooks/<token>.
 const HookPath = "/hooks/"
 
+// BotSuffix ends every bot user's name; people can't register such names,
+// so a bot can never squat a person's name (PROTOCOL.md §5 hook.create).
+const BotSuffix = "-bot"
+
+// BotName is the bot user name for a hook named name: name with BotSuffix
+// appended unless it already ends in it. ok is false if the result isn't a
+// valid user name (§9).
+func BotName(name string) (bot string, ok bool) {
+	bot = name
+	if !strings.HasSuffix(bot, BotSuffix) {
+		bot += BotSuffix
+	}
+	return bot, ValidName(bot)
+}
+
 type HookCreateArgs struct {
 	Chan uint64 `msgpack:"chan"`
 	Name string `msgpack:"name"`
@@ -23,6 +40,7 @@ type HookCreateArgs struct {
 
 type HookCreateRes struct {
 	ID   uint64 `msgpack:"id"`
+	Name string `msgpack:"name"` // the bot user's name (with BotSuffix)
 	URL  string `msgpack:"url"`
 	Curl string `msgpack:"curl"`
 }

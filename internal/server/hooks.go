@@ -141,11 +141,13 @@ func (s *Server) hookOp(ctx context.Context, u proto.User, op string, args proto
 }
 
 func (s *Server) opHookCreate(ctx context.Context, u proto.User, a proto.HookCreateArgs) (any, error) {
-	if !proto.ValidName(a.Name) {
-		return nil, badRequest("hook name must match ^[a-z0-9][a-z0-9_-]{0,31}$")
+	name, ok := proto.BotName(a.Name)
+	if !ok {
+		return nil, badRequest(`hook name plus "-bot" must match ^[a-z0-9][a-z0-9_-]{0,31}$`)
 	}
+	a.Name = name
 	token := newHookToken()
-	var res proto.HookCreateRes
+	res := proto.HookCreateRes{Name: name}
 	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
 		kind, ok := s.kinds[a.Chan]
 		switch {

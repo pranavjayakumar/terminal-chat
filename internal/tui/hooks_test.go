@@ -76,7 +76,7 @@ func TestWebhookCommands(t *testing.T) {
 		t.Fatalf("deleted %v", f.deleted)
 	}
 
-	for _, in := range []string{"/webhook", "/webhook Bad Name", "/webhook-delete x"} {
+	for _, in := range []string{"/webhook", "/webhook Bad Name", "/webhook-delete x", "/webhook " + strings.Repeat("a", 29)} {
 		m.input.SetValue(in)
 		m.submit()
 		if m.input.Value() != in || !m.noticeErr {
