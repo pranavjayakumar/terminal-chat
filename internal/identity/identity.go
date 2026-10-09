@@ -1,7 +1,7 @@
 // Package identity provides the user's SSH key as a tc identity: loading a
 // signer (ssh-agent first, then key files) and building/verifying the auth
 // signature defined in PROTOCOL.md §4, plus the SSH-signed E2E identity
-// objects (device certs, key endorsements, device revokes; E2E.md §12.2).
+// objects (device certs, key endorsements, device revokes; E2E.md §13.2).
 package identity
 
 import (
@@ -22,7 +22,7 @@ import (
 
 const authContext = "tc-auth-v1\x00"
 
-// SSH signing contexts for E2E identity objects (E2E.md §12.2), used with
+// SSH signing contexts for E2E identity objects (E2E.md §13.2), used with
 // SignContext/VerifyContext.
 const (
 	CtxDevice  = "tc-device-v1\x00"

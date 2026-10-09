@@ -53,14 +53,15 @@ func startServer(t *testing.T, kind string) *testServer {
 }
 
 type tclient struct {
-	t      *testing.T
-	conn   transport.Conn
-	codec  *proto.Codec
-	frames chan proto.Frame
-	signer ssh.Signer
-	user   proto.User
-	nextID uint32
-	held   []proto.Frame
+	t       *testing.T
+	conn    transport.Conn
+	codec   *proto.Codec
+	frames  chan proto.Frame
+	signer  ssh.Signer
+	user    proto.User
+	nextID  uint32
+	held    []proto.Frame
+	welcome proto.Welcome
 }
 
 func newKey(t *testing.T) ssh.Signer {
@@ -91,7 +92,13 @@ func (ts *testServer) dial(t *testing.T) (transport.Conn, *proto.Codec) {
 // connect performs the handshake. It returns the client, or the BYE code.
 func (ts *testServer) connect(t *testing.T, key ssh.Signer, invite, name string) (*tclient, string) {
 	t.Helper()
-	c, bye := ts.handshake(t, key, invite, name)
+	return ts.connectCaps(t, key, invite, name, nil)
+}
+
+// connectCaps is connect advertising caps in HELLO.
+func (ts *testServer) connectCaps(t *testing.T, key ssh.Signer, invite, name string, caps []string) (*tclient, string) {
+	t.Helper()
+	c, bye := ts.handshakeCaps(t, key, invite, name, caps)
 	if c != nil {
 		go func() {
 			defer close(c.frames)
@@ -110,6 +117,11 @@ func (ts *testServer) connect(t *testing.T, key ssh.Signer, invite, name string)
 // handshake is connect without the background reader.
 func (ts *testServer) handshake(t *testing.T, key ssh.Signer, invite, name string) (*tclient, string) {
 	t.Helper()
+	return ts.handshakeCaps(t, key, invite, name, nil)
+}
+
+func (ts *testServer) handshakeCaps(t *testing.T, key ssh.Signer, invite, name string, caps []string) (*tclient, string) {
+	t.Helper()
 	conn, codec := ts.dial(t)
 	exp, err := conn.Exporter()
 	if err != nil {
@@ -119,7 +131,7 @@ func (ts *testServer) handshake(t *testing.T, key ssh.Signer, invite, name strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := codec.Write(proto.THello, proto.Hello{Client: "test", Auth: proto.Auth{
+	if err := codec.Write(proto.THello, proto.Hello{Client: "test", Caps: caps, Auth: proto.Auth{
 		Pubkey: key.PublicKey().Marshal(), Sig: sig, Invite: invite, Name: name}}); err != nil {
 		t.Fatal(err)
 	}
@@ -137,10 +149,15 @@ func (ts *testServer) handshake(t *testing.T, key ssh.Signer, invite, name strin
 		t.Fatalf("expected WELCOME, got %#x", f.Type)
 	}
 	codec.SetMaxFrame(proto.MaxFrame)
-	return &tclient{t: t, conn: conn, codec: codec, frames: make(chan proto.Frame, 1024), signer: key, user: w.User}, ""
+	return &tclient{t: t, conn: conn, codec: codec, frames: make(chan proto.Frame, 1024), signer: key, user: w.User, welcome: w}, ""
 }
 
 func (ts *testServer) register(t *testing.T, name string, admin bool) *tclient {
+	t.Helper()
+	return ts.registerCaps(t, name, admin, nil)
+}
+
+func (ts *testServer) registerCaps(t *testing.T, name string, admin bool, caps []string) *tclient {
 	t.Helper()
 	code, err := ts.CreateInvite(context.Background(), admin, 0)
 	if err != nil {
@@ -150,7 +167,7 @@ func (ts *testServer) register(t *testing.T, name string, admin bool) *tclient {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, bye := ts.connect(t, newKey(t), inv.Token, name)
+	c, bye := ts.connectCaps(t, newKey(t), inv.Token, name, caps)
 	if bye != "" {
 		t.Fatalf("register %s: BYE %s", name, bye)
 	}
@@ -298,6 +315,8 @@ func (c *tclient) syncFresh() (proto.Snapshot, proto.SyncRes) {
 			snap.Users = append(snap.Users, part.Users...)
 			snap.Chans = append(snap.Chans, part.Chans...)
 			snap.Msgs = append(snap.Msgs, part.Msgs...)
+			snap.Devs = append(snap.Devs, part.Devs...)
+			snap.Revoked = append(snap.Revoked, part.Revoked...)
 			if part.Read != nil {
 				snap.Read = part.Read
 			}

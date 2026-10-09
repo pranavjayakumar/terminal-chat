@@ -67,7 +67,7 @@ func sigBody(sid ServerID, ch uint64, hdrAndCT []byte) []byte {
 	return append(b, hdrAndCT...)
 }
 
-// Encrypt builds enc = 0x01 || epoch || eh || dev || nonce || ct || sig (§12.4).
+// Encrypt builds enc = 0x01 || epoch || eh || dev || nonce || ct || sig (§13.4).
 func Encrypt(rand io.Reader, k Key, signer ed25519.PrivateKey, sid ServerID, ch uint64, ep uint32,
 	eh EpochHash, dev DevID, plain []byte) ([]byte, error) {
 	if len(plain) > MaxPlainSize {

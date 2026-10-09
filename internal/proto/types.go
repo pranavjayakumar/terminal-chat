@@ -205,6 +205,9 @@ type Snapshot struct {
 	Chans []Channel         `msgpack:"chans,omitempty"`
 	Msgs  []Message         `msgpack:"msgs,omitempty"`
 	Read  map[uint64]uint64 `msgpack:"read,omitempty"`
+	// Devs and Revoked are sent only with cap e2e1 (§13.2).
+	Devs    []Device `msgpack:"devs,omitempty"`
+	Revoked []Signed `msgpack:"revoked,omitempty"`
 }
 
 type Ping struct {

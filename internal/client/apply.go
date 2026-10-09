@@ -39,6 +39,19 @@ func (c *Client) syncHook(s *session) func(proto.Res) error {
 					return err
 				}
 			}
+			// An e2e1 reset snapshot carried every device. A session without
+			// e2e1 skips device events while last_seq moves on, so the next
+			// e2e1 session must fetch the full list again.
+			switch {
+			case !s.e2e():
+				if _, err := tx.Exec(`DELETE FROM meta WHERE k = 'devices_full'`); err != nil {
+					return err
+				}
+			case sr.Reset:
+				if err := setMeta(tx, "devices_full", 1); err != nil {
+					return err
+				}
+			}
 			last, err := metaUint(tx, "last_seq")
 			if err != nil {
 				return err
@@ -121,6 +134,16 @@ func (c *Client) applySnapshot(s *session, sn proto.Snapshot) error {
 		}
 		for ch, seq := range sn.Read {
 			if err := setRead(tx, ch, seq, false); err != nil {
+				return err
+			}
+		}
+		for _, d := range sn.Devs {
+			if err := storeDevice(tx, d); err != nil {
+				return err
+			}
+		}
+		for _, r := range sn.Revoked {
+			if err := storeRevoke(tx, r); err != nil {
 				return err
 			}
 		}
@@ -352,6 +375,18 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		*newUser = &x
 		u.Users = true
 		u.Channels = true // DM display names
+	case proto.KDeviceNew:
+		var d proto.Device
+		if !decode(&d) {
+			return nil
+		}
+		return storeDevice(tx, d)
+	case proto.KDeviceRevoke:
+		var d proto.DeviceRevokeArgs
+		if !decode(&d) {
+			return nil
+		}
+		return storeRevoke(tx, d.Revoke)
 	case proto.KReadUpdate:
 		var d proto.ReadUpdate
 		if !decode(&d) {

@@ -248,7 +248,7 @@ func (s *Server) applyCache(ev proto.Event) {
 // membership after the event was applied.
 func (s *Server) visibleLocked(ev proto.Event, u uint64) bool {
 	switch ev.Kind {
-	case proto.KUserNew, proto.KUserUpdate:
+	case proto.KUserNew, proto.KUserUpdate, proto.KDeviceNew, proto.KDeviceRevoke:
 		return true
 	case proto.KReadUpdate:
 		return ev.Actor == u
@@ -271,7 +271,11 @@ func (s *Server) publishLocked(ev proto.Event) {
 		s.log.Error("encoding event", "seq", ev.Seq, "err", err)
 		return
 	}
+	device := isDeviceKind(ev.Kind)
 	for sess := range s.sessions {
+		if device && !sess.e2e {
+			continue
+		}
 		if s.visibleLocked(ev, sess.user.ID) {
 			sess.pushLive(outFrame{t: proto.TEvent, payload: payload, seq: ev.Seq})
 		}

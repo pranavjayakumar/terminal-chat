@@ -89,6 +89,18 @@ CREATE TABLE IF NOT EXISTS reads (
 	seq INTEGER NOT NULL,
 	PRIMARY KEY (user, chan)
 );
+-- E2E devices (PROTOCOL.md §13.2). cert/endorse/revoked hold msgpack Signed.
+CREATE TABLE IF NOT EXISTS devices (
+	dev BLOB PRIMARY KEY,
+	user INTEGER NOT NULL REFERENCES users(id),
+	x25519 BLOB NOT NULL UNIQUE,
+	ed25519 BLOB NOT NULL UNIQUE,
+	cert BLOB NOT NULL,
+	endorse BLOB,
+	created INTEGER NOT NULL,
+	revoked BLOB
+);
+CREATE INDEX IF NOT EXISTS devices_user ON devices(user);
 CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5(body, content='messages', content_rowid='id');
 INSERT INTO msg_fts(msg_fts, rank) VALUES('secure-delete', 1);
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
@@ -405,12 +417,14 @@ func isMember(ctx context.Context, q querier, ch, u uint64) (bool, error) {
 	return n > 0, err
 }
 
-// visibleEvents returns events in (since, h] that u may see (PROTOCOL.md §6 Visibility).
-func visibleEvents(ctx context.Context, q querier, u, since, h uint64, limit int) ([]proto.Event, error) {
+// visibleEvents returns events in (since, h] that u may see (PROTOCOL.md §6
+// Visibility); device events only when e2e (§13).
+func visibleEvents(ctx context.Context, q querier, u, since, h uint64, limit int, e2e bool) ([]proto.Event, error) {
 	rows, err := q.QueryContext(ctx, `
 		SELECT seq, kind, COALESCE(chan, 0), time, actor, data FROM events e
 		WHERE seq > ?1 AND seq <= ?2 AND (
 			kind IN ('user.new', 'user.update')
+			OR (?5 AND kind IN ('device.new', 'device.revoke'))
 			OR (kind = 'read.update' AND actor = ?3)
 			OR (kind IN ('chan.join', 'chan.leave') AND about = ?3)
 			OR (kind IN ('chan.new', 'chan.update')
@@ -419,7 +433,7 @@ func visibleEvents(ctx context.Context, q querier, u, since, h uint64, limit int
 				SELECT 1 FROM membership m WHERE m.chan = e.chan AND m.user = ?3
 				AND m.join_seq <= e.seq AND (m.leave_seq IS NULL OR e.seq < m.leave_seq)))
 		)
-		ORDER BY seq LIMIT ?4`, since, h, u, limit)
+		ORDER BY seq LIMIT ?4`, since, h, u, limit, e2e)
 	if err != nil {
 		return nil, err
 	}
