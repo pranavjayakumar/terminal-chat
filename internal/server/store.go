@@ -434,7 +434,7 @@ func visibleEvents(ctx context.Context, q querier, u, since, h uint64, limit int
 			OR (kind IN ('chan.join', 'chan.leave') AND about = ?3)
 			OR (kind IN ('chan.new', 'chan.update')
 				AND EXISTS (SELECT 1 FROM channels c WHERE c.id = e.chan AND c.kind = 'public'))
-			OR (kind != 'read.update' AND (?5 OR kind != 'key.epoch') AND chan IS NOT NULL AND EXISTS (
+			OR (kind != 'read.update' AND (?5 OR kind NOT IN ('key.epoch', 'key.share')) AND chan IS NOT NULL AND EXISTS (
 				SELECT 1 FROM membership m WHERE m.chan = e.chan AND m.user = ?3
 				AND m.join_seq <= e.seq AND (m.leave_seq IS NULL OR e.seq < m.leave_seq)))
 		)

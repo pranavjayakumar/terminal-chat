@@ -157,7 +157,9 @@ func backfillSeqs(db *sql.DB) error {
 }
 
 // isE2EKind: events only e2e1 sessions receive, live or replayed.
-func isE2EKind(kind string) bool { return isDeviceKind(kind) || kind == proto.KKeyEpoch }
+func isE2EKind(kind string) bool {
+	return isDeviceKind(kind) || kind == proto.KKeyEpoch || kind == proto.KKeyShare
+}
 
 // epochHead is an encrypted channel's chain head: its current bundle (nil
 // at epoch 0), that bundle's chain hash, the seq of its key.epoch event,

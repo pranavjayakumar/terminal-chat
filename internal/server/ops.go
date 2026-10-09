@@ -47,12 +47,13 @@ var writeOps = map[string]bool{
 	proto.OpInviteCreate: true, proto.OpUserDisable: true, proto.OpUserUpdate: true,
 	proto.OpHookCreate: true, proto.OpHookDelete: true, proto.OpHookList: true,
 	proto.OpDeviceRegister: true, proto.OpDeviceRevoke: true, proto.OpKeyRotate: true,
+	proto.OpKeyShare: true,
 }
 
 // e2eOps exist only in sessions that negotiated proto.CapE2E.
 var e2eOps = map[string]bool{
 	proto.OpDeviceRegister: true, proto.OpDeviceRevoke: true, proto.OpDevicesList: true,
-	proto.OpKeyRotate: true, proto.OpKeyFetch: true,
+	proto.OpKeyRotate: true, proto.OpKeyFetch: true, proto.OpKeyShare: true,
 }
 
 func (s *Server) dispatch(ctx context.Context, sess *session, op string, args proto.Raw) (any, error) {
@@ -118,6 +119,8 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 		return withArgs(args, func(a proto.KeyRotateArgs) (any, error) { return s.opKeyRotate(ctx, u, a) })
 	case proto.OpKeyFetch:
 		return withArgs(args, func(a proto.KeyFetchArgs) (any, error) { return s.opKeyFetch(ctx, u, a) })
+	case proto.OpKeyShare:
+		return withArgs(args, func(a proto.KeyShareArgs) (any, error) { return s.opKeyShare(ctx, u, a) })
 	}
 	if res, ok, err := s.hookOp(ctx, u, op, args); ok {
 		return res, err

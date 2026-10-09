@@ -288,13 +288,14 @@ type deviceRow struct {
 	user    uint64
 	dev     proto.Device
 	revoke  *proto.Signed
+	revSeq  uint64 // seq of the device.revoke event
 	encSize int
 }
 
 // eachDevice streams devices of users (nil = all) with id > after, ordered
 // by user then registration, until fn returns false.
 func eachDevice(ctx context.Context, q querier, users []uint64, after uint64, fn func(deviceRow) bool) error {
-	query := `SELECT user, cert, endorse, revoked FROM devices WHERE user > ?`
+	query := `SELECT user, cert, endorse, revoked, COALESCE(revoked_seq, 0) FROM devices WHERE user > ?`
 	args := []any{after}
 	if len(users) > 0 {
 		query += ` AND user IN (SELECT value FROM json_each(?))`
@@ -312,7 +313,7 @@ func eachDevice(ctx context.Context, q querier, users []uint64, after uint64, fn
 	for rows.Next() {
 		var d deviceRow
 		var cert, endorse, revoked []byte
-		if err := rows.Scan(&d.user, &cert, &endorse, &revoked); err != nil {
+		if err := rows.Scan(&d.user, &cert, &endorse, &revoked, &d.revSeq); err != nil {
 			return err
 		}
 		if err := proto.Unmarshal(cert, &d.dev.Cert); err != nil {
@@ -368,6 +369,7 @@ func (s *Server) opDevicesList(ctx context.Context, a proto.DevicesListArgs) (an
 			}
 			if d.revoke != nil {
 				res.Revoked = append(res.Revoked, *d.revoke)
+				res.RevokedSeqs = append(res.RevokedSeqs, d.revSeq)
 			}
 		}
 		lastIncluded = group[0].user
@@ -410,6 +412,7 @@ func (sess *session) snapshotDevices(ctx context.Context, tx *sql.Tx) error {
 		part.Devs = append(part.Devs, d.dev)
 		if d.revoke != nil {
 			part.Revoked = append(part.Revoked, *d.revoke)
+			part.RevokedSeqs = append(part.RevokedSeqs, d.revSeq)
 		}
 		size += d.encSize
 		return true

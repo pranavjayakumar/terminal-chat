@@ -460,7 +460,7 @@ DeviceRevoke.sig = SSH signature by an endorsed key of `user` ("tc-revoke-v1\x00
 |---|---|---|
 | `device.register` | `{cert: Signed, endorse?: Signed}` | `{seq}` |
 | `device.revoke` | `{revoke: Signed}` | `{seq}` |
-| `devices.list` | `{users?: [u64], after?: u64}` | `{certs: [Signed], endorse: [Signed], revoked: [Signed], next?: u64}` |
+| `devices.list` | `{users?: [u64], after?: u64}` | `{certs: [Signed], endorse: [Signed], revoked: [Signed], next?: u64, revoked_seqs?: [u64]}` |
 
 | event kind | data | visible to |
 |---|---|---|
@@ -493,11 +493,13 @@ Server rules (honest case):
 - **devices.list**: devices of `users` (absent/empty = everyone; at most
   4096 entries, else `bad_request`), including
   revoked ones, with every distinct `endorse` attached to them and every
-  revoke, ordered by user. Whole users only; when the next user would push
+  revoke, ordered by user, and `revoked_seqs[i]`, the seq of `revoked[i]`'s
+  `device.revoke` event (§13.3 "Revocation vs epochs"). Whole users only; when the next user would push
   the result past ~768 KiB the server stops and sets `next`: call again with
   the same `users` and `after = next`.
-- **Snapshot** (§6) adds `devs: [Device]` (every device, revoked ones too) and
-  `revoked: [Signed]` (every DeviceRevoke), possibly over several parts.
+- **Snapshot** (§6) adds `devs: [Device]` (every device, revoked ones too),
+  `revoked: [Signed]` (every DeviceRevoke) and `revoked_seqs: [u64]` (same
+  length: each revoke's event seq), possibly over several parts.
 
 Clients store what they receive and decide trust locally: a cert counts only
 if it verifies under an SSH key pinned for its `user` (directly or via a
@@ -623,10 +625,20 @@ an epoch. Once encrypted sends land (step 7), a plaintext `send` into an
 e2e channel is `bad_request` "upgrade tc", so legacy clients can read
 channel metadata but not post into encrypted DMs or channels.
 
-Client validity (step 6, not yet implemented): `sig`; `by` is a verified
-device of a previous-roster user (epoch 1: the creator / any DM member);
-the chain extends the pinned head (lower or forked → alarm); K matches
-`kc`; boxes only to verified devices.
+Client validity: bundles are checked in epoch order, from epoch 1 (or the
+epoch after the pinned head), fetching gaps with `key.fetch`. Each must:
+decode (canonical, `server_id` and `chan` match, the epoch is the next one);
+be signed by `by`, a device the client verified (§13.2) whose revoke, if
+any, has a seq not before the bundle's seq; have `by`'s user in the previous
+bundle's roster (epoch 1: `Channel.creator`, or for a DM any member, and in
+the roster); have `prev` = ChainHash of the previous bundle; box no device
+the client knows to belong to a non-roster user or revoked before the
+bundle's seq, and no two boxes to one X25519 key among devices it knows.
+Boxes to devices the client hasn't verified are allowed (the rotator may
+have verified them). A failure, a second valid bundle for an epoch, or a
+current epoch below the pinned head is an **alarm** for the channel: the
+head doesn't move and the alarm is kept in the trust store. A bundle whose
+rotator the client can't verify (yet) stops the walk without an alarm.
 
 The chain link is about the signed bundle, not its keys: a bundle that
 verifies and whose `prev` is the pinned head is accepted and becomes the
@@ -649,14 +661,15 @@ e2e channel is `bad_request` "upgrade tc" (§13.3).
 ### 13.5 Ops
 
 Implemented: `device.register`, `device.revoke`, `devices.list` (§13.2),
-`key.rotate`, `key.fetch` (§13.3), `chan.create + e2e?`, `dm.open` (e2e
-DMs). Not yet: `key.share`, `send/edit/delete/react + enc`, `chan.add +
+`key.rotate`, `key.fetch` (§13.3), `key.share` (§13.7), `chan.create + e2e?`,
+`dm.open` (e2e DMs). Not yet: `send/edit/delete/react + enc`, `chan.add +
 bundle`, `chan.remove`, `chan.encrypt` (`docs/E2E.md` §13.5).
 
 | op | args | data |
 |---|---|---|
 | `key.rotate` | `{chan, bundle: Signed}` | `{seq}` |
 | `key.fetch` | `{chan, from: u32, to: u32}` | `{bundles: [Signed], seqs: [u64]}` |
+| `key.share` | `{chan, epoch: u32, dev: bin16, eph: bin32, ct: bin48}` | `{}` |
 
 ### 13.6 Events
 
@@ -665,15 +678,50 @@ Implemented: `device.new`, `device.revoke` (§13.2), and:
 | event kind | chan | data | visible to |
 |---|---|---|---|
 | `key.epoch` | the channel | `{bundle: Signed}` | `e2e1` sessions of users who are members at its seq (§6): after `chan.join` the joiner sees it, after `chan.leave` the leaver doesn't — identically live and on replay |
+| `key.share` | the channel | the `key.share` args (actor = the sharer) | same as `key.epoch` |
 
 Snapshot (§6) adds `keys: [{bundle: Signed, seq: u64}]` for `e2e1` sessions: the current
 bundle of every encrypted channel the user is a member of, with the seq of its
-`key.epoch` event (channels at epoch 0 have none), possibly over several parts. Not yet: `key.share`,
+`key.epoch` event (channels at epoch 0 have none), possibly over several parts. Not yet:
 `enc` in `msg.*`/`react.*`.
 
-### 13.7 Key requests *(not yet implemented)*
+### 13.7 Key requests
 
-Ephemeral `key.need` and op/event `key.share`: `docs/E2E.md` §13.7.
+A device that has no K for an epoch it verified (no box for it, a box that
+doesn't open, or `kc` doesn't match) asks the channel's members:
+
+```
+Ephemeral key.need = {kind: "key.need", chan, epoch: u32, dev: bin16}   // + user, set by the server
+```
+
+Clients send at most one per channel per 30 s. The server (honest case)
+relays it to the `e2e1` sessions of the channel's current members, the
+sender's other sessions included but not the sending one, and silently
+drops it unless the sender has `e2e1`, `dev` is an active device of the
+sender, the channel is encrypted, `1 ≤ epoch ≤` its current epoch, the
+sender is a member, and the session sent no `key.need` for the channel in
+the last 30 s.
+
+A member that holds K for `epoch` answers only if `dev` is a device it
+verified (§13.2), not revoked, of the `key.need`'s `user`, and that user is
+in the roster of that epoch's bundle (never seal K to a non-member). It
+answers at most once per (chan, epoch, dev) per 30 s, with
+**key.share** `{chan, epoch, dev, eph, ct}`:
+
+```
+eph = fresh X25519 key per share
+ss  = X25519(eph_priv, d.x25519);  bk = HKDF-SHA256(ss, salt = eph || d.x25519, info "tc-share-v1")
+ct  = XChaCha20-Poly1305(bk, nonce 0^24, K, AD = "tc-share-v1" || server_id || chan || epoch || d.dev)
+```
+
+Anyone can build a share, so the recipient accepts K only if it matches
+the `kc` of the epoch's verified bundle; a share for an epoch it hasn't
+verified yet is kept until it has. Server rules (write op, rate limited):
+`dev`, `eph`, `ct` of the right sizes and `epoch ≥ 1` (else `bad_request`);
+channel exists (`not_found`); caller is a member (`forbidden`); channel is
+encrypted and `epoch ≤` its current epoch (`bad_request`); `dev` is a
+registered device (`not_found`), not revoked, of a current member
+(`bad_request`). It appends a `key.share` event (§13.6).
 
 ### 13.8 Errors & limits
 
