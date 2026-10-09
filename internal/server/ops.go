@@ -46,12 +46,13 @@ var writeOps = map[string]bool{
 	proto.OpChanLeave: true, proto.OpChanTopic: true, proto.OpDMOpen: true,
 	proto.OpInviteCreate: true, proto.OpUserDisable: true, proto.OpUserUpdate: true,
 	proto.OpHookCreate: true, proto.OpHookDelete: true, proto.OpHookList: true,
-	proto.OpDeviceRegister: true, proto.OpDeviceRevoke: true,
+	proto.OpDeviceRegister: true, proto.OpDeviceRevoke: true, proto.OpKeyRotate: true,
 }
 
 // e2eOps exist only in sessions that negotiated proto.CapE2E.
 var e2eOps = map[string]bool{
 	proto.OpDeviceRegister: true, proto.OpDeviceRevoke: true, proto.OpDevicesList: true,
+	proto.OpKeyRotate: true, proto.OpKeyFetch: true,
 }
 
 func (s *Server) dispatch(ctx context.Context, sess *session, op string, args proto.Raw) (any, error) {
@@ -85,7 +86,7 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 	case proto.OpRead:
 		return withArgs(args, func(a proto.ReadArgs) (any, error) { return s.opRead(ctx, u, a) })
 	case proto.OpChanCreate:
-		return withArgs(args, func(a proto.ChanCreateArgs) (any, error) { return s.opChanCreate(ctx, u, a) })
+		return withArgs(args, func(a proto.ChanCreateArgs) (any, error) { return s.opChanCreate(ctx, sess, a) })
 	case proto.OpChanJoin:
 		return withArgs(args, func(a proto.ChanArgs) (any, error) {
 			return s.opChanAdd(ctx, u, proto.ChanAddArgs{Chan: a.Chan, User: u.ID}, true)
@@ -97,7 +98,7 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 	case proto.OpChanTopic:
 		return withArgs(args, func(a proto.ChanTopicArgs) (any, error) { return s.opChanTopic(ctx, u, a) })
 	case proto.OpDMOpen:
-		return withArgs(args, func(a proto.DMOpenArgs) (any, error) { return s.opDMOpen(ctx, u, a) })
+		return withArgs(args, func(a proto.DMOpenArgs) (any, error) { return s.opDMOpen(ctx, sess, a) })
 	case proto.OpUsersList:
 		users, err := listUsers(ctx, s.st.db)
 		return proto.UsersRes{Users: users}, err
@@ -113,6 +114,10 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 		return withArgs(args, func(a proto.DeviceRevokeArgs) (any, error) { return s.opDeviceRevoke(ctx, u, a) })
 	case proto.OpDevicesList:
 		return withArgs(args, func(a proto.DevicesListArgs) (any, error) { return s.opDevicesList(ctx, a) })
+	case proto.OpKeyRotate:
+		return withArgs(args, func(a proto.KeyRotateArgs) (any, error) { return s.opKeyRotate(ctx, u, a) })
+	case proto.OpKeyFetch:
+		return withArgs(args, func(a proto.KeyFetchArgs) (any, error) { return s.opKeyFetch(ctx, u, a) })
 	}
 	if res, ok, err := s.hookOp(ctx, u, op, args); ok {
 		return res, err
@@ -471,18 +476,18 @@ func (s *Server) opRead(ctx context.Context, u proto.User, a proto.ReadArgs) (an
 // ---- channels ----
 
 // createChannel inserts a channel whose members all join at the chan.new seq.
-func createChannel(ctx context.Context, tx *sql.Tx, now int64, actor uint64, name, kind, topic string, members []uint64) (proto.Channel, proto.Event, error) {
+func createChannel(ctx context.Context, tx *sql.Tx, now int64, actor uint64, name, kind, topic string, members []uint64, e2e bool) (proto.Channel, proto.Event, error) {
 	var dmkey any
 	if kind == proto.ChanDM {
 		dmkey = dmKey(members)
 	}
-	r, err := tx.ExecContext(ctx, `INSERT INTO channels (name, kind, topic, created, dmkey) VALUES (?, ?, ?, ?, ?)`,
-		name, kind, topic, now, dmkey)
+	r, err := tx.ExecContext(ctx, `INSERT INTO channels (name, kind, topic, created, dmkey, e2e) VALUES (?, ?, ?, ?, ?, ?)`,
+		name, kind, topic, now, dmkey, e2e)
 	if err != nil {
 		return proto.Channel{}, proto.Event{}, err
 	}
 	id, _ := r.LastInsertId()
-	c := proto.Channel{ID: uint64(id), Name: name, Kind: kind, Topic: topic, Members: members, Created: now}
+	c := proto.Channel{ID: uint64(id), Name: name, Kind: kind, Topic: topic, Members: members, Created: now, E2E: e2e}
 	if c.Members == nil {
 		c.Members = []uint64{}
 	}
@@ -537,7 +542,15 @@ func joinGeneral(ctx context.Context, tx *sql.Tx, now int64, user uint64) (proto
 	return ev, err == nil, err
 }
 
-func (s *Server) opChanCreate(ctx context.Context, u proto.User, a proto.ChanCreateArgs) (any, error) {
+func (s *Server) opChanCreate(ctx context.Context, sess *session, a proto.ChanCreateArgs) (any, error) {
+	u := sess.user
+	switch {
+	case a.E2E && !sess.e2e:
+		// Silently making a plaintext channel would mislead the client.
+		return nil, badRequest("encrypted channels need cap e2e1")
+	case a.E2E && !a.Private:
+		return nil, badRequest("only private channels can be encrypted")
+	}
 	if !proto.ValidName(a.Name) {
 		return nil, badRequest("channel name must match ^[a-z0-9][a-z0-9_-]{0,31}$")
 	}
@@ -555,7 +568,7 @@ func (s *Server) opChanCreate(ctx context.Context, u proto.User, a proto.ChanCre
 		if n > 0 {
 			return nil, proto.Errf(proto.ErrConflict, "channel exists")
 		}
-		c, ev, err := createChannel(ctx, tx, s.now(), u.ID, a.Name, kind, a.Topic, []uint64{u.ID})
+		c, ev, err := createChannel(ctx, tx, s.now(), u.ID, a.Name, kind, a.Topic, []uint64{u.ID}, a.E2E)
 		res.Chan = c
 		return []proto.Event{ev}, err
 	})
@@ -632,7 +645,10 @@ func (s *Server) opChanTopic(ctx context.Context, u proto.User, a proto.ChanTopi
 	return res, err
 }
 
-func (s *Server) opDMOpen(ctx context.Context, u proto.User, a proto.DMOpenArgs) (any, error) {
+// opDMOpen creates DMs encrypted (epoch 0 until the first key.rotate) when
+// the caller speaks e2e1; an existing DM is returned as it is.
+func (s *Server) opDMOpen(ctx context.Context, sess *session, a proto.DMOpenArgs) (any, error) {
+	u := sess.user
 	if len(a.Users) > proto.MaxDMOthers+1 {
 		return nil, badRequest("a DM needs 1 to 7 other people")
 	}
@@ -663,7 +679,7 @@ func (s *Server) opDMOpen(ctx context.Context, u proto.User, a proto.DMOpenArgs)
 				return nil, errNotFound
 			}
 		}
-		c, ev, err := createChannel(ctx, tx, s.now(), u.ID, "", proto.ChanDM, "", members)
+		c, ev, err := createChannel(ctx, tx, s.now(), u.ID, "", proto.ChanDM, "", members, sess.e2e)
 		res.Chan = c
 		return []proto.Event{ev}, err
 	})

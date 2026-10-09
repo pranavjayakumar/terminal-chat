@@ -617,6 +617,9 @@ func (s *Server) sendSnapshot(ctx context.Context, tx *sql.Tx, sess *session) er
 		if err := sess.snapshotDevices(ctx, tx); err != nil {
 			return err
 		}
+		if err := sess.snapshotKeys(ctx, tx, chans); err != nil {
+			return err
+		}
 	}
 
 	var part []proto.Message

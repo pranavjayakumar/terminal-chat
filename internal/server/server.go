@@ -190,7 +190,7 @@ func (s *Server) ensureGeneral() error {
 		return err
 	}
 	_, err := s.write(context.Background(), func(tx *sql.Tx) ([]proto.Event, error) {
-		_, ev, err := createChannel(context.Background(), tx, s.now(), 0, "general", proto.ChanPublic, "", nil)
+		_, ev, err := createChannel(context.Background(), tx, s.now(), 0, "general", proto.ChanPublic, "", nil, false)
 		return []proto.Event{ev}, err
 	})
 	return err
@@ -245,7 +245,8 @@ func (s *Server) applyCache(ev proto.Event) {
 }
 
 // visibleLocked implements PROTOCOL.md §6 Visibility for live fan-out, using
-// membership after the event was applied.
+// membership after the event was applied. Keep in step with visibleEvents;
+// e2e-only kinds are filtered by publishLocked.
 func (s *Server) visibleLocked(ev proto.Event, u uint64) bool {
 	switch ev.Kind {
 	case proto.KUserNew, proto.KUserUpdate, proto.KDeviceNew, proto.KDeviceRevoke:
@@ -271,9 +272,9 @@ func (s *Server) publishLocked(ev proto.Event) {
 		s.log.Error("encoding event", "seq", ev.Seq, "err", err)
 		return
 	}
-	device := isDeviceKind(ev.Kind)
+	e2eOnly := isE2EKind(ev.Kind)
 	for sess := range s.sessions {
-		if device && !sess.e2e {
+		if e2eOnly && !sess.e2e {
 			continue
 		}
 		if s.visibleLocked(ev, sess.user.ID) {
