@@ -170,7 +170,8 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 		notes: map[uint64]*pendingNote{}, badge: &badgeWriter{},
 	}
 	m.lastKey = m.now()
-	m.r = renderer{st: st, name: func(id uint64) string { return m.users[id].Name }}
+	m.r = renderer{st: st, name: func(id uint64) string { return m.users[id].Name },
+		bot: func(id uint64) bool { return m.users[id].Bot }}
 	m.input = newInput(st)
 	m.line = newLine(st)
 	m.reloadAll()

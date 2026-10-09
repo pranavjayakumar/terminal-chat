@@ -396,3 +396,41 @@ func TestAwayAfterEnv(t *testing.T) {
 		}
 	}
 }
+
+// TestBotsNeverNotify: webhook bot messages don't notify or get the
+// mention gutter, even in a DM or with @me in them (L5).
+func TestBotsNeverNotify(t *testing.T) {
+	f := newFake()
+	f.users = append(f.users, proto.User{ID: 9, Name: "ci-bot", Bot: true})
+	m := New(context.Background(), f, Options{Out: &syncBuf{}, Notifier: &fakeNotifier{}, styles: testStyles(true)})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	newClock(m)
+	deliver(m, newMsg(301, 20, 9, "dm from a bot"), newMsg(302, 11, 9, "fix-@alice failed"))
+	if got := notes(m).got(); len(got) != 0 {
+		t.Fatalf("bot notified: %q", got)
+	}
+	deliver(m, newMsg(303, 11, 3, "@alice from carol"))
+	if got := notes(m).got(); len(got) != 1 {
+		t.Fatalf("person's mention: %q", got)
+	}
+
+	gutter := func(body string, author uint64) bool {
+		f.msgs[10] = append(f.msgs[10], client.Message{Message: proto.Message{ID: 400 + uint64(len(f.msgs[10])), Chan: 10, Author: author,
+			Body: body, Time: f.msgs[10][len(f.msgs[10])-1].Time + 1}})
+		m.openChannel(10)
+		m.reloadPane(&m.main)
+		for _, l := range strings.Split(m.View(), "\n") {
+			if l = ansi.Strip(l); strings.Contains(l, body) {
+				return strings.Contains(l, "│▎")
+			}
+		}
+		t.Fatalf("%q not on screen:\n%s", body, ansi.Strip(m.View()))
+		return false
+	}
+	if !gutter("@alice person ping", 2) {
+		t.Fatal("no mention gutter for a person")
+	}
+	if gutter("@alice bot ping", 9) {
+		t.Fatal("mention gutter for a bot")
+	}
+}

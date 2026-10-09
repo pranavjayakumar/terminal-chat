@@ -33,7 +33,7 @@ func startServer(t *testing.T, dir, addr string) (*srv, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ln, err := transport.Listen(addr, s.Cert())
+	ln, err := transport.ListenWith(addr, s.Cert(), transport.ListenOpts{HTTP: true, HTTPCert: s.HTTPCert()})
 	if err != nil {
 		t.Fatal(err)
 	}

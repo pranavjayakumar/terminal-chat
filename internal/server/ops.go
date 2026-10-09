@@ -45,6 +45,7 @@ var writeOps = map[string]bool{
 	proto.OpRead: true, proto.OpChanCreate: true, proto.OpChanJoin: true, proto.OpChanAdd: true,
 	proto.OpChanLeave: true, proto.OpChanTopic: true, proto.OpDMOpen: true,
 	proto.OpInviteCreate: true, proto.OpUserDisable: true, proto.OpUserUpdate: true,
+	proto.OpHookCreate: true, proto.OpHookDelete: true, proto.OpHookList: true,
 }
 
 func (s *Server) dispatch(ctx context.Context, sess *session, op string, args proto.Raw) (any, error) {
@@ -97,6 +98,9 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 		return withArgs(args, func(a proto.UserUpdateArgs) (any, error) { return s.opUserUpdate(ctx, u, a) })
 	case proto.OpUserDisable:
 		return withArgs(args, func(a proto.UserArgs) (any, error) { return s.opUserDisable(ctx, u, a) })
+	}
+	if res, ok, err := s.hookOp(ctx, u, op, args); ok {
+		return res, err
 	}
 	return nil, proto.Errf(proto.ErrUnknownOp, "")
 }
@@ -154,6 +158,13 @@ func (s *Server) canRead(ch, u uint64) (string, bool) {
 // ---- messages ----
 
 func (s *Server) opSend(ctx context.Context, u proto.User, a proto.SendArgs) (any, error) {
+	return s.send(ctx, u, a, nil)
+}
+
+// send implements the send op. For a webhook send, hook is the hook that
+// was looked up; it is re-checked inside the write transaction so a hook
+// deleted or revoked meanwhile never posts.
+func (s *Server) send(ctx context.Context, u proto.User, a proto.SendArgs, hook *liveHook) (any, error) {
 	if len(a.Nonce) != 16 {
 		return nil, badRequest("nonce must be 16 bytes")
 	}
@@ -162,6 +173,11 @@ func (s *Server) opSend(ctx context.Context, u proto.User, a proto.SendArgs) (an
 	}
 	var res proto.SendRes
 	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
+		if hook != nil {
+			if err := s.hookLiveLocked(ctx, tx, hook); err != nil {
+				return nil, err
+			}
+		}
 		// Idempotent retry: same (author, nonce) returns the original message.
 		var id, ch, thread uint64
 		var body string
@@ -188,6 +204,11 @@ func (s *Server) opSend(ctx context.Context, u proto.User, a proto.SendArgs) (an
 			if err != nil || root != 0 {
 				return nil, badRequest("thread must be a top-level message in this channel")
 			}
+		}
+		// A hook send also spends its creator's send budget, so making more
+		// hooks doesn't multiply anyone's throughput.
+		if hook != nil && !s.allowSend(hook.creator) {
+			return nil, proto.Errf(proto.ErrRateLimited, "slow down")
 		}
 		if !s.allowSend(u.ID) {
 			return nil, proto.Errf(proto.ErrRateLimited, "slow down")
@@ -641,8 +662,12 @@ func (s *Server) opInviteCreate(ctx context.Context, u proto.User, a proto.Invit
 		return nil, errForbidden
 	}
 	if a.User != 0 {
-		if _, err := getUser(ctx, s.st.db, a.User); err != nil {
+		target, err := getUser(ctx, s.st.db, a.User)
+		if err != nil {
 			return nil, errNotFound
+		}
+		if target.Bot {
+			return nil, badRequest("bots can't log in")
 		}
 	}
 	code, err := s.CreateInvite(ctx, false, a.User)
@@ -665,6 +690,13 @@ func (s *Server) opUserDisable(ctx context.Context, u proto.User, a proto.UserAr
 			return nil, nil
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE users SET disabled = 1 WHERE id = ?`, a.User); err != nil {
+			return nil, err
+		}
+		// Their webhooks (made by them, or posting as them) die with them.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM hooks WHERE created_by = ? OR bot = ?`, a.User, a.User); err != nil {
+			return nil, err
+		}
+		if err := retireOrphanBots(tx); err != nil {
 			return nil, err
 		}
 		target.Disabled = true

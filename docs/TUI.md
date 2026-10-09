@@ -68,15 +68,18 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 
 - Opening a channel marks it read up to the newest message (MarkRead) when the view is at the bottom.
   Scrolled up → don't mark read; show `↓ N new` pill.
-- Unread counts in sidebar; `@` instead of count when there's a mention or it's a DM.
+- Unread counts in sidebar; `@` instead of count when there's a mention or it's a DM (bot
+  messages never make a mention).
 - Notifications: see "Notifications & herdr" below.
 - Never block the UI on network: all client calls run in `tea.Cmd`s.
 - Startup renders from cache immediately, before connecting.
 
 ## Notifications & herdr
 
-- **When**: a DM or a message that @mentions me, not my own, and either the terminal is blurred
-  (focus reporting) or the message is in a channel that isn't the active one.
+- **When**: a DM or a message that @mentions me, not my own and not from a webhook bot
+  (bot messages count as unread but never as mentions — their text comes from outside),
+  and either the terminal is blurred (focus reporting) or the message is in a channel that
+  isn't the active one.
 - **What**: title `#chan · alice` or `alice (DM)`, body = first non-empty line. Title ≤ 60 runes,
   body ≤ 160, both through `sanitize.Line`.
 - **Coalescing**: the first message in a channel notifies at once and opens a 5 s window; more

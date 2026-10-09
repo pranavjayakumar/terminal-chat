@@ -72,7 +72,8 @@ type pendingNote struct {
 }
 
 func (m *Model) shouldNotify(x proto.Message) bool {
-	if x.Author == m.me.ID || x.Deleted {
+	// Bots (webhooks) never notify: their text is from outside tc.
+	if x.Author == m.me.ID || x.Deleted || m.users[x.Author].Bot {
 		return false
 	}
 	if x.Chan == m.active && m.focused {

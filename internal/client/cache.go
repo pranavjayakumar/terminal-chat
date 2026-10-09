@@ -65,6 +65,10 @@ func openCache(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("creating cache schema: %w", err)
 	}
+	if err := migrateBots(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return db, nil
 }
 
@@ -112,13 +116,13 @@ func resetCache(q dbtx, serverID []byte) error {
 // ---- users ----
 
 func upsertUser(q dbtx, u proto.User) error {
-	_, err := q.Exec(`INSERT OR REPLACE INTO users (id, name, display, admin, disabled, created)
-		VALUES (?, ?, ?, ?, ?, ?)`, u.ID, u.Name, u.Display, u.Admin, u.Disabled, u.Created)
+	_, err := q.Exec(`INSERT OR REPLACE INTO users (id, name, display, admin, disabled, created, bot)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, u.ID, u.Name, u.Display, u.Admin, u.Disabled, u.Created, u.Bot)
 	return err
 }
 
 func loadUsers(q dbtx) (map[uint64]proto.User, error) {
-	rows, err := q.Query(`SELECT id, name, display, admin, disabled, created FROM users`)
+	rows, err := q.Query(`SELECT id, name, display, admin, disabled, created, bot FROM users`)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +130,7 @@ func loadUsers(q dbtx) (map[uint64]proto.User, error) {
 	m := map[uint64]proto.User{}
 	for rows.Next() {
 		var u proto.User
-		if err := rows.Scan(&u.ID, &u.Name, &u.Display, &u.Admin, &u.Disabled, &u.Created); err != nil {
+		if err := rows.Scan(&u.ID, &u.Name, &u.Display, &u.Admin, &u.Disabled, &u.Created, &u.Bot); err != nil {
 			return nil, err
 		}
 		m[u.ID] = u

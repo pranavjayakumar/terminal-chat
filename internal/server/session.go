@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -83,7 +84,7 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 	}
 	defer s.unregister(sess)
 	if err := sess.codec.Write(proto.TWelcome, proto.Welcome{
-		Server: Version, Caps: []string{}, ServerID: s.st.serverID, User: user, Time: s.now(),
+		Server: Version, Caps: []string{proto.CapHooks}, ServerID: s.st.serverID, User: user, Time: s.now(),
 	}); err != nil {
 		return
 	}
@@ -155,12 +156,15 @@ func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp str
 		var evs []proto.Event
 		if target.Valid {
 			user, err = getUser(ctx, tx, uint64(target.Int64))
-			if err != nil || user.Disabled {
+			if err != nil || user.Disabled || user.Bot {
 				return nil, fail(proto.ByeInviteInvalid, "invite user is gone")
 			}
 		} else {
 			if !proto.ValidName(a.Name) {
 				return nil, fail(proto.ByeProtocolError, "name must match ^[a-z0-9][a-z0-9_-]{0,31}$")
+			}
+			if strings.HasSuffix(a.Name, proto.BotSuffix) {
+				return nil, fail(proto.ByeProtocolError, `names ending in "-bot" are reserved for webhook bots`)
 			}
 			var n int
 			tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE name = ?`, a.Name).Scan(&n)
