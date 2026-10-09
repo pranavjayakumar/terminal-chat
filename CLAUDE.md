@@ -85,9 +85,10 @@ Local two-user test: `make dev`, then in two panes
 
 - **M0** scaffold, spec, agents, CI  ✓
 - **M1** core text chat: server, auth, channels, DMs, sync, reconnect, TUI  ← current
-- **M2** threads, reactions, search, notifications, herdr integration, `tc send/tail`, webhooks
-- **M3** voice huddles (QUIC datagrams, Opus)
-- **M4** distribution: goreleaser, install.sh, brew tap, `tc update`, deploy guide
+- **M2** herdr, notifications, webhooks, display names, `tc notify`, activity view (docs/ROADMAP.md)
+- **M3** end-to-end encryption for DMs + private channels (docs/E2E.md)
+- **M4** zero-setup onboarding: install-command invites, `tc join`, brew, `tc update`
+- **M5** voice huddles (QUIC datagrams, Opus)
 
 ## Herdr
 
