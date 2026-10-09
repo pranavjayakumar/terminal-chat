@@ -54,8 +54,17 @@ func TestKeyNeedRelay(t *testing.T) {
 	c1, _ := carol.registerDevice(ts)
 	need := proto.Ephemeral{Kind: proto.EphKeyNeed, Chan: ch.ID, Epoch: 1, Dev: b1.ID[:]}
 
+	// A fresh session of bob: each has its own rate-limit slot per channel.
+	bobSession := func() *tclient {
+		bs, bye := ts.connectCaps(t, bob.signer, "", "", e2eCaps)
+		if bye != "" {
+			t.Fatal(bye)
+		}
+		bs.syncFresh()
+		return bs
+	}
 	// Epoch 0: nothing to ask for yet.
-	bob.sendEph(need)
+	bobSession().sendEph(need)
 	if _, ok := alice.keyNeedFrom(200 * time.Millisecond); ok {
 		t.Fatal("key.need relayed for epoch 0")
 	}
@@ -68,13 +77,15 @@ func TestKeyNeedRelay(t *testing.T) {
 	}
 	alice2.syncFresh()
 
-	// Someone else's device, a future epoch, a garbage dev: dropped.
+	// Someone else's device, a future epoch, a garbage dev: dropped. Each
+	// from its own session (a dropped key.need still uses up the session's
+	// slot for the channel).
 	for _, bad := range []proto.Ephemeral{
 		{Kind: proto.EphKeyNeed, Chan: ch.ID, Epoch: 1, Dev: a1.ID[:]},
 		{Kind: proto.EphKeyNeed, Chan: ch.ID, Epoch: 2, Dev: b1.ID[:]},
 		{Kind: proto.EphKeyNeed, Chan: ch.ID, Epoch: 1, Dev: []byte{1, 2}},
 	} {
-		bob.sendEph(bad)
+		bobSession().sendEph(bad)
 	}
 	// A non-member asking.
 	carol.sendEph(proto.Ephemeral{Kind: proto.EphKeyNeed, Chan: ch.ID, Epoch: 1, Dev: c1.ID[:]})
@@ -102,6 +113,28 @@ func TestKeyNeedRelay(t *testing.T) {
 	bob.sendEph(need)
 	if _, ok := alice.keyNeedFrom(200 * time.Millisecond); ok {
 		t.Fatal("rate limit: second key.need relayed")
+	}
+}
+
+// The per-session rate limit comes before any database check: a key.need
+// that is then dropped as invalid still uses up the slot, so a session can't
+// make the server query for every frame of a flood.
+func TestKeyNeedRateLimitFirst(t *testing.T) {
+	ts := startServer(t, "tcp")
+	alice := ts.registerCaps(t, "alice", true, e2eCaps)
+	bob := ts.registerCaps(t, "bob", false, e2eCaps)
+	alice.syncFresh()
+	bob.syncFresh()
+	sid := ts.sid()
+	ch := alice.createE2E("sec")
+	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: bob.user.ID}, nil)
+	a1, _ := alice.registerDevice(ts)
+	b1, _ := bob.registerDevice(ts)
+	alice.rotate(ch.ID, bundle(t, a1, sid, ch.ID, 1, nil, []uint64{alice.user.ID, bob.user.ID}, a1, b1))
+	bob.sendEph(proto.Ephemeral{Kind: proto.EphKeyNeed, Chan: ch.ID, Epoch: 1, Dev: a1.ID[:]}) // not bob's: dropped
+	bob.sendEph(proto.Ephemeral{Kind: proto.EphKeyNeed, Chan: ch.ID, Epoch: 1, Dev: b1.ID[:]})
+	if e, ok := alice.keyNeedFrom(300 * time.Millisecond); ok {
+		t.Fatalf("relayed within the rate limit window: %+v", e)
 	}
 }
 

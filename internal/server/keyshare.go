@@ -17,14 +17,39 @@ import (
 // one channel.
 const keyNeedEvery = 30 * time.Second
 
+// maxKeyNeedChans bounds a session's per-channel key.need timestamps (the
+// rate limit is charged before the channel is checked, so ids are arbitrary).
+const maxKeyNeedChans = 1024
+
 // keyNeed relays an ephemeral key.need from sess to the e2e1 sessions of
 // the channel's members (the sender's other devices included). Dropped
 // silently unless dev is an active device of the sender, the channel is
-// encrypted, epoch ≤ its current epoch and the sender is a member.
+// encrypted, epoch ≤ its current epoch and the sender is a member. The
+// per-session rate limit is checked (and charged) before any database
+// query, so a flood of key.need costs the server no queries.
 func (s *Server) keyNeed(sess *session, e proto.Ephemeral) {
 	if !sess.e2e || len(e.Dev) != e2ecrypto.IDSize || e.Epoch == 0 || e.Chan == 0 {
 		return
 	}
+	now := time.Now()
+	s.mu.Lock()
+	if now.Sub(sess.lastKeyNeed[e.Chan]) < keyNeedEvery {
+		s.mu.Unlock()
+		return
+	}
+	if len(sess.lastKeyNeed) >= maxKeyNeedChans {
+		for ch, t := range sess.lastKeyNeed {
+			if now.Sub(t) >= keyNeedEvery {
+				delete(sess.lastKeyNeed, ch)
+			}
+		}
+		if len(sess.lastKeyNeed) >= maxKeyNeedChans {
+			s.mu.Unlock()
+			return
+		}
+	}
+	sess.lastKeyNeed[e.Chan] = now
+	s.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	// Reads first, outside the hub lock.
@@ -40,10 +65,9 @@ func (s *Server) keyNeed(sess *session, e proto.Ephemeral) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.members[e.Chan][e.User] || time.Since(sess.lastKeyNeed[e.Chan]) < keyNeedEvery {
+	if !s.members[e.Chan][e.User] {
 		return
 	}
-	sess.lastKeyNeed[e.Chan] = time.Now()
 	out := proto.Ephemeral{Kind: proto.EphKeyNeed, Chan: e.Chan, User: e.User, Epoch: e.Epoch, Dev: e.Dev}
 	payload, err := proto.Marshal(out)
 	if err != nil {

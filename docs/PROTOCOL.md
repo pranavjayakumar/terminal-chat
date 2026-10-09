@@ -798,10 +798,11 @@ Ephemeral key.need = {kind: "key.need", chan, epoch: u32, dev: bin16}   // + use
 Clients send at most one per channel per 30 s. The server (honest case)
 relays it to the `e2e1` sessions of the channel's current members, the
 sender's other sessions included but not the sending one, and silently
-drops it unless the sender has `e2e1`, `dev` is an active device of the
-sender, the channel is encrypted, `1 ≤ epoch ≤` its current epoch, the
-sender is a member, and the session sent no `key.need` for the channel in
-the last 30 s.
+drops it unless the session sent no `key.need` for the channel in the last
+30 s (checked first, before any database lookup: a dropped `key.need` still
+counts), the sender has `e2e1`, `dev` is an active device of the sender,
+the channel is encrypted, `1 ≤ epoch ≤` its current epoch and the sender is
+a member.
 
 A member that holds K for `epoch` answers only if `dev` is a device it
 verified (§13.2), not revoked, of the `key.need`'s `user`, and that user is
