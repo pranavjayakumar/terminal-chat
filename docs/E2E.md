@@ -124,7 +124,7 @@ Libraries (all pure Go, keeps `CGO_ENABLED=0`): `crypto/ecdh`, `crypto/ed25519`,
 ```
 EpochBundle.b = {v:1, server_id, chan: u64, epoch: u32 (first = 1), prev: bin32 (H(prev b), 0 for 1),
   roster: [u64] sorted distinct, by: bin16 (rotator dev), time: i64, kc: bin32, eph: bin32,
-  boxes: [{dev: bin16, ct: bin48}], back?: bin56}
+  boxes: [{dev: bin16, ct: bin48}], back?: bin72}
 sig = Ed25519(by, "tc-epoch-v1\x00" || b);  eh = H(b)[:16]
 K random 32B; kc = HMAC-SHA256(K, "tc-kc-v1" || server_id || chan || epoch)
 box(d): ss = X25519(eph_priv, d.x25519); bk = HKDF(ss, salt = eph || d.x25519, info "tc-box-v1");
