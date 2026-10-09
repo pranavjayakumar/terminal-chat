@@ -31,7 +31,7 @@ tc                                    # chat
 | `Ctrl-K` | jump to any channel or person |
 | `Alt-A` | activity: mentions, replies to you, reactions, DMs (Enter jumps) |
 | `Alt-↑/↓` | previous / next channel (`Alt-Shift` for unread) |
-| `↑` on empty input | select a message: `e` edit · `d` delete · `r` thread · `+` react · `y` copy |
+| `↑` on empty input | select a message: `e` edit · `d` delete · `r` thread · `+` react · `y` copy · `v` view full |
 | `Esc` | back out of anything |
 | `F1` or `/help` | all keys and commands |
 | `Ctrl-C` twice | quit |
