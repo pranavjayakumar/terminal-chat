@@ -38,6 +38,7 @@ type fakeClient struct {
 	setErr   error // SetDraft fails with this
 	seen     int64 // activity seen time
 	activity []client.ActivityItem
+	pinOrder []uint64 // pinned message ids, newest pin first
 }
 
 func newFake() *fakeClient {

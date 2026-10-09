@@ -112,6 +112,28 @@ func (c *Client) pinIDs() map[uint64][]uint64 {
 	return out
 }
 
+// markPinned sets Pinned on the messages that have a pin.
+func (c *Client) markPinned(ms []Message) {
+	if len(ms) == 0 {
+		return
+	}
+	have := map[uint64]bool{}
+	rows, err := c.db.Query(`SELECT msg FROM pins`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uint64
+		if rows.Scan(&id) == nil {
+			have[id] = true
+		}
+	}
+	for i := range ms {
+		ms[i].Pinned = ms[i].ID != 0 && have[ms[i].ID]
+	}
+}
+
 // Pins lists ch's pinned messages, newest pin first, from the local cache.
 // A pinned message we never loaded shows only after FetchPins.
 func (c *Client) Pins(ch uint64) []Message {

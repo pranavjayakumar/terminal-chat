@@ -341,6 +341,7 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 			return err
 		}
 		u.Channels = true
+		u.msgs(ev.Chan)
 	case proto.KChanNew, proto.KChanUpdate:
 		var ch proto.Channel
 		if !decode(&ch) || ch.ID == 0 {

@@ -67,6 +67,10 @@ type Backend interface {
 	SetAway(away bool, status string) error
 	SetDisplay(ctx context.Context, display string) error
 	ThreadHistory(ctx context.Context, ch, root, before uint64) (bool, error)
+	Pin(ctx context.Context, msg uint64) error
+	Unpin(ctx context.Context, msg uint64) error
+	Pins(ch uint64) []client.Message
+	FetchPins(ctx context.Context, ch uint64) error
 }
 
 var _ Backend = (*client.Client)(nil)
