@@ -8,7 +8,7 @@ Last updated: 2026-10-10 (end of session 1; branch `m2-activity` adds drafts, hi
 |---|---|
 | M0 scaffold, spec, agents, CI | ✅ done |
 | M1 core chat (server, client, TUI, sync, offline outbox) | ✅ done, battle-tested (chaos + adversarial + live herdr) |
-| M2 collaboration | ~75%: herdr/desktop notifications, unread badge, `/share-pane`, auto-away, `tc notify`, notes (`@me`), display names (`/name`), thread history, webhooks + bots, privacy scrubbing, per-channel drafts, `/highlight`, activity view (Alt-A) — all merged |
+| M2 collaboration | ✅ essentially done: notifications, herdr badge, `/share-pane`, auto-away, `tc notify`, notes, `/name`, threads, webhooks + bots, privacy scrubbing, drafts, `/highlight`, activity (Alt-A), message viewer (`v`), pins (`p`, `/pins`), user groups (`@oncall`), reminders (`/remind`), diff/snippets (`tc send --file`, `/snippet`) |
 | M3 end-to-end encryption | steps 1–5 merged (#9 crypto, #10 certs, #11 trust store, #13 server devices, #16 server epochs); **step 6 (client verification, key.need/share, RotateKey) in progress** on branch `e2e/client-bundles` |
 | M4 zero-setup onboarding | not started |
 | M5 voice | not started |
@@ -52,6 +52,8 @@ Release tag: `v0.1.0` = M1. No newer tag yet.
   **adversarial verifier** that tries to bypass each fix and keeps failing tests (this caught 2 webhook
   bypasses). New tests must be shown to fail without their fix.
 - To update a pushed PR branch: `git merge origin/main` (no rebase, no force-push).
+- Merge only with `gh pr checks <n> --watch` exiting 0, then `gh pr merge <n> --merge` (a hand-rolled
+  pending-loop once merged a PR with checks still pending).
 - Live testing: herdr tab "feat · terminal chat · servers" (recreated in session 2; herdr key names are
   `ctrl+n`, `alt+a`, `esc`, `enter`): pane `tc server` runs
   `./bin/tc server --data <scratch>/live/srv --listen 127.0.0.1:17450`, panes `alice`/`bob` run `tc` with
@@ -77,4 +79,5 @@ Release tag: `v0.1.0` = M1. No newer tag yet.
 #1 battle tests · #2 M2 core · #3 typed-words-as-keys fix · #4 E2E design r2 · #5 herdr + notifications ·
 #6 deflake sync test · #7 webhooks (+ security fixes + verifier bypass fixes) · #8 privacy scrubbing ·
 #9 e2ecrypto · #10 device certs · #11 trust store. Session 2: #12 status docs · #13 E2E step 4 · #14 TUI gaps
-(/name, thread history, ? fix) · #15 drafts/highlights/activity · #16 E2E step 5.
+(/name, thread history, ? fix) · #15 drafts/highlights/activity · #16 E2E step 5 · #17 status ·
+#18 message viewer · #19/#22 deflakes · #20 pins · #21 snippets/diffs · #23 groups + reminders.
