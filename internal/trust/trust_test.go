@@ -5,15 +5,18 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -151,7 +154,7 @@ func TestRefusesNewerSchema(t *testing.T) {
 
 func TestDeviceKeysPersist(t *testing.T) {
 	s, home := newStore(t)
-	k1, err := s.DeviceKeys(sidA)
+	k1, err := s.DeviceKeys(sidA, bob)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +162,7 @@ func TestDeviceKeysPersist(t *testing.T) {
 	if k1.ID == (e2ecrypto.DevID{}) {
 		t.Fatal("zero device id")
 	}
-	again, err := s.DeviceKeys(sidA)
+	again, err := s.DeviceKeys(sidA, bob)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +172,7 @@ func TestDeviceKeysPersist(t *testing.T) {
 	s.Close()
 
 	s = open(t, home)
-	re, err := s.DeviceKeys(sidA)
+	re, err := s.DeviceKeys(sidA, bob)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +182,7 @@ func TestDeviceKeysPersist(t *testing.T) {
 	if !bytes.Equal(re.Ed25519Pub, k1.Ed25519Pub) || re.X25519Pub != k1.X25519Pub {
 		t.Fatal("public keys differ")
 	}
-	other, err := s.DeviceKeys(sidB)
+	other, err := s.DeviceKeys(sidB, bob)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +204,7 @@ func TestDeviceKeysConcurrentFirstUse(t *testing.T) {
 			if i%2 == 1 {
 				s = s2
 			}
-			k, err := s.DeviceKeys(sidA)
+			k, err := s.DeviceKeys(sidA, bob)
 			if err != nil {
 				t.Error(err)
 				return
@@ -746,5 +749,417 @@ func TestLargeIDs(t *testing.T) {
 	}
 	if ok, _ := s.ChannelE2E(sidA, big); !ok {
 		t.Fatal("big channel flag")
+	}
+}
+
+// ---- step 6 additions ----
+
+func TestDeviceKeysBoundToUser(t *testing.T) {
+	s, _ := newStore(t)
+	k1, err := s.DeviceKeys(sidA, bob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DeviceKeys(sidA, 0); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("user 0: %v", err)
+	}
+	// TC_HOME re-used for another login on the same server: fresh keys.
+	k3, err := s.DeviceKeys(sidA, 3)
+	if err != nil || k3.ID == k1.ID {
+		t.Fatalf("other user kept the device: %v", err)
+	}
+	// Retiring a device that is no longer current is a no-op.
+	same, err := s.RetireDeviceKeys(sidA, 3, k1.ID)
+	if err != nil || same.ID != k3.ID {
+		t.Fatalf("retire of a stale id replaced keys: %v", err)
+	}
+	fresh, err := s.RetireDeviceKeys(sidA, 3, k3.ID)
+	if err != nil || fresh.ID == k3.ID {
+		t.Fatalf("retire: %v", err)
+	}
+	again, err := s.DeviceKeys(sidA, 3)
+	if err != nil || again.ID != fresh.ID {
+		t.Fatalf("retired keys not persisted: %v", err)
+	}
+}
+
+func TestImportDeviceKeys(t *testing.T) {
+	s, _ := newStore(t)
+	k, _ := e2ecrypto.Generate(rand.Reader)
+	if res, err := s.ImportDeviceKeys(sidA, bob, k); res != ImportStored || err != nil {
+		t.Fatalf("import: %v %v", res, err)
+	}
+	if res, err := s.ImportDeviceKeys(sidA, bob, k); res != ImportPresent || err != nil {
+		t.Fatalf("same keys again: %v %v", res, err)
+	}
+	other, _ := e2ecrypto.Generate(rand.Reader)
+	if res, err := s.ImportDeviceKeys(sidA, bob, other); res != ImportConflict || err != nil {
+		t.Fatalf("other keys: %v %v", res, err)
+	}
+	if res, err := s.ImportDeviceKeys(sidA, 9, k); res != ImportConflict || err != nil {
+		t.Fatalf("same keys, other user: %v %v", res, err)
+	}
+	got, err := s.DeviceKeys(sidA, bob)
+	if err != nil || got.ID != k.ID {
+		t.Fatalf("imported keys not used: %v", err)
+	}
+}
+
+// A v1 file (step 3) gains the v2 columns and tables; its device keys are
+// claimed by the first user that asks.
+func TestMigrateV1(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "tc")
+	os.MkdirAll(home, 0o700)
+	db, err := sql.Open("sqlite", filepath.Join(home, FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, _ := e2ecrypto.Generate(rand.Reader)
+	raw, _ := k.MarshalBinary()
+	for _, q := range []string{
+		`CREATE TABLE device_keys (server_id BLOB PRIMARY KEY, keys BLOB NOT NULL, created INTEGER NOT NULL)`,
+		`CREATE TABLE revoked_devices (server_id BLOB NOT NULL, dev BLOB NOT NULL, PRIMARY KEY (server_id, dev))`,
+		`PRAGMA user_version = 1`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO device_keys VALUES (?, ?, 1)`, sidA[:], raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO revoked_devices VALUES (?, ?)`, sidA[:], []byte{1}); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	s := open(t, home)
+	got, err := s.DeviceKeys(sidA, bob)
+	if err != nil || got.ID != k.ID {
+		t.Fatalf("v1 keys lost: %v", err)
+	}
+	if err := s.AdvanceEpoch(sidA, 1, Epoch{Epoch: 1, Roster: []uint64{bob}}); err != nil {
+		t.Fatalf("epochs table missing: %v", err)
+	}
+	var v int
+	s.db.QueryRow(`PRAGMA user_version`).Scan(&v)
+	if v != schemaVersion {
+		t.Fatalf("user_version = %d", v)
+	}
+}
+
+func TestRevokeSeqKeepsEarliest(t *testing.T) {
+	s, _ := newStore(t)
+	d := device(t, bob)
+	if err := s.PutDevice(sidA, d); err != nil {
+		t.Fatal(err)
+	}
+	for _, seq := range []uint64{50, 30, 70} {
+		if err := s.RevokeDeviceAt(sidA, d.ID, seq); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, _, _ := s.Device(sidA, d.ID)
+	if !got.Revoked || got.RevokedSeq != 30 {
+		t.Fatalf("revoked %v at %d, want 30", got.Revoked, got.RevokedSeq)
+	}
+	// Seq 0 is "unknown": it never wins the min.
+	if err := s.RevokeDevice(sidA, d.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.Device(sidA, d.ID); !got.Revoked || got.RevokedSeq != 30 {
+		t.Fatalf("unknown-seq revoke won: %d", got.RevokedSeq)
+	}
+	// A device first revoked at an unknown seq takes the first real one.
+	d2 := device(t, bob)
+	s.PutDevice(sidA, d2)
+	s.RevokeDevice(sidA, d2.ID)
+	if got, _, _ := s.Device(sidA, d2.ID); !got.Revoked || got.RevokedSeq != 0 {
+		t.Fatalf("unknown revoke: %+v", got)
+	}
+	s.RevokeDeviceAt(sidA, d2.ID, 90)
+	if got, _, _ := s.Device(sidA, d2.ID); got.RevokedSeq != 90 {
+		t.Fatalf("real seq after unknown: %d", got.RevokedSeq)
+	}
+}
+
+// A v4 file stored unknown revoke seqs as 0; the migration makes them NULL
+// (unknown) and keeps real ones.
+func TestMigrateV4RevokeSeqZero(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "tc")
+	os.MkdirAll(home, 0o700)
+	s0 := open(t, home)
+	zero, real := device(t, bob), device(t, bob)
+	s0.PutDevice(sidA, zero)
+	s0.PutDevice(sidA, real)
+	s0.RevokeDeviceAt(sidA, real.ID, 12)
+	for _, q := range []string{
+		`DROP TABLE revoked_devices`,
+		`CREATE TABLE revoked_devices (server_id BLOB NOT NULL, dev BLOB NOT NULL, seq INTEGER NOT NULL DEFAULT 0,
+			time INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (server_id, dev))`,
+		`PRAGMA user_version = 4`,
+	} {
+		if _, err := s0.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s0.db.Exec(`INSERT INTO revoked_devices VALUES (?, ?, 0, 500), (?, ?, 12, 0)`, sidA[:], zero.ID[:], sidA[:], real.ID[:])
+	s0.Close()
+
+	s := open(t, home)
+	if got, _, _ := s.Device(sidA, zero.ID); !got.Revoked || got.RevokedSeq != 0 || got.RevokedTime != 500 {
+		t.Fatalf("zero row: %+v", got)
+	}
+	var null bool
+	s.db.QueryRow(`SELECT seq IS NULL FROM revoked_devices WHERE dev = ?`, zero.ID[:]).Scan(&null)
+	if !null {
+		t.Fatal("seq 0 not reset to unknown")
+	}
+	if err := s.RevokeDeviceAt(sidA, zero.ID, 40); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.Device(sidA, zero.ID); got.RevokedSeq != 40 {
+		t.Fatalf("real seq after migration: %d", got.RevokedSeq)
+	}
+	if got, _, _ := s.Device(sidA, real.ID); !got.Revoked || got.RevokedSeq != 12 {
+		t.Fatalf("real row: %+v", got)
+	}
+}
+
+func TestRevokeTimeKeepsEarliestKnown(t *testing.T) {
+	s, _ := newStore(t)
+	d := device(t, bob)
+	if err := s.PutDevice(sidA, d); err != nil {
+		t.Fatal(err)
+	}
+	for _, at := range []int64{5000, 0, 3000, 9000} { // 0 = unknown, never wins
+		if err := s.RevokeDeviceAtTime(sidA, d.ID, 40, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _, _ := s.Device(sidA, d.ID); !got.Revoked || got.RevokedSeq != 40 || got.RevokedTime != 3000 {
+		t.Fatalf("revoked %v seq %d time %d, want 40 and 3000", got.Revoked, got.RevokedSeq, got.RevokedTime)
+	}
+}
+
+// A v2 file (step 6 before revoke times) gains revoked_devices.time and
+// keeps its revokes.
+func TestMigrateV2(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "tc")
+	os.MkdirAll(home, 0o700)
+	s0 := open(t, home)
+	d := device(t, bob)
+	if err := s0.PutDevice(sidA, d); err != nil {
+		t.Fatal(err)
+	}
+	if err := s0.RevokeDeviceAt(sidA, d.ID, 7); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{`ALTER TABLE revoked_devices DROP COLUMN time`, `PRAGMA user_version = 2`} {
+		if _, err := s0.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s0.Close()
+
+	s := open(t, home)
+	if err := s.RevokeDeviceAtTime(sidA, d.ID, 7, 123); err != nil {
+		t.Fatalf("time column missing: %v", err)
+	}
+	if got, _, _ := s.Device(sidA, d.ID); !got.Revoked || got.RevokedSeq != 7 || got.RevokedTime != 123 {
+		t.Fatalf("after migration: %+v", got)
+	}
+}
+
+func TestEpochsAndKeys(t *testing.T) {
+	s, home := newStore(t)
+	const ch = 4
+	k1 := e2ecrypto.Key{1}
+	e1 := Epoch{Epoch: 1, Hash: sha256.Sum256([]byte("e1")), KC: e2ecrypto.KeyCommitment(k1, sidA, ch, 1), Roster: []uint64{2, 5}}
+	if err := s.AdvanceEpoch(sidA, ch, Epoch{Epoch: 2, Hash: e1.Hash, KC: e1.KC, Roster: e1.Roster}); !errors.Is(err, ErrGap) {
+		t.Fatalf("epoch 2 without a head: %v", err)
+	}
+	bad := e1
+	bad.Key = &e2ecrypto.Key{9}
+	if err := s.AdvanceEpoch(sidA, ch, bad); !errors.Is(err, ErrKeyMismatch) {
+		t.Fatalf("bad key: %v", err)
+	}
+	if err := s.AdvanceEpoch(sidA, ch, e1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AdvanceEpoch(sidA, ch, e1); err != nil {
+		t.Fatalf("same head again: %v", err)
+	}
+	fork := e1
+	fork.Hash[0] ^= 1
+	if err := s.AdvanceEpoch(sidA, ch, fork); !errors.Is(err, ErrFork) {
+		t.Fatalf("fork: %v", err)
+	}
+	if err := s.SetEpochKey(sidA, ch, 1, e2ecrypto.Key{2}); !errors.Is(err, ErrKeyMismatch) {
+		t.Fatalf("kc mismatch: %v", err)
+	}
+	if err := s.SetEpochKey(sidA, ch, 2, k1); !errors.Is(err, ErrUnknownEpoch) {
+		t.Fatalf("unknown epoch: %v", err)
+	}
+	if m, _ := s.MissingKeys(sidA, ch); len(m) != 1 || m[0] != 1 {
+		t.Fatalf("missing = %v", m)
+	}
+	if err := s.SetEpochKey(sidA, ch, 1, k1); err != nil {
+		t.Fatal(err)
+	}
+	k2 := e2ecrypto.Key{3}
+	e2 := Epoch{Epoch: 2, Hash: sha256.Sum256([]byte("e2")), KC: e2ecrypto.KeyCommitment(k2, sidA, ch, 2), Roster: []uint64{5}, Key: &k2}
+	if err := s.AdvanceEpoch(sidA, ch, e2); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AdvanceEpoch(sidA, ch, e1); !errors.Is(err, ErrRollback) {
+		t.Fatalf("rollback: %v", err)
+	}
+	s.Close()
+
+	s = open(t, home)
+	got, ok, err := s.Epoch(sidA, ch, 1)
+	if err != nil || !ok || got.Key == nil || *got.Key != k1 || !reflect.DeepEqual(got.Roster, e1.Roster) || got.Hash != e1.Hash {
+		t.Fatalf("epoch 1 = %+v %v %v", got, ok, err)
+	}
+	if h, _, _ := s.ChainHead(sidA, ch); h.Epoch != 2 || h.Hash != e2.Hash {
+		t.Fatalf("head = %+v", h)
+	}
+	if m, _ := s.MissingKeys(sidA, ch); len(m) != 0 {
+		t.Fatalf("missing = %v", m)
+	}
+	if _, ok, _ := s.Epoch(sidB, ch, 1); ok {
+		t.Fatal("epoch leaked across servers")
+	}
+}
+
+func TestAlarmsSticky(t *testing.T) {
+	s, home := newStore(t)
+	if _, ok, err := s.Alarm(sidA, 3); ok || err != nil {
+		t.Fatalf("fresh alarm: %v %v", ok, err)
+	}
+	s.RaiseAlarm(sidA, 3, "fork at epoch 2")
+	s.RaiseAlarm(sidA, 3, "later")
+	s.Close()
+	s = open(t, home)
+	if d, ok, err := s.Alarm(sidA, 3); !ok || err != nil || d != "fork at epoch 2" {
+		t.Fatalf("alarm = %q %v %v", d, ok, err)
+	}
+	if _, ok, _ := s.Alarm(sidB, 3); ok {
+		t.Fatal("alarm leaked across servers")
+	}
+}
+
+// ---- step 6 review ----
+
+func TestServerPins(t *testing.T) {
+	s, _ := newStore(t)
+	if _, ok, err := s.ServerIdentity("h:1", "p"); ok || err != nil {
+		t.Fatalf("empty store: %v %v", ok, err)
+	}
+	if err := s.PinServer("h:1", "p", sidA); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PinServer("h:1", "p", sidA); err != nil {
+		t.Fatalf("same id again: %v", err)
+	}
+	if err := s.PinServer("h:1", "p", sidB); !errors.Is(err, ErrServerChanged) {
+		t.Fatalf("other id: %v", err)
+	}
+	if got, _, _ := s.ServerIdentity("h:1", "p"); got != sidA {
+		t.Fatal("pin replaced by PinServer")
+	}
+	// Another TLS pin at the same address is another server record.
+	if err := s.PinServer("h:1", "p2", sidB); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RepinServer("h:1", "p", sidB); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.ServerIdentity("h:1", "p"); got != sidB {
+		t.Fatal("RepinServer didn't replace")
+	}
+	if err := s.RaiseServerAlarm(sidA, "first"); err != nil {
+		t.Fatal(err)
+	}
+	s.RaiseServerAlarm(sidA, "second")
+	if d, ok, _ := s.ServerAlarm(sidA); !ok || d != "first" {
+		t.Fatalf("alarm %q %v", d, ok)
+	}
+	if _, ok, _ := s.ServerAlarm(sidB); ok {
+		t.Fatal("alarm leaked to another server")
+	}
+}
+
+// Pending key changes are an LRU of 16 per user and server.
+func TestKeyChangesLRU(t *testing.T) {
+	s, _ := newStore(t)
+	first := sshKey(t)
+	if err := s.PinKey(sidA, bob, first.fp, first.wire, TOFU); err != nil {
+		t.Fatal(err)
+	}
+	var keys []key
+	for range maxKeyChanges + 4 {
+		k := sshKey(t)
+		keys = append(keys, k)
+		if err := s.PinKey(sidA, bob, k.fp, k.wire, TOFU); !errors.Is(err, ErrKeyChanged) {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Millisecond) // distinct last_seen
+	}
+	// Seeing the oldest surviving one again keeps it.
+	if err := s.PinKey(sidA, bob, keys[4].fp, keys[4].wire, TOFU); !errors.Is(err, ErrKeyChanged) {
+		t.Fatal(err)
+	}
+	k := sshKey(t)
+	s.PinKey(sidA, bob, k.fp, k.wire, TOFU)
+	pend, _ := s.PendingKeyChanges(sidA)
+	if len(pend) != maxKeyChanges {
+		t.Fatalf("%d pending, want %d", len(pend), maxKeyChanges)
+	}
+	has := func(fp string) bool {
+		return slices.ContainsFunc(pend, func(p SSHKey) bool { return p.Fingerprint == fp })
+	}
+	if has(keys[0].fp) || has(keys[5].fp) || !has(keys[4].fp) || !has(k.fp) {
+		t.Fatal("not least-recently-seen eviction")
+	}
+	// Another user's changes are counted separately.
+	c := sshKey(t)
+	s.PinKey(sidA, 9, c.fp, c.wire, TOFU)
+	c2 := sshKey(t)
+	if err := s.PinKey(sidA, 9, c2.fp, c2.wire, TOFU); !errors.Is(err, ErrKeyChanged) {
+		t.Fatal(err)
+	}
+	if pend, _ := s.PendingKeyChanges(sidA); len(pend) != maxKeyChanges+1 {
+		t.Fatalf("%d pending across users", len(pend))
+	}
+}
+
+// Device keys replaced on a user mismatch (or retired) are archived, never
+// deleted.
+func TestDeviceKeysArchivedOnUserMismatch(t *testing.T) {
+	s, _ := newStore(t)
+	kb, err := s.DeviceKeys(sidA, bob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k3, err := s.DeviceKeys(sidA, 3)
+	if err != nil || k3.ID == kb.ID {
+		t.Fatalf("other user kept bob's device: %v", err)
+	}
+	arch, err := s.ArchivedDeviceKeys(sidA)
+	if err != nil || len(arch) != 1 || arch[0].User != bob || arch[0].Keys.ID != kb.ID || arch[0].Keys.X25519Pub != kb.X25519Pub {
+		t.Fatalf("archive after mismatch = %+v %v", arch, err)
+	}
+	fresh, err := s.RetireDeviceKeys(sidA, 3, k3.ID)
+	if err != nil || fresh.ID == k3.ID {
+		t.Fatal(err)
+	}
+	arch, _ = s.ArchivedDeviceKeys(sidA)
+	if len(arch) != 2 || arch[0].User != 3 || arch[0].Keys.ID != k3.ID {
+		t.Fatalf("archive after retire = %+v", arch)
+	}
+	if other, _ := s.ArchivedDeviceKeys(sidB); len(other) != 0 {
+		t.Fatal("archive leaked to another server")
 	}
 }

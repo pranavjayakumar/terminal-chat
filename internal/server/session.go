@@ -51,6 +51,7 @@ type session struct {
 	synced       bool
 	e2e          bool // both sides advertised proto.CapE2E
 	lastTyping   map[uint64]time.Time
+	lastKeyNeed  map[uint64]time.Time // under srv.mu
 	lastPresence time.Time
 	lastRecv     time.Time
 	recvMu       sync.Mutex
@@ -60,7 +61,7 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 	sess := &session{
 		srv: s, conn: conn, codec: proto.NewCodec(conn),
 		wake: make(chan struct{}, 1), done: make(chan struct{}),
-		lastTyping: map[uint64]time.Time{},
+		lastTyping: map[uint64]time.Time{}, lastKeyNeed: map[uint64]time.Time{},
 	}
 	defer conn.Close()
 
@@ -500,6 +501,10 @@ func (s *Server) handleEphemeral(sess *session, e proto.Ephemeral) {
 		return
 	}
 	e.User = sess.user.ID
+	if e.Kind == proto.EphKeyNeed {
+		s.keyNeed(sess, e)
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch e.Kind {
@@ -517,7 +522,7 @@ func (s *Server) handleEphemeral(sess *session, e proto.Ephemeral) {
 			return
 		}
 		p := proto.Ephemeral{Kind: proto.EphPresence, User: e.User, State: e.State, Status: e.Status}
-		if s.presence[e.User] == p {
+		if old := s.presence[e.User]; old.State == p.State && old.Status == p.Status {
 			return
 		}
 		sess.lastPresence = time.Now()

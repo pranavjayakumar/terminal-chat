@@ -63,6 +63,15 @@
 //	Remind(ctx, at, text, ch) (id, error); Reminders(ctx) ([]proto.Reminder, error); DeleteReminder(ctx, id) error
 //	func ParseRemind(args string, now time.Time) (at time.Time, text string, err error) // "10m text", "tomorrow 9am text"
 //	SendTyping(ch) error; SetAway(away bool, status string) error
+//	CreateEncryptedChannel(ctx, name, topic) (proto.Channel, error)
+//	RotateKey(ctx, ch) error                          // new epoch key (e2e.go)
+//
+// End-to-end keys (e2e.go; verification runs in the background per session):
+//
+//	func (c *Client) E2EStatus(ch uint64) E2EStatus  // off / ok / waiting_key / unverified / alarm
+//	func (c *Client) ServerID() (e2ecrypto.ServerID, bool)
+//	func (c *Client) UnverifiedUsers() []uint64      // e2e channel members trusted only on first use
+//	func (c *Client) TrustAlarm() (string, bool)      // server dropped e2e1 after speaking it (sticky)
 //
 // Server-side refusals are returned as *proto.Error (check Code).
 package client
@@ -79,6 +88,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
 	"github.com/skailama/tc/internal/trust"
@@ -116,7 +126,7 @@ func (s State) String() string {
 }
 
 // Status describes the connection. Stopped means Run gave up for good
-// (revoked, auth failure, pin mismatch) and Err says why.
+// (revoked, auth failure, pin mismatch, server identity changed) and Err says why.
 type Status struct {
 	State     State
 	Err       string
@@ -171,6 +181,20 @@ type Client struct {
 
 	running atomic.Bool
 	timing  timing
+
+	// E2E (e2e.go). e2eMu serializes chain processing and rotation.
+	e2eMu    sync.Mutex
+	e2eKick  chan struct{}
+	keyNeeds chan proto.Ephemeral
+	myDev    atomic.Pointer[e2ecrypto.DevID] // this device's id, once known (ourDev)
+	// under mu:
+	e2eSoft      map[uint64]string // channel → why its next bundle can't be judged yet
+	needSent     map[uint64]time.Time
+	shared       map[shareKey]time.Time
+	autoTried    map[uint64]time.Time
+	badCerts     map[[32]byte]struct{} // hashes of certs that failed verification
+	needVerified time.Time             // last verifyDevices run from answerKeyNeed
+	certVerifies atomic.Int64          // cert signature checks (tests)
 }
 
 // timing holds the protocol's timers; tests shrink them.
@@ -178,13 +202,14 @@ type timing struct {
 	pingIdle, recvTimeout, tick   time.Duration
 	backoffMin, backoffMax        time.Duration
 	dial, handshake, retry, type_ time.Duration
+	keyNeed, autoEpoch            time.Duration // §13.7: ≤ 1 key.need per channel per keyNeed
 }
 
 var defaultTiming = timing{
 	pingIdle: 20 * time.Second, recvTimeout: 45 * time.Second, tick: time.Second,
 	backoffMin: 250 * time.Millisecond, backoffMax: 30 * time.Second,
 	dial: 15 * time.Second, handshake: 30 * time.Second, retry: 2 * time.Second,
-	type_: 6 * time.Second,
+	type_: 6 * time.Second, keyNeed: 30 * time.Second, autoEpoch: time.Minute,
 }
 
 // DefaultHome is $TC_HOME, else ~/.config/tc.
@@ -237,12 +262,20 @@ func Open(home string) (*Client, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrateDeviceKeyFile(home, ts); err != nil {
+		db.Close()
+		ts.Close()
+		return nil, err
+	}
 	c := &Client{
 		home: home, cfg: cfg, db: db, trust: ts, users: users,
 		typing: map[uint64]map[uint64]time.Time{}, typingTimers: map[uint64]*time.Timer{}, presence: map[uint64]Presence{},
 		typed:   map[uint64]time.Time{},
 		updates: make(chan Update, 1), obKick: make(chan struct{}, 1),
 		obChanged: make(chan struct{}), timing: defaultTiming,
+		e2eKick: make(chan struct{}, 1), keyNeeds: make(chan proto.Ephemeral, 32),
+		e2eSoft: map[uint64]string{}, needSent: map[uint64]time.Time{}, shared: map[shareKey]time.Time{},
+		autoTried: map[uint64]time.Time{}, badCerts: map[[32]byte]struct{}{},
 	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	c.me = users[cfg.UserID]
@@ -272,6 +305,9 @@ func (c *Client) Close() error {
 
 // Trust is the E2E trust store, open for the Client's lifetime.
 func (c *Client) Trust() *trust.Store { return c.trust }
+
+// Home is the client's TC_HOME.
+func (c *Client) Home() string { return c.home }
 
 // Config returns the loaded configuration.
 func (c *Client) Config() Config { return c.cfg }

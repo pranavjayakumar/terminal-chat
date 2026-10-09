@@ -564,3 +564,48 @@ func TestLimits(t *testing.T) {
 }
 
 var _ io.Reader = (*detRand)(nil)
+
+func TestShareRoundTripAndBinding(t *testing.T) {
+	d, err := Generate(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ad := ShareAD{ServerID: ServerID{1}, Chan: 9, Epoch: 3, Recipient: d.ID}
+	k := Key{7, 7, 7}
+	eph, ct, err := SealShare(rand.Reader, d.X25519Pub, ad, k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := OpenShare(d.X25519, eph, ad, ct[:])
+	if err != nil || got != k {
+		t.Fatalf("open: %v", err)
+	}
+	eph2, _, _ := SealShare(rand.Reader, d.X25519Pub, ad, k)
+	if eph2 == eph {
+		t.Fatal("ephemeral key reused")
+	}
+	for name, mod := range map[string]func(*ShareAD){
+		"server": func(a *ShareAD) { a.ServerID[0] ^= 1 },
+		"chan":   func(a *ShareAD) { a.Chan++ },
+		"epoch":  func(a *ShareAD) { a.Epoch++ },
+		"dev":    func(a *ShareAD) { a.Recipient[0] ^= 1 },
+	} {
+		bad := ad
+		mod(&bad)
+		if _, err := OpenShare(d.X25519, eph, bad, ct[:]); !errors.Is(err, ErrDecrypt) {
+			t.Errorf("%s swapped: %v", name, err)
+		}
+	}
+	// A share is not an epoch box: the domains differ.
+	if _, err := OpenKey(d.X25519, eph, BoxAD{ServerID: ad.ServerID, Chan: 9, Epoch: 3, Recipient: d.ID}, ct[:]); err == nil {
+		t.Fatal("share opened as an epoch box")
+	}
+	flipped := ct
+	flipped[5] ^= 1
+	if _, err := OpenShare(d.X25519, eph, ad, flipped[:]); !errors.Is(err, ErrDecrypt) {
+		t.Fatalf("bit flip: %v", err)
+	}
+	if _, err := OpenShare(d.X25519, eph, ad, ct[:10]); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("short: %v", err)
+	}
+}

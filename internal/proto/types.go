@@ -198,6 +198,9 @@ type Ephemeral struct {
 	User   uint64 `msgpack:"user,omitempty"`
 	State  string `msgpack:"state,omitempty"`
 	Status string `msgpack:"status,omitempty"`
+	// Epoch and Dev are key.need's (§13.7): the device lacking K for Epoch.
+	Epoch uint32 `msgpack:"epoch,omitempty"`
+	Dev   []byte `msgpack:"dev,omitempty"`
 }
 
 type Snapshot struct {
@@ -208,6 +211,8 @@ type Snapshot struct {
 	// Devs and Revoked are sent only with cap e2e1 (§13.2).
 	Devs    []Device `msgpack:"devs,omitempty"`
 	Revoked []Signed `msgpack:"revoked,omitempty"`
+	// RevokedSeqs[i] is the seq of Revoked[i]'s device.revoke event.
+	RevokedSeqs []uint64 `msgpack:"revoked_seqs,omitempty"`
 	// Keys is the latest epoch bundle of each visible e2e channel (§13.3).
 	Keys []EpochKey `msgpack:"keys,omitempty"`
 	// Groups is every user group (cap groups).

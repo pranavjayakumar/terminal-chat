@@ -304,6 +304,7 @@ func TestDeviceRevoke(t *testing.T) {
 		rv := revokeBySSH(t, alice.signer, sid, alice.user.ID, a1.ID)
 		var r proto.SeqRes
 		alice.ok(proto.OpDeviceRevoke, proto.DeviceRevokeArgs{Revoke: rv}, &r)
+		r1 := r.Seq
 		if ev := alice.event(proto.KDeviceRevoke); ev.Seq != r.Seq {
 			t.Fatalf("own revoke event seq %d, res %d", ev.Seq, r.Seq)
 		}
@@ -330,6 +331,18 @@ func TestDeviceRevoke(t *testing.T) {
 		bob.ok(proto.OpDevicesList, proto.DevicesListArgs{}, &list)
 		if len(list.Certs) != 4 || len(list.Revoked) != 2 {
 			t.Fatalf("list: %d certs, %d revoked", len(list.Certs), len(list.Revoked))
+		}
+		// Each revoke comes with its event's seq, in the list and the snapshot.
+		if len(list.RevokedSeqs) != 2 || !slices.Contains(list.RevokedSeqs, r1) || slices.Contains(list.RevokedSeqs, 0) {
+			t.Fatalf("revoked seqs %v, want %d among them", list.RevokedSeqs, r1)
+		}
+		bob2, bye := ts.connectCaps(t, bob.signer, "", "", e2eCaps)
+		if bye != "" {
+			t.Fatal(bye)
+		}
+		sn, _ := bob2.syncFresh()
+		if len(sn.Revoked) != 2 || !slices.Equal(sn.RevokedSeqs, list.RevokedSeqs) {
+			t.Fatalf("snapshot revoked seqs %v, list %v", sn.RevokedSeqs, list.RevokedSeqs)
 		}
 	})
 }

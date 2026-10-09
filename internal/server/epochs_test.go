@@ -1063,3 +1063,39 @@ func TestEpochStaleQueryPlans(t *testing.T) {
 		t.Log(p)
 	}
 }
+
+// A revoke whose seq can't be backfilled is left out of devices.list and the
+// snapshot: clients read seq 0 as "unknown", so the server never sends it.
+func TestRevokeWithoutSeqOmitted(t *testing.T) {
+	ts := startServer(t, "tcp")
+	fastClock(ts)
+	alice := ts.registerCaps(t, "alice", true, e2eCaps)
+	alice.syncFresh()
+	sid := ts.sid()
+	_, _ = alice.registerDevice(ts)
+	a2, _ := alice.registerDevice(ts)
+	alice.ok(proto.OpDeviceRevoke, proto.DeviceRevokeArgs{Revoke: revokeBySSH(t, alice.signer, sid, alice.user.ID, a2.ID)}, nil)
+	db := ts.st.db
+	if _, err := db.Exec(`UPDATE devices SET revoked_seq = NULL`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM events WHERE kind = ?`, proto.KDeviceRevoke); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfillSeqs(db); err != nil {
+		t.Fatal(err)
+	}
+	var list proto.DevicesListRes
+	alice.ok(proto.OpDevicesList, proto.DevicesListArgs{}, &list)
+	if len(list.Certs) != 2 || len(list.Revoked) != 0 || len(list.RevokedSeqs) != 0 {
+		t.Fatalf("list: %d certs, revoked %d, seqs %v", len(list.Certs), len(list.Revoked), list.RevokedSeqs)
+	}
+	again, bye := ts.connectCaps(t, alice.signer, "", "", e2eCaps)
+	if bye != "" {
+		t.Fatal(bye)
+	}
+	sn, _ := again.syncFresh()
+	if len(sn.Devs) != 2 || len(sn.Revoked) != 0 || slices.Contains(sn.RevokedSeqs, 0) {
+		t.Fatalf("snapshot: %d devs, revoked %d, seqs %v", len(sn.Devs), len(sn.Revoked), sn.RevokedSeqs)
+	}
+}

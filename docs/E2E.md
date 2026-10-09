@@ -74,6 +74,28 @@ the local cache is therefore sensitive — rely on disk encryption, documented.
 Cap `e2e1`. DMs and new private channels encrypted by default; `/encrypt` converts an existing
 private channel. Public channels unchanged. Bots in encrypted channels get a bot device.
 
+## Threat model (as of step 6)
+
+What a malicious server can and cannot do today, and what closes each gap:
+
+- **Trust on first use (TOFU), Signal-like.** A user's first SSH key the client sees in a valid
+  device cert is pinned without confirmation. A server present at that first contact could
+  substitute its own key and read what is sealed to it. Later key changes are caught (pending key
+  change, nothing sealed until acknowledged). Clients therefore report every user whose pins are
+  only TOFU (or endorsed by a TOFU key) as **unverified** (`Client.UnverifiedUsers`; the TUI marks
+  them). Invite-anchored pins (the invite carries the inviter's SSH fingerprint) arrive in M4;
+  `/verify` (safety numbers, step 10) upgrades a pin to verified.
+- **Server-asserted membership, creator and roster are trusted** until signed membership exists:
+  the server says who is in a channel, who created it (who may sign epoch 1) and so who belongs in
+  an epoch's roster. A server can add a member it controls (who then gets keys sealed to their
+  verified devices) or hide a leave. Clients check that each rotator was in the previous roster
+  and seal only to verified devices, but the roster itself comes from the server.
+- **Server identity is pinned** per address + TLS pin; a changed `server_id` stops the client
+  instead of starting trust over, and dropping `e2e1` after speaking it is a sticky alarm.
+- **Revocation timing**: a bundle is rejected if the server's seq order or its signed time (with
+  5 min clock skew allowed) put it after a revoke of its signer. This defends against a server
+  acting alone; a revoked device colluding with the server can backdate its bundles.
+
 ## Pitfalls checklist
 
 Nonce reuse (random 24-byte XChaCha nonces) · cross-channel replay (chan/epoch in AD) · trusting the
@@ -104,6 +126,9 @@ Libraries (all pure Go, keeps `CGO_ENABLED=0`): `crypto/ecdh`, `crypto/ed25519`,
   can't move, replay, re-attribute or forge edits. Reactions become HMAC tags + signed enc.
 - Device certs use the existing tc signature format with context `"tc-device-v1\x00"` (no SSHSIG).
   sk-* signatures must have the user-presence flag.
+- Device private keys are never deleted from the trust store: keys replaced because TC_HOME is re-used
+  for another user, or retired after a revoke, move to an archive table; `TC_HOME/device.key`
+  (pre-trust-store) is removed only once the trust store holds exactly its keys.
 - Cut from v1: age passphrase backup, `--github` verify, emoji SAS, per-epoch history boxes, SSHSIG.
 - Webhooks into e2e channels → `forbidden`. Server search excludes e2e; client FTS instead.
 - **M1 bug found:** delete/edit never scrub `events.data`, so old bodies replay on sync (PR 0).
@@ -184,7 +209,7 @@ excludes e2e. Webhooks into e2e forbidden. Delete/edit scrub messages AND origin
 ### 13.6 Events
 `device.new {cert, endorse?}` (all) · `device.revoke {revoke}` (all) · `key.epoch {bundle}` (members at
 seq; after chan.join, after chan.leave) · `key.share` (members) · `msg.*`/`react.*` gain `enc?`.
-`Channel += {e2e, epoch, creator?}`; `Message += {enc?}` (body "" when enc). Snapshot += `devs`, `revoked`, `keys: [{bundle, seq}]`. A device revoke invalidates only bundles whose seq is after the revoke event's seq.
+`Channel += {e2e, epoch, creator?}`; `Message += {enc?}` (body "" when enc). Snapshot += `devs`, `revoked`, `keys: [{bundle, seq}]`. A device revoke invalidates only bundles whose seq is after the revoke event's seq, or whose signed `time` is at or after the revoke's signed `time` (a client rejects a bundle on either).
 
 ### 13.7–13.8
 Ephemeral `key.need {chan, epoch, dev}` (≤ 1/chan/30 s) → members answer with `key.share`.
@@ -203,6 +228,11 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    disabled users and their devices count as revoked for sealing and staleness. Low-order X25519 keys (all-zero or
    any other, which would make every box undecryptable and block rotations) are rejected in certs; clients drop unverified objects for another server_id and keep ≤ 64 per user per kind.
 6. Client bundle logic: verify chain/kc/backlinks, lazy decrypt queue, `key.need/share`; reject bundles with duplicate recipient X25519 keys (one ephemeral + zero nonce per box means a duplicate would reuse key+nonce).
+   Decisions (step 6 review): a bundle is invalid if EITHER the server seq order OR its signed `time` puts it
+   after a signed revoke of its `by` device (time: more than 5 min after, for clock skew; defends against a
+   server acting alone — a revoked device colluding with the server can backdate); `key.share` stays a logged,
+   rate-limited event so offline devices get keys; TOFU on the first valid cert in arrival order is accepted
+   until invite-anchored pins (M4).
 7. Encrypted send e2e: outbox stores enc once, stale_epoch retry same nonce, DMs epoch 1, self-DM.
 8. Encrypted edit/delete/react, thread_ref, HMAC emoji, local FTS.
 9. `chan.add{bundle}`, `chan.remove`, `chan.encrypt`, disable → rotate; history via backlinks.

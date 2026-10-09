@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS users (
 	admin INTEGER NOT NULL, disabled INTEGER NOT NULL, created INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS chans (
 	id INTEGER PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, topic TEXT NOT NULL,
-	members TEXT NOT NULL, created INTEGER NOT NULL);
+	members TEXT NOT NULL, created INTEGER NOT NULL,
+	e2e INTEGER NOT NULL DEFAULT 0, epoch INTEGER NOT NULL DEFAULT 0, creator INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS msgs (
 	id INTEGER PRIMARY KEY, chan INTEGER NOT NULL, author INTEGER NOT NULL, body TEXT NOT NULL,
 	thread INTEGER NOT NULL, time INTEGER NOT NULL, edited INTEGER NOT NULL,
@@ -40,8 +41,20 @@ CREATE TABLE IF NOT EXISTS devices (cert BLOB PRIMARY KEY, dev BLOB NOT NULL, us
 CREATE INDEX IF NOT EXISTS devices_dev ON devices (dev);
 CREATE INDEX IF NOT EXISTS devices_user ON devices (user);
 CREATE TABLE IF NOT EXISTS device_endorse (endorse BLOB PRIMARY KEY, user INTEGER NOT NULL, new_ssh BLOB NOT NULL);
-CREATE TABLE IF NOT EXISTS device_revokes (revoke BLOB PRIMARY KEY, dev BLOB NOT NULL, user INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS device_revokes (revoke BLOB PRIMARY KEY, dev BLOB NOT NULL, user INTEGER NOT NULL,
+	seq INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS device_revokes_dev ON device_revokes (dev);
+-- Epoch bundles (msgpack Signed) not yet verified into the trust store, with
+-- the seq of their key.epoch event; see e2e.go.
+CREATE TABLE IF NOT EXISTS epochs (
+	chan INTEGER NOT NULL, epoch INTEGER NOT NULL, hash BLOB NOT NULL, bundle BLOB NOT NULL,
+	seq INTEGER NOT NULL, PRIMARY KEY (chan, epoch, hash));
+-- key.share events (K sealed to this device), until the worker handles
+-- them: one per (chan, epoch, dev, sharer), the newest (by event seq) wins.
+CREATE TABLE IF NOT EXISTS key_shares (
+	chan INTEGER NOT NULL, epoch INTEGER NOT NULL, dev BLOB NOT NULL, sharer INTEGER NOT NULL,
+	seq INTEGER NOT NULL, eph BLOB NOT NULL, ct BLOB NOT NULL,
+	PRIMARY KEY (chan, epoch, dev, sharer));
 -- Local-only state (never sent to the server, kept across snapshot resets).
 CREATE TABLE IF NOT EXISTS drafts (
 	chan INTEGER NOT NULL, thread INTEGER NOT NULL, body TEXT NOT NULL, time INTEGER NOT NULL,
@@ -86,6 +99,10 @@ func openCache(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("creating cache schema: %w", err)
 	}
 	if err := migrateBots(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := migrateE2E(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -167,7 +184,7 @@ func resetCache(q dbtx, serverID []byte) error {
 	for _, s := range []string{
 		`DELETE FROM users`, `DELETE FROM chans`, `DELETE FROM msgs`, `DELETE FROM pins`, `DELETE FROM groups`, `DELETE FROM reads WHERE dirty = 0`,
 		`DELETE FROM devices`, `DELETE FROM device_endorse`, `DELETE FROM device_revokes`,
-		`DELETE FROM meta WHERE k = 'devices_full'`,
+		`DELETE FROM meta WHERE k = 'devices_full'`, `DELETE FROM epochs`, `DELETE FROM key_shares`,
 	} {
 		if _, err := q.Exec(s); err != nil {
 			return err
@@ -206,19 +223,26 @@ func loadUsers(q dbtx) (map[uint64]proto.User, error) {
 
 // ---- channels ----
 
+// upsertChan stores a channel. The epoch never moves back here (key.epoch
+// events raise it; a channel object from an older event mustn't lower it);
+// a reset snapshot starts from scratch, so the server's claim is kept as is.
 func upsertChan(q dbtx, c proto.Channel) error {
 	members, _ := json.Marshal(c.Members)
-	_, err := q.Exec(`INSERT OR REPLACE INTO chans (id, name, kind, topic, members, created)
-		VALUES (?, ?, ?, ?, ?, ?)`, c.ID, c.Name, c.Kind, c.Topic, string(members), c.Created)
+	_, err := q.Exec(`INSERT INTO chans (id, name, kind, topic, members, created, e2e, epoch, creator)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (id) DO UPDATE SET name = excluded.name, kind = excluded.kind, topic = excluded.topic,
+			members = excluded.members, created = excluded.created, e2e = excluded.e2e,
+			epoch = max(epoch, excluded.epoch), creator = excluded.creator`,
+		c.ID, c.Name, c.Kind, c.Topic, string(members), c.Created, c.E2E, c.Epoch, c.Creator)
 	return err
 }
 
-const chanCols = `id, name, kind, topic, members, created`
+const chanCols = `id, name, kind, topic, members, created, e2e, epoch, creator`
 
 func scanChan(sc interface{ Scan(...any) error }) (proto.Channel, error) {
 	var c proto.Channel
 	var members string
-	if err := sc.Scan(&c.ID, &c.Name, &c.Kind, &c.Topic, &members, &c.Created); err != nil {
+	if err := sc.Scan(&c.ID, &c.Name, &c.Kind, &c.Topic, &members, &c.Created, &c.E2E, &c.Epoch, &c.Creator); err != nil {
 		return c, err
 	}
 	_ = json.Unmarshal([]byte(members), &c.Members)
@@ -388,7 +412,7 @@ func matchOutbox(q dbtx, m proto.Message) error {
 
 // wipe empties the whole cache, outbox included (new login).
 func wipe(q dbtx) error {
-	for _, t := range []string{"meta", "users", "chans", "msgs", "reads", "outbox", "devices", "device_endorse", "device_revokes", "drafts", "highlights", "reacts", "pins", "groups"} {
+	for _, t := range []string{"meta", "users", "chans", "msgs", "reads", "outbox", "devices", "device_endorse", "device_revokes", "drafts", "highlights", "reacts", "epochs", "key_shares", "pins", "groups"} {
 		if _, err := q.Exec(`DELETE FROM ` + t); err != nil {
 			return err
 		}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"slices"
@@ -131,9 +132,8 @@ func TestDeviceRegisteredOnceAndEventsApplied(t *testing.T) {
 		t.Fatalf("revoke not cached: %x %v", revDev, err)
 	}
 
-	st, err := os.Stat(filepath.Join(home, deviceKeyFile))
-	if err != nil || st.Mode().Perm() != 0o600 {
-		t.Fatalf("device.key: %v %v", st, err)
+	if _, err := os.Stat(filepath.Join(home, deviceKeyFile)); !os.IsNotExist(err) {
+		t.Fatalf("device.key written: %v", err)
 	}
 
 	// Reconnect: the server already has our device, so no second register.
@@ -150,7 +150,7 @@ func TestDeviceRegisteredOnceAndEventsApplied(t *testing.T) {
 	fc2.noReq(proto.OpDeviceRegister, 300*time.Millisecond)
 
 	// A restarted process reuses the same device keys.
-	keys1, err := loadDeviceKeys(home, testSID(), alice, nil)
+	keys1, err := c.Trust().DeviceKeys(testSID(), alice)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,8 +172,10 @@ func TestDeviceFullListAfterUpgrade(t *testing.T) {
 	fc.bootstrap()
 	waitFor(t, "online", online(c))
 	fc.noReq(proto.OpDevicesList, 200*time.Millisecond) // no e2e1: nothing
-	if _, err := os.Stat(filepath.Join(home, deviceKeyFile)); !os.IsNotExist(err) {
-		t.Fatalf("device.key without e2e1: %v", err)
+	var nkeys int
+	c.Trust() // keys are only made for e2e1 sessions
+	if err := c.db.QueryRow(`SELECT COUNT(*) FROM devices`).Scan(&nkeys); err != nil || nkeys != 0 {
+		t.Fatalf("devices without e2e1: %d %v", nkeys, err)
 	}
 
 	fs.caps.Store([]string{proto.CapE2E})
@@ -204,23 +206,115 @@ func TestDeviceFullListAfterUpgrade(t *testing.T) {
 	}
 }
 
-func TestDeviceKeyFileReplacedForOtherLogin(t *testing.T) {
-	home := t.TempDir()
-	a, err := loadDeviceKeys(home, testSID(), alice, nil)
+// writeOldKeyFile writes a pre-trust-store TC_HOME/device.key.
+func writeOldKeyFile(t *testing.T, home string, sid e2ecrypto.ServerID, user uint64) *e2ecrypto.DeviceKeys {
+	t.Helper()
+	k, err := e2ecrypto.Generate(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, err := loadDeviceKeys(home, testSID(), alice, nil)
-	if err != nil || again.ID != a.ID {
-		t.Fatalf("reload: %v", err)
+	secret, _ := k.MarshalBinary()
+	b := append(append(sid[:0:0], sid[:]...), binary.BigEndian.AppendUint64(nil, user)...)
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	other, err := loadDeviceKeys(home, e2ecrypto.ServerID{1}, alice, nil)
-	if err != nil || other.ID == a.ID {
-		t.Fatalf("other server got the same device: %v", err)
+	if err := os.WriteFile(filepath.Join(home, deviceKeyFile), append(b, secret...), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	b, err := loadDeviceKeys(home, e2ecrypto.ServerID{1}, bob, nil)
-	if err != nil || b.ID == other.ID {
-		t.Fatalf("other user got the same device: %v", err)
+	return k
+}
+
+// An existing device.key moves into the trust store once and is deleted;
+// the device keeps its identity (no re-registration).
+func TestDeviceKeyFileMigrated(t *testing.T) {
+	testEnv(t)
+	fs := newFakeServer(t)
+	home := login(t, fs)
+	old := writeOldKeyFile(t, home, testSID(), alice)
+	os.WriteFile(filepath.Join(home, deviceKeyFile+".lock"), nil, 0o600)
+	c := open(t, home)
+	for _, f := range []string{deviceKeyFile, deviceKeyFile + ".lock"} {
+		if _, err := os.Stat(filepath.Join(home, f)); !os.IsNotExist(err) {
+			t.Fatalf("%s still there: %v", f, err)
+		}
+	}
+	k, err := c.Trust().DeviceKeys(testSID(), alice)
+	if err != nil || k.ID != old.ID || k.X25519Pub != old.X25519Pub {
+		t.Fatalf("migrated keys differ: %v", err)
+	}
+	c.Close()
+
+	// A store that already has other keys keeps them, and the file (the only
+	// copy of its key) stays.
+	writeOldKeyFile(t, home, testSID(), alice)
+	c = open(t, home)
+	if k2, _ := c.Trust().DeviceKeys(testSID(), alice); k2.ID != old.ID {
+		t.Fatal("second migration overwrote keys")
+	}
+	if _, err := os.Stat(filepath.Join(home, deviceKeyFile)); err != nil {
+		t.Fatalf("conflicting device.key removed: %v", err)
+	}
+	c.Close()
+
+	// The same keys already present (another process migrated first): removed.
+	raw, _ := old.MarshalBinary()
+	sid := testSID()
+	b := append(append(sid[:0:0], sid[:]...), binary.BigEndian.AppendUint64(nil, alice)...)
+	os.WriteFile(filepath.Join(home, deviceKeyFile), append(b, raw...), 0o600)
+	c = open(t, home)
+	defer c.Close()
+	if _, err := os.Stat(filepath.Join(home, deviceKeyFile)); !os.IsNotExist(err) {
+		t.Fatalf("device.key with keys already present still there: %v", err)
+	}
+
+	// A file without a user can't be imported: kept.
+	writeOldKeyFile(t, home, testSID(), 0)
+	c4 := open(t, home)
+	c4.Close()
+	if _, err := os.Stat(filepath.Join(home, deviceKeyFile)); err != nil {
+		t.Fatalf("user-0 device.key removed: %v", err)
+	}
+	os.Remove(filepath.Join(home, deviceKeyFile))
+
+	// A malformed file is left alone and doesn't stop Open.
+	os.WriteFile(filepath.Join(home, deviceKeyFile), []byte("junk"), 0o600)
+	c3 := open(t, home)
+	c3.Close()
+	if _, err := os.Stat(filepath.Join(home, deviceKeyFile)); err != nil {
+		t.Fatalf("malformed device.key removed: %v", err)
+	}
+}
+
+// Two processes opening the same TC_HOME at once both end up with the
+// migrated keys.
+func TestDeviceKeyFileMigratedConcurrently(t *testing.T) {
+	testEnv(t)
+	fs := newFakeServer(t)
+	home := login(t, fs)
+	old := writeOldKeyFile(t, home, testSID(), alice)
+	ids := make(chan e2ecrypto.DevID, 4)
+	for range 4 {
+		go func() {
+			c, err := Open(home)
+			if err != nil {
+				t.Error(err)
+				ids <- e2ecrypto.DevID{}
+				return
+			}
+			defer c.Close()
+			k, err := c.Trust().DeviceKeys(testSID(), alice)
+			if err != nil {
+				t.Error(err)
+				ids <- e2ecrypto.DevID{}
+				return
+			}
+			ids <- k.ID
+		}()
+	}
+	for range 4 {
+		if id := <-ids; id != old.ID {
+			t.Fatal("a process got other keys than the migrated ones")
+		}
 	}
 }
 
@@ -269,7 +363,7 @@ func TestRevokedDeviceReKeys(t *testing.T) {
 	if nc.Dev == old.Dev || nc.Ed25519.Equal(old.Ed25519) {
 		t.Fatal("revoked device registered again with its old keys")
 	}
-	if k, _ := loadDeviceKeys(home, testSID(), alice, nil); k.ID != nc.Dev {
+	if k, _ := c.Trust().DeviceKeys(testSID(), alice); k.ID != nc.Dev {
 		t.Fatal("new keys not persisted")
 	}
 }
@@ -314,28 +408,6 @@ func TestDevicesFullClearedByNonE2ESession(t *testing.T) {
 	}
 }
 
-func TestDeviceKeysConcurrentFirstUse(t *testing.T) {
-	home := t.TempDir()
-	ids := make(chan e2ecrypto.DevID, 8)
-	for range 8 {
-		go func() {
-			k, err := loadDeviceKeys(home, testSID(), alice, nil)
-			if err != nil {
-				t.Error(err)
-				ids <- e2ecrypto.DevID{}
-				return
-			}
-			ids <- k.ID
-		}()
-	}
-	first := <-ids
-	for range 7 {
-		if id := <-ids; id != first {
-			t.Fatal("concurrent first use produced different device keys")
-		}
-	}
-}
-
 // A malicious server can't grow the unverified device tables without bound
 // or slip in objects for another server.
 func TestUnverifiedDeviceObjectsBounded(t *testing.T) {
@@ -364,5 +436,82 @@ func TestUnverifiedDeviceObjectsBounded(t *testing.T) {
 	}
 	if !keepUnverified(db, "devices", sid, 6) {
 		t.Fatal("cap leaked to another user")
+	}
+}
+
+// Seq 0 means "unknown" in the cache too: it never wins the min.
+func TestStoreRevokeUnknownSeq(t *testing.T) {
+	db, err := openCache(filepath.Join(t.TempDir(), "cache.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	signer := newSSH(t)
+	d, _ := e2ecrypto.Generate(rand.Reader)
+	r, err := identity.NewDeviceRevoke(signer, testSID(), bob, d.ID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq := func() (n uint64) {
+		db.QueryRow(`SELECT seq FROM device_revokes`).Scan(&n)
+		return n
+	}
+	for _, step := range []struct{ in, want uint64 }{{0, 0}, {30, 30}, {0, 30}, {20, 20}, {40, 20}} {
+		if err := storeRevoke(db, proto.Signed(r), step.in); err != nil {
+			t.Fatal(err)
+		}
+		if got := seq(); got != step.want {
+			t.Fatalf("after %d: seq %d, want %d", step.in, got, step.want)
+		}
+	}
+}
+
+// One share per (chan, epoch, dev, sharer), newest seq wins; shares for
+// other devices or from non-members aren't kept; over the global cap the
+// sharer holding the most loses its oldest.
+func TestStoreShareBounds(t *testing.T) {
+	db, err := openCache(filepath.Join(t.TempDir(), "cache.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := storeChan(db, proto.Channel{ID: dm, Kind: proto.ChanDM, Members: []uint64{alice, bob, carol}, E2E: true}); err != nil {
+		t.Fatal(err)
+	}
+	mine := e2ecrypto.DevID{1}
+	share := func(sharer, seq uint64, epoch uint32, dev e2ecrypto.DevID, tag byte) {
+		t.Helper()
+		eph := make([]byte, 32)
+		eph[0] = tag
+		if err := storeShare(db, alice, dm, sharer, seq, proto.KeyShareArgs{Chan: dm, Epoch: epoch, Dev: dev[:], Eph: eph,
+			CT: make([]byte, e2ecrypto.BoxCTSize)}, &mine); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n := func(q string, args ...any) (k int) {
+		db.QueryRow(`SELECT COUNT(*) FROM key_shares `+q, args...).Scan(&k)
+		return k
+	}
+	share(bob, 10, 1, mine, 1)
+	share(bob, 12, 1, mine, 2)
+	share(bob, 11, 1, mine, 3) // older: ignored
+	var tag []byte
+	db.QueryRow(`SELECT eph FROM key_shares WHERE sharer = ?`, bob).Scan(&tag)
+	if n("") != 1 || tag[0] != 2 {
+		t.Fatalf("newest share not kept alone: %d rows, tag %d", n(""), tag[0])
+	}
+	share(bob, 13, 1, e2ecrypto.DevID{2}, 4) // another device
+	share(99, 14, 1, mine, 5)                // not a member
+	if n("") != 1 {
+		t.Fatalf("%d rows after foreign shares", n(""))
+	}
+	for i := range uint64(maxCachedShares + 20) {
+		share(carol, 100+i, uint32(2+i), mine, 6)
+	}
+	if n("") != maxCachedShares || n("WHERE sharer = ?", bob) != 1 {
+		t.Fatalf("%d rows (cap %d), bob's %d", n(""), maxCachedShares, n("WHERE sharer = ?", bob))
+	}
+	if n("WHERE sharer = ? AND epoch = 2", carol) != 0 {
+		t.Fatal("carol's oldest share not evicted first")
 	}
 }

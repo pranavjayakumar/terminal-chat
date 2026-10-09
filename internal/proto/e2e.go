@@ -31,6 +31,25 @@ const (
 	KKeyEpoch = "key.epoch"
 )
 
+// Key requests (PROTOCOL.md §13.7): a device without K for an epoch asks
+// with an ephemeral key.need; a member holding K answers with key.share,
+// which the server relays as an event to the channel's members.
+const (
+	EphKeyNeed = "key.need"
+	OpKeyShare = "key.share"
+	KKeyShare  = "key.share"
+)
+
+// KeyShareArgs is key.share's args and the key.share event data: K of
+// Epoch sealed to device Dev under the ephemeral X25519 key Eph.
+type KeyShareArgs struct {
+	Chan  uint64 `msgpack:"chan"`
+	Epoch uint32 `msgpack:"epoch"`
+	Dev   []byte `msgpack:"dev"`
+	Eph   []byte `msgpack:"eph"`
+	CT    []byte `msgpack:"ct"`
+}
+
 // ErrStaleEpoch: the bundle (or, later, enc) doesn't build on the
 // channel's current epoch, roster or devices. Retryable after catching up.
 const ErrStaleEpoch = "stale_epoch"
@@ -125,9 +144,13 @@ type DevicesListArgs struct {
 // endorsements attached to them, and every revoke, for whole users in id
 // order. Next != 0 means the result was cut at a user boundary to fit
 // MaxResultBytes: ask again with the same Users and After = Next.
+//
+// RevokedSeqs[i] is the seq of Revoked[i]'s device.revoke event (same
+// length; absent from older servers).
 type DevicesListRes struct {
-	Certs   []Signed `msgpack:"certs"`
-	Endorse []Signed `msgpack:"endorse"`
-	Revoked []Signed `msgpack:"revoked"`
-	Next    uint64   `msgpack:"next,omitempty"`
+	Certs       []Signed `msgpack:"certs"`
+	Endorse     []Signed `msgpack:"endorse"`
+	Revoked     []Signed `msgpack:"revoked"`
+	Next        uint64   `msgpack:"next,omitempty"`
+	RevokedSeqs []uint64 `msgpack:"revoked_seqs,omitempty"`
 }

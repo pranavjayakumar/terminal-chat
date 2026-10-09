@@ -9,7 +9,7 @@ Last updated: 2026-10-10 (end of session 1; branch `m2-activity` adds drafts, hi
 | M0 scaffold, spec, agents, CI | ✅ done |
 | M1 core chat (server, client, TUI, sync, offline outbox) | ✅ done, battle-tested (chaos + adversarial + live herdr) |
 | M2 collaboration | ✅ essentially done: notifications, herdr badge, `/share-pane`, auto-away, `tc notify`, notes, `/name`, threads, webhooks + bots, privacy scrubbing, drafts, `/highlight`, activity (Alt-A), message viewer (`v`), pins (`p`, `/pins`), user groups (`@oncall`), reminders (`/remind`), diff/snippets (`tc send --file`, `/snippet`) |
-| M3 end-to-end encryption | steps 1–5 merged (#9 crypto, #10 certs, #11 trust store, #13 server devices, #16 server epochs); **step 6 (client verification, key.need/share, RotateKey) in progress** on branch `e2e/client-bundles` |
+| M3 end-to-end encryption | steps 1–5 merged (#9 crypto, #10 certs, #11 trust store, #13 server devices, #16 server epochs); **step 6 (client verification, key.need/share, RotateKey) in PR** from branch `e2e/client-bundles` |
 | M4 zero-setup onboarding | not started |
 | M5 voice | not started |
 
@@ -20,6 +20,9 @@ Release tag: `v0.1.0` = M1. No newer tag yet.
 1. **E2E step 6** (`e2e/client-bundles`, worktree `.claude/worktrees/kiro-verify`): client verifies certs
    (TOFU + endorsements), epoch chain (sig, prev, roster, by-authorization, rollback/fork alarms), opens boxes
    (kc), backlinks, `key.need`/`key.share`, `Client.RotateKey`, moves device key into `internal/trust`.
+   Review fixes landed (server identity pin + e2e1 downgrade alarm / `TrustAlarm`, `UnverifiedUsers`, revoke seq
+   0 = unknown, 5 min skew, bounded caches, archived device keys; trust schema v7). Step 7 must refuse
+   plaintext into e2e channels (placeholder `TestPlaintextIntoE2ERefused`).
    Review with protocol-guardian + security-reviewer, then merge.
 2. **E2E steps 7–12** per `docs/E2E.md`: 7 encrypted send/outbox (DMs created as e2e since step 5 still send
    plaintext until this lands — handle that history), 8 edit/delete/react + local FTS, 9 membership changes +

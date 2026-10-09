@@ -82,7 +82,7 @@ func generateVectors(t *testing.T) map[string]string {
 	must(err)
 	ephPub := [32]byte(eph.PublicKey().Bytes())
 	put("eph_pub", ephPub[:])
-	bk, err := boxKey(eph, bob.X25519Pub, ephPub, bob.X25519Pub)
+	bk, err := boxKey(eph, bob.X25519Pub, ephPub, bob.X25519Pub, "tc-box-v1")
 	must(err)
 	put("box.bob.bk", bk)
 	box, err := SealKey(eph, bob.X25519Pub, BoxAD{sid, ch, ep, bob.ID, alice.ID}, k)

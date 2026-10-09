@@ -32,7 +32,7 @@ func TestCacheResetLeavesTrustStore(t *testing.T) {
 
 	sid := e2ecrypto.ServerID(serverID)
 	ts := c.Trust()
-	keys, err := ts.DeviceKeys(sid)
+	keys, err := ts.DeviceKeys(sid, alice)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestCacheResetLeavesTrustStore(t *testing.T) {
 	}
 	check := func(ts *trust.Store, when string) {
 		t.Helper()
-		k, err := ts.DeviceKeys(sid)
+		k, err := ts.DeviceKeys(sid, alice)
 		if b, _ := k.MarshalBinary(); err != nil || !bytes.Equal(b, want) {
 			t.Fatalf("%s: device keys changed (%v)", when, err)
 		}

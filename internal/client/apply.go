@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/proto"
 )
 
@@ -147,8 +148,13 @@ func (c *Client) applySnapshot(s *session, sn proto.Snapshot) error {
 				return err
 			}
 		}
-		for _, r := range sn.Revoked {
-			if err := storeRevoke(tx, r); err != nil {
+		for _, k := range sn.Keys {
+			if err := c.storeBundle(tx, 0, k.Bundle, k.Seq); err != nil {
+				return err
+			}
+		}
+		for i, r := range sn.Revoked {
+			if err := storeRevoke(tx, r, seqAt(sn.RevokedSeqs, i)); err != nil {
 				return err
 			}
 		}
@@ -419,7 +425,23 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		if !decode(&d) {
 			return nil
 		}
-		return storeRevoke(tx, d.Revoke)
+		return storeRevoke(tx, d.Revoke, ev.Seq)
+	case proto.KKeyEpoch:
+		var d proto.KeyEpoch
+		if !decode(&d) || ev.Chan == 0 {
+			return nil
+		}
+		return c.storeBundle(tx, ev.Chan, d.Bundle, ev.Seq)
+	case proto.KKeyShare:
+		var d proto.KeyShareArgs
+		if !decode(&d) || ev.Chan == 0 {
+			return nil
+		}
+		var dev *e2ecrypto.DevID
+		if id, ok := c.ourDev(tx); ok {
+			dev = &id
+		}
+		return storeShare(tx, me, ev.Chan, ev.Actor, ev.Seq, d, dev)
 	case proto.KReadUpdate:
 		var d proto.ReadUpdate
 		if !decode(&d) {
@@ -445,7 +467,7 @@ func (c *Client) msgChan(tx *sql.Tx, id, fallback uint64) uint64 {
 // forgetChan drops a channel we left: its messages and read marker go; a
 // public channel stays listed (it is still visible and joinable) without us.
 func (c *Client) forgetChan(tx *sql.Tx, id, me uint64) error {
-	for _, q := range []string{`DELETE FROM reacts WHERE msg IN (SELECT id FROM msgs WHERE chan = ?)`, `DELETE FROM msgs WHERE chan = ?`, `DELETE FROM reads WHERE chan = ?`, `DELETE FROM drafts WHERE chan = ?`, `DELETE FROM pins WHERE chan = ?`} {
+	for _, q := range []string{`DELETE FROM reacts WHERE msg IN (SELECT id FROM msgs WHERE chan = ?)`, `DELETE FROM msgs WHERE chan = ?`, `DELETE FROM reads WHERE chan = ?`, `DELETE FROM drafts WHERE chan = ?`, `DELETE FROM epochs WHERE chan = ?`, `DELETE FROM key_shares WHERE chan = ?`, `DELETE FROM pins WHERE chan = ?`} {
 		if _, err := tx.Exec(q, id); err != nil {
 			return err
 		}
@@ -496,6 +518,11 @@ func (c *Client) ephemeral(e proto.Ephemeral) {
 			})
 		}
 		c.mu.Unlock()
+	case proto.EphKeyNeed:
+		select { // the worker answers; drop if it's swamped
+		case c.keyNeeds <- e:
+		default:
+		}
 	case proto.EphPresence:
 		if e.User == 0 || c.User(e.User).ID == 0 {
 			return

@@ -26,6 +26,50 @@ func migrateBots(db *sql.DB) error {
 	return nil
 }
 
+// migrateE2E adds the channel e2e fields and revoke seqs to older caches.
+// Cached revokes from before seqs were stored are dropped, with the
+// "full device list" mark, so the next e2e1 session lists them again with
+// their seqs (an unknown seq would invalidate every bundle of the device).
+func migrateE2E(db *sql.DB) error {
+	// key_shares gained sharer/seq and a new key: rebuild it (shares are
+	// recoverable through key.need).
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('key_shares') WHERE name = 'sharer'`).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		if _, err := db.Exec(`DROP TABLE key_shares; CREATE TABLE key_shares (
+			chan INTEGER NOT NULL, epoch INTEGER NOT NULL, dev BLOB NOT NULL, sharer INTEGER NOT NULL,
+			seq INTEGER NOT NULL, eph BLOB NOT NULL, ct BLOB NOT NULL,
+			PRIMARY KEY (chan, epoch, dev, sharer))`); err != nil {
+			return fmt.Errorf("migrating cache: %w", err)
+		}
+	}
+	for _, c := range [][3]string{
+		{"chans", "e2e", "INTEGER NOT NULL DEFAULT 0"},
+		{"chans", "epoch", "INTEGER NOT NULL DEFAULT 0"},
+		{"chans", "creator", "INTEGER NOT NULL DEFAULT 0"},
+		{"device_revokes", "seq", "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, c[0], c[1]).Scan(&n); err != nil {
+			return err
+		}
+		if n > 0 {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE ` + c[0] + ` ADD COLUMN ` + c[1] + ` ` + c[2]); err != nil {
+			return fmt.Errorf("migrating cache: %w", err)
+		}
+		if c[0] == "device_revokes" {
+			if _, err := db.Exec(`DELETE FROM device_revokes; DELETE FROM meta WHERE k = 'devices_full'`); err != nil {
+				return fmt.Errorf("migrating cache: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
 // NewHook is a created webhook. Curl is a ready-to-paste command that the
 // client built from the validated URL and pin; it reads the URL from
 // $TC_HOOK_URL so the secret stays out of shell history and ps.

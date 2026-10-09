@@ -288,13 +288,18 @@ type deviceRow struct {
 	user    uint64
 	dev     proto.Device
 	revoke  *proto.Signed
+	revSeq  uint64 // seq of the device.revoke event
 	encSize int
+	// revUnknown: the device is revoked but its revoke's seq is unknown
+	// (backfill found no event). The revoke is left out (logged): clients
+	// read seq 0 as "unknown", so never send it.
+	revUnknown bool
 }
 
 // eachDevice streams devices of users (nil = all) with id > after, ordered
 // by user then registration, until fn returns false.
 func eachDevice(ctx context.Context, q querier, users []uint64, after uint64, fn func(deviceRow) bool) error {
-	query := `SELECT user, cert, endorse, revoked FROM devices WHERE user > ?`
+	query := `SELECT user, cert, endorse, revoked, COALESCE(revoked_seq, 0) FROM devices WHERE user > ?`
 	args := []any{after}
 	if len(users) > 0 {
 		query += ` AND user IN (SELECT value FROM json_each(?))`
@@ -312,7 +317,7 @@ func eachDevice(ctx context.Context, q querier, users []uint64, after uint64, fn
 	for rows.Next() {
 		var d deviceRow
 		var cert, endorse, revoked []byte
-		if err := rows.Scan(&d.user, &cert, &endorse, &revoked); err != nil {
+		if err := rows.Scan(&d.user, &cert, &endorse, &revoked, &d.revSeq); err != nil {
 			return err
 		}
 		if err := proto.Unmarshal(cert, &d.dev.Cert); err != nil {
@@ -323,6 +328,9 @@ func eachDevice(ctx context.Context, q querier, users []uint64, after uint64, fn
 			if err := proto.Unmarshal(endorse, d.dev.Endorse); err != nil {
 				return err
 			}
+		}
+		if revoked != nil && d.revSeq == 0 {
+			d.revUnknown, revoked = true, nil
 		}
 		if revoked != nil {
 			d.revoke = new(proto.Signed)
@@ -368,6 +376,7 @@ func (s *Server) opDevicesList(ctx context.Context, a proto.DevicesListArgs) (an
 			}
 			if d.revoke != nil {
 				res.Revoked = append(res.Revoked, *d.revoke)
+				res.RevokedSeqs = append(res.RevokedSeqs, d.revSeq)
 			}
 		}
 		lastIncluded = group[0].user
@@ -378,6 +387,9 @@ func (s *Server) opDevicesList(ctx context.Context, a proto.DevicesListArgs) (an
 		return nil, badRequest("user ids out of range")
 	}
 	err := eachDevice(ctx, s.st.db, a.Users, a.After, func(d deviceRow) bool {
+		if d.revUnknown {
+			s.log.Error("device revoke without a seq, omitted", "user", d.user)
+		}
 		if len(group) > 0 && d.user != group[0].user && !flush() {
 			res.Next = lastIncluded
 			return false
@@ -401,6 +413,9 @@ func (sess *session) snapshotDevices(ctx context.Context, tx *sql.Tx) error {
 	size := 0
 	var perr error
 	err := eachDevice(ctx, tx, nil, 0, func(d deviceRow) bool {
+		if d.revUnknown {
+			sess.srv.log.Error("device revoke without a seq, omitted", "user", d.user)
+		}
 		if size+d.encSize > snapshotPart && size > 0 {
 			if perr = sess.pushSnapshot(part); perr != nil {
 				return false
@@ -410,6 +425,7 @@ func (sess *session) snapshotDevices(ctx context.Context, tx *sql.Tx) error {
 		part.Devs = append(part.Devs, d.dev)
 		if d.revoke != nil {
 			part.Revoked = append(part.Revoked, *d.revoke)
+			part.RevokedSeqs = append(part.RevokedSeqs, d.revSeq)
 		}
 		size += d.encSize
 		return true

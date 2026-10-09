@@ -81,7 +81,7 @@ func (a BoxAD) bytes() []byte {
 }
 
 // boxKey is bk = HKDF-SHA256(ss, salt = eph_pub || recipient_pub, info "tc-box-v1").
-func boxKey(priv *ecdh.PrivateKey, peer, ephPub, recipientPub [32]byte) ([]byte, error) {
+func boxKey(priv *ecdh.PrivateKey, peer, ephPub, recipientPub [32]byte, info string) ([]byte, error) {
 	pk, err := ecdh.X25519().NewPublicKey(peer[:])
 	if err != nil {
 		return nil, ErrBadKey
@@ -97,7 +97,7 @@ func boxKey(priv *ecdh.PrivateKey, peer, ephPub, recipientPub [32]byte) ([]byte,
 	}
 	salt := make([]byte, 0, 64)
 	salt = append(append(salt, ephPub[:]...), recipientPub[:]...)
-	return hkdf.Key(sha256.New, ss, salt, "tc-box-v1", KeySize)
+	return hkdf.Key(sha256.New, ss, salt, info, KeySize)
 }
 
 var zeroNonce [NonceSize]byte
@@ -110,7 +110,7 @@ func SealKey(eph *ecdh.PrivateKey, recipientPub [32]byte, ad BoxAD, k Key) ([Box
 		return out, ErrBadKey
 	}
 	ephPub := [32]byte(eph.PublicKey().Bytes())
-	bk, err := boxKey(eph, recipientPub, ephPub, recipientPub)
+	bk, err := boxKey(eph, recipientPub, ephPub, recipientPub, "tc-box-v1")
 	if err != nil {
 		return out, err
 	}
@@ -131,7 +131,7 @@ func OpenKey(recipient *ecdh.PrivateKey, ephPub [32]byte, ad BoxAD, ct []byte) (
 		return Key{}, ErrMalformed
 	}
 	recipientPub := [32]byte(recipient.PublicKey().Bytes())
-	bk, err := boxKey(recipient, ephPub, ephPub, recipientPub)
+	bk, err := boxKey(recipient, ephPub, ephPub, recipientPub, "tc-box-v1")
 	if err != nil {
 		return Key{}, err
 	}
@@ -184,6 +184,67 @@ func OpenBack(kNew Key, sid ServerID, ch uint64, ep uint32, back []byte) (Key, e
 	}
 	var k Key
 	if _, err := aead.Open(k[:0], back[:NonceSize], back[NonceSize:], scope(sid, ch, ep)); err != nil {
+		return Key{}, ErrDecrypt
+	}
+	return k, nil
+}
+
+// ShareAD are the fields authenticated by a key.share box (PROTOCOL §13.7).
+type ShareAD struct {
+	ServerID  ServerID
+	Chan      uint64
+	Epoch     uint32
+	Recipient DevID
+}
+
+func (a ShareAD) bytes() []byte {
+	b := append([]byte("tc-share-v1"), scope(a.ServerID, a.Chan, a.Epoch)...)
+	return append(b, a.Recipient[:]...)
+}
+
+// SealShare seals k to one device for key.share, under a fresh ephemeral
+// key (returned as eph): ss = X25519(eph, recipient), bk = HKDF-SHA256(ss,
+// salt = eph || recipient, info "tc-share-v1"), ct = XChaCha20-Poly1305(bk,
+// 0^24, k, AD = "tc-share-v1" || server_id || chan || epoch || recipient dev).
+// The zero nonce is safe because eph is never reused.
+func SealShare(rand io.Reader, recipientPub [32]byte, ad ShareAD, k Key) (eph [32]byte, ct [BoxCTSize]byte, err error) {
+	priv, err := NewEphemeral(rand)
+	if err != nil {
+		return eph, ct, err
+	}
+	eph = [32]byte(priv.PublicKey().Bytes())
+	bk, err := boxKey(priv, recipientPub, eph, recipientPub, "tc-share-v1")
+	if err != nil {
+		return eph, ct, err
+	}
+	aead, err := chacha20poly1305.NewX(bk)
+	if err != nil {
+		return eph, ct, err
+	}
+	aead.Seal(ct[:0], zeroNonce[:], k[:], ad.bytes())
+	return eph, ct, nil
+}
+
+// OpenShare opens a key.share box sealed to recipient. Anyone can seal one:
+// the caller must check the key against the epoch's kc.
+func OpenShare(recipient *ecdh.PrivateKey, eph [32]byte, ad ShareAD, ct []byte) (Key, error) {
+	if recipient == nil {
+		return Key{}, ErrBadKey
+	}
+	if len(ct) != BoxCTSize {
+		return Key{}, ErrMalformed
+	}
+	recipientPub := [32]byte(recipient.PublicKey().Bytes())
+	bk, err := boxKey(recipient, eph, eph, recipientPub, "tc-share-v1")
+	if err != nil {
+		return Key{}, err
+	}
+	aead, err := chacha20poly1305.NewX(bk)
+	if err != nil {
+		return Key{}, err
+	}
+	var k Key
+	if _, err := aead.Open(k[:0], zeroNonce[:], ct, ad.bytes()); err != nil {
 		return Key{}, ErrDecrypt
 	}
 	return k, nil
