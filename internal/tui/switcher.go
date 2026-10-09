@@ -229,14 +229,72 @@ func (m *Model) searchKey(k tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
+// jumpState is a jump's lasting effects: the channel whose page it widened
+// and a thread jump still waiting for the thread's history.
+type jumpState struct {
+	wide    uint64 // channel whose page limit the jump raised, 0 if none
+	prev    int    // that channel's limits entry before (0: the default)
+	waiting bool   // want is a thread reply that isn't loaded yet
+	want    proto.Message
+}
+
+// endWiden puts back the page limit a jump raised, so one jump to an old
+// message doesn't leave a channel at 2000 messages for the whole session.
+// reload says whether to re-read the pane (not needed when it is about to
+// be replaced).
+func (m *Model) endWiden(reload bool) {
+	j := &m.jump
+	if j.wide == 0 {
+		return
+	}
+	ch := j.wide
+	j.wide = 0
+	if j.prev > 0 {
+		m.limits[ch] = j.prev
+	} else {
+		delete(m.limits, ch)
+	}
+	if reload && m.main.ch == ch {
+		m.reloadPane(&m.main)
+		m.clampScroll(&m.main)
+	}
+}
+
+// trimWiden ends a widening once the selection is back among the messages
+// of a normal page (it moved on, towards the newest ones).
+func (m *Model) trimWiden() {
+	p := &m.main
+	if m.jump.wide == 0 || m.jump.wide != p.ch || p.sel < 0 || p.sel >= len(p.msgs) {
+		return
+	}
+	normal := m.jump.prev
+	if normal <= 0 {
+		normal = pageLimit
+	}
+	if loadedReal(p.msgs[p.sel:]) <= normal {
+		m.endWiden(true)
+		m.ensureVisible(p)
+	}
+}
+
+// threadLoadedMsg says the request for a thread's replies finished.
+type threadLoadedMsg struct {
+	ch, root uint64
+	err      error
+}
+
 // jumpTo opens the message's channel (and thread) and selects it if it is
-// loaded.
+// loaded. An old top-level message widens the channel's page for as long as
+// the selection needs it; a thread reply that isn't cached yet is selected
+// when the thread's history arrives.
 func (m *Model) jumpTo(x proto.Message) tea.Cmd {
 	m.cancelEdit()
+	m.jump.waiting = false
 	if _, ok := m.chanView(x.Chan); !ok {
 		m.setInfo("that channel isn't available here")
 		return nil
 	}
+	m.endWiden(true)
 	cmd := m.openChannel(x.Chan)
 	p := &m.main
 	if x.Thread != 0 {
@@ -255,19 +313,57 @@ func (m *Model) jumpTo(x proto.Message) tea.Cmd {
 	// A top-level message older than the loaded page: widen the page while
 	// the cache may still hold it.
 	for i < 0 && p == &m.main && x.ID != 0 && loadedReal(p.msgs) >= m.limit(x.Chan) && m.limit(x.Chan) < maxJumpLimit {
+		if m.jump.wide != x.Chan {
+			m.jump.wide, m.jump.prev = x.Chan, m.limits[x.Chan]
+		}
 		m.limits[x.Chan] = min(m.limit(x.Chan)*4, maxJumpLimit)
 		m.reloadPane(p)
 		i = find()
 	}
-	if i >= 0 {
-		m.mode = modeSelect
-		p.sel = i
-		m.ensureVisible(p)
-		m.updatePlaceholder()
-		return cmd
+	switch {
+	case i >= 0:
+		m.selectJumped(p, i)
+	case p == &m.thread && x.ID != 0:
+		// The replies are being fetched: look again when they arrive.
+		m.jump.waiting, m.jump.want = true, x
+		m.setInfo("loading the thread…")
+	default:
+		m.endWiden(true)
+		m.setInfo("older message — scroll up to find it")
 	}
-	m.setInfo("older message — scroll up to find it")
 	return cmd
+}
+
+func (m *Model) selectJumped(p *pane, i int) {
+	m.mode = modeSelect
+	p.sel = i
+	m.ensureVisible(p)
+	m.updatePlaceholder()
+}
+
+// finishJump retries a waiting thread jump after the thread's replies were
+// reloaded; final says no more replies are coming.
+func (m *Model) finishJump(final bool) {
+	j := &m.jump
+	if !j.waiting {
+		return
+	}
+	if !m.thread.open() || m.thread.root != j.want.Thread || (m.mode != modeNormal && m.mode != modeSelect) {
+		j.waiting = false // the user went elsewhere
+		return
+	}
+	for i, y := range m.thread.msgs {
+		if y.ID == j.want.ID {
+			j.waiting = false
+			m.clearNotice()
+			m.selectJumped(&m.thread, i)
+			return
+		}
+	}
+	if final {
+		j.waiting = false
+		m.setInfo("older message — scroll up to find it")
+	}
 }
 
 // loadedReal counts the acknowledged messages in a pane (not unsent ones).

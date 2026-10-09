@@ -124,6 +124,8 @@ type Model struct {
 	dk         draftKey            // where the input's text belongs
 
 	highlights []string // keywords that count like an @mention (lowercase)
+
+	jump jumpState
 }
 
 // ---- tea messages ----
@@ -402,6 +404,9 @@ func (m *Model) openChannel(ch uint64) tea.Cmd {
 	if ch == 0 {
 		return nil
 	}
+	if m.jump.wide != 0 && m.jump.wide != ch {
+		m.endWiden(false) // leaving the channel a jump widened
+	}
 	if ch == m.active && m.main.ch == ch {
 		m.closeThread()
 		m.main.scroll = 0
@@ -501,14 +506,17 @@ func (m *Model) openThread(root uint64) tea.Cmd {
 	m.updatePlaceholder()
 	// The cache may hold only some of the replies; fetch the newest page
 	// from the server (results arrive as a normal Msgs update).
-	ch := m.thread.ch
-	return m.call("thread history", func(ctx context.Context) error {
-		_, err := m.c.ThreadHistory(ctx, ch, root, 0)
-		return err
-	})
+	ch, c, ctx := m.thread.ch, m.c, m.ctx
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(ctx, reqTimeout)
+		defer cancel()
+		_, err := c.ThreadHistory(ctx, ch, root, 0)
+		return threadLoadedMsg{ch, root, err}
+	}
 }
 
 func (m *Model) closeThread() {
+	m.jump.waiting = false
 	m.thread = pane{sel: -1}
 	m.updatePlaceholder()
 }
@@ -681,6 +689,19 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case okMsg:
 		m.clearErr()
 		return m, nil
+	case threadLoadedMsg:
+		if msg.err != nil {
+			if !errors.Is(msg.err, client.ErrOffline) {
+				m.setErr("thread history", msg.err)
+			}
+		} else {
+			m.clearErr()
+		}
+		if m.thread.open() && m.thread.ch == msg.ch && m.thread.root == msg.root {
+			m.reloadPane(&m.thread)
+		}
+		m.finishJump(true)
+		return m, nil
 	case activityRefreshMsg:
 		m.act.timer = false
 		if m.act.pending && m.mode == modeActivity {
@@ -822,6 +843,7 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 	}
 	if m.thread.open() && u.Msgs[m.thread.ch] {
 		m.reloadPane(&m.thread)
+		m.finishJump(false)
 	}
 	if u.Typing[m.active] {
 		m.reloadTyping()
@@ -896,6 +918,7 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 		return m.sharePreviewKey(key)
 	case modeSelect:
 		if cmd, handled := m.selectKey(k); handled {
+			m.trimWiden()
 			return cmd
 		}
 		m.leaveSelect()
@@ -1069,6 +1092,10 @@ func (m *Model) enterSelect() {
 func (m *Model) leaveSelect() {
 	m.mode = modeNormal
 	m.main.sel, m.thread.sel = -1, -1
+	if m.jump.wide != 0 {
+		m.endWiden(true)
+		m.main.scroll = 0
+	}
 	m.updatePlaceholder()
 }
 

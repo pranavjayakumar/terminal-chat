@@ -476,3 +476,132 @@ func TestActivityRefreshIsFilteredAndDebounced(t *testing.T) {
 		t.Fatalf("reads = %d", got-base)
 	}
 }
+
+// bigChannel gives #backend (11) n messages, ids 1..n.
+func bigChannel(f *fakeClient, n int) {
+	for i := 1; i <= n; i++ {
+		f.msgs[11] = append(f.msgs[11], client.Message{Message: proto.Message{ID: uint64(i), Chan: 11, Author: 2,
+			Body: fmt.Sprintf("backend message %d", i), Time: actBase + int64(i)*1000}})
+	}
+	f.chans[0].Last = uint64(n)
+}
+
+// Reaching an old message widens the page; that must end with the selection,
+// not stay for the rest of the session.
+func TestJumpWidensThePageOnlyWhileNeeded(t *testing.T) {
+	old := proto.Message{ID: 5, Chan: 11}
+	setup := func(t *testing.T) (*Model, *fakeClient) {
+		m, f := newTestModelFake(t, 100, 30)
+		bigChannel(f, 300)
+		m.jumpTo(old)
+		if m.mode != modeSelect || m.main.msgs[m.main.sel].ID != 5 {
+			t.Fatalf("jump failed: mode %v notice %q", m.mode, m.notice)
+		}
+		if m.limit(11) <= pageLimit {
+			t.Fatalf("limit = %d, want the page widened", m.limit(11))
+		}
+		return m, f
+	}
+	t.Run("leaving select mode", func(t *testing.T) {
+		m, _ := setup(t)
+		press(m, "esc")
+		if m.limit(11) != pageLimit || loadedReal(m.main.msgs) != pageLimit {
+			t.Fatalf("limit %d, %d messages loaded after Esc", m.limit(11), loadedReal(m.main.msgs))
+		}
+		checkView(t, m, "after esc")
+	})
+	t.Run("leaving the channel", func(t *testing.T) {
+		m, _ := setup(t)
+		run(m, m.openChannel(10))
+		if m.limit(11) != pageLimit {
+			t.Fatalf("limit of the channel left behind = %d", m.limit(11))
+		}
+	})
+	t.Run("selection moving into the normal page", func(t *testing.T) {
+		m, _ := setup(t)
+		press(m, "end") // newest message
+		if m.mode != modeSelect || m.limit(11) != pageLimit || m.main.msgs[m.main.sel].ID != 300 {
+			t.Fatalf("mode %v limit %d selected %d", m.mode, m.limit(11), m.main.msgs[m.main.sel].ID)
+		}
+		checkView(t, m, "at the end")
+	})
+	t.Run("selection still far back keeps the page", func(t *testing.T) {
+		m, _ := setup(t)
+		press(m, "down", "down")
+		if m.limit(11) <= pageLimit || m.main.msgs[m.main.sel].ID != 7 {
+			t.Fatalf("limit %d selected %d", m.limit(11), m.main.msgs[m.main.sel].ID)
+		}
+	})
+	t.Run("a larger limit from before is restored, not reset", func(t *testing.T) {
+		m, f := newTestModelFake(t, 100, 30)
+		bigChannel(f, 300)
+		m.limits[11] = 150
+		m.jumpTo(old)
+		if m.limit(11) <= 150 {
+			t.Fatalf("limit = %d", m.limit(11))
+		}
+		press(m, "esc")
+		if m.limit(11) != 150 {
+			t.Fatalf("limit = %d, want 150 back", m.limit(11))
+		}
+	})
+	t.Run("not found", func(t *testing.T) {
+		m, f := newTestModelFake(t, 100, 30)
+		bigChannel(f, 300)
+		m.jumpTo(proto.Message{ID: 999999, Chan: 11})
+		if m.limit(11) != pageLimit || !strings.Contains(m.notice, "older message") {
+			t.Fatalf("limit %d notice %q", m.limit(11), m.notice)
+		}
+	})
+}
+
+func TestJumpToThreadReplyWaitsForTheHistory(t *testing.T) {
+	reply := proto.Message{ID: 250, Chan: 10, Thread: 103}
+	arrive := func(f *fakeClient) {
+		f.threads[103] = append(f.threads[103], client.Message{Message: proto.Message{ID: 250, Chan: 10, Thread: 103, Author: 3, Body: "late reply", Time: actBase}})
+	}
+	t.Run("found on the next update", func(t *testing.T) {
+		m, f := newTestModelFake(t, 100, 30)
+		m.jumpTo(reply) // its request is still running
+		if strings.Contains(m.notice, "older message") || m.mode == modeSelect || !m.jump.waiting {
+			t.Fatalf("notice %q mode %v waiting %v", m.notice, m.mode, m.jump.waiting)
+		}
+		m.Update(updateMsg(client.Update{Msgs: map[uint64]bool{11: true}})) // another channel: nothing yet
+		if m.mode == modeSelect {
+			t.Fatal("selected without the message")
+		}
+		arrive(f)
+		m.Update(updateMsg(client.Update{Msgs: map[uint64]bool{10: true}}))
+		if m.mode != modeSelect || m.thread.sel < 0 || m.thread.msgs[m.thread.sel].ID != 250 || m.jump.waiting {
+			t.Fatalf("mode %v sel %d waiting %v", m.mode, m.thread.sel, m.jump.waiting)
+		}
+		checkView(t, m, "selected")
+	})
+	t.Run("gives up when the request is done", func(t *testing.T) {
+		m, _ := newTestModelFake(t, 100, 30)
+		m.jumpTo(reply)
+		m.Update(threadLoadedMsg{ch: 10, root: 103})
+		if m.jump.waiting || !strings.Contains(m.notice, "older message") {
+			t.Fatalf("waiting %v notice %q", m.jump.waiting, m.notice)
+		}
+	})
+	t.Run("found when the request finishes", func(t *testing.T) {
+		m, f := newTestModelFake(t, 100, 30)
+		m.jumpTo(reply)
+		arrive(f)
+		m.Update(threadLoadedMsg{ch: 10, root: 103})
+		if m.mode != modeSelect || m.thread.msgs[m.thread.sel].ID != 250 {
+			t.Fatalf("mode %v", m.mode)
+		}
+	})
+	t.Run("leaving drops the wish", func(t *testing.T) {
+		m, f := newTestModelFake(t, 100, 30)
+		m.jumpTo(reply)
+		press(m, "esc") // closes the thread
+		arrive(f)
+		m.Update(updateMsg(client.Update{Msgs: map[uint64]bool{10: true}}))
+		if m.mode == modeSelect || m.jump.waiting {
+			t.Fatalf("mode %v waiting %v", m.mode, m.jump.waiting)
+		}
+	})
+}
