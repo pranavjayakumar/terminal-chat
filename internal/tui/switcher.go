@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"time"
@@ -201,9 +202,10 @@ func (m *Model) switcherKey(k tea.KeyMsg) tea.Cmd {
 // ---- search results ----
 
 type searchState struct {
-	q   string
-	res []proto.Message
-	sel int
+	q    string
+	pins uint64 // nonzero: the /pins list of this channel, not search results
+	res  []proto.Message
+	sel  int
 }
 
 func (m *Model) searchKey(k tea.KeyMsg) tea.Cmd {
@@ -227,6 +229,23 @@ func (m *Model) searchKey(k tea.KeyMsg) tea.Cmd {
 		return m.jumpTo(s.res[s.sel])
 	}
 	return nil
+}
+
+// showPins loads ch's pinned messages. The list is refreshed from the server
+// when online; offline it shows whatever the cache has.
+func (m *Model) showPins(ch uint64) tea.Cmd {
+	be := m.c
+	ctx := m.ctx
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(ctx, reqTimeout)
+		defer cancel()
+		_ = be.FetchPins(ctx, ch)
+		var res []proto.Message
+		for _, x := range be.Pins(ch) {
+			res = append(res, x.Message)
+		}
+		return pinsMsg{ch: ch, res: res}
+	}
 }
 
 // jumpState is a jump's lasting effects: the channel whose page it widened

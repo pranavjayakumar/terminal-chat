@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS reacts (
 	msg INTEGER NOT NULL, actor INTEGER NOT NULL, emoji TEXT NOT NULL, time INTEGER NOT NULL,
 	PRIMARY KEY (msg, actor, emoji));
 CREATE INDEX IF NOT EXISTS reacts_time ON reacts (time);
-`
+` + pinsSchema
 
 // dbtx is the subset of *sql.DB / *sql.Tx the cache helpers need.
 type dbtx interface {
@@ -165,7 +165,7 @@ func resetCache(q dbtx, serverID []byte) error {
 		}
 	}
 	for _, s := range []string{
-		`DELETE FROM users`, `DELETE FROM chans`, `DELETE FROM msgs`, `DELETE FROM reads WHERE dirty = 0`,
+		`DELETE FROM users`, `DELETE FROM chans`, `DELETE FROM msgs`, `DELETE FROM pins`, `DELETE FROM reads WHERE dirty = 0`,
 		`DELETE FROM devices`, `DELETE FROM device_endorse`, `DELETE FROM device_revokes`,
 		`DELETE FROM meta WHERE k = 'devices_full'`,
 	} {

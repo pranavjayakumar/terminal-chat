@@ -146,7 +146,12 @@ type (
 		err  error
 	}
 	openChanMsg struct{ ch uint64 }
-	searchMsg   struct {
+	pinsMsg     struct {
+		ch  uint64
+		res []proto.Message
+		err error
+	}
+	searchMsg struct {
 		q   string
 		res []proto.Message
 		err error
@@ -785,6 +790,17 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.search = searchState{q: msg.q, res: msg.res}
 		m.mode = modeSearch
 		return m, nil
+	case pinsMsg:
+		if msg.err != nil {
+			m.setErr("pins", msg.err)
+			return m, nil
+		}
+		if msg.ch != m.active {
+			return m, nil // switched channels while it loaded
+		}
+		m.search = searchState{pins: msg.ch, res: msg.res}
+		m.mode = modeSearch
+		return m, nil
 	case typingTickMsg:
 		m.typingRun = false
 		m.reloadTyping()
@@ -1319,6 +1335,17 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 		return nil, true
 	case kSelCopy:
 		return m.copyCmd(sanitize.Text(sel.Body)), true
+	case kSelPin:
+		if sel.ID == 0 || sel.Deleted {
+			return nil, true
+		}
+		id, pinned := sel.ID, sel.Pinned
+		return m.callThen("pin", func(ctx context.Context) (tea.Msg, error) {
+			if pinned {
+				return infoMsg("unpinned"), m.c.Unpin(ctx, id)
+			}
+			return infoMsg("pinned"), m.c.Pin(ctx, id)
+		}), true
 	case kSelView:
 		m.openViewer(sel)
 		return nil, true

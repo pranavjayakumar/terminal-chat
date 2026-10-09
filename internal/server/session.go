@@ -86,7 +86,7 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 	}
 	defer s.unregister(sess)
 	if err := sess.codec.Write(proto.TWelcome, proto.Welcome{
-		Server: Version, Caps: []string{proto.CapHooks, proto.CapE2E}, ServerID: s.st.serverID, User: user, Time: s.now(),
+		Server: Version, Caps: []string{proto.CapHooks, proto.CapE2E, proto.CapPins}, ServerID: s.st.serverID, User: user, Time: s.now(),
 	}); err != nil {
 		return
 	}

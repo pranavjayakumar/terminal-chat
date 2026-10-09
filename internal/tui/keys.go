@@ -30,6 +30,7 @@ const (
 	kSelReply   = "r"
 	kSelReact   = "+"
 	kSelCopy    = "y"
+	kSelPin     = "p"
 	kSelView    = "v"
 	kConfirmYes = "y"
 )
@@ -55,7 +56,7 @@ var helpLines = [][2]string{
 	{"End, Ctrl-End", "jump to newest"},
 	{"↑ (empty input)", "select messages"},
 	{"  e  d  r", "edit, delete, reply in thread"},
-	{"  +  y  v", "react, copy, view full message (scroll sideways)"},
+	{"  +  y  v  p", "react, copy, view full message, pin / unpin"},
 	{"  PgUp/PgDn  Home/End", "move by page / to ends"},
 	{"  r / d on failed", "retry / discard"},
 	{"Ctrl-U", "clear draft"},
@@ -71,6 +72,7 @@ var helpLines = [][2]string{
 	{"/name Display Name", "set your display name"},
 	{"/dm @a @b", "direct message"},
 	{"/search terms", "search; Enter jumps"},
+	{"/pins", "pinned messages here; Enter jumps"},
 	{"/highlight word…", "mark messages with these words like a mention (none: list)"},
 	{"/unhighlight word…", "stop highlighting"},
 	{"/away [status], /back", "presence"},

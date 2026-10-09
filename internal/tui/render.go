@@ -499,6 +499,9 @@ func (r *renderer) footer(m client.Message, bw int) string {
 		}
 		parts = append(parts, r.st.replies.Render(fmt.Sprintf("↳ %d %s", m.Replies, word)))
 	}
+	if m.Pinned && !m.Deleted {
+		parts = append(parts, r.st.dim.Render("📌"))
+	}
 	if len(parts) == 0 {
 		return ""
 	}
@@ -527,7 +530,7 @@ const groupWindow = 5 * 60 * 1000 // ms
 // A message with replies or reactions ends its group so its footer clearly
 // belongs to it.
 func grouped(prev, cur client.Message) bool {
-	if prev.Replies > 0 || hasReactions(prev) {
+	if prev.Replies > 0 || prev.Pinned || hasReactions(prev) {
 		return false
 	}
 	return prev.Author == cur.Author && cur.Time-prev.Time < groupWindow && cur.Time >= prev.Time &&
@@ -553,6 +556,7 @@ type renderKey struct {
 	pending bool
 	failed  string
 	replies int
+	pinned  bool
 	reacts  string
 	width   int
 	header  bool
@@ -560,7 +564,7 @@ type renderKey struct {
 
 func keyFor(m client.Message, w int, header bool) renderKey {
 	k := renderKey{id: m.ID, local: m.Local, edited: m.Edited, deleted: m.Deleted, pending: m.Pending,
-		failed: m.Failed, replies: m.Replies, width: w, header: header}
+		failed: m.Failed, replies: m.Replies, pinned: m.Pinned, width: w, header: header}
 	if len(m.Reactions) > 0 {
 		keys := make([]string, 0, len(m.Reactions))
 		for e, us := range m.Reactions {

@@ -41,7 +41,7 @@ func decodeArgs[T any](raw proto.Raw) (T, error) {
 
 // writeOps are rate limited by allowWrite (send has its own limit).
 var writeOps = map[string]bool{
-	proto.OpEdit: true, proto.OpDelete: true, proto.OpReact: true, proto.OpUnreact: true,
+	proto.OpEdit: true, proto.OpDelete: true, proto.OpReact: true, proto.OpUnreact: true, proto.OpPin: true, proto.OpUnpin: true,
 	proto.OpRead: true, proto.OpChanCreate: true, proto.OpChanJoin: true, proto.OpChanAdd: true,
 	proto.OpChanLeave: true, proto.OpChanTopic: true, proto.OpDMOpen: true,
 	proto.OpInviteCreate: true, proto.OpUserDisable: true, proto.OpUserUpdate: true,
@@ -79,6 +79,10 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 		return withArgs(args, func(a proto.MsgArgs) (any, error) { return s.opDelete(ctx, u, a) })
 	case proto.OpReact, proto.OpUnreact:
 		return withArgs(args, func(a proto.ReactArgs) (any, error) { return s.opReact(ctx, u, a, op == proto.OpReact) })
+	case proto.OpPin, proto.OpUnpin:
+		return withArgs(args, func(a proto.MsgArgs) (any, error) { return s.opPin(ctx, u, a, op == proto.OpPin) })
+	case proto.OpPinsList:
+		return withArgs(args, func(a proto.ChanArgs) (any, error) { return s.opPinsList(ctx, u, a) })
 	case proto.OpHistory:
 		return withArgs(args, func(a proto.HistoryArgs) (any, error) { return s.opHistory(ctx, u, a) })
 	case proto.OpSearch:
@@ -313,12 +317,18 @@ func (s *Server) opDelete(ctx context.Context, u proto.User, a proto.MsgArgs) (a
 		if _, err := tx.ExecContext(ctx, `DELETE FROM reactions WHERE msg = ?`, m.ID); err != nil {
 			return nil, err
 		}
+		evs := []proto.Event{ev}
+		unpin, err := s.unpinInTx(ctx, tx, m, u.ID)
+		if err != nil {
+			return nil, err
+		}
+		evs = append(evs, unpin...)
 		m.Body, m.Deleted = "", true
 		if err := scrubMessageEvents(ctx, tx, m, 0); err != nil {
 			return nil, err
 		}
 		res.Seq = ev.Seq
-		return []proto.Event{ev}, nil
+		return evs, nil
 	})
 	return res, err
 }

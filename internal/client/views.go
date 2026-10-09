@@ -14,6 +14,7 @@ import (
 type Message struct {
 	proto.Message
 	Replies int
+	Pinned  bool // currently pinned in its channel
 	Pending bool
 	Failed  string
 	Local   int64
@@ -77,8 +78,10 @@ func (c *Client) Channels() []ChannelView {
 		mrows.Close()
 	}
 
+	pins := c.pinIDs()
 	for i := range out {
 		v := &out[i]
+		v.Pins = pins[v.ID]
 		v.Read, v.Last = reads[v.ID], last[v.ID]
 		v.Display = c.displayName(v.Channel, me.ID)
 		if v.Member {
@@ -175,6 +178,7 @@ func (c *Client) Messages(ch uint64, limit int) []Message {
 	}
 	out := c.queryMsgs(`SELECT `+msgCols+`, (SELECT COUNT(*) FROM msgs r WHERE r.thread = m.id)
 		FROM (SELECT * FROM msgs WHERE chan = ? AND thread = 0 ORDER BY id DESC LIMIT ?) m ORDER BY id`, ch, limit)
+	c.markPinned(out)
 	return append(out, c.outboxMsgs(`chan = ? AND thread = 0`, ch)...)
 }
 
@@ -183,6 +187,7 @@ func (c *Client) Thread(root uint64) []Message {
 	out := c.queryMsgs(`SELECT `+msgCols+`, (SELECT COUNT(*) FROM msgs r WHERE r.thread = m.id)
 		FROM msgs m WHERE id = ?`, root)
 	out = append(out, c.queryMsgs(`SELECT `+msgCols+`, 0 FROM msgs WHERE thread = ? ORDER BY id`, root)...)
+	c.markPinned(out)
 	return append(out, c.outboxMsgs(`thread = ?`, root)...)
 }
 

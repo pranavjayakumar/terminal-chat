@@ -134,6 +134,10 @@ func openStore(path string) (*store, error) {
 		db.Close()
 		return nil, err
 	}
+	if _, err := db.Exec(pinsSchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("creating pins schema: %w", err)
+	}
 	if err := migrateEpochs(db); err != nil {
 		db.Close()
 		return nil, err
@@ -302,7 +306,10 @@ func getChannel(ctx context.Context, q querier, id uint64) (proto.Channel, error
 	if err != nil {
 		return c, err
 	}
-	c.Members, err = currentMembers(ctx, q, id)
+	if c.Members, err = currentMembers(ctx, q, id); err != nil {
+		return c, err
+	}
+	c.Pins, err = channelPins(ctx, q, id)
 	return c, err
 }
 

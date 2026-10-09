@@ -368,6 +368,12 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 			return nil, errors.New("usage: /share-pane [pane id or label]")
 		}
 		return m.sharePane(c.rest)
+	case "pins":
+		ch, err := needChan()
+		if err != nil {
+			return nil, err
+		}
+		return m.showPins(ch), nil
 	case "search":
 		if c.rest == "" {
 			return nil, errors.New("usage: /search terms")
