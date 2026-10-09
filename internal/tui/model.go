@@ -797,7 +797,7 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 // ---- keys ----
 
 func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
-	key := k.String()
+	key := keyName(k)
 	if key == kQuit {
 		if m.ctrlC {
 			return tea.Quit
@@ -844,7 +844,7 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 }
 
 func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
-	key := k.String()
+	key := keyName(k)
 	empty := m.input.Value() == ""
 	switch {
 	case key == kSwitcher:
@@ -922,7 +922,13 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 	before := m.input.Value()
 	var cmd tea.Cmd
 	m.input.SetHeight(m.inputMax()) // see layoutInput
-	m.input, cmd = m.input.Update(k)
+	if keyName(k) == "" && k.Type == tea.KeyRunes {
+		// Multi-rune input is text: the textarea's own keymap would read
+		// a typed "down" as cursor-down. InsertString sanitizes like typing.
+		m.input.InsertString(string(k.Runes))
+	} else {
+		m.input, cmd = m.input.Update(k)
+	}
 	m.layoutInput()
 	if v := m.input.Value(); v != before && v != "" && !strings.HasPrefix(v, "/") && m.editing == 0 {
 		cmd = tea.Batch(cmd, m.sendTyping())
@@ -1111,7 +1117,7 @@ func (m *Model) helpKey(key string) {
 
 func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 	p := m.focus()
-	key := k.String()
+	key := keyName(k)
 	switch key {
 	case kEsc:
 		m.leaveSelect()
@@ -1217,7 +1223,7 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 }
 
 func (m *Model) reactKey(k tea.KeyMsg) tea.Cmd {
-	switch k.String() {
+	switch keyName(k) {
 	case kEsc:
 		m.mode = modeSelect
 		return nil

@@ -397,3 +397,22 @@ func TestResetReload(t *testing.T) {
 		t.Fatalf("stop reason not shown: %q", m.notice)
 	}
 }
+
+// Fast typing and IME input arrive as one multi-rune KeyMsg whose String()
+// is the text itself: typed words that spell key names must stay text.
+func TestTypedWordsThatSpellKeyNames(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	words := []string{"down", " up", " end", " home", " enter", " esc", " tab", " pgup", " ctrl+c", " ?", " e d r"}
+	for _, w := range words {
+		run(m, m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(w)}))
+	}
+	run(m, m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" down"), Paste: true}))
+	want := strings.Join(words, "") + " down"
+	if got := m.input.Value(); got != want {
+		t.Fatalf("input %q, want %q", got, want)
+	}
+	run(m, m.handleKey(keyMsg("enter")))
+	if len(f.sent) != 1 || f.sent[0].Body != want {
+		t.Fatalf("sent %+v", f.sent)
+	}
+}
