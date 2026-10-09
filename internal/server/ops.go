@@ -696,6 +696,9 @@ func (s *Server) opUserDisable(ctx context.Context, u proto.User, a proto.UserAr
 		if _, err := tx.ExecContext(ctx, `DELETE FROM hooks WHERE created_by = ? OR bot = ?`, a.User, a.User); err != nil {
 			return nil, err
 		}
+		if err := retireOrphanBots(tx); err != nil {
+			return nil, err
+		}
 		target.Disabled = true
 		ev, err := appendEvent(ctx, tx, proto.KUserUpdate, 0, u.ID, a.User, s.now(), target)
 		if err != nil {

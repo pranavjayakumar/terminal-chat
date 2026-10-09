@@ -507,6 +507,13 @@ func TestBotOwnerMigration(t *testing.T) {
 			t.Fatalf("bot %d owner %d (%v), want %d", id, owner, err, want)
 		}
 	}
+	// A bot without hooks is retired by the migration; one with hooks isn't.
+	for id, want := range map[int]bool{3: false, 4: true} {
+		var retired bool
+		if err := st.db.QueryRow(`SELECT bot_retired FROM users WHERE id = ?`, id).Scan(&retired); err != nil || retired != want {
+			t.Fatalf("bot %d retired=%v (%v), want %v", id, retired, err, want)
+		}
+	}
 }
 
 // TestHookCaps: hooks per creator and per channel, and bots per server, are
@@ -545,6 +552,170 @@ func TestHookCaps(t *testing.T) {
 	}
 	carol.fail(proto.OpHookCreate, proto.HookCreateArgs{Chan: other.Chan.ID, Name: "new"}, proto.ErrConflict)
 	carol.createHook(other.Chan.ID, "c")
+}
+
+// botRow is a bot user's id and retired flag, looked up by name.
+func botRow(t *testing.T, ts *testServer, name string) (id uint64, retired bool) {
+	t.Helper()
+	if err := ts.st.db.QueryRow(`SELECT id, bot_retired FROM users WHERE name = ? AND bot = 1`, name).Scan(&id, &retired); err != nil {
+		t.Fatalf("bot %s: %v", name, err)
+	}
+	return id, retired
+}
+
+func activeBots(t *testing.T, ts *testServer) int {
+	t.Helper()
+	var n int
+	if err := ts.st.db.QueryRow(`SELECT COUNT(*) FROM users WHERE bot = 1 AND bot_retired = 0`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// TestBotRetireReactivate: deleting a bot's last hook retires it (it keeps
+// its id and name, and stops counting toward the caps); only its owner or an
+// admin can bring it back by creating a hook with that name.
+func TestBotRetireReactivate(t *testing.T) {
+	ts := startHookServer(t)
+	admin := ts.register(t, "root", true)
+	admin.syncFresh()
+	alice := ts.register(t, "alice", false)
+	snap, _ := alice.syncFresh()
+	bob := ts.register(t, "bob", false)
+	bob.syncFresh()
+	gen := generalID(t, snap)
+
+	h1 := alice.createHook(gen, "ci")
+	h2 := alice.createHook(gen, "ci")
+	id, retired := botRow(t, ts, "ci-bot")
+	if retired || activeBots(t, ts) != 1 {
+		t.Fatalf("new bot retired=%v, active=%d", retired, activeBots(t, ts))
+	}
+	if r := ts.post(t, "POST", h1.URL, "text/plain", "hello"); r.status != 200 {
+		t.Fatalf("post: %d %s", r.status, r.raw)
+	}
+
+	// One hook left: still active.
+	alice.ok(proto.OpHookDelete, proto.HookArgs{ID: h1.ID}, nil)
+	if _, retired := botRow(t, ts, "ci-bot"); retired {
+		t.Fatal("bot retired while it still has a hook")
+	}
+	// Last hook gone: retired, but the user (and so its old messages) stays.
+	alice.ok(proto.OpHookDelete, proto.HookArgs{ID: h2.ID}, nil)
+	gotID, retired := botRow(t, ts, "ci-bot")
+	if !retired || gotID != id || activeBots(t, ts) != 0 {
+		t.Fatalf("after last delete: id %d (was %d), retired=%v, active=%d", gotID, id, retired, activeBots(t, ts))
+	}
+	if u, err := getUser(context.Background(), ts.st.db, id); err != nil || u.Name != "ci-bot" || !u.Bot {
+		t.Fatalf("retired bot user: %+v, %v", u, err)
+	}
+
+	// Someone else can't take the name over; the bot stays retired.
+	bob.fail(proto.OpHookCreate, proto.HookCreateArgs{Chan: gen, Name: "ci"}, proto.ErrConflict)
+	if _, retired := botRow(t, ts, "ci-bot"); !retired {
+		t.Fatal("bob reactivated alice's bot")
+	}
+	// An admin can; the bot keeps its id and owner.
+	h3 := admin.createHook(gen, "ci")
+	gotID, retired = botRow(t, ts, "ci-bot")
+	if retired || gotID != id || activeBots(t, ts) != 1 {
+		t.Fatalf("after admin reactivation: id %d, retired=%v, active=%d", gotID, retired, activeBots(t, ts))
+	}
+	var owner uint64
+	ts.st.db.QueryRow(`SELECT bot_owner FROM users WHERE id = ?`, id).Scan(&owner)
+	if owner != alice.user.ID {
+		t.Fatalf("owner %d after admin reactivation, want alice (%d)", owner, alice.user.ID)
+	}
+	if r := ts.post(t, "POST", h3.URL, "text/plain", "back"); r.status != 200 {
+		t.Fatalf("post after reactivation: %d %s", r.status, r.raw)
+	}
+
+	// The owner can too.
+	admin.ok(proto.OpHookDelete, proto.HookArgs{ID: h3.ID}, nil)
+	if _, retired := botRow(t, ts, "ci-bot"); !retired {
+		t.Fatal("bot not retired again")
+	}
+	alice.createHook(gen, "ci")
+	if _, retired := botRow(t, ts, "ci-bot"); retired || activeBots(t, ts) != 1 {
+		t.Fatalf("owner reactivation: retired=%v active=%d", retired, activeBots(t, ts))
+	}
+}
+
+// TestBotRetiredWhenOwnerDisabled: disabling a person deletes their hooks,
+// which retires the bots left without any.
+func TestBotRetiredWhenOwnerDisabled(t *testing.T) {
+	ts := startHookServer(t)
+	admin := ts.register(t, "root", true)
+	admin.syncFresh()
+	alice := ts.register(t, "alice", false)
+	snap, _ := alice.syncFresh()
+	alice.createHook(generalID(t, snap), "ci")
+	admin.ok(proto.OpUserDisable, proto.UserArgs{User: alice.user.ID}, nil)
+	if _, retired := botRow(t, ts, "ci-bot"); !retired || activeBots(t, ts) != 0 {
+		t.Fatalf("retired=%v active=%d after owner disabled", retired, activeBots(t, ts))
+	}
+}
+
+// TestBotCapsCountActiveOnly: 10 active bots per owner and 100 per server;
+// retired bots count toward neither, and reactivating one needs a free slot.
+func TestBotCapsCountActiveOnly(t *testing.T) {
+	ts := startHookServer(t)
+	admin := ts.register(t, "root", true)
+	admin.syncFresh()
+	alice := ts.register(t, "alice", false)
+	snap, _ := alice.syncFresh()
+	gen := generalID(t, snap)
+	noWait := func() {
+		ts.mu.Lock()
+		delete(ts.wlimits, alice.user.ID)
+		delete(ts.wlimits, admin.user.ID)
+		ts.mu.Unlock()
+	}
+
+	hooks := make([]proto.HookCreateRes, maxBotsPerUser)
+	for i := range hooks {
+		noWait()
+		hooks[i] = alice.createHook(gen, fmt.Sprintf("b%d", i))
+	}
+	// Retire one, take its slot with another, then try to bring it back.
+	noWait()
+	alice.ok(proto.OpHookDelete, proto.HookArgs{ID: hooks[0].ID}, nil)
+	noWait()
+	alice.createHook(gen, "extra")
+	noWait()
+	admin.fail(proto.OpHookCreate, proto.HookCreateArgs{Chan: gen, Name: "b0"}, proto.ErrConflict)
+	if _, retired := botRow(t, ts, "b0-bot"); !retired {
+		t.Fatal("reactivated past the owner's cap")
+	}
+	noWait()
+	alice.ok(proto.OpHookDelete, proto.HookArgs{ID: hooks[1].ID}, nil)
+	noWait()
+	admin.createHook(gen, "b0")
+	if _, retired := botRow(t, ts, "b0-bot"); retired {
+		t.Fatal("b0 not reactivated with a free slot")
+	}
+
+	// Server-wide: fill with active bots owned by nobody in particular.
+	for i := activeBots(t, ts); i < maxBots; i++ {
+		if _, err := ts.st.db.Exec(`INSERT INTO users (name, created, bot, bot_owner) VALUES (?, 0, 1, ?)`,
+			fmt.Sprintf("filler%d-bot", i), 1000+i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A pile of retired bots changes nothing.
+	for i := range 2 * maxBots {
+		if _, err := ts.st.db.Exec(`INSERT INTO users (name, created, bot, bot_owner, bot_retired) VALUES (?, 0, 1, 1, 1)`,
+			fmt.Sprintf("old%d-bot", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	noWait()
+	admin.fail(proto.OpHookCreate, proto.HookCreateArgs{Chan: gen, Name: "new"}, proto.ErrConflict)
+	if _, err := ts.st.db.Exec(`UPDATE users SET bot_retired = 1 WHERE name = 'filler50-bot'`); err != nil {
+		t.Fatal(err)
+	}
+	noWait()
+	admin.createHook(gen, "new")
 }
 
 // TestHookSendsChargeCreator: many hooks by one person share that person's

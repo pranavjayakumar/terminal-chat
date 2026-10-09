@@ -183,12 +183,18 @@ Rules:
   the caller; a human with that name → `conflict`. If the bot isn't a member of `chan` it is
   added (`chan.join`, actor = caller). The result's `name` is the bot's name. Caps
   (`conflict` with a message saying which): at most 10 hooks per creator, 20 per channel,
-  and 100 bot users per server (reusing an existing bot doesn't count).
+  and 100 **active** bots per server and 10 per owner. A bot is *active* while it has at
+  least one hook; reusing an active bot doesn't take a slot. A *retired* bot (below) counts
+  toward no cap, but creating a hook under its name reactivates it — by its owner or an
+  admin only, and only if a slot is free (the caps are checked against the bot's owner).
   `url` is secret and returned only here. **hook.list** returns hooks in channels the caller
   currently belongs to (admins: all), filtered in the query. **hook.delete**: the creator, an admin, or any current
   member of the hook's channel (anyone else → `not_found`); the URL stops working at once. The
-  bot user and its messages stay. Disabling a user (`user.disable`) deletes the hooks they
-  created (and any posting as them) in the same transaction. `hook.create`, `hook.list` and
+  bot user and its messages stay. When a bot's last hook is deleted the bot is *retired*:
+  the user keeps its id and name (so old messages still render, and nobody else can take the
+  name) and its owner, but frees its slots. Retirement is server state only — no event, and
+  `User` is unchanged. Disabling a user (`user.disable`) deletes the hooks they
+  created (and any posting as them) in the same transaction, retiring bots left without hooks. `hook.create`, `hook.list` and
   `hook.delete` count as write ops for rate limits.
 - **dm.open** returns the existing DM for that exact member set (caller included)
   or creates it. DMs have `name = ""`.

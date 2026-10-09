@@ -46,11 +46,14 @@ const (
 
 	maxHooksPerUser = 10
 	maxHooksPerChan = 20
-	maxBots         = 100
+	// Only active bots count (a bot with no hooks is retired): this many on
+	// the server, and this many owned by one person.
+	maxBots        = 100
+	maxBotsPerUser = 10
 )
 
-// migrateHooks adds the webhook tables and the users.bot and users.bot_owner
-// columns to databases created before they existed.
+// migrateHooks adds the webhook tables and the users.bot, users.bot_owner and
+// users.bot_retired columns to databases created before they existed.
 func migrateHooks(db *sql.DB) error {
 	if _, err := db.Exec(hooksSchema); err != nil {
 		return fmt.Errorf("creating hooks schema: %w", err)
@@ -75,7 +78,33 @@ func migrateHooks(db *sql.DB) error {
 			return fmt.Errorf("backfilling users.bot_owner: %w", err)
 		}
 	}
+	var hadRetired int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'bot_retired'`).Scan(&hadRetired); err != nil {
+		return err
+	}
+	if err := addColumn(db, "users", "bot_retired", `INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	if hadRetired == 0 {
+		if err := retireOrphanBots(db); err != nil {
+			return fmt.Errorf("backfilling users.bot_retired: %w", err)
+		}
+	}
 	return nil
+}
+
+// execer is satisfied by *sql.DB and *sql.Tx.
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// retireOrphanBots retires every bot whose last hook is gone. A retired bot
+// keeps its id and name (old messages still render) but counts toward no cap
+// until its owner or an admin creates a hook with that name again.
+func retireOrphanBots(db execer) error {
+	_, err := db.Exec(`UPDATE users SET bot_retired = 1 WHERE bot = 1 AND bot_retired = 0
+		AND NOT EXISTS (SELECT 1 FROM hooks WHERE hooks.bot = users.id)`)
+	return err
 }
 
 // hooksAutoincrement rebuilds a hooks table created without AUTOINCREMENT.
@@ -281,8 +310,8 @@ func (s *Server) opHookCreate(ctx context.Context, u proto.User, a proto.HookCre
 		now := s.now()
 		var evs []proto.Event
 		var botID, owner uint64
-		var isBot, disabled bool
-		err := tx.QueryRowContext(ctx, `SELECT id, bot, disabled, bot_owner FROM users WHERE name = ?`, a.Name).Scan(&botID, &isBot, &disabled, &owner)
+		var isBot, disabled, retired bool
+		err := tx.QueryRowContext(ctx, `SELECT id, bot, disabled, bot_owner, bot_retired FROM users WHERE name = ?`, a.Name).Scan(&botID, &isBot, &disabled, &owner, &retired)
 		switch {
 		case err == nil && !isBot:
 			return nil, proto.Errf(proto.ErrConflict, "that name belongs to a person")
@@ -291,13 +320,16 @@ func (s *Server) opHookCreate(ctx context.Context, u proto.User, a proto.HookCre
 		case err == nil && owner != u.ID && !u.Admin:
 			// Otherwise anyone could post as someone else's trusted bot.
 			return nil, proto.Errf(proto.ErrConflict, "that bot belongs to someone else; pick another name")
-		case errors.Is(err, sql.ErrNoRows):
-			var bots int
-			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE bot = 1`).Scan(&bots); err != nil {
+		case err == nil && retired:
+			if err := botSlotFree(ctx, tx, owner); err != nil {
 				return nil, err
 			}
-			if bots >= maxBots {
-				return nil, proto.Errf(proto.ErrConflict, fmt.Sprintf("this server already has %d bots; reuse one of yours", maxBots))
+			if _, err := tx.ExecContext(ctx, `UPDATE users SET bot_retired = 0 WHERE id = ?`, botID); err != nil {
+				return nil, err
+			}
+		case errors.Is(err, sql.ErrNoRows):
+			if err := botSlotFree(ctx, tx, u.ID); err != nil {
+				return nil, err
 			}
 			r, err := tx.ExecContext(ctx, `INSERT INTO users (name, created, bot, bot_owner) VALUES (?, ?, 1, ?)`, a.Name, now, u.ID)
 			if err != nil {
@@ -338,6 +370,23 @@ func (s *Server) opHookCreate(ctx context.Context, u proto.User, a proto.HookCre
 	return res, nil
 }
 
+// botSlotFree checks that one more active bot owned by owner fits under the
+// server-wide and per-owner caps. Retired bots don't count.
+func botSlotFree(ctx context.Context, tx *sql.Tx, owner uint64) error {
+	var all, mine int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COUNT(*) FILTER (WHERE bot_owner = ?)
+		FROM users WHERE bot = 1 AND bot_retired = 0`, owner).Scan(&all, &mine); err != nil {
+		return err
+	}
+	switch {
+	case mine >= maxBotsPerUser:
+		return proto.Errf(proto.ErrConflict, fmt.Sprintf("you already have %d active bots; delete all hooks of one first (/webhooks)", maxBotsPerUser))
+	case all >= maxBots:
+		return proto.Errf(proto.ErrConflict, fmt.Sprintf("this server already has %d active bots; reuse one of yours", maxBots))
+	}
+	return nil
+}
+
 func (s *Server) opHookList(ctx context.Context, u proto.User) (any, error) {
 	rows, err := s.st.db.QueryContext(ctx, `SELECT id, chan, name, created_by, created FROM hooks
 		WHERE ? OR chan IN (SELECT chan FROM membership WHERE user = ? AND leave_seq IS NULL) ORDER BY id`, u.Admin, u.ID)
@@ -371,8 +420,10 @@ func (s *Server) opHookDelete(ctx context.Context, u proto.User, a proto.HookArg
 		if by != u.ID && !u.Admin && !s.members[ch][u.ID] {
 			return nil, errNotFound
 		}
-		_, err = tx.ExecContext(ctx, `DELETE FROM hooks WHERE id = ?`, a.ID)
-		return nil, err
+		if _, err = tx.ExecContext(ctx, `DELETE FROM hooks WHERE id = ?`, a.ID); err != nil {
+			return nil, err
+		}
+		return nil, retireOrphanBots(tx)
 	})
 	if err != nil {
 		return nil, err
