@@ -132,8 +132,10 @@ func TestSyncUnderConcurrentWrites(t *testing.T) {
 
 	bob2, _ := ts.connect(t, bob.signer, "", "")
 	stop := make(chan struct{})
+	senderDone := make(chan struct{})
 	var sent atomic.Int32
 	go func() {
+		defer close(senderDone)
 		for i := 0; ; i++ {
 			select {
 			case <-stop:
@@ -191,26 +193,47 @@ func TestSyncUnderConcurrentWrites(t *testing.T) {
 			head, gotRes = sr.Head, true
 		}
 	}
-	// Everything the server has must have reached bob.
+	// Stop the sender, then everything the server stored must reach bob.
+	select {
+	case <-stop:
+	default:
+		close(stop)
+	}
+	<-senderDone
 	var n int
-	ts.st.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE chan = ?`, gen).Scan(&n)
-	time.Sleep(200 * time.Millisecond)
+	settle := time.After(10 * time.Second)
 	for {
+		ts.st.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE chan = ?`, gen).Scan(&n)
+		if len(seen) >= n {
+			break
+		}
 		select {
 		case f := <-bob2.frames:
 			if f.Type == proto.TEvent {
 				var ev proto.Event
 				f.Decode(&ev)
+				if ev.Seq <= last {
+					t.Fatalf("seq %d after %d (dup or reorder)", ev.Seq, last)
+				}
+				last = ev.Seq
 				if ev.Kind == proto.KMsgNew {
 					seen[ev.Seq] = true
 				}
 			}
-			continue
-		default:
+		case <-settle:
+			rows, _ := ts.st.db.Query(`SELECT id FROM messages WHERE chan = ?`, gen)
+			var missing []uint64
+			for rows.Next() {
+				var id uint64
+				rows.Scan(&id)
+				if !seen[id] {
+					missing = append(missing, id)
+				}
+			}
+			rows.Close()
+			t.Fatalf("bob saw %d messages, server has %d; missing seqs %v (head %d)", len(seen), n, missing, head)
 		}
-		break
 	}
-	ts.st.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE chan = ?`, gen).Scan(&n)
 	if len(seen) != n {
 		t.Fatalf("bob saw %d messages, server has %d", len(seen), n)
 	}
