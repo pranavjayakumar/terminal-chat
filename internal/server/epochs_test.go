@@ -561,35 +561,43 @@ func TestKeyFetch(t *testing.T) {
 	a1, _ := alice.registerDevice(ts)
 	roster := []uint64{alice.user.ID, bob.user.ID}
 	var chain []proto.Signed
+	var seqs []uint64
 	var prev *proto.Signed
 	for ep := uint32(1); ep <= 3; ep++ {
 		advance(rotateEveryMs * time.Millisecond)
 		b := bundle(t, a1, sid, ch.ID, ep, prev, roster, a1)
-		alice.rotate(ch.ID, b)
+		seqs = append(seqs, alice.rotate(ch.ID, b))
 		chain = append(chain, b)
 		prev = &chain[len(chain)-1]
 	}
-	fetch := func(c *tclient, from, to uint32) []proto.Signed {
+	fetchRes := func(c *tclient, from, to uint32) proto.KeyFetchRes {
 		t.Helper()
 		var r proto.KeyFetchRes
 		c.ok(proto.OpKeyFetch, proto.KeyFetchArgs{Chan: ch.ID, From: from, To: to}, &r)
-		return r.Bundles
-	}
-	same := func(got, want []proto.Signed) {
-		t.Helper()
-		if len(got) != len(want) {
-			t.Fatalf("got %d bundles, want %d", len(got), len(want))
+		if len(r.Seqs) != len(r.Bundles) {
+			t.Fatalf("%d seqs for %d bundles", len(r.Seqs), len(r.Bundles))
 		}
-		for i := range got {
-			if !bytes.Equal(got[i].B, want[i].B) || !bytes.Equal(got[i].Sig, want[i].Sig) {
+		return r
+	}
+	same := func(got proto.KeyFetchRes, want []proto.Signed, wantSeqs []uint64) {
+		t.Helper()
+		if len(got.Bundles) != len(want) {
+			t.Fatalf("got %d bundles, want %d", len(got.Bundles), len(want))
+		}
+		for i := range want {
+			if !bytes.Equal(got.Bundles[i].B, want[i].B) || !bytes.Equal(got.Bundles[i].Sig, want[i].Sig) {
 				t.Fatalf("bundle %d differs", i)
 			}
 		}
+		// Each bundle's seq is its key.epoch event's.
+		if !slices.Equal(got.Seqs, wantSeqs) {
+			t.Fatalf("seqs %v, want %v", got.Seqs, wantSeqs)
+		}
 	}
-	same(fetch(bob, 1, 3), chain)
-	same(fetch(bob, 2, 2), chain[1:2])
-	same(fetch(bob, 2, 256), chain[1:])
-	same(fetch(alice, 4, 9), nil)
+	same(fetchRes(bob, 1, 3), chain, seqs)
+	same(fetchRes(bob, 2, 2), chain[1:2], seqs[1:2])
+	same(fetchRes(bob, 2, 256), chain[1:], seqs[1:])
+	same(fetchRes(alice, 4, 9), nil, []uint64{})
 	for _, r := range [][2]uint32{{0, 3}, {3, 2}, {1, 257}, {10, 10 + proto.MaxKeyFetch}} {
 		bob.fail(proto.OpKeyFetch, proto.KeyFetchArgs{Chan: ch.ID, From: r[0], To: r[1]}, proto.ErrBadRequest)
 	}
@@ -607,10 +615,11 @@ func TestKeyFetch(t *testing.T) {
 	}
 	got, from, calls := 0, uint32(1), 0
 	for from <= 100 {
-		bs := fetch(bob, from, 100)
+		r := fetchRes(bob, from, 100)
+		bs := r.Bundles
 		calls++
-		if len(bs) == 0 || encodedSize(proto.KeyFetchRes{Bundles: bs}) > proto.MaxResultBytes {
-			t.Fatalf("fetch from %d: %d bundles, %d bytes", from, len(bs), encodedSize(proto.KeyFetchRes{Bundles: bs}))
+		if len(bs) == 0 || encodedSize(r) > proto.MaxResultBytes {
+			t.Fatalf("fetch from %d: %d bundles, %d bytes", from, len(bs), encodedSize(r))
 		}
 		got += len(bs)
 		from += uint32(len(bs))
@@ -645,14 +654,17 @@ func TestSnapshotKeys(t *testing.T) {
 	alice.rotate(ch.ID, e1)
 	advance(rotateEveryMs * time.Millisecond)
 	e2 := bundle(t, a1, sid, ch.ID, 2, &e1, roster, a1)
-	alice.rotate(ch.ID, e2)
+	s2 := alice.rotate(ch.ID, e2)
 	d1 := bundle(t, a1, sid, dm.Chan.ID, 1, nil, roster, a1)
-	alice.rotate(dm.Chan.ID, d1)
+	sd1 := alice.rotate(dm.Chan.ID, d1)
 
 	c, _ := ts.connectCaps(t, bob.signer, "", "", e2eCaps)
 	snap, _ := c.syncFresh()
-	if len(snap.Keys) != 2 || !bytes.Equal(snap.Keys[0].B, e2.B) || !bytes.Equal(snap.Keys[1].B, d1.B) {
+	if len(snap.Keys) != 2 || !bytes.Equal(snap.Keys[0].Bundle.B, e2.B) || !bytes.Equal(snap.Keys[1].Bundle.B, d1.B) {
 		t.Fatalf("bob's snapshot keys: %d", len(snap.Keys))
+	}
+	if snap.Keys[0].Seq != s2 || snap.Keys[1].Seq != sd1 {
+		t.Fatalf("snapshot key seqs %d %d, want %d %d", snap.Keys[0].Seq, snap.Keys[1].Seq, s2, sd1)
 	}
 	for _, sc := range snap.Chans {
 		if sc.ID == ch.ID && (!sc.E2E || sc.Epoch != 2) || sc.ID == dm.Chan.ID && (!sc.E2E || sc.Epoch != 1) {

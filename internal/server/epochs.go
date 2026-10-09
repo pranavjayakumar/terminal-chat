@@ -470,20 +470,21 @@ func (s *Server) opKeyFetch(ctx context.Context, u proto.User, a proto.KeyFetchA
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT bundle FROM epochs WHERE chan = ? AND epoch >= ? AND epoch <= ? ORDER BY epoch`,
+	rows, err := tx.QueryContext(ctx, `SELECT bundle, seq FROM epochs WHERE chan = ? AND epoch >= ? AND epoch <= ? ORDER BY epoch`,
 		a.Chan, a.From, a.To)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	res := proto.KeyFetchRes{Bundles: []proto.Signed{}}
+	res := proto.KeyFetchRes{Bundles: []proto.Signed{}, Seqs: []uint64{}}
 	size := 0
 	for rows.Next() {
 		var raw []byte
-		if err := rows.Scan(&raw); err != nil {
+		var seq uint64
+		if err := rows.Scan(&raw, &seq); err != nil {
 			return nil, err
 		}
-		if size += len(raw); size > proto.MaxResultBytes {
+		if size += len(raw) + 9; size > proto.MaxResultBytes { // + a msgpack u64
 			break
 		}
 		var b proto.Signed
@@ -491,6 +492,7 @@ func (s *Server) opKeyFetch(ctx context.Context, u proto.User, a proto.KeyFetchA
 			return nil, err
 		}
 		res.Bundles = append(res.Bundles, b)
+		res.Seqs = append(res.Seqs, seq)
 	}
 	return res, rows.Err()
 }
@@ -549,7 +551,8 @@ func (sess *session) snapshotKeys(ctx context.Context, tx *sql.Tx, chans []proto
 			continue
 		}
 		var raw []byte
-		if err := tx.QueryRowContext(ctx, `SELECT bundle FROM epochs WHERE chan = ? AND epoch = ?`, c.ID, c.Epoch).Scan(&raw); err != nil {
+		var seq uint64
+		if err := tx.QueryRowContext(ctx, `SELECT bundle, seq FROM epochs WHERE chan = ? AND epoch = ?`, c.ID, c.Epoch).Scan(&raw, &seq); err != nil {
 			return err
 		}
 		var b proto.Signed
@@ -562,7 +565,7 @@ func (sess *session) snapshotKeys(ctx context.Context, tx *sql.Tx, chans []proto
 			}
 			part, size = proto.Snapshot{}, 0
 		}
-		part.Keys = append(part.Keys, b)
+		part.Keys = append(part.Keys, proto.EpochKey{Bundle: b, Seq: seq})
 		size += len(raw)
 	}
 	if size > 0 {

@@ -157,7 +157,7 @@ and higher v; first mid wins. Decrypted text must pass §10 checks. Undecryptabl
 | `device.revoke` | `{revoke: Signed}` | `{seq}` |
 | `devices.list` | `{users?: [u64]}` | `{certs, endorse, revoked}` |
 | `key.rotate` | `{chan, bundle: Signed}` | `{seq}` |
-| `key.fetch` | `{chan, from: u32, to: u32}` (≤ 256) | `{bundles}` |
+| `key.fetch` | `{chan, from: u32, to: u32}` (≤ 256) | `{bundles, seqs}` (seqs[i] = key.epoch seq of bundles[i]) |
 | `key.share` | `{chan, epoch, dev, eph, ct}` | `{}` |
 | `send` | `+ enc?: bin` (exactly one of body/enc) | `{msg}` |
 | `edit` / `delete` / `react` | `+ enc?` (e2e react emoji = "~"+b64url(HMAC(mk,"tc-react"‖mid‖emoji)[:12])) | |
@@ -182,7 +182,7 @@ excludes e2e. Webhooks into e2e forbidden. Delete/edit scrub messages AND origin
 ### 13.6 Events
 `device.new {cert, endorse?}` (all) · `device.revoke {revoke}` (all) · `key.epoch {bundle}` (members at
 seq; after chan.join, after chan.leave) · `key.share` (members) · `msg.*`/`react.*` gain `enc?`.
-`Channel += {e2e, epoch, creator?}`; `Message += {enc?}` (body "" when enc). Snapshot += `devs`, `revoked`, `keys`.
+`Channel += {e2e, epoch, creator?}`; `Message += {enc?}` (body "" when enc). Snapshot += `devs`, `revoked`, `keys: [{bundle, seq}]`. A device revoke invalidates only bundles whose seq is after the revoke event's seq.
 
 ### 13.7–13.8
 Ephemeral `key.need {chan, epoch, dev}` (≤ 1/chan/30 s) → members answer with `key.share`.

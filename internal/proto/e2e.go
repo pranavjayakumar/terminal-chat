@@ -63,10 +63,19 @@ type KeyFetchArgs struct {
 	To   uint32 `msgpack:"to"`
 }
 
-// KeyFetchRes holds the requested bundles that exist, in epoch order. It
-// may stop early to fit MaxResultBytes: ask again from the last epoch + 1.
+// KeyFetchRes holds the requested bundles that exist, in epoch order, and
+// Seqs[i], the seq of Bundles[i]'s key.epoch event (same length). It may
+// stop early to fit MaxResultBytes: ask again from the last epoch + 1.
 type KeyFetchRes struct {
 	Bundles []Signed `msgpack:"bundles"`
+	Seqs    []uint64 `msgpack:"seqs"`
+}
+
+// EpochKey is a bundle with the seq of its key.epoch event (snapshot keys).
+// A device revoke invalidates only bundles with a seq after the revoke's.
+type EpochKey struct {
+	Bundle Signed `msgpack:"bundle"`
+	Seq    uint64 `msgpack:"seq"`
 }
 
 // Device limits (PROTOCOL.md §13.2). They mirror e2ecrypto's, which proto

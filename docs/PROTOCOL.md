@@ -593,8 +593,15 @@ needs none.
 
 **key.fetch** `{chan, from: u32, to: u32}`: current members only (else
 `forbidden`, also for unknown channels); `1 ≤ from ≤ to` and `to − from < 256` (else `bad_request`).
-Returns `{bundles: [Signed]}`, the stored bundles in that range in epoch
-order, possibly stopping early at ~768 KiB: ask again from the last epoch + 1.
+Returns `{bundles: [Signed], seqs: [u64]}`: the stored bundles in that range in epoch
+order, and (same length) the seq of each bundle's `key.epoch` event,
+possibly stopping early at ~768 KiB: ask again from the last epoch + 1.
+
+**Revocation vs epochs.** A `device.revoke` at seq r invalidates only
+bundles whose `key.epoch` seq is after r (they should not have boxed that
+device); bundles at or before r stay valid, and the revoked device's
+earlier keys are expected history. Clients order the two by these seqs
+(`key.fetch` `seqs`, snapshot `keys[].seq`, event seqs).
 
 A channel's current bundle is **stale** (encrypted sends will need a
 rotation first, §13.4) when there is none yet, its roster isn't the current
@@ -638,7 +645,7 @@ bundle`, `chan.remove`, `chan.encrypt` (`docs/E2E.md` §13.5).
 | op | args | data |
 |---|---|---|
 | `key.rotate` | `{chan, bundle: Signed}` | `{seq}` |
-| `key.fetch` | `{chan, from: u32, to: u32}` | `{bundles: [Signed]}` |
+| `key.fetch` | `{chan, from: u32, to: u32}` | `{bundles: [Signed], seqs: [u64]}` |
 
 ### 13.6 Events
 
@@ -648,9 +655,9 @@ Implemented: `device.new`, `device.revoke` (§13.2), and:
 |---|---|---|---|
 | `key.epoch` | the channel | `{bundle: Signed}` | `e2e1` sessions of users who are members at its seq (§6): after `chan.join` the joiner sees it, after `chan.leave` the leaver doesn't — identically live and on replay |
 
-Snapshot (§6) adds `keys: [Signed]` for `e2e1` sessions: the current
-bundle of every encrypted channel the user is a member of (channels at
-epoch 0 have none), possibly over several parts. Not yet: `key.share`,
+Snapshot (§6) adds `keys: [{bundle: Signed, seq: u64}]` for `e2e1` sessions: the current
+bundle of every encrypted channel the user is a member of, with the seq of its
+`key.epoch` event (channels at epoch 0 have none), possibly over several parts. Not yet: `key.share`,
 `enc` in `msg.*`/`react.*`.
 
 ### 13.7 Key requests *(not yet implemented)*

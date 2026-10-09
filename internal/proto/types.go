@@ -209,7 +209,7 @@ type Snapshot struct {
 	Devs    []Device `msgpack:"devs,omitempty"`
 	Revoked []Signed `msgpack:"revoked,omitempty"`
 	// Keys is the latest epoch bundle of each visible e2e channel (§13.3).
-	Keys []Signed `msgpack:"keys,omitempty"`
+	Keys []EpochKey `msgpack:"keys,omitempty"`
 }
 
 type Ping struct {
