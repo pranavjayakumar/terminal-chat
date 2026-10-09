@@ -232,6 +232,7 @@ func (m *Model) searchKey(k tea.KeyMsg) tea.Cmd {
 // jumpTo opens the message's channel (and thread) and selects it if it is
 // loaded.
 func (m *Model) jumpTo(x proto.Message) tea.Cmd {
+	m.cancelEdit()
 	if _, ok := m.chanView(x.Chan); !ok {
 		m.setInfo("that channel isn't available here")
 		return nil

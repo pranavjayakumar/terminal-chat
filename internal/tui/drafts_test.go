@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/skailama/tc/internal/proto"
 )
 
 // press sends keys through Update (not handleKey) so the draft bookkeeping
@@ -200,4 +202,74 @@ func TestDraftMarksFitAllSizes(t *testing.T) {
 		press(m, "esc", "ctrl+p")
 		checkView(t, m, "back")
 	}
+}
+
+// A jump from the activity view lands in select mode with the channel's
+// draft still in the input; editing a message must not eat that draft.
+func TestEditAfterJumpKeepsTheDraft(t *testing.T) {
+	jumpToMine := func(t *testing.T) (*Model, *fakeClient) {
+		m, f := newTestModelFake(t, 100, 30)
+		activityFake(f)
+		typeVia(m, "half typed")
+		press(m, "alt+a", "enter") // the reaction on my message 103, same channel
+		if m.mode != modeSelect || m.focus().msgs[m.focus().sel].ID != 103 || m.input.Value() != "half typed" {
+			t.Fatalf("mode %v input %q", m.mode, m.input.Value())
+		}
+		return m, f
+	}
+	t.Run("cancelled", func(t *testing.T) {
+		m, f := jumpToMine(t)
+		press(m, "e")
+		if m.editing != 103 || m.input.Value() == "half typed" {
+			t.Fatalf("not editing: %d %q", m.editing, m.input.Value())
+		}
+		press(m, "esc")
+		if m.editing != 0 || m.input.Value() != "half typed" {
+			t.Fatalf("after Esc: editing %d input %q", m.editing, m.input.Value())
+		}
+		m.Close()
+		if got := f.draft(10, 0); got != "half typed" {
+			t.Fatalf("saved draft = %q", got)
+		}
+	})
+	t.Run("saved", func(t *testing.T) {
+		m, f := jumpToMine(t)
+		press(m, "e", "enter")
+		if !f.called("edit") {
+			t.Fatal("edit wasn't sent")
+		}
+		if m.editing != 0 || m.input.Value() != "half typed" {
+			t.Fatalf("after saving: editing %d input %q", m.editing, m.input.Value())
+		}
+	})
+	t.Run("switching away and back", func(t *testing.T) {
+		m, f := jumpToMine(t)
+		press(m, "e", "ctrl+n")
+		if m.editing != 0 || m.input.Value() != "" {
+			t.Fatalf("edit survived: %d %q", m.editing, m.input.Value())
+		}
+		press(m, "ctrl+p")
+		if m.active != 10 || m.input.Value() != "half typed" {
+			t.Fatalf("back in %d: input %q", m.active, m.input.Value())
+		}
+		m.Close()
+		if got := f.draft(10, 0); got != "half typed" {
+			t.Fatalf("saved draft = %q", got)
+		}
+	})
+	t.Run("the overlay ends the edit", func(t *testing.T) {
+		m, _ := jumpToMine(t)
+		press(m, "e", "alt+a")
+		if m.editing != 0 || m.input.Value() != "half typed" || m.mode != modeActivity {
+			t.Fatalf("overlay: editing %d input %q mode %v", m.editing, m.input.Value(), m.mode)
+		}
+	})
+	t.Run("a jump ends the edit", func(t *testing.T) {
+		m, _ := jumpToMine(t)
+		press(m, "e")
+		m.jumpTo(proto.Message{ID: 104, Chan: 10})
+		if m.editing != 0 || m.input.Value() != "half typed" {
+			t.Fatalf("jumpTo: editing %d input %q", m.editing, m.input.Value())
+		}
+	})
 }

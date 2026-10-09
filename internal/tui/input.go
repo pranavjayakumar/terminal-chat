@@ -143,7 +143,6 @@ func (m *Model) submit() tea.Cmd {
 	if m.editing != 0 {
 		id := m.editing
 		m.cancelEdit()
-		m.clearInput()
 		return m.call("edit", func(ctx context.Context) error { return m.c.Edit(ctx, id, body) })
 	}
 	if strings.HasPrefix(v, "/") && !strings.HasPrefix(v, "//") {

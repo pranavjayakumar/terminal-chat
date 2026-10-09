@@ -947,7 +947,6 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 		switch {
 		case m.editing != 0:
 			m.cancelEdit()
-			m.input.Reset()
 		case m.thread.open():
 			m.closeThread()
 			m.layoutInput()
@@ -1218,6 +1217,9 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 			return nil, true
 		}
 		m.leaveSelect()
+		// A jump can leave select mode with a draft in the input: keep it
+		// in its slot; cancelEdit puts it back.
+		m.setDraft(m.dk, m.input.Value())
 		m.editing = sel.ID
 		m.input.SetValue(sanitize.Text(sel.Body))
 		m.layoutInput()
@@ -1299,12 +1301,14 @@ func (m *Model) reactKey(k tea.KeyMsg) tea.Cmd {
 	return cmd
 }
 
-// cancelEdit ends an edit and drops its text from the input (the input was
-// empty when the edit began, so no draft is lost).
+// cancelEdit ends an edit: its text leaves the input and the draft that was
+// there when the edit began (held in m.drafts meanwhile) comes back.
 func (m *Model) cancelEdit() {
-	if m.editing != 0 {
-		m.editing = 0
-		m.input.Reset()
-		m.clearNotice()
+	if m.editing == 0 {
+		return
 	}
+	m.editing = 0
+	m.input.SetValue(m.drafts[m.dk])
+	m.layoutInput()
+	m.clearNotice()
 }

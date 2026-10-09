@@ -38,6 +38,7 @@ func idOf(it client.ActivityItem) activityID {
 // openActivity shows the overlay (Alt-A, /activity). The list comes from
 // the local cache.
 func (m *Model) openActivity() {
+	m.cancelEdit()
 	m.leaveSelect()
 	m.mode = modeActivity
 	m.act = activityState{items: m.c.Activity(activityLimit)}
