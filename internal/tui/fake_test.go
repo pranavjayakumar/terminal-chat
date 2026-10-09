@@ -36,6 +36,7 @@ type fakeClient struct {
 	drafts   map[[2]uint64]string
 	words    []string
 	setErr   error // SetDraft fails with this
+	seen     int64 // activity seen time
 	activity []client.ActivityItem
 }
 
@@ -373,4 +374,17 @@ func (f *fakeClient) Activity(limit int) []client.ActivityItem {
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "activity")
 	return slices.Clone(f.activity)
+}
+
+func (f *fakeClient) ActivitySeen() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.seen
+}
+
+func (f *fakeClient) SetActivitySeen(ms int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seen = max(f.seen, ms)
+	return nil
 }

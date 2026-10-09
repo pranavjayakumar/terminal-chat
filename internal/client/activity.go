@@ -3,6 +3,7 @@ package client
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"slices"
 	"sort"
 	"strings"
@@ -89,6 +90,25 @@ func (c *Client) Activity(limit int) []ActivityItem {
 		return nil
 	})
 	return out
+}
+
+// ActivitySeen is the time (ms) of the newest activity item that was on
+// screen the last time the activity view was open; 0 if it never was. It
+// lives in the cache, so it survives restarts.
+func (c *Client) ActivitySeen() int64 {
+	v, _ := metaUint(c.db, "activity_seen")
+	return int64(v)
+}
+
+// SetActivitySeen records that items up to time ms were seen. It only ever
+// moves forward.
+func (c *Client) SetActivitySeen(ms int64) error {
+	_, err := c.db.Exec(`INSERT INTO meta (k, v) VALUES ('activity_seen', ?)
+		ON CONFLICT (k) DO UPDATE SET v = MAX(v, excluded.v)`, ms)
+	if err != nil {
+		return fmt.Errorf("saving activity time: %w", err)
+	}
+	return nil
 }
 
 func (c *Client) activity(q dbtx, me proto.User, limit int) []ActivityItem {

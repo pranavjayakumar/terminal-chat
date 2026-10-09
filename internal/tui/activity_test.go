@@ -271,7 +271,7 @@ func TestActivityRowsAdaptToWidth(t *testing.T) {
 	mention := client.ActivityItem{Kind: client.ActMention, Time: actBase, Chan: 14, Msg: 1, Author: 2, Preview: "page me"}
 	react := client.ActivityItem{Kind: client.ActReaction, Time: actBase, Chan: 14, Msg: 1, Author: 2, Emoji: "🎉", Preview: "page me"}
 	row := func(it client.ActivityItem, w int) string {
-		r := ansi.Strip(m.activityRow(it, w, false))
+		r := ansi.Strip(m.activityRow(it, w, false, false))
 		if sw := strWidth(r); sw != w {
 			t.Fatalf("w=%d: row is %d cells: %q", w, sw, r)
 		}
@@ -317,4 +317,90 @@ func TestActivityRowsAdaptToWidth(t *testing.T) {
 	if got := ansi.Strip(m.activityLines(80, 5)[0]); !strings.HasPrefix(got, "activity — 6 items") {
 		t.Errorf("wide title %q", got)
 	}
+}
+
+func TestActivitySelectionSurvivesReopen(t *testing.T) {
+	m, f := newTestModelFake(t, 100, 30)
+	activityFake(f)
+	press(m, "alt+a", "down", "down") // the DM
+	press(m, "esc", "alt+a")
+	if m.act.sel != 2 {
+		t.Fatalf("selection after Esc + reopen = %d, want 2", m.act.sel)
+	}
+	press(m, "enter") // jump into the DM, select mode
+	if m.mode != modeSelect || m.active != 20 {
+		t.Fatalf("mode %v, active %d", m.mode, m.active)
+	}
+	press(m, "alt+a") // from select mode back to the overlay
+	if m.mode != modeActivity || m.act.sel != 2 {
+		t.Fatalf("Alt-A from select mode: mode %v sel %d, want the overlay on item 2", m.mode, m.act.sel)
+	}
+	checkView(t, m, "back")
+	// A different list starts at the top again.
+	press(m, "esc")
+	f.activity = f.activity[:2]
+	press(m, "alt+a")
+	if m.act.sel != 0 {
+		t.Fatalf("changed list kept selection %d", m.act.sel)
+	}
+}
+
+func TestActivityMarksItemsNewerThanLastOpen(t *testing.T) {
+	m, f := newTestModelFake(t, 120, 30)
+	activityFake(f)
+	dots := func() (n int) {
+		for _, l := range strings.Split(checkView(t, m, "dots"), "\n") {
+			if strings.Contains(l, "│•") {
+				n++
+			}
+		}
+		return
+	}
+	press(m, "alt+a")
+	if got := dots(); got != 0 {
+		t.Fatalf("first open: %d dots, want none (nothing to compare with)", got)
+	}
+	if f.seen != actBase+9*60_000 {
+		t.Fatalf("seen = %d, want the newest item's time", f.seen)
+	}
+	press(m, "esc")
+	// Something new arrives while the overlay is closed.
+	fresh := client.ActivityItem{Kind: client.ActMention, Time: actBase + 20*60_000, Chan: 10, Msg: 104, Author: 3, Preview: "brand new"}
+	f.activity = append([]client.ActivityItem{fresh}, f.activity...)
+	press(m, "alt+a")
+	if got := dots(); got != 1 {
+		t.Fatalf("%d dots, want 1 (only the new item)\n%s", got, checkView(t, m, "x"))
+	}
+	if row := activityRowOf(t, checkView(t, m, "x"), "brand new"); !strings.Contains(row, "│•") {
+		t.Fatalf("the new item has no dot: %q", row)
+	}
+	if f.seen != fresh.Time {
+		t.Fatalf("seen = %d, want %d", f.seen, fresh.Time)
+	}
+	// Seen now: reopening shows no dots.
+	press(m, "esc", "alt+a")
+	if got := dots(); got != 0 {
+		t.Fatalf("reopened: %d dots, want none", got)
+	}
+	// An item arriving while the overlay is open gets one, and counts as seen.
+	late := client.ActivityItem{Kind: client.ActDM, Time: actBase + 30*60_000, Chan: 20, Msg: 300, Author: 2, Preview: "late one"}
+	f.activity = append([]client.ActivityItem{late}, f.activity...)
+	m.Update(updateMsg(client.Update{Msgs: map[uint64]bool{20: true}}))
+	if row := activityRowOf(t, checkView(t, m, "x"), "late one"); !strings.Contains(row, "│•") {
+		t.Fatalf("live item has no dot: %q", row)
+	}
+	if f.seen != late.Time {
+		t.Fatalf("seen = %d, want %d", f.seen, late.Time)
+	}
+}
+
+func activityRowOf(t *testing.T, view, text string) string {
+	t.Helper()
+	for _, l := range strings.Split(view, "\n") {
+		if strings.Contains(l, text) {
+			return l
+		}
+	}
+	t.Fatalf("no row with %q in\n%s", text, view)
+	return ""
 }

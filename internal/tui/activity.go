@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -21,6 +22,10 @@ const maxJumpLimit = 2000
 type activityState struct {
 	items []client.ActivityItem
 	sel   int
+	// seen is the newest item time that had been shown before the overlay
+	// was opened; later items get a "new" dot. 0: it was never opened.
+	seen  int64
+	saved int64 // the last time written to the cache
 }
 
 // activityID identifies an item across refreshes.
@@ -37,11 +42,37 @@ func idOf(it client.ActivityItem) activityID {
 
 // openActivity shows the overlay (Alt-A, /activity). The list comes from
 // the local cache.
+//
+// The selection survives closing and reopening while the list is the same,
+// so Alt-A after a jump comes back to where Enter was pressed.
 func (m *Model) openActivity() {
 	m.cancelEdit()
 	m.leaveSelect()
 	m.mode = modeActivity
-	m.act = activityState{items: m.c.Activity(activityLimit)}
+	a := &m.act
+	items := m.c.Activity(activityLimit)
+	if !slices.Equal(items, a.items) {
+		a.sel = 0
+	}
+	a.items = items
+	a.sel = min(max(a.sel, 0), max(len(items)-1, 0))
+	a.seen = m.c.ActivitySeen()
+	m.markActivitySeen()
+}
+
+// markActivitySeen persists the time of the newest item on screen.
+func (m *Model) markActivitySeen() {
+	var newest int64
+	for _, it := range m.act.items {
+		newest = max(newest, it.Time)
+	}
+	if newest > m.act.saved {
+		if err := m.c.SetActivitySeen(newest); err != nil {
+			m.setErr("", err)
+			return
+		}
+		m.act.saved = newest
+	}
 }
 
 // refreshActivity re-reads the list while the overlay is open, keeping the
@@ -54,6 +85,7 @@ func (m *Model) refreshActivity() {
 		keep = idOf(a.items[a.sel])
 	}
 	a.items = m.c.Activity(activityLimit)
+	m.markActivitySeen()
 	if had {
 		for i, it := range a.items {
 			if idOf(it) == keep {
@@ -108,7 +140,7 @@ func (m *Model) activityLines(w, h int) []string {
 	}
 	start, end := window(n, a.sel, h-1)
 	for i := start; i < end; i++ {
-		out = append(out, m.activityRow(a.items[i], w, i == a.sel))
+		out = append(out, m.activityRow(a.items[i], w, i == a.sel, a.seen > 0 && a.items[i].Time > a.seen))
 	}
 	return padLines(out, w, h)
 }
@@ -124,7 +156,7 @@ const (
 
 // activityRow is "marker time · #chan · author · preview", one line of
 // exactly w cells. Everything from the cache goes through sanitize.
-func (m *Model) activityRow(it client.ActivityItem, w int, selected bool) string {
+func (m *Model) activityRow(it client.ActivityItem, w int, selected, fresh bool) string {
 	where := m.chanTitle(it.Chan)
 	if w < wideRows {
 		where = truncate(where, narrowChan)
@@ -143,7 +175,13 @@ func (m *Model) activityRow(it client.ActivityItem, w int, selected bool) string
 	text := activityText(it)
 	parts = append(parts, part{text, text})
 
-	head := " " + activityMarker(it) + " "
+	// The first cell is a dim dot for items newer than the last time the
+	// overlay was open.
+	dot, styledDot := " ", " "
+	if fresh {
+		dot, styledDot = "•", m.st.dim.Render("•")
+	}
+	head := dot + activityMarker(it) + " "
 	if selected {
 		var plain []string
 		for _, p := range parts {
@@ -157,7 +195,7 @@ func (m *Model) activityRow(it client.ActivityItem, w int, selected bool) string
 	for _, p := range parts {
 		styled = append(styled, p.styled)
 	}
-	return fit(truncate(head+strings.Join(styled, sep), w), w)
+	return fit(truncate(styledDot+activityMarker(it)+" "+strings.Join(styled, sep), w), w)
 }
 
 // activityMarker is the two-cell reason for an item: @ mention, * highlight

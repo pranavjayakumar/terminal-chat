@@ -160,6 +160,9 @@ func resetCache(q dbtx, serverID []byte) error {
 				return err
 			}
 		}
+		if _, err := q.Exec(`DELETE FROM meta WHERE k = 'activity_seen'`); err != nil {
+			return err
+		}
 	}
 	for _, s := range []string{
 		`DELETE FROM users`, `DELETE FROM chans`, `DELETE FROM msgs`, `DELETE FROM reads WHERE dirty = 0`,

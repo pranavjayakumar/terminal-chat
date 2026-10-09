@@ -342,3 +342,39 @@ func BenchmarkActivity10k(b *testing.B) {
 		}
 	}
 }
+
+func TestActivitySeenPersistsAndOnlyMovesForward(t *testing.T) {
+	c, home := localClient(t)
+	if got := c.ActivitySeen(); got != 0 {
+		t.Fatalf("fresh cache: %d", got)
+	}
+	if err := c.SetActivitySeen(5000); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetActivitySeen(3000); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.ActivitySeen(); got != 5000 {
+		t.Fatalf("moved backwards: %d", got)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	c = reopen(t, home)
+	if got := c.ActivitySeen(); got != 5000 {
+		t.Fatalf("after reopen: %d", got)
+	}
+	// Same server's snapshot reset keeps it; another server's ids mean nothing.
+	if err := resetCache(c.db, serverID); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.ActivitySeen(); got != 5000 {
+		t.Fatalf("after a reset of the same server: %d", got)
+	}
+	if err := resetCache(c.db, []byte("another server")); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.ActivitySeen(); got != 0 {
+		t.Fatalf("after switching servers: %d", got)
+	}
+}

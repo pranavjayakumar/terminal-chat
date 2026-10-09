@@ -47,6 +47,8 @@ type Backend interface {
 	AddHighlight(word string) (bool, error)
 	RemoveHighlight(word string) (bool, error)
 	Activity(limit int) []client.ActivityItem
+	ActivitySeen() int64
+	SetActivitySeen(ms int64) error
 
 	Edit(ctx context.Context, msg uint64, body string) error
 	Delete(ctx context.Context, msg uint64) error
