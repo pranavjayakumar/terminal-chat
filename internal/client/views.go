@@ -195,11 +195,11 @@ func (c *Client) queryMsgs(q string, args ...any) []Message {
 	return out
 }
 
-// outboxMsgs lists outbox entries as messages. Entries already matched to a
-// delivered message are hidden: the real copy is in msgs.
+// outboxMsgs lists outbox entries as messages. An entry matched to a message
+// that is in the cache is hidden: the real copy shows instead.
 func (c *Client) outboxMsgs(where string, args ...any) []Message {
 	rows, err := c.db.Query(`SELECT `+outboxCols+` FROM outbox WHERE `+where+
-		` AND (msg = 0 OR failed != '') ORDER BY id`, args...)
+		` AND (failed != '' OR NOT EXISTS (SELECT 1 FROM msgs WHERE msgs.id = outbox.msg)) ORDER BY id`, args...)
 	if err != nil {
 		return nil
 	}

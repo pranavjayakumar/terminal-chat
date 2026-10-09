@@ -294,15 +294,25 @@ func scanOutbox(sc interface{ Scan(...any) error }) (outboxEntry, error) {
 	return e, err
 }
 
-// matchOutbox hides the oldest unacknowledged outbox copy of a message of
-// ours that just arrived, so the real and pending copies never show
-// together. Only entries already sent at least once can match (an older
-// message with the same text must not hide a queued one); a wrong match
-// among those only hides a pending copy early, and its RES still removes it.
+// matchOutbox hides the pending copy of a message of ours that just arrived
+// (live, replayed or in a snapshot), so the real and pending copies never
+// show together.
+//
+// The wire protocol doesn't echo the send nonce in msg.new, and the EVENT
+// arrives before the RES that names the message id, so the match can't be
+// exact. It doesn't use the body (identical texts, future E2E ciphertext);
+// it relies on the outbox loop sending strictly one entry at a time, oldest
+// first: the only entry that can be on the server unacknowledged is the
+// oldest unfailed one, and only once it has been sent. sent holds last_seq+1
+// from its first send, and a message created by that send has a larger id,
+// so older messages of ours (snapshots, history) can't match. A wrong match
+// (another device of ours posting in the same channel in that window) only
+// hides the entry until its RES, which deletes it on success or unhides it
+// on failure; the RES's msg id is the authoritative mapping.
 func matchOutbox(q dbtx, m proto.Message) error {
-	_, err := q.Exec(`UPDATE outbox SET msg = ? WHERE id = (
-		SELECT id FROM outbox WHERE msg = 0 AND sent = 1 AND failed = '' AND chan = ? AND thread = ? AND body = ?
-		ORDER BY id LIMIT 1)`, m.ID, m.Chan, m.Thread, m.Body)
+	_, err := q.Exec(`UPDATE outbox SET msg = ?1
+		WHERE id = (SELECT id FROM outbox WHERE failed = '' ORDER BY id LIMIT 1)
+		AND msg = 0 AND sent > 0 AND sent <= ?1 AND chan = ?2 AND thread = ?3`, m.ID, m.Chan, m.Thread)
 	return err
 }
 
