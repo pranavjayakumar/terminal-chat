@@ -146,6 +146,21 @@ func (m *Model) queueActivityRefresh() tea.Cmd {
 	return tea.Tick(wait, func(time.Time) tea.Msg { return activityRefreshMsg{} })
 }
 
+// activityWheel moves the selection like the wheel scrolls the log: three
+// rows a notch.
+func (m *Model) activityWheel(b tea.MouseButton) {
+	a := &m.act
+	switch b {
+	case tea.MouseButtonWheelUp:
+		a.sel -= 3
+	case tea.MouseButtonWheelDown:
+		a.sel += 3
+	default:
+		return
+	}
+	a.sel = min(max(a.sel, 0), max(len(a.items)-1, 0))
+}
+
 func (m *Model) activityKey(k tea.KeyMsg) tea.Cmd {
 	a := &m.act
 	page := max(m.dims().bodyH-2, 1)

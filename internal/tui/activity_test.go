@@ -605,3 +605,42 @@ func TestJumpToThreadReplyWaitsForTheHistory(t *testing.T) {
 		}
 	})
 }
+
+// The wheel scrolls what is on top: the overlay's list, not the log under it.
+func TestActivityWheelMovesTheOverlaySelection(t *testing.T) {
+	m, f := newTestModelFake(t, 100, 30)
+	activityFake(f)
+	wheel := func(b tea.MouseButton) {
+		m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: b})
+	}
+	before := m.main.scroll
+	press(m, "alt+a")
+	wheel(tea.MouseButtonWheelDown)
+	if m.act.sel != 3 {
+		t.Fatalf("after wheel down: sel = %d, want 3", m.act.sel)
+	}
+	wheel(tea.MouseButtonWheelDown)
+	wheel(tea.MouseButtonWheelDown)
+	if m.act.sel != 5 { // the last of 6, clamped
+		t.Fatalf("sel = %d, want 5", m.act.sel)
+	}
+	wheel(tea.MouseButtonWheelUp)
+	if m.act.sel != 2 {
+		t.Fatalf("after wheel up: sel = %d, want 2", m.act.sel)
+	}
+	wheel(tea.MouseButtonWheelUp)
+	wheel(tea.MouseButtonWheelUp)
+	if m.act.sel != 0 {
+		t.Fatalf("sel = %d, want 0", m.act.sel)
+	}
+	if m.main.scroll != before {
+		t.Fatalf("the hidden log scrolled: %d → %d", before, m.main.scroll)
+	}
+	checkView(t, m, "wheel")
+	// With the overlay closed the wheel scrolls the log again.
+	press(m, "esc")
+	wheel(tea.MouseButtonWheelUp)
+	if m.main.scroll == before {
+		t.Fatal("the wheel stopped scrolling the log")
+	}
+}

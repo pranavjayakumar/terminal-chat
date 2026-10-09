@@ -791,6 +791,10 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Action != tea.MouseActionPress {
 			return m, nil
 		}
+		if m.mode == modeActivity { // the overlay covers the log: scroll its list
+			m.activityWheel(msg.Button)
+			return m, nil
+		}
 		switch msg.Button {
 		case tea.MouseButtonWheelUp:
 			return m, m.scrollBy(m.focus(), 3)
