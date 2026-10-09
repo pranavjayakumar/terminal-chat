@@ -448,3 +448,19 @@ func TestPeekDecodesWithoutVerifying(t *testing.T) {
 		t.Fatalf("peek oversize: %v", err)
 	}
 }
+
+func TestDeviceCertZeroX25519Rejected(t *testing.T) {
+	signers := allSigners(t)
+	dev := newDevice(t)
+	dev.X25519Pub = [32]byte{}
+	sc, err := NewDeviceCert(signers[0].s, testSID, 42, dev, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sc.VerifyDeviceCert(testSID, signers[0].s.PublicKey().Marshal()); err == nil {
+		t.Fatal("cert with an all-zero X25519 key accepted")
+	}
+	if _, err := PeekDeviceCert(sc); err == nil {
+		t.Fatal("peek accepted an all-zero X25519 key")
+	}
+}

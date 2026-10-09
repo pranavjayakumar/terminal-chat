@@ -32,10 +32,25 @@ import (
 
 func (s *session) e2e() bool { return slices.Contains(s.welcome.Caps, proto.CapE2E) }
 
+// maxUnverifiedPerUser bounds how many unverified objects of each kind the
+// cache keeps per user, so a malicious server can't grow it without limit.
+const maxUnverifiedPerUser = 64
+
+// keepUnverified reports whether an unverified object claiming (sid, user)
+// may be stored: it must name this server and the user must be under the cap.
+func keepUnverified(q dbtx, table string, sid []byte, user uint64) bool {
+	if cur, err := metaBytes(q, "server_id"); err == nil && len(cur) > 0 && !bytes.Equal(cur, sid) {
+		return false
+	}
+	var n int
+	q.QueryRow(`SELECT COUNT(*) FROM `+table+` WHERE user = ?`, user).Scan(&n)
+	return n < maxUnverifiedPerUser
+}
+
 // storeDevice keeps a device.new / snapshot device. Malformed objects are dropped.
 func storeDevice(q dbtx, d proto.Device) error {
 	c, err := identity.PeekDeviceCert(identity.Signed(d.Cert))
-	if err != nil {
+	if err != nil || !keepUnverified(q, "devices", c.ServerID[:], c.User) {
 		return nil
 	}
 	if _, err := q.Exec(`INSERT OR IGNORE INTO devices (cert, dev, user) VALUES (?, ?, ?)`,
@@ -50,7 +65,7 @@ func storeDevice(q dbtx, d proto.Device) error {
 
 func storeEndorse(q dbtx, e proto.Signed) error {
 	ke, err := identity.PeekKeyEndorse(identity.Signed(e))
-	if err != nil {
+	if err != nil || !keepUnverified(q, "device_endorse", ke.ServerID[:], ke.User) {
 		return nil
 	}
 	_, err = q.Exec(`INSERT OR IGNORE INTO device_endorse (endorse, user, new_ssh) VALUES (?, ?, ?)`,
@@ -60,7 +75,7 @@ func storeEndorse(q dbtx, e proto.Signed) error {
 
 func storeRevoke(q dbtx, r proto.Signed) error {
 	dr, err := identity.PeekDeviceRevoke(identity.Signed(r))
-	if err != nil {
+	if err != nil || !keepUnverified(q, "device_revokes", dr.ServerID[:], dr.User) {
 		return nil
 	}
 	_, err = q.Exec(`INSERT OR IGNORE INTO device_revokes (revoke, dev, user) VALUES (?, ?, ?)`,

@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"slices"
 
 	"github.com/skailama/tc/internal/e2ecrypto"
@@ -367,6 +368,9 @@ func (s *Server) opDevicesList(ctx context.Context, a proto.DevicesListArgs) (an
 		lastIncluded = group[0].user
 		group, groupSize = group[:0], 0
 		return true
+	}
+	if a.After > math.MaxInt64 || slices.ContainsFunc(a.Users, func(u uint64) bool { return u > math.MaxInt64 }) {
+		return nil, badRequest("user ids out of range")
 	}
 	err := eachDevice(ctx, s.st.db, a.Users, a.After, func(d deviceRow) bool {
 		if len(group) > 0 && d.user != group[0].user && !flush() {

@@ -335,3 +335,34 @@ func TestDeviceKeysConcurrentFirstUse(t *testing.T) {
 		}
 	}
 }
+
+// A malicious server can't grow the unverified device tables without bound
+// or slip in objects for another server.
+func TestUnverifiedDeviceObjectsBounded(t *testing.T) {
+	db, err := openCache(filepath.Join(t.TempDir(), "cache.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	sid := bytes.Repeat([]byte{7}, 16)
+	if err := setMeta(db, "server_id", sid); err != nil {
+		t.Fatal(err)
+	}
+	if keepUnverified(db, "devices", bytes.Repeat([]byte{8}, 16), 5) {
+		t.Fatal("object for another server kept")
+	}
+	if !keepUnverified(db, "devices", sid, 5) {
+		t.Fatal("object for this server dropped")
+	}
+	for i := range maxUnverifiedPerUser {
+		if _, err := db.Exec(`INSERT INTO devices (cert, dev, user) VALUES (?, ?, 5)`, []byte{byte(i), 1}, []byte{byte(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if keepUnverified(db, "devices", sid, 5) {
+		t.Fatal("per-user cap not enforced")
+	}
+	if !keepUnverified(db, "devices", sid, 6) {
+		t.Fatal("cap leaked to another user")
+	}
+}

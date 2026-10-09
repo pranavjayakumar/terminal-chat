@@ -188,6 +188,9 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
 3. Client trust store `e2e.db`: survives reset; concurrent processes.
 4. Proto+server devices: `e2e1`, device ops/events, snapshot `devs`, limits (protocol-guardian).
 5. Server epochs: `key.rotate` CAS/roster/staleness, `key.fetch`, `key.epoch`, ordering, rate cap.
+   Decision (PR #13 review): `user.disable` does not emit device revokes; instead rosters exclude
+   disabled users and their devices count as revoked for sealing and staleness. All-zero X25519 keys are
+   rejected in certs; clients drop unverified objects for another server_id and keep ≤ 64 per user per kind.
 6. Client bundle logic: verify chain/kc/backlinks, lazy decrypt queue, `key.need/share`; reject bundles with duplicate recipient X25519 keys (one ephemeral + zero nonce per box means a duplicate would reuse key+nonce).
 7. Encrypted send e2e: outbox stores enc once, stale_epoch retry same nonce, DMs epoch 1, self-DM.
 8. Encrypted edit/delete/react, thread_ref, HMAC emoji, local FTS.
