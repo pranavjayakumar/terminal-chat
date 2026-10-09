@@ -1,0 +1,387 @@
+package client
+
+import (
+	"context"
+	"crypto/rand"
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/skailama/tc/internal/proto"
+	"github.com/skailama/tc/internal/sanitize"
+)
+
+// ---- outbox ----
+
+// Send queues a message. It is stored in the outbox (with a fresh nonce) and
+// shown as pending at once; it is sent when online and retried with the same
+// nonce until the server acknowledges it or rejects it for good.
+func (c *Client) Send(ch uint64, body string, thread uint64) error {
+	if ch == 0 || body == "" {
+		return errors.New("send: empty channel or body")
+	}
+	if len(body) > proto.MaxBody {
+		return proto.Errf(proto.ErrTooLarge, "message is over 64 KiB")
+	}
+	nonce := make([]byte, 16)
+	rand.Read(nonce)
+	if _, err := c.db.Exec(`INSERT INTO outbox (nonce, chan, thread, body, time) VALUES (?, ?, ?, ?, ?)`,
+		nonce, ch, thread, body, time.Now().UnixMilli()); err != nil {
+		return fmt.Errorf("queueing message: %w", err)
+	}
+	c.outboxChanged(ch, nil)
+	return nil
+}
+
+// RetryFailed requeues a failed outbox message (same nonce).
+func (c *Client) RetryFailed(local int64) error {
+	return c.editOutbox(`UPDATE outbox SET failed = '', msg = 0 WHERE id = ? AND failed != '' RETURNING chan`, local)
+}
+
+// DiscardFailed drops a failed outbox message.
+func (c *Client) DiscardFailed(local int64) error {
+	return c.editOutbox(`DELETE FROM outbox WHERE id = ? AND failed != '' RETURNING chan`, local)
+}
+
+func (c *Client) editOutbox(q string, local int64) error {
+	var ch uint64
+	if err := c.db.QueryRow(q, local).Scan(&ch); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("no such failed message")
+		}
+		return err
+	}
+	c.outboxChanged(ch, nil)
+	return nil
+}
+
+// outboxChanged notifies the UI, Flush waiters and the sender.
+func (c *Client) outboxChanged(ch uint64, failed *Message) {
+	u := Update{}
+	u.msgs(ch)
+	if failed != nil {
+		u.Failed = []Message{*failed}
+	}
+	c.post(u)
+	c.obMu.Lock()
+	close(c.obChanged)
+	c.obChanged = make(chan struct{})
+	c.obMu.Unlock()
+	select {
+	case c.obKick <- struct{}{}:
+	default:
+	}
+}
+
+// Flush waits until nothing in the outbox is waiting to be sent. It returns
+// an error if some messages were rejected (they stay listed as Failed).
+func (c *Client) Flush(ctx context.Context) error {
+	for {
+		c.obMu.Lock()
+		changed := c.obChanged
+		c.obMu.Unlock()
+		var pending, failed int
+		var reason sql.NullString
+		err := c.db.QueryRow(`SELECT COUNT(*) FILTER (WHERE failed = ''), COUNT(*) FILTER (WHERE failed != ''),
+			MAX(failed) FROM outbox`).Scan(&pending, &failed, &reason)
+		if err != nil {
+			return err
+		}
+		if pending == 0 {
+			if failed > 0 {
+				return fmt.Errorf("%d message(s) not sent: %s", failed, reason.String)
+			}
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-changed:
+		}
+	}
+}
+
+// permanent reports whether a send error won't go away by retrying.
+func permanent(code string) bool {
+	return code != proto.ErrRateLimited && code != proto.ErrInternal
+}
+
+// outboxLoop sends the outbox oldest first, one at a time, which keeps
+// per-channel order. It stops when the session ends; the next session
+// resends whatever is left with the same nonces.
+func (c *Client) outboxLoop(ctx context.Context, s *session) {
+	for {
+		e, err := scanOutbox(c.db.QueryRow(`SELECT ` + outboxCols + ` FROM outbox WHERE failed = '' ORDER BY id LIMIT 1`))
+		if errors.Is(err, sql.ErrNoRows) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-c.obKick:
+			}
+			continue
+		}
+		if err == nil {
+			_, err = c.db.Exec(`UPDATE outbox SET sent = 1 WHERE id = ?`, e.id)
+		}
+		if err == nil {
+			_, err = s.call(ctx, proto.OpSend,
+				proto.SendArgs{Chan: e.chan_, Body: e.body, Nonce: e.nonce, Thread: e.thread}, c.sentHook(e))
+		}
+		var perr *proto.Error
+		switch {
+		case err == nil:
+		case errors.As(err, &perr) && permanent(perr.Code):
+			if _, err := c.db.Exec(`UPDATE outbox SET failed = ?, msg = 0 WHERE id = ?`, sanitize.Line(perr.Error()), e.id); err == nil {
+				e.failed = sanitize.Line(perr.Error())
+				m := e.message(c.Me().ID)
+				c.outboxChanged(e.chan_, &m)
+			}
+		case errors.Is(err, ErrOffline) || ctx.Err() != nil:
+			return
+		default: // rate limited, server hiccup, local DB error
+			t := time.NewTimer(c.timing.retry)
+			select {
+			case <-ctx.Done():
+				t.Stop()
+				return
+			case <-t.C:
+			}
+		}
+	}
+}
+
+// sentHook removes an acknowledged entry on the read goroutine, right after
+// its msg.new event was applied, so the pending copy never coexists with the
+// real one in a published state.
+func (c *Client) sentHook(e outboxEntry) func(proto.Res) error {
+	return func(r proto.Res) error {
+		if !r.OK {
+			return nil
+		}
+		if _, err := c.db.Exec(`DELETE FROM outbox WHERE id = ?`, e.id); err != nil {
+			return err
+		}
+		c.outboxChanged(e.chan_, nil)
+		return nil
+	}
+}
+
+// ---- read markers ----
+
+// MarkRead moves ch's read marker to seq (a message id). It applies locally
+// at once; the server is told when online (now, or after the next sync).
+func (c *Client) MarkRead(ch, seq uint64) error {
+	if err := setRead(c.db, ch, seq, true); err != nil {
+		return err
+	}
+	c.post(Update{Channels: true})
+	c.mu.Lock()
+	s := c.sess
+	c.mu.Unlock()
+	if s != nil {
+		_ = s.fire(proto.OpRead, proto.ReadArgs{Chan: ch, Seq: seq})
+	}
+	return nil
+}
+
+// pushReads sends read markers the server hasn't confirmed yet.
+func (c *Client) pushReads(s *session) {
+	for ch, seq := range c.uintMap(`SELECT chan, seq FROM reads WHERE dirty = 1`) {
+		if s.fire(proto.OpRead, proto.ReadArgs{Chan: ch, Seq: seq}) != nil {
+			return
+		}
+	}
+}
+
+// ---- online-only requests ----
+
+func (c *Client) call(ctx context.Context, op string, args, out any, hook func(proto.Res) error) error {
+	c.mu.Lock()
+	s := c.sess
+	c.mu.Unlock()
+	if s == nil {
+		return ErrOffline
+	}
+	data, err := s.call(ctx, op, args, hook)
+	if err != nil {
+		return err
+	}
+	if out != nil && len(data) > 0 {
+		return proto.Unmarshal(data, out)
+	}
+	return nil
+}
+
+// Edit changes the body of one of our messages.
+func (c *Client) Edit(ctx context.Context, msg uint64, body string) error {
+	return c.call(ctx, proto.OpEdit, proto.EditArgs{Msg: msg, Body: body}, nil, nil)
+}
+
+// Delete deletes a message (ours, or any as admin). Deleting twice is ok.
+func (c *Client) Delete(ctx context.Context, msg uint64) error {
+	return c.call(ctx, proto.OpDelete, proto.MsgArgs{Msg: msg}, nil, nil)
+}
+
+// React adds our emoji reaction.
+func (c *Client) React(ctx context.Context, msg uint64, emoji string) error {
+	return c.call(ctx, proto.OpReact, proto.ReactArgs{Msg: msg, Emoji: emoji}, nil, nil)
+}
+
+// Unreact removes our emoji reaction.
+func (c *Client) Unreact(ctx context.Context, msg uint64, emoji string) error {
+	return c.call(ctx, proto.OpUnreact, proto.ReactArgs{Msg: msg, Emoji: emoji}, nil, nil)
+}
+
+// chanHook caches a channel returned in a RES if no event delivered it
+// (dm.open of an existing DM emits nothing).
+func (c *Client) chanHook(r proto.Res) error {
+	var cr proto.ChanRes
+	if !r.OK || len(r.Data) == 0 || proto.Unmarshal(r.Data, &cr) != nil || cr.Chan.ID == 0 {
+		return nil
+	}
+	err := c.tx(func(tx *sql.Tx) error {
+		if _, ok, err := getChan(tx, cr.Chan.ID); err != nil || ok {
+			return err
+		}
+		return upsertChan(tx, cr.Chan)
+	})
+	if err == nil {
+		c.post(Update{Channels: true})
+	}
+	return err
+}
+
+// CreateChannel creates a public or private channel.
+func (c *Client) CreateChannel(ctx context.Context, name string, private bool, topic string) (proto.Channel, error) {
+	var r proto.ChanRes
+	err := c.call(ctx, proto.OpChanCreate, proto.ChanCreateArgs{Name: name, Private: private, Topic: topic}, &r, c.chanHook)
+	return r.Chan, err
+}
+
+// OpenDM returns (creating if needed) the DM with exactly these other users.
+func (c *Client) OpenDM(ctx context.Context, users []uint64) (proto.Channel, error) {
+	var r proto.ChanRes
+	err := c.call(ctx, proto.OpDMOpen, proto.DMOpenArgs{Users: users}, &r, c.chanHook)
+	return r.Chan, err
+}
+
+// Join joins a public channel.
+func (c *Client) Join(ctx context.Context, ch uint64) error {
+	return c.call(ctx, proto.OpChanJoin, proto.ChanArgs{Chan: ch}, nil, nil)
+}
+
+// Leave leaves a channel.
+func (c *Client) Leave(ctx context.Context, ch uint64) error {
+	return c.call(ctx, proto.OpChanLeave, proto.ChanArgs{Chan: ch}, nil, nil)
+}
+
+// AddMember adds user to ch.
+func (c *Client) AddMember(ctx context.Context, ch, user uint64) error {
+	return c.call(ctx, proto.OpChanAdd, proto.ChanAddArgs{Chan: ch, User: user}, nil, nil)
+}
+
+// SetTopic sets ch's topic.
+func (c *Client) SetTopic(ctx context.Context, ch uint64, topic string) error {
+	return c.call(ctx, proto.OpChanTopic, proto.ChanTopicArgs{Chan: ch, Topic: topic}, nil, nil)
+}
+
+// History fetches up to 100 messages of ch older than before (0 = latest)
+// into the cache; Messages/Thread then include them. more reports whether
+// older ones exist.
+func (c *Client) History(ctx context.Context, ch, before uint64) (more bool, err error) {
+	var r proto.HistoryRes
+	hook := func(res proto.Res) error {
+		var hr proto.HistoryRes
+		if !res.OK || len(res.Data) == 0 || proto.Unmarshal(res.Data, &hr) != nil {
+			return nil
+		}
+		// The RES is ordered after every event we've applied, so its copies
+		// are at least as new as the cache.
+		err := c.tx(func(tx *sql.Tx) error {
+			for _, m := range hr.Msgs {
+				if err := upsertMsg(tx, m, true); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err == nil {
+			c.post(Update{Msgs: map[uint64]bool{ch: true}, Channels: true})
+		}
+		return err
+	}
+	err = c.call(ctx, proto.OpHistory, proto.HistoryArgs{Chan: ch, Before: before, Limit: 100}, &r, hook)
+	return r.More, err
+}
+
+// Search searches messages on the server (ch 0 = everywhere). Results are
+// not cached.
+func (c *Client) Search(ctx context.Context, q string, ch uint64) ([]proto.Message, error) {
+	var r proto.MsgsRes
+	err := c.call(ctx, proto.OpSearch, proto.SearchArgs{Q: q, Chan: ch, Limit: proto.MaxSearch}, &r, nil)
+	return r.Msgs, err
+}
+
+// CreateInvite (admin) returns an invite code: a new-user invite, or with
+// user != 0 an add-key invite for that user.
+func (c *Client) CreateInvite(ctx context.Context, user uint64) (string, error) {
+	var r proto.InviteRes
+	err := c.call(ctx, proto.OpInviteCreate, proto.InviteCreateArgs{User: user}, &r, nil)
+	return r.Code, err
+}
+
+// DisableUser (admin) disables a user and closes their sessions.
+func (c *Client) DisableUser(ctx context.Context, user uint64) error {
+	return c.call(ctx, proto.OpUserDisable, proto.UserArgs{User: user}, nil, nil)
+}
+
+// ---- ephemeral ----
+
+const typingEvery = 3 * time.Second
+
+// SendTyping tells ch's members we're typing; call it on every keystroke,
+// it rate-limits itself to once per 3 s per channel.
+func (c *Client) SendTyping(ch uint64) error {
+	c.mu.Lock()
+	s := c.sess
+	if s == nil {
+		c.mu.Unlock()
+		return ErrOffline
+	}
+	if time.Since(c.typed[ch]) < typingEvery {
+		c.mu.Unlock()
+		return nil
+	}
+	c.typed[ch] = time.Now()
+	c.mu.Unlock()
+	if err := s.send(proto.TEphemeral, proto.Ephemeral{Kind: proto.EphTyping, Chan: ch}); err != nil {
+		return ErrOffline
+	}
+	return nil
+}
+
+// SetAway sets our presence to away (or back to online) with an optional
+// status. It is remembered and re-sent after every reconnect.
+func (c *Client) SetAway(away bool, status string) error {
+	if len(status) > proto.MaxStatus {
+		return proto.Errf(proto.ErrTooLarge, "status is over 128 bytes")
+	}
+	e := proto.Ephemeral{Kind: proto.EphPresence, State: proto.PresOnline, Status: status}
+	if away {
+		e.State = proto.PresAway
+	}
+	c.mu.Lock()
+	c.away = &e
+	if !away && status == "" {
+		c.away = nil
+	}
+	s := c.sess
+	c.presence[c.me.ID] = Presence{State: e.State, Status: status}
+	c.mu.Unlock()
+	c.post(Update{Presence: true})
+	if s != nil {
+		_ = s.send(proto.TEphemeral, e)
+	}
+	return nil
+}

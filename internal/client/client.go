@@ -1,0 +1,357 @@
+// Package client is tc's connection manager and local cache. The TUI and the
+// CLI subcommands talk to the server only through it.
+//
+// Lifecycle:
+//
+//	func Login(ctx context.Context, home, invite, name, keyPath string) (proto.User, error)
+//	func Open(home string) (*Client, error)   // config + cache only, no network
+//	func (c *Client) Run(ctx context.Context) // connect/sync/reconnect until ctx or Close
+//	func (c *Client) Close() error
+//	func DefaultHome() string                 // $TC_HOME or ~/.config/tc
+//
+// State and notifications:
+//
+//	func (c *Client) Updates() <-chan Update  // coalesced; closed by Close
+//	func (c *Client) Status() Status
+//	func (c *Client) Me() proto.User
+//
+// Reads (local cache, work offline):
+//
+//	func (c *Client) Channels() []ChannelView
+//	func (c *Client) Channel(id uint64) (ChannelView, bool)
+//	func (c *Client) Messages(ch uint64, limit int) []Message // latest top-level + pending
+//	func (c *Client) Thread(root uint64) []Message            // root + replies + pending
+//	func (c *Client) User(id uint64) proto.User
+//	func (c *Client) Users() []proto.User
+//	func (c *Client) TypingUsers(ch uint64) []uint64
+//	func (c *Client) Presence(user uint64) Presence
+//
+// Writes:
+//
+//	func (c *Client) Send(ch uint64, body string, thread uint64) error // outbox, works offline
+//	func (c *Client) Flush(ctx context.Context) error                   // wait until the outbox has nothing left to send
+//	func (c *Client) RetryFailed(local int64) error
+//	func (c *Client) DiscardFailed(local int64) error
+//	func (c *Client) MarkRead(ch, seq uint64) error                     // local now, server best-effort
+//
+// Online-only (return ErrOffline unless Status().State == Online):
+//
+//	Edit(ctx, msg, body) error; Delete(ctx, msg) error
+//	React(ctx, msg, emoji) error; Unreact(ctx, msg, emoji) error
+//	CreateChannel(ctx, name, private, topic) (proto.Channel, error)
+//	Join(ctx, ch) error; Leave(ctx, ch) error; AddMember(ctx, ch, user) error
+//	SetTopic(ctx, ch, topic) error; OpenDM(ctx, users) (proto.Channel, error)
+//	History(ctx, ch, before) (more bool, err error)  // older messages into the cache
+//	Search(ctx, q, ch) ([]proto.Message, error)
+//	CreateInvite(ctx, user) (string, error); DisableUser(ctx, user) error
+//	SendTyping(ch) error; SetAway(away bool, status string) error
+//
+// Server-side refusals are returned as *proto.Error (check Code).
+package client
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/skailama/tc/internal/proto"
+	"github.com/skailama/tc/internal/sanitize"
+)
+
+var (
+	// ErrOffline means the request needs a live, synced connection.
+	ErrOffline = errors.New("offline")
+	// ErrNotLoggedIn means Home has no config.json.
+	ErrNotLoggedIn = errors.New("not logged in (run: tc login <invite>)")
+)
+
+// ByeError is a BYE received from the server.
+type ByeError struct{ Code, Msg string }
+
+func (e *ByeError) Error() string {
+	if e.Msg == "" {
+		return "server closed connection: " + sanitize.Line(e.Code)
+	}
+	return "server closed connection: " + sanitize.Line(e.Code) + ": " + sanitize.Line(e.Msg)
+}
+
+// State is the connection state.
+type State int
+
+const (
+	Offline State = iota
+	Connecting
+	Syncing
+	Online
+)
+
+func (s State) String() string {
+	return [...]string{"offline", "connecting", "syncing", "online"}[s]
+}
+
+// Status describes the connection. Stopped means Run gave up for good
+// (revoked, auth failure, pin mismatch) and Err says why.
+type Status struct {
+	State     State
+	Err       string
+	Transport string // "quic" or "tcp" while connected
+	Stopped   bool
+}
+
+// Presence is a user's last known presence; State is "" when unknown.
+type Presence struct{ State, Status string }
+
+// Config is Home/config.json.
+type Config struct {
+	Addr    string `json:"addr"`
+	Pin     string `json:"pin"`
+	KeyPath string `json:"key_path,omitempty"`
+	UserID  uint64 `json:"user_id"`
+	Name    string `json:"name"`
+}
+
+// Client owns one user's connection and cache. All methods are safe for
+// concurrent use.
+type Client struct {
+	home string
+	cfg  Config
+	db   *sql.DB
+	// procSeq is the highest event seq this process has handled. Only the
+	// read goroutine touches it.
+	procSeq uint64
+	cancel  context.CancelFunc
+	ctx     context.Context // cancelled by Close
+
+	mu           sync.Mutex
+	status       Status
+	sess         *session // set only while Online
+	me           proto.User
+	users        map[uint64]proto.User
+	typing       map[uint64]map[uint64]time.Time
+	typingTimers map[uint64]*time.Timer
+	presence     map[uint64]Presence
+	away         *proto.Ephemeral // our own presence to restore after reconnect
+	typed        map[uint64]time.Time
+	runDone      chan struct{}
+
+	updMu     sync.Mutex
+	updClosed bool
+	updates   chan Update
+
+	obKick    chan struct{}
+	obMu      sync.Mutex
+	obChanged chan struct{} // closed and replaced on every outbox change
+
+	running atomic.Bool
+	timing  timing
+}
+
+// timing holds the protocol's timers; tests shrink them.
+type timing struct {
+	pingIdle, recvTimeout, tick   time.Duration
+	backoffMin, backoffMax        time.Duration
+	dial, handshake, retry, type_ time.Duration
+}
+
+var defaultTiming = timing{
+	pingIdle: 20 * time.Second, recvTimeout: 45 * time.Second, tick: time.Second,
+	backoffMin: 250 * time.Millisecond, backoffMax: 30 * time.Second,
+	dial: 15 * time.Second, handshake: 30 * time.Second, retry: 2 * time.Second,
+	type_: 6 * time.Second,
+}
+
+// DefaultHome is $TC_HOME, else ~/.config/tc.
+func DefaultHome() string {
+	if h := os.Getenv("TC_HOME"); h != "" {
+		return h
+	}
+	if d, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(d, ".config", "tc")
+	}
+	return ".tc"
+}
+
+func homeOr(home string) string {
+	if home == "" {
+		return DefaultHome()
+	}
+	return home
+}
+
+// Open loads config and cache from home ("" = DefaultHome). It never touches
+// the network; call Run for that.
+func Open(home string) (*Client, error) {
+	home = homeOr(home)
+	b, err := os.ReadFile(filepath.Join(home, "config.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, ErrNotLoggedIn
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading config: %w", err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing config: %w", err)
+	}
+	if cfg.Addr == "" || cfg.Pin == "" || cfg.UserID == 0 {
+		return nil, ErrNotLoggedIn
+	}
+	db, err := openCache(filepath.Join(home, "cache.db"))
+	if err != nil {
+		return nil, err
+	}
+	users, err := loadUsers(db)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("loading cache: %w", err)
+	}
+	c := &Client{
+		home: home, cfg: cfg, db: db, users: users,
+		typing: map[uint64]map[uint64]time.Time{}, typingTimers: map[uint64]*time.Timer{}, presence: map[uint64]Presence{},
+		typed:   map[uint64]time.Time{},
+		updates: make(chan Update, 1), obKick: make(chan struct{}, 1),
+		obChanged: make(chan struct{}), timing: defaultTiming,
+	}
+	c.ctx, c.cancel = context.WithCancel(context.Background())
+	c.me = users[cfg.UserID]
+	if c.me.ID == 0 {
+		c.me = proto.User{ID: cfg.UserID, Name: cfg.Name}
+	}
+	return c, nil
+}
+
+// Close stops Run, waits for it, and closes the cache and Updates channel.
+func (c *Client) Close() error {
+	c.cancel()
+	c.mu.Lock()
+	done := c.runDone
+	c.mu.Unlock()
+	if done != nil {
+		<-done
+	}
+	c.updMu.Lock()
+	if !c.updClosed {
+		c.updClosed = true
+		close(c.updates)
+	}
+	c.updMu.Unlock()
+	return c.db.Close()
+}
+
+// Config returns the loaded configuration.
+func (c *Client) Config() Config { return c.cfg }
+
+// Status is the current connection status.
+func (c *Client) Status() Status {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.status
+}
+
+func (c *Client) setStatus(s Status) {
+	c.mu.Lock()
+	changed := c.status != s
+	c.status = s
+	c.mu.Unlock()
+	if changed {
+		c.post(Update{Status: true})
+	}
+}
+
+// Me is the logged-in user.
+func (c *Client) Me() proto.User {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.me
+}
+
+// ---- updates ----
+
+// Update says what changed since the previous Update was received. Updates
+// coalesce: if the consumer is slow, several changes merge into one, so
+// re-read whatever the flags point at rather than expecting one Update per
+// change.
+type Update struct {
+	Status   bool
+	Channels bool // channel list, membership, topics, unread or mention state
+	Users    bool
+	Presence bool
+	Reset    bool            // the cache was replaced by a snapshot: reload everything
+	Msgs     map[uint64]bool // channels whose messages (incl. threads and pending) changed
+	Typing   map[uint64]bool // channels whose typing set changed
+	// New lists messages that arrived via msg.new (replay or live, own
+	// included), oldest first, at most maxNew. For notifications and `tc tail`.
+	New []proto.Message
+	// Failed lists outbox messages that the server permanently rejected.
+	Failed []Message
+}
+
+const maxNew = 256
+
+func (u *Update) msgs(ch uint64) {
+	if u.Msgs == nil {
+		u.Msgs = map[uint64]bool{}
+	}
+	u.Msgs[ch] = true
+}
+
+func (u Update) empty() bool {
+	return !u.Status && !u.Channels && !u.Users && !u.Presence && !u.Reset &&
+		len(u.Msgs) == 0 && len(u.Typing) == 0 && len(u.New) == 0 && len(u.Failed) == 0
+}
+
+func (u Update) merge(v Update) Update {
+	u.Status = u.Status || v.Status
+	u.Channels = u.Channels || v.Channels
+	u.Users = u.Users || v.Users
+	u.Presence = u.Presence || v.Presence
+	u.Reset = u.Reset || v.Reset
+	for k := range v.Msgs {
+		u.msgs(k)
+	}
+	for k := range v.Typing {
+		if u.Typing == nil {
+			u.Typing = map[uint64]bool{}
+		}
+		u.Typing[k] = true
+	}
+	u.New = append(u.New, v.New...)
+	if len(u.New) > maxNew {
+		u.New = append([]proto.Message(nil), u.New[len(u.New)-maxNew:]...)
+	}
+	u.Failed = append(u.Failed, v.Failed...)
+	if len(u.Failed) > maxNew {
+		u.Failed = append([]Message(nil), u.Failed[len(u.Failed)-maxNew:]...)
+	}
+	return u
+}
+
+// Updates delivers change notifications. The channel has capacity one and
+// pending changes are merged into the buffered value, so the client never
+// blocks on a slow UI. Closed by Close.
+func (c *Client) Updates() <-chan Update { return c.updates }
+
+func (c *Client) post(u Update) {
+	if u.empty() {
+		return
+	}
+	c.updMu.Lock()
+	defer c.updMu.Unlock()
+	if c.updClosed {
+		return
+	}
+	select {
+	case old := <-c.updates:
+		u = old.merge(u)
+	default:
+	}
+	// Only post sends, under updMu, and we just emptied the buffer.
+	c.updates <- u
+}
