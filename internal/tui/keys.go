@@ -30,6 +30,7 @@ const (
 	kSelReply   = "r"
 	kSelReact   = "+"
 	kSelCopy    = "y"
+	kSelView    = "v"
 	kConfirmYes = "y"
 )
 
@@ -54,7 +55,7 @@ var helpLines = [][2]string{
 	{"End, Ctrl-End", "jump to newest"},
 	{"↑ (empty input)", "select messages"},
 	{"  e  d  r", "edit, delete, reply in thread"},
-	{"  +  y", "react, copy"},
+	{"  +  y  v", "react, copy, view full message (scroll sideways)"},
 	{"  PgUp/PgDn  Home/End", "move by page / to ends"},
 	{"  r / d on failed", "retry / discard"},
 	{"Ctrl-U", "clear draft"},
