@@ -384,6 +384,14 @@ func (c *Client) CreateChannel(ctx context.Context, name string, private bool, t
 func (c *Client) CreateEncryptedChannel(ctx context.Context, name, topic string) (proto.Channel, error) {
 	var r proto.ChanRes
 	err := c.call(ctx, proto.OpChanCreate, proto.ChanCreateArgs{Name: name, Private: true, Topic: topic, E2E: true}, &r, c.chanHook)
+	if err == nil && !r.Chan.E2E {
+		return r.Chan, errors.New("the server created the channel without encryption")
+	}
+	if err == nil {
+		if sid, ok := c.cacheServerID(); ok {
+			_ = c.trust.MarkChannelE2E(sid, r.Chan.ID) // our choice: sticky from now on
+		}
+	}
 	c.kickE2E()
 	return r.Chan, err
 }

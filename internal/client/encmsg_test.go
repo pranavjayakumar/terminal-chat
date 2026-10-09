@@ -530,6 +530,16 @@ func TestEncSearchScope(t *testing.T) {
 	}
 }
 
+// A channel we asked to be encrypted must come back encrypted.
+func TestEncCreateRefusesPlaintextAnswer(t *testing.T) {
+	d := newEncDM(t, proto.Snapshot{})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := d.c.CreateEncryptedChannel(ctx, "sec", ""); err == nil || !strings.Contains(err.Error(), "without encryption") {
+		t.Fatalf("create: %v", err)
+	}
+}
+
 // Edits of uncached messages and reminders into encrypted channels are
 // refused before anything goes out.
 func TestEncEditAndRemindRefused(t *testing.T) {
