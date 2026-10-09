@@ -1,5 +1,7 @@
 # tc — terminal chat
 
+> **Resuming work? Read [docs/STATUS.md](docs/STATUS.md) first** — current state, resume checklist, how we work.
+
 A lightweight team chat that lives in the terminal (and in herdr panes).
 One Go binary is both client (`tc`) and server (`tc server`). Mac + Linux.
 
@@ -85,9 +87,9 @@ Local two-user test: `make dev`, then in two panes
 ## Milestones
 
 - **M0** scaffold, spec, agents, CI  ✓
-- **M1** core text chat: server, auth, channels, DMs, sync, reconnect, TUI  ← current
-- **M2** herdr, notifications, webhooks, display names, `tc notify`, activity view (docs/ROADMAP.md)
-- **M3** end-to-end encryption for DMs + private channels (docs/E2E.md)
+- **M1** core text chat: server, auth, channels, DMs, sync, reconnect, TUI  ✓
+- **M2** herdr, notifications, webhooks, display names, `tc notify`, activity view (docs/ROADMAP.md)  ← in progress
+- **M3** end-to-end encryption for DMs + private channels (docs/E2E.md)  ← in progress (steps 1–3 done)
 - **M4** zero-setup onboarding: install-command invites, `tc join`, brew, `tc update`
 - **M5** voice huddles (QUIC datagrams, Opus)
 
