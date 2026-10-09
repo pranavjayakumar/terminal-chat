@@ -61,15 +61,64 @@ func migrateEpochs(db *sql.DB) error {
 		{"epochs", "state", `BLOB`},
 		{"devices", "revoked_seq", `INTEGER`},
 		{"messages", "enc", `BLOB`}, // §13.4; never in msg_fts (body is "" then)
+		{"messages", "mid", `BLOB`}, // e2ecrypto.MID(enc): one message per enc and channel
 	} {
 		if err := addColumn(db, c[0], c[1], c[2]); err != nil {
 			return err
 		}
 	}
+	if err := backfillMids(db); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS messages_mid ON messages(chan, mid) WHERE mid IS NOT NULL`); err != nil {
+		return fmt.Errorf("creating messages_mid: %w", err)
+	}
 	if err := migrateCreator(db); err != nil {
 		return err
 	}
 	return backfillSeqs(db)
+}
+
+// backfillMids fills messages.mid for encrypted messages stored before it
+// existed. A replayed enc (a second row with the same mid in a channel)
+// keeps NULL, so the unique index can still be built.
+func backfillMids(db *sql.DB) error {
+	rows, err := db.Query(`SELECT id, chan, enc FROM messages WHERE enc IS NOT NULL AND mid IS NULL ORDER BY id`)
+	if err != nil {
+		return err
+	}
+	type row struct {
+		id, ch uint64
+		mid    e2ecrypto.MsgID
+	}
+	var todo []row
+	for rows.Next() {
+		var r row
+		var enc []byte
+		if err := rows.Scan(&r.id, &r.ch, &enc); err != nil {
+			rows.Close()
+			return err
+		}
+		r.mid = e2ecrypto.MID(enc)
+		todo = append(todo, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil || len(todo) == 0 {
+		return err
+	}
+	seen := map[[2]any]bool{}
+	for _, r := range todo {
+		k := [2]any{r.ch, r.mid}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		if _, err := db.Exec(`UPDATE messages SET mid = ? WHERE id = ? AND NOT EXISTS
+			(SELECT 1 FROM messages WHERE chan = ? AND mid = ?)`, r.mid[:], r.id, r.ch, r.mid[:]); err != nil {
+			return fmt.Errorf("backfilling messages.mid: %w", err)
+		}
+	}
+	return nil
 }
 
 // migrateCreator adds channels.creator, backfilled from each channel's

@@ -121,6 +121,9 @@ func TestEncryptedSend(t *testing.T) {
 	if r2.Msg != r1.Msg {
 		t.Fatalf("retry made message %d, want %d", r2.Msg, r1.Msg)
 	}
+	// The same enc under a new nonce is a replay, not a second message.
+	wantErr(t, "replayed enc", send(alice, proto.SendArgs{Chan: ch.ID, Nonce: newNonce(), Enc: enc}),
+		proto.ErrConflict, "already sent")
 	wantErr(t, "same nonce, other enc", send(alice, proto.SendArgs{Chan: ch.ID, Nonce: nonce, Enc: encFor(t, sid, a1, ch.ID, 1, e1, "secret")}),
 		proto.ErrConflict, "")
 

@@ -273,6 +273,20 @@ func (s *Server) send(ctx context.Context, u proto.User, a proto.SendArgs, hook 
 				return nil, err
 			}
 		}
+		var mid []byte
+		if a.Enc != nil {
+			// One message per enc and channel: a replay under a new nonce is
+			// refused (a retry with the original nonce was found above).
+			m := e2ecrypto.MID(a.Enc)
+			mid = m[:]
+			var n int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE chan = ? AND mid = ?`, a.Chan, mid).Scan(&n); err != nil {
+				return nil, err
+			}
+			if n > 0 {
+				return nil, proto.Errf(proto.ErrConflict, "this encrypted message was already sent")
+			}
+		}
 		if a.Thread != 0 {
 			var root uint64
 			err := tx.QueryRowContext(ctx, `SELECT thread FROM messages WHERE id = ? AND chan = ?`, a.Thread, a.Chan).Scan(&root)
@@ -298,8 +312,8 @@ func (s *Server) send(ctx context.Context, u proto.User, a proto.SendArgs, hook 
 		if err := patchEventData(ctx, tx, &ev, m); err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO messages (id, chan, author, body, thread, time, nonce, enc) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			m.ID, m.Chan, m.Author, m.Body, m.Thread, m.Time, a.Nonce, a.Enc); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO messages (id, chan, author, body, thread, time, nonce, enc, mid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			m.ID, m.Chan, m.Author, m.Body, m.Thread, m.Time, a.Nonce, a.Enc, mid); err != nil {
 			return nil, err
 		}
 		res.Msg = m.ID
