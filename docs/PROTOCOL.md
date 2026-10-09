@@ -474,7 +474,8 @@ Server rules (honest case):
   server stores and forwards it but does not register `new_ssh` as a login key.
   `dev` already registered → `conflict`, except an exact repeat of the
   same cert and endorse by the same user, which is ok `{seq: 0}` and
-  emits nothing. An `x25519` or `ed25519` key already used by any device →
+  emits nothing. A low-order `x25519` point (any encoding; its shared secret with every
+  key is zero) is malformed → `bad_request`. An `x25519` or `ed25519` key already used by any device →
   `conflict` (clients must check this too: a shared X25519 key would reuse
   key and nonce in epoch boxes). A user may have at most 8 non-revoked devices and register
   at most 32 ever (`bad_request`). Emits `device.new`.
