@@ -520,7 +520,8 @@ eh = H(b)[:16]        ChainHash = H(b) (the next bundle's prev)
 
 - `prev` = ChainHash of the previous epoch's `b`; all zero for epoch 1.
   `roster` is sorted ascending with no duplicates and non-empty; `boxes` is
-  non-empty, at most 128, with distinct `dev`. Epoch 1 has no `back`.
+  non-empty, at most 128, with distinct `dev`. `back` is REQUIRED for epoch
+  > 1 and MUST be absent for epoch 1 (every e2e channel shares history).
   Anything else (including non-canonical msgpack, §13.1) is malformed.
 - `kc = HMAC-SHA256(K, "tc-kc-v1" || server_id || chan || epoch)`; one
   ephemeral X25519 key `eph` per bundle; per box

@@ -38,6 +38,14 @@ func bundle(t *testing.T, by *e2ecrypto.DeviceKeys, sid e2ecrypto.ServerID, ch u
 	if prev != nil {
 		p.Prev = e2ecrypto.ChainHash(prev.B)
 	}
+	if epoch > 1 {
+		// The server can't open backlinks; any K_prev will do.
+		pk, err := e2ecrypto.NewEpochKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.PrevK = &pk
+	}
 	for _, d := range to {
 		p.Recipients = append(p.Recipients, identity.Recipient{Dev: d.ID, X25519: d.X25519Pub})
 	}
@@ -263,6 +271,10 @@ func TestKeyRotateRejects(t *testing.T) {
 
 	alice.rotate(ch.ID, ok1)
 	bob.keyEpoch()
+	// Epoch 2 must carry a backlink.
+	noBack := rawOf(t, bundle(t, a1, sid, ch.ID, 2, &ok1, roster, a1, b1))
+	noBack.Back = nil
+	rot(alice, ch.ID, signRaw(t, a1, noBack), proto.ErrBadRequest)
 	// CAS once the chain has a head: replay, skip, wrong prev.
 	rot(alice, ch.ID, ok1, proto.ErrStaleEpoch)
 	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 1, nil, roster, a1, b1), proto.ErrStaleEpoch)
@@ -278,35 +290,59 @@ func TestKeyRotateRejects(t *testing.T) {
 	alice.rotate(ch.ID, bundle(t, a1, sid, ch.ID, 2, &ok1, roster, a1, b1))
 }
 
+// rawBox and rawBundleB mirror EpochBundle.b, to sign bundles that
+// identity.NewEpochBundle refuses to build.
+type rawBox struct {
+	Dev []byte `msgpack:"dev"`
+	CT  []byte `msgpack:"ct"`
+}
+
+type rawBundleB struct {
+	V        uint32   `msgpack:"v"`
+	ServerID []byte   `msgpack:"server_id"`
+	Chan     uint64   `msgpack:"chan"`
+	Epoch    uint32   `msgpack:"epoch"`
+	Prev     []byte   `msgpack:"prev"`
+	Roster   []uint64 `msgpack:"roster"`
+	By       []byte   `msgpack:"by"`
+	Time     int64    `msgpack:"time"`
+	KC       []byte   `msgpack:"kc"`
+	Eph      []byte   `msgpack:"eph"`
+	Boxes    []rawBox `msgpack:"boxes"`
+	Back     []byte   `msgpack:"back,omitempty"`
+}
+
+// rawOf decodes a real bundle's b for tampering.
+func rawOf(t *testing.T, s proto.Signed) rawBundleB {
+	t.Helper()
+	var w rawBundleB
+	if err := proto.Unmarshal(s.B, &w); err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
+// signRaw signs any b as an epoch bundle by device by.
+func signRaw(t *testing.T, by *e2ecrypto.DeviceKeys, w any) proto.Signed {
+	t.Helper()
+	raw := proto.MustRaw(w)
+	sig, err := e2ecrypto.SignEd25519(by.Ed25519, identity.CtxEpoch, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return proto.Signed{B: raw, Sig: sig}
+}
+
 // hugeBundle is a well-formed, signed bundle with 129 boxes.
 func hugeBundle(t *testing.T, by *e2ecrypto.DeviceKeys, sid e2ecrypto.ServerID, ch uint64) proto.Signed {
 	t.Helper()
-	type box struct {
-		Dev []byte `msgpack:"dev"`
-		CT  []byte `msgpack:"ct"`
-	}
-	type b struct {
-		V        uint32   `msgpack:"v"`
-		ServerID []byte   `msgpack:"server_id"`
-		Chan     uint64   `msgpack:"chan"`
-		Epoch    uint32   `msgpack:"epoch"`
-		Prev     []byte   `msgpack:"prev"`
-		Roster   []uint64 `msgpack:"roster"`
-		By       []byte   `msgpack:"by"`
-		Time     int64    `msgpack:"time"`
-		KC       []byte   `msgpack:"kc"`
-		Eph      []byte   `msgpack:"eph"`
-		Boxes    []box    `msgpack:"boxes"`
-	}
-	w := b{V: 1, ServerID: sid[:], Chan: ch, Epoch: 1, Prev: make([]byte, 32), Roster: []uint64{1},
+	w := rawBundleB{V: 1, ServerID: sid[:], Chan: ch, Epoch: 1, Prev: make([]byte, 32), Roster: []uint64{1},
 		By: by.ID[:], KC: make([]byte, 32), Eph: make([]byte, 32)}
 	for i := range proto.MaxBundleBoxes + 1 {
-		w.Boxes = append(w.Boxes, box{Dev: append(make([]byte, 14), byte(i>>8), byte(i)), CT: make([]byte, 48)})
+		w.Boxes = append(w.Boxes, rawBox{Dev: append(make([]byte, 14), byte(i>>8), byte(i)), CT: make([]byte, 48)})
 	}
-	raw := proto.MustRaw(w)
-	sig, _ := e2ecrypto.SignEd25519(by.Ed25519, identity.CtxEpoch, raw)
-	s := proto.Signed{B: raw, Sig: sig}
-	if len(raw)+len(sig) > proto.MaxBundle {
+	s := signRaw(t, by, w)
+	if len(s.B)+len(s.Sig) > proto.MaxBundle {
 		t.Fatal("huge bundle over the byte limit; it should fail on the box count")
 	}
 	return s

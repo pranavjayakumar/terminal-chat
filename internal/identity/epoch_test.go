@@ -101,6 +101,17 @@ func TestEpochBundleRoundTrip(t *testing.T) {
 	if k, err := e2ecrypto.OpenBack(p2.K, testSID, 7, 2, eb2.Back[:]); err != nil || k != p.K {
 		t.Fatalf("backlink: %v", err)
 	}
+	// The backlink is mandatory after epoch 1 and impossible on it.
+	p3 := testParams(t, a)
+	p3.Epoch, p3.Prev = 2, e2ecrypto.ChainHash(s.B)
+	if _, err := NewEpochBundle(rand.Reader, a, p3); !errors.Is(err, e2ecrypto.ErrMalformed) {
+		t.Fatalf("epoch 2 without PrevK: %v", err)
+	}
+	p4 := testParams(t, a)
+	p4.PrevK = &p.K
+	if _, err := NewEpochBundle(rand.Reader, a, p4); !errors.Is(err, e2ecrypto.ErrMalformed) {
+		t.Fatalf("epoch 1 with PrevK: %v", err)
+	}
 }
 
 func TestEpochBundleVerifyFailures(t *testing.T) {
@@ -142,7 +153,7 @@ func TestEpochBundleDecodeRejects(t *testing.T) {
 		ct := make([]byte, e2ecrypto.BoxCTSize)
 		return epochBundleB{V: 1, ServerID: testSID[:], Chan: 7, Epoch: 2, Prev: make([]byte, 32), Roster: []uint64{1, 2},
 			By: a.ID[:], Time: 1, KC: make([]byte, 32), Eph: make([]byte, 32),
-			Boxes: []epochBoxB{{Dev: a.ID[:], CT: ct}, {Dev: b.ID[:], CT: ct}}}
+			Boxes: []epochBoxB{{Dev: a.ID[:], CT: ct}, {Dev: b.ID[:], CT: ct}}, Back: make([]byte, e2ecrypto.BackSize)}
 	}
 	if _, err := signBundleB(t, a, good()).VerifyEpochBundle(testSID, a.Ed25519Pub); err != nil {
 		t.Fatalf("baseline rejected: %v", err)
@@ -158,7 +169,8 @@ func TestEpochBundleDecodeRejects(t *testing.T) {
 		"version":         {func() any { w := good(); w.V = 2; return w }(), e2ecrypto.ErrVersion},
 		"epoch 0":         {func() any { w := good(); w.Epoch = 0; return w }(), e2ecrypto.ErrMalformed},
 		"epoch 1 prev":    {func() any { w := good(); w.Epoch = 1; w.Prev[0] = 1; return w }(), e2ecrypto.ErrMalformed},
-		"epoch 1 back":    {func() any { w := good(); w.Epoch = 1; w.Back = make([]byte, e2ecrypto.BackSize); return w }(), e2ecrypto.ErrMalformed},
+		"epoch 1 back":    {func() any { w := good(); w.Epoch = 1; return w }(), e2ecrypto.ErrMalformed},
+		"epoch 2 no back": {func() any { w := good(); w.Back = nil; return w }(), e2ecrypto.ErrMalformed},
 		"short back":      {func() any { w := good(); w.Back = make([]byte, 10); return w }(), e2ecrypto.ErrMalformed},
 		"short prev":      {func() any { w := good(); w.Prev = w.Prev[:31]; return w }(), e2ecrypto.ErrMalformed},
 		"short kc":        {func() any { w := good(); w.KC = nil; return w }(), e2ecrypto.ErrMalformed},

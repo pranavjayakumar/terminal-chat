@@ -80,8 +80,8 @@ type Recipient struct {
 	X25519 [32]byte
 }
 
-// EpochParams describe a new bundle. PrevK is required (for the backlink)
-// when Epoch > 1 and History is true.
+// EpochParams describe a new bundle. PrevK (for the backlink) is required
+// when Epoch > 1 and must be nil for epoch 1.
 type EpochParams struct {
 	ServerID   e2ecrypto.ServerID
 	Chan       uint64
@@ -100,7 +100,7 @@ func NewEpochBundle(rand io.Reader, by *e2ecrypto.DeviceKeys, p EpochParams) (Si
 	if by == nil {
 		return Signed{}, e2ecrypto.ErrBadKey
 	}
-	if p.Epoch == 0 || len(p.Recipients) == 0 || len(p.Recipients) > MaxBundleBoxes {
+	if p.Epoch == 0 || len(p.Recipients) == 0 || len(p.Recipients) > MaxBundleBoxes || (p.Epoch > 1) != (p.PrevK != nil) {
 		return Signed{}, e2ecrypto.ErrMalformed
 	}
 	keys := map[e2ecrypto.DevID][32]byte{}
@@ -127,7 +127,7 @@ func NewEpochBundle(rand io.Reader, by *e2ecrypto.DeviceKeys, p EpochParams) (Si
 		}
 		w.Boxes = append(w.Boxes, epochBoxB{Dev: r.Dev[:], CT: ct[:]})
 	}
-	if p.PrevK != nil && p.Epoch > 1 {
+	if p.PrevK != nil {
 		back, err := e2ecrypto.SealBack(rand, p.K, *p.PrevK, p.ServerID, p.Chan, p.Epoch)
 		if err != nil {
 			return Signed{}, err
@@ -226,7 +226,9 @@ func decodeEpochBundle(b []byte) (EpochBundle, error) {
 	if eb.Epoch == 0 || len(eb.Roster) == 0 || len(w.Boxes) == 0 {
 		return EpochBundle{}, e2ecrypto.ErrMalformed
 	}
-	if eb.Epoch == 1 && (eb.Prev != [32]byte{} || w.Back != nil) {
+	// Every e2e channel shares history (docs/E2E.md): epoch n > 1 always
+	// links back to K_{n-1}, and epoch 1 has nothing to link to.
+	if eb.Epoch == 1 && (eb.Prev != [32]byte{} || w.Back != nil) || eb.Epoch > 1 && w.Back == nil {
 		return EpochBundle{}, e2ecrypto.ErrMalformed
 	}
 	for i := 1; i < len(eb.Roster); i++ {
