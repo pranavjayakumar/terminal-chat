@@ -99,13 +99,22 @@ func (s *skSigner) Sign(r io.Reader, data []byte) (*ssh.Signature, error) {
 	return sig, nil
 }
 
-func signerFromKey(t *testing.T, k crypto.PrivateKey) ssh.Signer {
+func signerFromKey(t testing.TB, k crypto.PrivateKey) ssh.Signer {
 	t.Helper()
 	s, err := ssh.NewSignerFromKey(k)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return s
+}
+
+func ed25519Key(t testing.TB) ed25519.PrivateKey {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return priv
 }
 
 // agentSigner adds k to an in-memory keyring and returns the signer an agent
@@ -133,7 +142,7 @@ type namedSigner struct {
 
 func allSigners(t *testing.T) []namedSigner {
 	t.Helper()
-	_, edPriv, _ := ed25519.GenerateKey(rand.Reader)
+	edPriv := ed25519Key(t)
 	ec := func(c elliptic.Curve) *ecdsa.PrivateKey {
 		k, err := ecdsa.GenerateKey(c, rand.Reader)
 		if err != nil {
