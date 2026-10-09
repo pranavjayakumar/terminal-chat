@@ -234,6 +234,21 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    rate-limited event so offline devices get keys; TOFU on the first valid cert in arrival order is accepted
    until invite-anchored pins (M4).
 7. Encrypted send e2e: outbox stores enc once, stale_epoch retry same nonce, DMs epoch 1, self-DM.
+   Decisions (step 7): Plain = `{t: "msg", ts, body, thread_ref?}`; `thread_ref` = the root's mid, or 16
+   zero bytes for a plaintext (legacy) root. "Same nonce" on stale_epoch = same send nonce AND same enc
+   nonce (safe: the epoch key differs; same epoch → identical bytes). A message is encrypted at `Send`
+   when the verified head's K is here (offline too), else by the outbox before the first send; only a
+   stale_epoch re-encrypts (at most twice in a row, then retry later), never a reconnect, so a lost RES
+   finds its bytes by nonce. The sender rotates first when there's no bundle (DM member / creator) or the
+   roster changed, and after a stale_epoch at the server's current epoch (e.g. a boxed device was
+   revoked). No K → failed "no key yet — waiting for a member" + key.need, requeued when K arrives.
+   Receivers: undecidable messages (no K, unknown device, thread root not cached) wait as ciphertext and
+   are re-judged by the e2e worker; invalid ones are never shown; first mid wins. Plaintext in an e2e
+   channel is legacy below epoch 1's `key.epoch` seq (stored in the trust store, schema v8; unknown →
+   legacy) and "inserted by server" at or above it — note step-6 clients sent plaintext after epoch 1,
+   so such old messages also show as inserted. The server refuses plaintext `edit` in e2e channels too
+   and the client refuses edits there until step 8. The cache (and outbox) holds plaintext: as
+   sensitive as the conversation.
 8. Encrypted edit/delete/react, thread_ref, HMAC emoji, local FTS.
 9. `chan.add{bundle}`, `chan.remove`, `chan.encrypt`, disable → rotate; history via backlinks.
 10. TUI: key-change banner + send block, fork alarm, "⚠ unencrypted", "waiting for key", `/verify`.
