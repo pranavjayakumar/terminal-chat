@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -65,7 +66,20 @@ func ListenWith(addr string, cert tls.Certificate, o ListenOpts) (Listener, erro
 	return listen(addr, cert, listenOpts{ListenOpts: o})
 }
 
+// listen binds TCP and UDP on the same port. With port 0 the kernel picks a
+// free TCP port, but that UDP port may be taken by something else; then try
+// another port rather than fail (this made tests flaky under load).
 func listen(addr string, cert tls.Certificate, o listenOpts) (Listener, error) {
+	_, port, _ := net.SplitHostPort(addr)
+	for attempt := 0; ; attempt++ {
+		ln, err := listenOnce(addr, cert, o)
+		if err == nil || port != "0" || attempt == 20 || !errors.Is(err, syscall.EADDRINUSE) {
+			return ln, err
+		}
+	}
+}
+
+func listenOnce(addr string, cert tls.Certificate, o listenOpts) (Listener, error) {
 	if o.handshakeTimeout == 0 {
 		o.handshakeTimeout = handshakeTimeout
 	}
