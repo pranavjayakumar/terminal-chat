@@ -34,6 +34,7 @@ type fakeClient struct {
 	calls    []string
 	aways    []bool
 	drafts   map[[2]uint64]string
+	words    []string
 }
 
 func newFake() *fakeClient {
@@ -322,4 +323,40 @@ func (f *fakeClient) SetDisplay(ctx context.Context, display string) error {
 func (f *fakeClient) ThreadHistory(ctx context.Context, ch, root, before uint64) (bool, error) {
 	f.record(fmt.Sprintf("thread-history:%d:%d", ch, root))
 	return false, nil
+}
+
+func (f *fakeClient) Highlights() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.words)
+}
+
+func (f *fakeClient) AddHighlight(word string) (bool, error) {
+	w, err := client.NormalizeHighlight(word)
+	if err != nil {
+		return false, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if slices.Contains(f.words, w) {
+		return false, nil
+	}
+	f.words = append(f.words, w)
+	slices.Sort(f.words)
+	return true, nil
+}
+
+func (f *fakeClient) RemoveHighlight(word string) (bool, error) {
+	w, err := client.NormalizeHighlight(word)
+	if err != nil {
+		return false, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	i := slices.Index(f.words, w)
+	if i < 0 {
+		return false, nil
+	}
+	f.words = slices.Delete(f.words, i, i+1)
+	return true, nil
 }

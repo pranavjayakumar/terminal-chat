@@ -42,6 +42,9 @@ type Backend interface {
 	MarkRead(ch, seq uint64) error
 	Drafts() []client.Draft
 	SetDraft(ch, thread uint64, body string) error
+	Highlights() []string
+	AddHighlight(word string) (bool, error)
+	RemoveHighlight(word string) (bool, error)
 
 	Edit(ctx context.Context, msg uint64, body string) error
 	Delete(ctx context.Context, msg uint64) error

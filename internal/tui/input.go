@@ -379,6 +379,9 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 			return searchMsg{q, res, err}
 		}, nil
 	}
+	if ok, err := m.highlightCommand(c); ok {
+		return nil, err
+	}
 	if cmd, ok, err := m.hookCommand(c); ok {
 		return cmd, err
 	}

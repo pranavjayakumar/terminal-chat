@@ -120,6 +120,8 @@ type Model struct {
 	draftTimer bool                // a debounced save is scheduled
 	draftMark  map[uint64]bool     // channels with a draft not shown in the input
 	dk         draftKey            // where the input's text belongs
+
+	highlights []string // keywords that count like an @mention (lowercase)
 }
 
 // ---- tea messages ----
@@ -181,6 +183,7 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 	m.input = newInput(st)
 	m.line = newLine(st)
 	m.loadDrafts()
+	m.highlights = c.Highlights()
 	m.reloadAll()
 	if ch := m.defaultChannel(); ch != 0 {
 		m.openChannel(ch)

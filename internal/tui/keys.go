@@ -68,6 +68,8 @@ var helpLines = [][2]string{
 	{"/name Display Name", "set your display name"},
 	{"/dm @a @b", "direct message"},
 	{"/search terms", "search; Enter jumps"},
+	{"/highlight word…", "mark messages with these words like a mention (none: list)"},
+	{"/unhighlight word…", "stop highlighting"},
 	{"/away [status], /back", "presence"},
 	{"/invite", "invite code (admin)"},
 	{"/share-pane [pane]", "send a herdr pane's output (preview first)"},

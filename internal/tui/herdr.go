@@ -80,7 +80,7 @@ func (m *Model) shouldNotify(x proto.Message) bool {
 		return false
 	}
 	v, ok := m.chanView(x.Chan)
-	return (ok && v.Kind == proto.ChanDM) || mentionsMe(x.Body, m.me.Name)
+	return (ok && v.Kind == proto.ChanDM) || m.concernsMe(x.Body)
 }
 
 // noteText is the notification for x: "#chan · alice" or "alice (DM)",
