@@ -49,8 +49,10 @@ func NormalizeHighlight(word string) (string, error) {
 }
 
 // Highlights lists the keywords, sorted.
-func (c *Client) Highlights() []string {
-	rows, err := c.db.Query(`SELECT word FROM highlights ORDER BY word`)
+func (c *Client) Highlights() []string { return highlightsOf(c.db) }
+
+func highlightsOf(q dbtx) []string {
+	rows, err := q.Query(`SELECT word FROM highlights ORDER BY word`)
 	if err != nil {
 		return nil
 	}

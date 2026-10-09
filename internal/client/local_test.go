@@ -13,7 +13,7 @@ import (
 // localClient opens a Client on a fresh home with no server: alice (id 1) is
 // logged in and the cache is filled directly. Close it with closeLocal so
 // the same home can be reopened.
-func localClient(t *testing.T) (*Client, string) {
+func localClient(t testing.TB) (*Client, string) {
 	t.Helper()
 	home := filepath.Join(t.TempDir(), "tc")
 	if err := ensurePrivateDir(home); err != nil {
@@ -25,7 +25,7 @@ func localClient(t *testing.T) (*Client, string) {
 	return reopen(t, home), home
 }
 
-func reopen(t *testing.T, home string) *Client {
+func reopen(t testing.TB, home string) *Client {
 	t.Helper()
 	c, err := Open(home)
 	if err != nil {

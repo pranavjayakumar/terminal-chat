@@ -44,6 +44,7 @@
 //	func (c *Client) AddHighlight(word string) (added bool, err error)
 //	func (c *Client) RemoveHighlight(word string) (removed bool, err error)
 //	func Highlighted(body string, words []string) bool                  // whole word, case-insensitive
+//	func (c *Client) Activity(limit int) []ActivityItem                 // what concerns me, newest first (see activity.go)
 //
 // Online-only (return ErrOffline unless Status().State == Online):
 //

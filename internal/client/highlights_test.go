@@ -16,7 +16,7 @@ const (
 
 // seedLocal gives a localClient some people and two channels: #general
 // (alice, bob, carol, the bot) and a DM with bob.
-func seedLocal(t *testing.T, c *Client) {
+func seedLocal(t testing.TB, c *Client) {
 	t.Helper()
 	us := []proto.User{
 		{ID: alice, Name: "alice"}, {ID: bob, Name: "bob"}, {ID: carol, Name: "carol"},
@@ -44,7 +44,7 @@ func seedLocal(t *testing.T, c *Client) {
 	c.memUsers(us)
 }
 
-func addMsg(t *testing.T, c *Client, m proto.Message) {
+func addMsg(t testing.TB, c *Client, m proto.Message) {
 	t.Helper()
 	if err := upsertMsg(c.db, m, true); err != nil {
 		t.Fatal(err)
