@@ -45,6 +45,7 @@ CREATE INDEX IF NOT EXISTS device_revokes_dev ON device_revokes (dev);
 CREATE TABLE IF NOT EXISTS drafts (
 	chan INTEGER NOT NULL, thread INTEGER NOT NULL, body TEXT NOT NULL, time INTEGER NOT NULL,
 	PRIMARY KEY (chan, thread));
+CREATE TABLE IF NOT EXISTS highlights (word TEXT PRIMARY KEY, time INTEGER NOT NULL);
 `
 
 // dbtx is the subset of *sql.DB / *sql.Tx the cache helpers need.
@@ -347,7 +348,7 @@ func matchOutbox(q dbtx, m proto.Message) error {
 
 // wipe empties the whole cache, outbox included (new login).
 func wipe(q dbtx) error {
-	for _, t := range []string{"meta", "users", "chans", "msgs", "reads", "outbox", "devices", "device_endorse", "device_revokes", "drafts"} {
+	for _, t := range []string{"meta", "users", "chans", "msgs", "reads", "outbox", "devices", "device_endorse", "device_revokes", "drafts", "highlights"} {
 		if _, err := q.Exec(`DELETE FROM ` + t); err != nil {
 			return err
 		}
