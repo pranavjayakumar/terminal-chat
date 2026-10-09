@@ -5,6 +5,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/skailama/tc/internal/sanitize"
 )
 
 // draftDebounce is how long typing must pause before the draft is written
@@ -31,7 +33,7 @@ func (m *Model) loadDrafts() {
 	m.draftDirty = map[draftKey]bool{}
 	for _, d := range m.c.Drafts() {
 		if strings.TrimSpace(d.Body) != "" {
-			m.drafts[draftKey{d.Chan, d.Thread}] = d.Body
+			m.drafts[draftKey{d.Chan, d.Thread}] = sanitize.Text(d.Body)
 		}
 	}
 }

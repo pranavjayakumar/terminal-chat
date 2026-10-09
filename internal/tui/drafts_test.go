@@ -296,3 +296,20 @@ func TestDraftFlushKeepsDirtyUntilSaved(t *testing.T) {
 		t.Fatalf("still dirty after a good write: %v", m.draftDirty)
 	}
 }
+
+// Drafts come from a file other programs can write: no control sequences
+// may reach the input.
+func TestRestoredDraftIsSanitized(t *testing.T) {
+	f := newFake()
+	f.SetDraft(10, 0, "safe\x1b]0;pwned\a text\x1b[31m red \u202e")
+	f.SetDraft(13, 0, "other\x07\x1b[2J")
+	m := New(t.Context(), f, Options{Out: &syncBuf{}, Notifier: &fakeNotifier{}, styles: testStyles(true)})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	if got := m.input.Value(); strings.ContainsAny(got, "\x1b\a\u202e") || !strings.HasPrefix(got, "safe") {
+		t.Fatalf("input = %q", got)
+	}
+	press(m, "ctrl+n") // general → secret
+	if got := m.input.Value(); strings.ContainsAny(got, "\x1b\a") || !strings.HasPrefix(got, "other") {
+		t.Fatalf("second draft = %q", got)
+	}
+}
