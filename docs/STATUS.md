@@ -20,6 +20,9 @@ Release tag: `v0.1.0` = M1. No newer tag yet.
 1. **E2E step 6** (`e2e/client-bundles`, worktree `.claude/worktrees/kiro-verify`): client verifies certs
    (TOFU + endorsements), epoch chain (sig, prev, roster, by-authorization, rollback/fork alarms), opens boxes
    (kc), backlinks, `key.need`/`key.share`, `Client.RotateKey`, moves device key into `internal/trust`.
+   Review fixes landed (server identity pin + e2e1 downgrade alarm / `TrustAlarm`, `UnverifiedUsers`, revoke seq
+   0 = unknown, 5 min skew, bounded caches, archived device keys; trust schema v7). Step 7 must refuse
+   plaintext into e2e channels (placeholder `TestPlaintextIntoE2ERefused`).
    Review with protocol-guardian + security-reviewer, then merge.
 2. **E2E steps 7–12** per `docs/E2E.md`: 7 encrypted send/outbox (DMs created as e2e since step 5 still send
    plaintext until this lands — handle that history), 8 edit/delete/react + local FTS, 9 membership changes +
