@@ -801,36 +801,49 @@ RES, fetches missing bundles, rotates if it holds the current epoch yet the
 server calls it stale (e.g. it boxes a revoked device), and re-encrypts the
 same plaintext and `ts` with the **same send nonce and the same enc nonce**
 (safe: the epoch key differs) — at most twice in a row, then it waits and
-tries again later. A client that can't get K for the epoch (no box, no
+tries again later. If the channel still needs a rotation after its last
+try, the message fails: it is never sealed to the old K. An entry encrypted
+while queued and not yet handed to the server is re-encrypted if the
+verified head or the members changed meanwhile. A client that can't get K for the epoch (no box, no
 share yet, can't rotate) marks the message failed ("no key yet — waiting for
-a member"), sends `key.need`, and requeues it when the key arrives. It never
+a member"), sends `key.need`, and requeues it when the key arrives; a failed
+message the user retries is encrypted afresh. It never
 sends plaintext into a channel that is, or that it once saw as, encrypted
-(also not after a downgrade alarm, §13), and refuses to send into a channel
-with an alarm.
+(also not after a downgrade alarm, §13), refuses to send into (or flush
+queued messages into) a channel with an alarm, never sends a plaintext
+`edit` there (nor of a message it hasn't cached), and refuses reminders
+(`remind.create` `chan`) that point into one.
 
 **Receiving.** A client accepts a message with `enc` only if: the enc
 parses; it holds the verified K of `enc.epoch` and `enc.eh` is that epoch's
 eh; `enc.dev` is a device it verified that belongs to `Message.author` (and
-wasn't revoked before the message's id); the signature and AEAD check out;
+wasn't revoked before the message's id, nor — for a revoke whose seq it
+doesn't know — signed with a Plain `ts` more than 5 minutes after the
+revoke's signed time); the signature and AEAD check out;
 Plain decodes with `t = "msg"`; `body` passes §10 (valid UTF-8, no control
 characters but `\n`/`\t`, not blank, ≤ 64 KiB); `thread_ref` matches
-`Message.thread` as above; and no other message it has seen carries the
-same `mid` (first wins: a replayed enc is rejected). Anything that fails is
+`Message.thread` as above; and no message with a lower id carries the same
+`mid` (the lowest id wins whatever arrives first: a later-id copy is a
+replay and becomes invalid when the lower one shows up). Anything that fails is
 kept and shown as invalid, never as text. A message it can't judge yet (no
 K for the epoch, the sending device or the thread root not known yet) is
 stored as ciphertext, still advances `last_seq`, shows as "waiting for
-key", and is decrypted when what it lacked arrives.
+key", and is decrypted when what it lacked arrives. Once verified, a
+message's channel, author, thread and bytes are fixed: a refetched copy
+(history, snapshot) that differs is invalid and the stored one stays.
 
 **Plaintext in encrypted channels.** DMs created as encrypted before
-encrypted sends existed may hold plaintext messages: a message without
-`enc` whose id is below the seq of the channel's epoch-1 `key.epoch` (or in
-a channel without a verified epoch 1) is shown as "unencrypted (legacy)";
-one at or after it can only have been inserted by the server (honest servers
-refuse plaintext sends there) and is shown as "unencrypted, inserted by
-server", untrusted (no notification). The client's cache keeps decrypted
+encrypted sends existed may hold plaintext messages. When a client first
+sees a channel as encrypted it records, once, a **legacy cutoff**: the
+newest message id it had cached in it. A message without `enc` at or below
+the cutoff is shown as "⚠ unauthenticated (legacy)"; any other can only have
+been inserted by the server (honest servers refuse plaintext sends there)
+and is shown as "⚠ inserted by server". Neither is authenticated: neither
+notifies nor counts as a mention. The client's cache keeps decrypted
 bodies (and the outbox plaintext): it is as sensitive as the conversation.
-Search in encrypted channels is local, over the decrypted cache; the server
-never returns their messages from `search`.
+Search in encrypted channels is local, over the decrypted cache: a search
+scoped to one never reaches the server, and a global search drops any
+server result from an encrypted channel (the server never returns them).
 
 ### 13.5 Ops
 
@@ -866,6 +879,7 @@ Server rules (honest case) for **send**, in this order:
 | `enc.eh` is the eh of the current bundle | `bad_request` |
 | `enc.dev` is a registered, non-revoked device of the caller | `bad_request` |
 | `enc`'s signature verifies under that device's Ed25519 key | `bad_request` |
+| no message in the channel has the same `mid` (a replay under a new nonce) | `conflict` |
 | then the usual thread and rate-limit checks (§5, §9) | |
 
 The stored message and its `msg.new` carry `enc` byte for byte with
