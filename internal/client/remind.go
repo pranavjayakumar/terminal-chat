@@ -57,7 +57,10 @@ func ParseRemind(args string, now time.Time) (at time.Time, text string, err err
 		at, after = time.Date(y, mo, d+1, h, m, 0, 0, now.Location()), after2
 	default:
 		if d, ok := parseDuration(lt); ok {
-			if d <= 0 || d > maxAhead {
+			if d <= 0 {
+				return time.Time{}, "", errors.New("that isn't in the future")
+			}
+			if d > maxAhead {
 				return time.Time{}, "", errors.New("reminders can be set up to a year ahead")
 			}
 			at = now.Add(d)
