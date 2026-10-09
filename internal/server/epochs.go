@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS epochs (
 	hash BLOB NOT NULL,   -- ChainHash(b): the next bundle's prev
 	by_user INTEGER NOT NULL,
 	time INTEGER NOT NULL, -- server clock, for the rotate rate cap
+	seq INTEGER NOT NULL DEFAULT 0, -- of its key.epoch event
 	PRIMARY KEY (chan, epoch)
 );
 -- The rate cap looks up a user's last rotation under the write lock.
@@ -37,36 +38,116 @@ CREATE INDEX IF NOT EXISTS epochs_by ON epochs(chan, by_user, time);
 // roster or device set changed since the current epoch.
 const rotateEveryMs = 10_000
 
-// migrateEpochs adds the epochs table and channels.e2e/epoch.
+// migrateEpochs adds the epochs table, channels.e2e/epoch, epochs.seq and
+// devices.revoked_seq (the seq of the device.revoke event).
 func migrateEpochs(db *sql.DB) error {
 	if _, err := db.Exec(epochsSchema); err != nil {
 		return fmt.Errorf("creating epochs schema: %w", err)
 	}
-	if err := addColumn(db, "channels", "e2e", `INTEGER NOT NULL DEFAULT 0`); err != nil {
+	for _, c := range [][3]string{
+		{"channels", "e2e", `INTEGER NOT NULL DEFAULT 0`},
+		{"channels", "epoch", `INTEGER NOT NULL DEFAULT 0`},
+		{"epochs", "seq", `INTEGER NOT NULL DEFAULT 0`},
+		{"devices", "revoked_seq", `INTEGER`},
+	} {
+		if err := addColumn(db, c[0], c[1], c[2]); err != nil {
+			return err
+		}
+	}
+	return backfillSeqs(db)
+}
+
+// backfillSeqs fills epochs.seq and devices.revoked_seq for rows written
+// before those columns existed, from their events.
+func backfillSeqs(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`SELECT (SELECT COUNT(*) FROM epochs WHERE seq = 0)
+		+ (SELECT COUNT(*) FROM devices WHERE revoked IS NOT NULL AND revoked_seq IS NULL)`).Scan(&n); err != nil || n == 0 {
 		return err
 	}
-	return addColumn(db, "channels", "epoch", `INTEGER NOT NULL DEFAULT 0`)
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(`SELECT seq, kind, chan, data FROM events WHERE kind IN (?, ?) ORDER BY seq`,
+		proto.KKeyEpoch, proto.KDeviceRevoke)
+	if err != nil {
+		return err
+	}
+	type upd struct {
+		q    string
+		args []any
+	}
+	var ups []upd
+	for rows.Next() {
+		var seq uint64
+		var kind string
+		var ch sql.NullInt64
+		var data []byte
+		if err := rows.Scan(&seq, &kind, &ch, &data); err != nil {
+			rows.Close()
+			return err
+		}
+		switch kind {
+		case proto.KKeyEpoch:
+			var d proto.KeyEpoch
+			if proto.Unmarshal(data, &d) != nil {
+				continue
+			}
+			if eb, err := identity.PeekEpochBundle(identity.Signed(d.Bundle)); err == nil {
+				ups = append(ups, upd{`UPDATE epochs SET seq = ? WHERE chan = ? AND epoch = ? AND seq = 0`, []any{seq, ch.Int64, eb.Epoch}})
+			}
+		case proto.KDeviceRevoke:
+			var d proto.DeviceRevokeArgs
+			if proto.Unmarshal(data, &d) != nil {
+				continue
+			}
+			if r, err := identity.PeekDeviceRevoke(identity.Signed(d.Revoke)); err == nil {
+				ups = append(ups, upd{`UPDATE devices SET revoked_seq = ? WHERE dev = ? AND revoked IS NOT NULL AND revoked_seq IS NULL`, []any{seq, r.Dev[:]}})
+			}
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, u := range ups {
+		if _, err := tx.Exec(u.q, u.args...); err != nil {
+			return fmt.Errorf("backfilling seqs: %w", err)
+		}
+	}
+	return tx.Commit()
 }
 
 // isE2EKind: events only e2e1 sessions receive, live or replayed.
 func isE2EKind(kind string) bool { return isDeviceKind(kind) || kind == proto.KKeyEpoch }
 
-// chanEpoch returns whether ch is encrypted and its current bundle (nil at
-// epoch 0) with its chain hash.
-func chanEpoch(ctx context.Context, q querier, ch uint64) (e2e bool, epoch uint32, bundle *proto.Signed, hash []byte, err error) {
-	if err = q.QueryRowContext(ctx, `SELECT e2e, epoch FROM channels WHERE id = ?`, ch).Scan(&e2e, &epoch); err != nil {
+// epochHead is an encrypted channel's chain head: its current bundle (nil
+// at epoch 0), that bundle's chain hash and the seq of its key.epoch event.
+type epochHead struct {
+	e2e    bool
+	epoch  uint32
+	bundle *proto.Signed
+	hash   []byte
+	seq    uint64
+}
+
+// chanEpoch returns ch's chain head.
+func chanEpoch(ctx context.Context, q querier, ch uint64) (h epochHead, err error) {
+	if err = q.QueryRowContext(ctx, `SELECT e2e, epoch FROM channels WHERE id = ?`, ch).Scan(&h.e2e, &h.epoch); err != nil {
 		return
 	}
-	if epoch == 0 {
+	if h.epoch == 0 {
 		return
 	}
 	var raw []byte
-	if err = q.QueryRowContext(ctx, `SELECT bundle, hash FROM epochs WHERE chan = ? AND epoch = ?`, ch, epoch).
-		Scan(&raw, &hash); err != nil {
+	if err = q.QueryRowContext(ctx, `SELECT bundle, hash, seq FROM epochs WHERE chan = ? AND epoch = ?`, ch, h.epoch).
+		Scan(&raw, &h.hash, &h.seq); err != nil {
 		return
 	}
-	bundle = new(proto.Signed)
-	err = proto.Unmarshal(raw, bundle)
+	h.bundle = new(proto.Signed)
+	err = proto.Unmarshal(raw, h.bundle)
 	return
 }
 
@@ -134,16 +215,36 @@ func sameBoxes(eb identity.EpochBundle, devs map[e2ecrypto.DevID][32]byte) bool 
 	return true
 }
 
-// boxesWithin reports whether every box in eb goes to a device in devs.
-// Boxes may be missing: clients seal only to devices they've verified, and
-// unsealed devices get the key later via key.share (docs/E2E.md).
-func boxesWithin(eb identity.EpochBundle, devs map[e2ecrypto.DevID][32]byte) bool {
+// checkBoxes checks that every box goes to an active device (in devs) of a
+// roster user. Boxes may be missing: clients seal only to devices they've
+// verified, and the rest get the key later via key.share (docs/E2E.md).
+// A box to a device revoked after headSeq (the current epoch's key.epoch;
+// 0 at epoch 0) is a race the client couldn't have seen → stale_epoch.
+// Anything else — unknown device, another user's, one revoked before the
+// client's view of the chain — is a client error → bad_request.
+func checkBoxes(ctx context.Context, q querier, eb identity.EpochBundle, roster []uint64,
+	devs map[e2ecrypto.DevID][32]byte, headSeq uint64) error {
 	for _, bx := range eb.Boxes {
-		if _, ok := devs[bx.Dev]; !ok {
-			return false
+		if _, ok := devs[bx.Dev]; ok {
+			continue
+		}
+		var owner uint64
+		var revSeq sql.NullInt64
+		err := q.QueryRowContext(ctx, `SELECT user, revoked_seq FROM devices WHERE dev = ?`, bx.Dev[:]).Scan(&owner, &revSeq)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return badRequest("bundle boxes an unknown device")
+		case err != nil:
+			return err
+		case !slices.Contains(roster, owner):
+			return badRequest("bundle boxes a device of a non-member")
+		case revSeq.Valid && uint64(revSeq.Int64) > headSeq:
+			return staleEpoch("bundle boxes a device revoked since the current epoch")
+		default:
+			return badRequest("bundle boxes a revoked device")
 		}
 	}
-	return true
+	return nil
 }
 
 func staleEpoch(msg string) error { return proto.Errf(proto.ErrStaleEpoch, msg) }
@@ -162,11 +263,11 @@ func (s *Server) opKeyRotate(ctx context.Context, u proto.User, a proto.KeyRotat
 		if !s.members[a.Chan][u.ID] {
 			return nil, errForbidden
 		}
-		e2e, cur, curBundle, curHash, err := chanEpoch(ctx, tx, a.Chan)
+		head, err := chanEpoch(ctx, tx, a.Chan)
 		if err != nil {
 			return nil, err
 		}
-		if !e2e {
+		if !head.e2e {
 			return nil, badRequest("channel is not encrypted")
 		}
 		peek, err := identity.PeekEpochBundle(identity.Signed(a.Bundle))
@@ -198,9 +299,9 @@ func (s *Server) opKeyRotate(ctx context.Context, u proto.User, a proto.KeyRotat
 
 		// Compare-and-set on the chain head.
 		var prev [32]byte
-		copy(prev[:], curHash)
-		if eb.Epoch != cur+1 || eb.Prev != prev {
-			return nil, staleEpoch(fmt.Sprintf("channel is at epoch %d", cur))
+		copy(prev[:], head.hash)
+		if eb.Epoch != head.epoch+1 || eb.Prev != prev {
+			return nil, staleEpoch(fmt.Sprintf("channel is at epoch %d", head.epoch))
 		}
 		roster, err := rosterOf(ctx, tx, a.Chan)
 		if err != nil {
@@ -213,16 +314,16 @@ func (s *Server) opKeyRotate(ctx context.Context, u proto.User, a proto.KeyRotat
 		if err != nil {
 			return nil, err
 		}
-		if !boxesWithin(eb, devs) {
-			return nil, staleEpoch("bundle boxes a device that isn't an active member device")
+		if err := checkBoxes(ctx, tx, eb, roster, devs, head.seq); err != nil {
+			return nil, err
 		}
 		if err := eb.CheckBoxKeys(devs); err != nil {
 			return nil, badRequest("bundle seals twice to one key")
 		}
 
 		now := s.now()
-		if curBundle != nil {
-			old, err := identity.PeekEpochBundle(identity.Signed(*curBundle))
+		if head.bundle != nil {
+			old, err := identity.PeekEpochBundle(identity.Signed(*head.bundle))
 			if err != nil {
 				return nil, err
 			}
@@ -238,17 +339,20 @@ func (s *Server) opKeyRotate(ctx context.Context, u proto.User, a proto.KeyRotat
 			}
 		}
 
+		ev, err := appendEvent(ctx, tx, proto.KKeyEpoch, a.Chan, u.ID, 0, now, proto.KeyEpoch{Bundle: a.Bundle})
+		if err != nil {
+			return nil, err
+		}
 		hash := e2ecrypto.ChainHash(a.Bundle.B)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO epochs (chan, epoch, bundle, hash, by_user, time) VALUES (?, ?, ?, ?, ?, ?)`,
-			a.Chan, eb.Epoch, proto.MustRaw(a.Bundle), hash[:], u.ID, now); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO epochs (chan, epoch, bundle, hash, by_user, time, seq) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			a.Chan, eb.Epoch, proto.MustRaw(a.Bundle), hash[:], u.ID, now, ev.Seq); err != nil {
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE channels SET epoch = ? WHERE id = ?`, eb.Epoch, a.Chan); err != nil {
 			return nil, err
 		}
-		ev, err := appendEvent(ctx, tx, proto.KKeyEpoch, a.Chan, u.ID, 0, now, proto.KeyEpoch{Bundle: a.Bundle})
 		res.Seq = ev.Seq
-		return []proto.Event{ev}, err
+		return []proto.Event{ev}, nil
 	})
 	return res, err
 }
@@ -314,10 +418,11 @@ func (s *Server) EpochStale(ctx context.Context, ch uint64) (bool, error) {
 }
 
 func epochStale(ctx context.Context, q querier, ch uint64) (bool, error) {
-	e2e, _, cur, _, err := chanEpoch(ctx, q, ch)
-	if err != nil || !e2e {
+	h, err := chanEpoch(ctx, q, ch)
+	if err != nil || !h.e2e {
 		return false, err
 	}
+	cur := h.bundle
 	if cur == nil {
 		return true, nil
 	}

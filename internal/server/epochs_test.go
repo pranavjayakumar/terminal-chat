@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"crypto/rand"
 	"slices"
 	"sync"
@@ -231,6 +232,7 @@ func TestKeyRotateRejects(t *testing.T) {
 	a2, _ := alice.registerDevice(ts)
 	b1, _ := bob.registerDevice(ts)
 	c1, _ := carol.registerDevice(ts)
+	d1, _ := dave.registerDevice(ts)
 	alice.ok(proto.OpDeviceRevoke, proto.DeviceRevokeArgs{Revoke: revokeBySSH(t, alice.signer, sid, alice.user.ID, a2.ID)}, nil)
 	roster := []uint64{alice.user.ID, bob.user.ID}
 	ok1 := bundle(t, a1, sid, ch.ID, 1, nil, roster, a1, b1)
@@ -266,11 +268,13 @@ func TestKeyRotateRejects(t *testing.T) {
 	// Roster: missing or extra (a disabled member: below).
 	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 1, nil, []uint64{alice.user.ID}, a1, b1), proto.ErrStaleEpoch)
 	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 1, nil, append(slices.Clone(roster), carol.user.ID), a1, b1), proto.ErrStaleEpoch)
-	// Boxes: extra, or to a revoked device. (Missing boxes are allowed: see
-	// TestKeyRotateMissingBoxAllowed.)
-	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 1, nil, roster, a1, b1, c1), proto.ErrStaleEpoch)
+	// Boxes outside the members' active devices are client errors: another
+	// user's device, an unknown one. A device revoked at epoch 0 may be a
+	// race (there's no head to date the client's view by). (Missing boxes
+	// are allowed: see TestKeyRotateMissingBoxAllowed.)
+	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 1, nil, roster, a1, b1, c1), proto.ErrBadRequest)
 	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 1, nil, roster, a1, b1, a2), proto.ErrStaleEpoch)
-	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 1, nil, roster, a1, b1, newDevKeys(t)), proto.ErrStaleEpoch)
+	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 1, nil, roster, a1, b1, newDevKeys(t)), proto.ErrBadRequest)
 	// More than 128 boxes.
 	rot(alice, ch.ID, hugeBundle(t, a1, sid, ch.ID), proto.ErrTooLarge)
 	bob.noKind(proto.KKeyEpoch, 100*time.Millisecond)
@@ -288,10 +292,20 @@ func TestKeyRotateRejects(t *testing.T) {
 	other := bundle(t, a1, sid, ch.ID, 1, nil, roster, a1, b1)
 	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 2, &other, roster, a1, b1), proto.ErrStaleEpoch)
 
+	// Once there's a head: a device revoked before it was visible to the
+	// rotator (bad_request); one revoked after it is a race (stale_epoch).
+	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 2, &ok1, roster, a1, b1, a2), proto.ErrBadRequest)
+	b3, _ := bob.registerDevice(ts)
+	bob.ok(proto.OpDeviceRevoke, proto.DeviceRevokeArgs{Revoke: revokeBySSH(t, bob.signer, sid, bob.user.ID, b3.ID)}, nil)
+	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 2, &ok1, roster, a1, b1, b3), proto.ErrStaleEpoch)
+	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 2, &ok1, roster, a1, b1, c1), proto.ErrBadRequest)
+
 	// A disabled member leaves the roster.
 	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: dave.user.ID}, nil)
 	alice.ok(proto.OpUserDisable, proto.UserArgs{User: dave.user.ID}, nil)
 	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 2, &ok1, append(slices.Clone(roster), dave.user.ID), a1, b1), proto.ErrStaleEpoch)
+	// Boxing the disabled member's device is a client error: not on the roster.
+	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 2, &ok1, roster, a1, b1, d1), proto.ErrBadRequest)
 	bob.noKind(proto.KKeyEpoch, 100*time.Millisecond)
 	alice.rotate(ch.ID, bundle(t, a1, sid, ch.ID, 2, &ok1, roster, a1, b1))
 }
@@ -808,4 +822,46 @@ func TestKeyRotateMissingBoxAllowed(t *testing.T) {
 	bob.registerDevice(ts) // bob's device isn't verified by alice yet
 	roster := []uint64{alice.user.ID, bob.user.ID}
 	alice.ok(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: bundle(t, a1, sid, ch.ID, 1, nil, roster, a1)}, nil)
+}
+
+// Databases from before epochs.seq / devices.revoked_seq get them from events.
+func TestBackfillSeqs(t *testing.T) {
+	ts := startServer(t, "tcp")
+	fastClock(ts)
+	alice := ts.registerCaps(t, "alice", true, e2eCaps)
+	alice.syncFresh()
+	sid := ts.sid()
+	ch := alice.createE2E("sec")
+	a1, _ := alice.registerDevice(ts)
+	a2, _ := alice.registerDevice(ts)
+	roster := []uint64{alice.user.ID}
+	e1 := bundle(t, a1, sid, ch.ID, 1, nil, roster, a1)
+	s1 := alice.rotate(ch.ID, e1)
+	s2 := alice.rotate(ch.ID, bundle(t, a1, sid, ch.ID, 2, &e1, roster, a1, a2))
+	var rs proto.SeqRes
+	alice.ok(proto.OpDeviceRevoke, proto.DeviceRevokeArgs{Revoke: revokeBySSH(t, alice.signer, sid, alice.user.ID, a2.ID)}, &rs)
+
+	db := ts.st.db
+	if _, err := db.Exec(`UPDATE epochs SET seq = 0`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE devices SET revoked_seq = NULL`); err != nil {
+		t.Fatal(err)
+	}
+	if err := backfillSeqs(db); err != nil {
+		t.Fatal(err)
+	}
+	var got1, got2 uint64
+	db.QueryRow(`SELECT seq FROM epochs WHERE chan = ? AND epoch = 1`, ch.ID).Scan(&got1)
+	db.QueryRow(`SELECT seq FROM epochs WHERE chan = ? AND epoch = 2`, ch.ID).Scan(&got2)
+	if got1 != s1 || got2 != s2 {
+		t.Fatalf("epoch seqs %d %d, want %d %d", got1, got2, s1, s2)
+	}
+	var rev sql.NullInt64
+	var live sql.NullInt64
+	db.QueryRow(`SELECT revoked_seq FROM devices WHERE dev = ?`, a2.ID[:]).Scan(&rev)
+	db.QueryRow(`SELECT revoked_seq FROM devices WHERE dev = ?`, a1.ID[:]).Scan(&live)
+	if !rev.Valid || uint64(rev.Int64) != rs.Seq || live.Valid {
+		t.Fatalf("revoked_seq %v (want %d), active %v", rev, rs.Seq, live)
+	}
 }

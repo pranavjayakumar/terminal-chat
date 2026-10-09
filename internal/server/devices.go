@@ -268,12 +268,17 @@ func (s *Server) opDeviceRevoke(ctx context.Context, u proto.User, a proto.Devic
 				return nil, proto.Errf(proto.ErrForbidden, "the revoking device is itself revoked")
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE devices SET revoked = ? WHERE dev = ?`, proto.MustRaw(a.Revoke), r.Dev[:]); err != nil {
+		ev, err := appendEvent(ctx, tx, proto.KDeviceRevoke, 0, u.ID, 0, s.now(), a)
+		if err != nil {
 			return nil, err
 		}
-		ev, err := appendEvent(ctx, tx, proto.KDeviceRevoke, 0, u.ID, 0, s.now(), a)
+		// revoked_seq lets key.rotate tell a race from a client error (§13.3).
+		if _, err := tx.ExecContext(ctx, `UPDATE devices SET revoked = ?, revoked_seq = ? WHERE dev = ?`,
+			proto.MustRaw(a.Revoke), ev.Seq, r.Dev[:]); err != nil {
+			return nil, err
+		}
 		res.Seq = ev.Seq
-		return []proto.Event{ev}, err
+		return []proto.Event{ev}, nil
 	})
 	return res, err
 }

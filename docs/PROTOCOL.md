@@ -555,7 +555,9 @@ so non-members can't make the server parse 16 KiB):
 | `sig` verifies under `by`'s Ed25519 key | `bad_request` |
 | CAS: `epoch == current + 1` and `prev == ChainHash(current b)` | `stale_epoch` |
 | `roster` == current members that aren't disabled | `stale_epoch` |
-| every box goes to a non-revoked device of a roster user, each at most once (devices may be missing: clients seal only to devices they verified; the rest get the key via `key.share`) | `stale_epoch` |
+| every box goes to a registered device of a roster user, each at most once | `bad_request` |
+| no box goes to a device revoked after the current epoch's `key.epoch` seq (any revoked device at epoch 0): the rotator couldn't have seen that revoke | `stale_epoch` |
+| no box goes to any other revoked device (its revoke came before the head the rotator built on) | `bad_request` |
 | no two boxes share an X25519 key | `bad_request` |
 | ≤ 1 rotation per channel per user per 10 s, unless the current bundle's roster or boxed-device set differs from the current members/devices | `rate_limited` |
 
@@ -565,6 +567,11 @@ serialized and each write's events are fanned out before its RES, so the
 loser of a concurrent rotation always receives the winner's `key.epoch`
 before its own `stale_epoch` RES. `stale_epoch` means "your view of the
 channel is behind": apply pending events (or `key.fetch`), rebuild, retry.
+It is returned only for races (the CAS, a roster change, a boxed device
+revoked after the head); a bundle that is wrong for the state the client
+must already have seen is `bad_request`, so retrying it can't loop.
+Boxes may be missing for some devices: clients seal only to devices they
+verified, and the rest get the key via `key.share` (§13.7).
 
 **key.fetch** `{chan, from: u32, to: u32}`: current members only (else
 `forbidden`, also for unknown channels); `1 ≤ from ≤ to` and `to − from < 256` (else `bad_request`).
