@@ -32,7 +32,7 @@ func TestWebhook(t *testing.T) {
 	}
 
 	hc := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: transport.HTTPSConfig(s.HTTPPin())}}
-	resp, err := hc.Post(url, "application/json", strings.NewReader(`{"text":"build #7 passed"}`))
+	resp, err := hc.Post(url, "application/json", strings.NewReader(`{"text":"build #7 passed, branch fix-@bob"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,13 +44,17 @@ func TestWebhook(t *testing.T) {
 
 	eventually(t, "bob sees the bot message", func() bool {
 		for _, m := range bob.Messages(gen, 50) {
-			if m.Body == "build #7 passed" {
+			if m.Body == "build #7 passed, branch fix-@bob" {
 				a := bob.User(m.Author)
 				return a.Name == "ci-bot" && a.Bot
 			}
 		}
 		return false
 	})
+	// Unread, but a bot's @bob is not a mention (L5).
+	if cv, _ := bob.Channel(gen); cv.Unread == 0 || cv.Mention {
+		t.Fatalf("bob's view of general: %+v", cv)
+	}
 
 	hooks, err := bob.ListHooks(ctx)
 	if err != nil || len(hooks) != 1 || hooks[0].Name != "ci-bot" {

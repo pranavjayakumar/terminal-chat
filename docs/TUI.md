@@ -77,8 +77,9 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 ## Notifications & herdr
 
 - **When**: a DM or a message that @mentions me, not my own and not from a webhook bot
-  (bot messages count as unread but never as mentions — their text comes from outside), and either the terminal is blurred
-  (focus reporting) or the message is in a channel that isn't the active one.
+  (bot messages count as unread but never as mentions — their text comes from outside),
+  and either the terminal is blurred (focus reporting) or the message is in a channel that
+  isn't the active one.
 - **What**: title `#chan · alice` or `alice (DM)`, body = first non-empty line. Title ≤ 60 runes,
   body ≤ 160, both through `sanitize.Line`.
 - **Coalescing**: the first message in a channel notifies at once and opens a 5 s window; more
