@@ -453,7 +453,7 @@ func TestNonASCIIKeywordIsFilteredInSQL(t *testing.T) {
 	addMsg(t, c, proto.Message{ID: 101, Chan: general, Author: bob, Body: "ÜNÏ here", Time: 101})
 	addMsg(t, c, proto.Message{ID: 102, Chan: general, Author: bob, Body: "süni no", Time: 102})
 	addMsg(t, c, proto.Message{ID: 103, Chan: general, Author: bob, Body: "Straße und STRASSE", Time: 103})
-	filter, args := highlightFilter("m.body", "alice", []string{"ünï"})
+	filter, args := highlightFilter("m.body", []string{"alice"}, []string{"ünï"})
 	var n int
 	if err := c.db.QueryRow(`SELECT COUNT(*) FROM msgs m WHERE `+filter, args...).Scan(&n); err != nil {
 		t.Fatal(err)

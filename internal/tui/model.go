@@ -32,6 +32,8 @@ const (
 	modePanePick
 	modeSharePreview
 	modeActivity
+	modeViewer
+	modeList
 )
 
 // pane is a scrollable message list: a channel (root 0) or a thread.
@@ -94,6 +96,7 @@ type Model struct {
 	ctrlC        bool
 	escAt        time.Time // first Esc on a non-empty draft
 	helpScroll   int
+	view         viewer
 
 	sw     switcher
 	search searchState
@@ -124,6 +127,8 @@ type Model struct {
 	dk         draftKey            // where the input's text belongs
 
 	highlights []string // keywords that count like an @mention (lowercase)
+	mentionAs  []string // names that @mention me: mine, then my groups
+	list       listState
 
 	jump jumpState
 }
@@ -144,7 +149,13 @@ type (
 		err  error
 	}
 	openChanMsg struct{ ch uint64 }
-	searchMsg   struct {
+	listMsg     listState
+	pinsMsg     struct {
+		ch  uint64
+		res []proto.Message
+		err error
+	}
+	searchMsg struct {
 		q   string
 		res []proto.Message
 		err error
@@ -270,6 +281,7 @@ func (m *Model) reloadUsers() {
 		m.r.me = u
 	}
 	m.reloadPresence()
+	m.refreshMentionNames()
 	m.rc.reset()
 	m.main.ver++
 	m.thread.ver++
@@ -285,6 +297,7 @@ func (m *Model) reloadPresence() {
 func (m *Model) reloadChans() {
 	m.chans = m.c.Channels()
 	m.refreshHighlights()
+	m.refreshMentionNames()
 	if m.active != 0 {
 		if v, ok := m.chanView(m.active); !ok || (!v.Member && v.Kind != proto.ChanPublic) {
 			// Left or removed: fall back to something we're in.
@@ -720,6 +733,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.checkAway()
 	case panesMsg:
 		return m, m.gotPanes(msg)
+	case snippetMsg:
+		m.gotSnippet(msg)
+		return m, nil
 	case paneReadMsg:
 		m.gotPaneText(msg)
 		return m, nil
@@ -781,6 +797,21 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.search = searchState{q: msg.q, res: msg.res}
+		m.mode = modeSearch
+		return m, nil
+	case listMsg:
+		m.list = listState(msg)
+		m.mode = modeList
+		return m, nil
+	case pinsMsg:
+		if msg.err != nil {
+			m.setErr("pins", msg.err)
+			return m, nil
+		}
+		if msg.ch != m.active {
+			return m, nil // switched channels while it loaded
+		}
+		m.search = searchState{pins: msg.ch, res: msg.res}
 		m.mode = modeSearch
 		return m, nil
 	case typingTickMsg:
@@ -903,8 +934,17 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 		return m.searchKey(k)
 	case modeActivity:
 		return m.activityKey(k)
+	case modeList:
+		m.listKey(keyName(k))
+		return nil
 	case modeHelp:
 		m.helpKey(key)
+		return nil
+	case modeViewer:
+		if key == kSelCopy {
+			return m.copyCmd(strings.Join(m.view.lines, "\n"))
+		}
+		m.viewerKey(key)
 		return nil
 	case modeConfirmDelete:
 		m.mode = modeSelect
@@ -1311,6 +1351,20 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 		return nil, true
 	case kSelCopy:
 		return m.copyCmd(sanitize.Text(sel.Body)), true
+	case kSelPin:
+		if sel.ID == 0 || sel.Deleted {
+			return nil, true
+		}
+		id, pinned := sel.ID, sel.Pinned
+		return m.callThen("pin", func(ctx context.Context) (tea.Msg, error) {
+			if pinned {
+				return infoMsg("unpinned"), m.c.Unpin(ctx, id)
+			}
+			return infoMsg("pinned"), m.c.Pin(ctx, id)
+		}), true
+	case kSelView:
+		m.openViewer(sel)
+		return nil, true
 	}
 	return nil, false
 }

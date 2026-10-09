@@ -403,26 +403,27 @@ func (r *renderer) body(m client.Message, bw int) []string {
 	}
 	text := sanitize.Text(m.Body)
 	var out []string
-	inCode := false
 	lastCode := false
-	for _, ln := range strings.Split(text, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(ln), "```") {
-			inCode = !inCode
-			continue
-		}
-		if inCode {
+	for _, sg := range splitFences(strings.Split(text, "\n")) {
+		if sg.code {
 			bar := st.codeBar.Render("┃") + " "
-			out = append(out, bar+r.style(fCode, m.Pending).Render(truncate(ln, bw-2)))
-			lastCode = true
+			for _, l := range r.codeLines(sg, bw-2, m.Pending) {
+				out = append(out, bar+l)
+			}
+			if len(sg.lines) > 0 {
+				lastCode = true
+			}
 			continue
 		}
-		lastCode = false
-		for _, l := range wrapSpans(parseInline(ln, r.me.Name), bw) {
-			var b strings.Builder
-			for _, sp := range l {
-				b.WriteString(r.style(sp.f, m.Pending).Render(sp.text))
+		for _, ln := range sg.lines {
+			lastCode = false
+			for _, l := range wrapSpans(parseInline(ln, r.me.Name), bw) {
+				var b strings.Builder
+				for _, sp := range l {
+					b.WriteString(r.style(sp.f, m.Pending).Render(sp.text))
+				}
+				out = append(out, b.String())
 			}
-			out = append(out, b.String())
 		}
 	}
 	if len(out) == 0 {
@@ -499,6 +500,9 @@ func (r *renderer) footer(m client.Message, bw int) string {
 		}
 		parts = append(parts, r.st.replies.Render(fmt.Sprintf("↳ %d %s", m.Replies, word)))
 	}
+	if m.Pinned && !m.Deleted {
+		parts = append(parts, r.st.dim.Render("📌"))
+	}
 	if len(parts) == 0 {
 		return ""
 	}
@@ -527,7 +531,7 @@ const groupWindow = 5 * 60 * 1000 // ms
 // A message with replies or reactions ends its group so its footer clearly
 // belongs to it.
 func grouped(prev, cur client.Message) bool {
-	if prev.Replies > 0 || hasReactions(prev) {
+	if prev.Replies > 0 || prev.Pinned || hasReactions(prev) {
 		return false
 	}
 	return prev.Author == cur.Author && cur.Time-prev.Time < groupWindow && cur.Time >= prev.Time &&
@@ -553,6 +557,7 @@ type renderKey struct {
 	pending bool
 	failed  string
 	replies int
+	pinned  bool
 	reacts  string
 	width   int
 	header  bool
@@ -560,7 +565,7 @@ type renderKey struct {
 
 func keyFor(m client.Message, w int, header bool) renderKey {
 	k := renderKey{id: m.ID, local: m.Local, edited: m.Edited, deleted: m.Deleted, pending: m.Pending,
-		failed: m.Failed, replies: m.Replies, width: w, header: header}
+		failed: m.Failed, replies: m.Replies, pinned: m.Pinned, width: w, header: header}
 	if len(m.Reactions) > 0 {
 		keys := make([]string, 0, len(m.Reactions))
 		for e, us := range m.Reactions {

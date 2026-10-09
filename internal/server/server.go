@@ -57,6 +57,8 @@ type Server struct {
 	limits   map[uint64]*bucket         // sends
 	wlimits  map[uint64]*bucket         // other write ops
 	disabled map[uint64]bool
+
+	remindWake chan struct{} // nudges the reminder scheduler
 }
 
 // New opens (or creates) the data directory: database and TLS identity.
@@ -101,14 +103,15 @@ func New(cfg Config) (*Server, error) {
 	}
 	s := &Server{
 		cfg: cfg, st: st, cert: cert, pin: transport.Pin(cert), log: cfg.Logger,
-		sessions: map[*session]struct{}{},
-		members:  map[uint64]map[uint64]bool{},
-		kinds:    map[uint64]string{},
-		online:   map[uint64]int{},
-		presence: map[uint64]proto.Ephemeral{},
-		limits:   map[uint64]*bucket{},
-		wlimits:  map[uint64]*bucket{},
-		disabled: map[uint64]bool{},
+		sessions:   map[*session]struct{}{},
+		members:    map[uint64]map[uint64]bool{},
+		kinds:      map[uint64]string{},
+		online:     map[uint64]int{},
+		presence:   map[uint64]proto.Ephemeral{},
+		limits:     map[uint64]*bucket{},
+		wlimits:    map[uint64]*bucket{},
+		disabled:   map[uint64]bool{},
+		remindWake: make(chan struct{}, 1),
 	}
 	if s.hk, err = newHookState(cfg.DataDir, func() time.Time { return s.cfg.Now() }); err != nil {
 		st.close()
@@ -249,7 +252,7 @@ func (s *Server) applyCache(ev proto.Event) {
 // e2e-only kinds are filtered by publishLocked.
 func (s *Server) visibleLocked(ev proto.Event, u uint64) bool {
 	switch ev.Kind {
-	case proto.KUserNew, proto.KUserUpdate, proto.KDeviceNew, proto.KDeviceRevoke:
+	case proto.KUserNew, proto.KUserUpdate, proto.KGroupUpdate, proto.KDeviceNew, proto.KDeviceRevoke:
 		return true
 	case proto.KReadUpdate:
 		return ev.Actor == u
@@ -302,6 +305,15 @@ func (s *Server) ephemeralLocked(e proto.Ephemeral, to map[uint64]bool, from *se
 func (s *Server) Serve(ctx context.Context, ln transport.Listener) error {
 	var wg sync.WaitGroup
 	defer wg.Wait()
+	// Deferred after wg.Wait, so it runs first: the scheduler stops even when
+	// Serve returns because the listener failed, not because ctx ended.
+	rctx, stopReminders := context.WithCancel(ctx)
+	defer stopReminders()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.remindLoop(rctx)
+	}()
 	if hl := transport.HTTPListener(ln); hl != nil {
 		defer s.serveHTTP(ctx, hl)()
 	}

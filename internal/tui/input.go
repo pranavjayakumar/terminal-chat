@@ -363,11 +363,19 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 	case "back":
 		m.manualAway, m.autoAway = false, false
 		return tea.Batch(m.call("back", func(context.Context) error { return be.SetAway(false, "") }), m.awayTick()), nil
+	case "snippet":
+		return m.shareSnippet(c.args)
 	case "share-pane":
 		if len(c.args) > 1 {
 			return nil, errors.New("usage: /share-pane [pane id or label]")
 		}
 		return m.sharePane(c.rest)
+	case "pins":
+		ch, err := needChan()
+		if err != nil {
+			return nil, err
+		}
+		return m.showPins(ch), nil
 	case "search":
 		if c.rest == "" {
 			return nil, errors.New("usage: /search terms")
@@ -385,6 +393,12 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 		return nil, err
 	}
 	if cmd, ok, err := m.hookCommand(c); ok {
+		return cmd, err
+	}
+	if cmd, ok, err := m.groupCommand(c); ok {
+		return cmd, err
+	}
+	if cmd, ok, err := m.remindCommand(c); ok {
 		return cmd, err
 	}
 	return nil, fmt.Errorf("unknown command /%s", sanitize.Line(c.name))

@@ -116,7 +116,12 @@ func (c *Client) applySnapshot(s *session, sn proto.Snapshot) error {
 			}
 		}
 		for _, ch := range sn.Chans {
-			if err := upsertChan(tx, ch); err != nil {
+			if err := storeChan(tx, ch); err != nil {
+				return err
+			}
+		}
+		for _, g := range sn.Groups {
+			if err := storeGroup(tx, g); err != nil {
 				return err
 			}
 		}
@@ -260,6 +265,8 @@ func (c *Client) appliedElsewhere(ev proto.Event) Update {
 		if proto.Unmarshal(ev.Data, &m) == nil {
 			u.New = append(u.New, m)
 		}
+	case proto.KGroupUpdate:
+		u.Channels = true
 	}
 	if ev.Chan != 0 {
 		u.msgs(ev.Chan)
@@ -331,12 +338,28 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 			u.msgs(ch)
 		}
 		return noteReaction(tx, d, ev, me)
+	case proto.KPinAdd, proto.KPinRemove:
+		var d proto.MsgRef
+		if !decode(&d) || ev.Chan == 0 {
+			return nil
+		}
+		var err error
+		if ev.Kind == proto.KPinAdd {
+			err = addPin(tx, ev.Chan, d.Msg)
+		} else {
+			err = removePin(tx, d.Msg)
+		}
+		if err != nil {
+			return err
+		}
+		u.Channels = true
+		u.msgs(ev.Chan)
 	case proto.KChanNew, proto.KChanUpdate:
 		var ch proto.Channel
 		if !decode(&ch) || ch.ID == 0 {
 			return nil
 		}
-		if err := upsertChan(tx, ch); err != nil {
+		if err := storeChan(tx, ch); err != nil {
 			return err
 		}
 		u.Channels = true
@@ -349,7 +372,7 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 			if !slices.Contains(d.Chan.Members, d.User) {
 				d.Chan.Members = append(d.Chan.Members, d.User)
 			}
-			if err := upsertChan(tx, d.Chan); err != nil {
+			if err := storeChan(tx, d.Chan); err != nil {
 				return err
 			}
 		} else if err := setMember(tx, ev.Chan, d.User, true); err != nil {
@@ -381,6 +404,15 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		*newUser = &x
 		u.Users = true
 		u.Channels = true // DM display names
+	case proto.KGroupUpdate:
+		var g proto.Group
+		if !decode(&g) || !proto.ValidName(g.Name) {
+			return nil
+		}
+		if err := storeGroup(tx, g); err != nil {
+			return err
+		}
+		u.Channels = true // who a message mentions changed
 	case proto.KDeviceNew:
 		var d proto.Device
 		if !decode(&d) {
@@ -430,7 +462,7 @@ func (c *Client) msgChan(tx *sql.Tx, id, fallback uint64) uint64 {
 // forgetChan drops a channel we left: its messages and read marker go; a
 // public channel stays listed (it is still visible and joinable) without us.
 func (c *Client) forgetChan(tx *sql.Tx, id, me uint64) error {
-	for _, q := range []string{`DELETE FROM reacts WHERE msg IN (SELECT id FROM msgs WHERE chan = ?)`, `DELETE FROM msgs WHERE chan = ?`, `DELETE FROM reads WHERE chan = ?`, `DELETE FROM drafts WHERE chan = ?`, `DELETE FROM epochs WHERE chan = ?`, `DELETE FROM key_shares WHERE chan = ?`} {
+	for _, q := range []string{`DELETE FROM reacts WHERE msg IN (SELECT id FROM msgs WHERE chan = ?)`, `DELETE FROM msgs WHERE chan = ?`, `DELETE FROM reads WHERE chan = ?`, `DELETE FROM drafts WHERE chan = ?`, `DELETE FROM epochs WHERE chan = ?`, `DELETE FROM key_shares WHERE chan = ?`, `DELETE FROM pins WHERE chan = ?`} {
 		if _, err := tx.Exec(q, id); err != nil {
 			return err
 		}

@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS reacts (
 	msg INTEGER NOT NULL, actor INTEGER NOT NULL, emoji TEXT NOT NULL, time INTEGER NOT NULL,
 	PRIMARY KEY (msg, actor, emoji));
 CREATE INDEX IF NOT EXISTS reacts_time ON reacts (time);
-`
+` + pinsSchema + groupsSchema
 
 // dbtx is the subset of *sql.DB / *sql.Tx the cache helpers need.
 type dbtx interface {
@@ -180,7 +180,7 @@ func resetCache(q dbtx, serverID []byte) error {
 		}
 	}
 	for _, s := range []string{
-		`DELETE FROM users`, `DELETE FROM chans`, `DELETE FROM msgs`, `DELETE FROM reads WHERE dirty = 0`,
+		`DELETE FROM users`, `DELETE FROM chans`, `DELETE FROM msgs`, `DELETE FROM pins`, `DELETE FROM groups`, `DELETE FROM reads WHERE dirty = 0`,
 		`DELETE FROM devices`, `DELETE FROM device_endorse`, `DELETE FROM device_revokes`,
 		`DELETE FROM meta WHERE k = 'devices_full'`, `DELETE FROM epochs`, `DELETE FROM key_shares`,
 	} {
@@ -410,7 +410,7 @@ func matchOutbox(q dbtx, m proto.Message) error {
 
 // wipe empties the whole cache, outbox included (new login).
 func wipe(q dbtx) error {
-	for _, t := range []string{"meta", "users", "chans", "msgs", "reads", "outbox", "devices", "device_endorse", "device_revokes", "drafts", "highlights", "reacts", "epochs", "key_shares"} {
+	for _, t := range []string{"meta", "users", "chans", "msgs", "reads", "outbox", "devices", "device_endorse", "device_revokes", "drafts", "highlights", "reacts", "epochs", "key_shares", "pins", "groups"} {
 		if _, err := q.Exec(`DELETE FROM ` + t); err != nil {
 			return err
 		}

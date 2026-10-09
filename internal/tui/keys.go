@@ -30,6 +30,8 @@ const (
 	kSelReply   = "r"
 	kSelReact   = "+"
 	kSelCopy    = "y"
+	kSelPin     = "p"
+	kSelView    = "v"
 	kConfirmYes = "y"
 )
 
@@ -54,7 +56,7 @@ var helpLines = [][2]string{
 	{"End, Ctrl-End", "jump to newest"},
 	{"↑ (empty input)", "select messages"},
 	{"  e  d  r", "edit, delete, reply in thread"},
-	{"  +  y", "react, copy"},
+	{"  +  y  v  p", "react, copy, view full message, pin / unpin"},
 	{"  PgUp/PgDn  Home/End", "move by page / to ends"},
 	{"  r / d on failed", "retry / discard"},
 	{"Ctrl-U", "clear draft"},
@@ -70,11 +72,18 @@ var helpLines = [][2]string{
 	{"/name Display Name", "set your display name"},
 	{"/dm @a @b", "direct message"},
 	{"/search terms", "search; Enter jumps"},
+	{"/pins", "pinned messages here; Enter jumps"},
 	{"/highlight word…", "mark messages with these words like a mention (none: list)"},
 	{"/unhighlight word…", "stop highlighting"},
 	{"/away [status], /back", "presence"},
 	{"/invite", "invite code (admin)"},
 	{"/share-pane [pane]", "send a herdr pane's output (preview first)"},
+	{"/group name @a @b", "user group: @name mentions them all (admin; no users deletes)"},
+	{"/groups", "list the groups"},
+	{"/remind 10m text", "remind me in my notes (2h, 1d, 15:30, 9am, tomorrow 9am)"},
+	{"/reminders", "pending reminders with ids"},
+	{"/remind-delete id", "cancel a reminder"},
+	{"/snippet file[:range]", "send file lines as a code block (preview first)"},
 	{"/webhook name", "webhook here; copies curl"},
 	{"/webhooks", "list webhooks"},
 	{"/webhook-delete id", "delete a webhook"},

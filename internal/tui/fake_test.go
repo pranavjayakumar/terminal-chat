@@ -38,6 +38,19 @@ type fakeClient struct {
 	setErr   error // SetDraft fails with this
 	seen     int64 // activity seen time
 	activity []client.ActivityItem
+	pinOrder []uint64 // pinned message ids, newest pin first
+
+	groups    []proto.Group
+	reminders []proto.Reminder
+	reminded  []remindCall
+	remindErr error
+	nextRemID uint64
+}
+
+type remindCall struct {
+	at   time.Time
+	text string
+	ch   uint64
 }
 
 func newFake() *fakeClient {

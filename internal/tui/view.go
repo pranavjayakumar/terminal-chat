@@ -220,6 +220,10 @@ func (m *Model) bodyLines(d dims) []string {
 		return m.searchLines(w, h)
 	case modeActivity:
 		return m.activityLines(w, h)
+	case modeList:
+		return m.listLines(w, h)
+	case modeViewer:
+		return m.viewerLines(w, h)
 	case modePanePick:
 		return m.panePickLines(w, h)
 	case modeSharePreview:
@@ -357,6 +361,9 @@ func (m *Model) headerLeft(w int) string {
 	}
 	v, _ := m.chanView(m.active)
 	b.WriteString(m.st.header.Render(m.chanTitle(m.active)))
+	if n := len(v.Pins); n > 0 {
+		b.WriteString(m.st.dim.Render(" 📌 " + strconv.Itoa(n)))
+	}
 	if v.Kind == proto.ChanDM {
 		if others := m.dmOthers(v); len(others) == 1 {
 			if p := m.presence[others[0]]; p.State != "" {
@@ -607,6 +614,12 @@ func (m *Model) switcherLines(w, h int) []string {
 func (m *Model) searchLines(w, h int) []string {
 	s := &m.search
 	title := fmt.Sprintf("search “%s” — %d %s · Enter jumps, Esc closes", sanitize.Line(s.q), len(s.res), plural(len(s.res), "result", "results"))
+	if s.pins != 0 {
+		title = fmt.Sprintf("pinned in %s — %d · Enter jumps, Esc closes", m.chanTitle(s.pins), len(s.res))
+		if len(s.res) == 0 {
+			title = fmt.Sprintf("nothing pinned in %s · p pins the selected message · Esc closes", m.chanTitle(s.pins))
+		}
+	}
 	out := []string{fit(m.st.overlayTitle.Render(truncate(title, w)), w)}
 	start, end := window(len(s.res), s.sel, h-1)
 	for i := start; i < end; i++ {
@@ -616,6 +629,9 @@ func (m *Model) searchLines(w, h int) []string {
 			body = "message deleted"
 		}
 		l := fmt.Sprintf(" %s %s %s: %s", m.chanTitle(x.Chan), fmtWhen(x.Time), m.r.userName(x.Author), body)
+		if s.pins != 0 {
+			l = fmt.Sprintf(" %s · %s", m.r.userName(x.Author), body)
+		}
 		if i == s.sel {
 			out = append(out, fit(m.st.overlaySel.Render(fit(truncate(l, w), w)), w))
 		} else {

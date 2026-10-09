@@ -67,6 +67,15 @@ type Backend interface {
 	SetAway(away bool, status string) error
 	SetDisplay(ctx context.Context, display string) error
 	ThreadHistory(ctx context.Context, ch, root, before uint64) (bool, error)
+	Pin(ctx context.Context, msg uint64) error
+	Unpin(ctx context.Context, msg uint64) error
+	Pins(ch uint64) []client.Message
+	FetchPins(ctx context.Context, ch uint64) error
+	Groups() []proto.Group
+	SetGroup(ctx context.Context, name string, members []uint64) error
+	Remind(ctx context.Context, at time.Time, text string, ch uint64) (uint64, error)
+	Reminders(ctx context.Context) ([]proto.Reminder, error)
+	DeleteReminder(ctx context.Context, id uint64) error
 }
 
 var _ Backend = (*client.Client)(nil)
@@ -103,6 +112,9 @@ type Options struct {
 	Herdr Herdr
 	// AwayAfter sets presence to away after this long without a key; 0: never.
 	AwayAfter time.Duration
+
+	// SnippetDir is the base for relative /snippet paths; "": the working directory.
+	SnippetDir string
 
 	styles *styles // nil: from Out and NO_COLOR
 }

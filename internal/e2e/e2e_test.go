@@ -70,6 +70,7 @@ func writeKey(t *testing.T, dir string) string {
 type user struct {
 	*client.Client
 	cancel context.CancelFunc
+	home   string
 }
 
 func login(t *testing.T, s *srv, addr, name string, admin bool) *user {
@@ -91,7 +92,7 @@ func login(t *testing.T, s *srv, addr, name string, admin bool) *user {
 	}
 	rctx, rcancel := context.WithCancel(context.Background())
 	go c.Run(rctx)
-	u := &user{c, rcancel}
+	u := &user{Client: c, cancel: rcancel, home: home}
 	t.Cleanup(func() { rcancel(); c.Close() })
 	return u
 }

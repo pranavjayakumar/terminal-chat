@@ -834,16 +834,18 @@ func TestUpdatesCoalesce(t *testing.T) {
 	for i := range uint64(5) {
 		fc.event(30+i, proto.KMsgNew, general, bob, proto.Message{ID: 30 + i, Chan: general, Author: bob, Body: "x"})
 	}
-	waitFor(t, "events", func() bool { return lastSeq(t, c) == 34 })
+	// The Update for an event is posted just after its transaction commits,
+	// so keep draining until all five arrive rather than stopping at the
+	// first empty read after last_seq moves.
 	var merged Update
-	for {
+	deadline := time.After(5 * time.Second)
+	for len(merged.New) < 5 {
 		select {
 		case u := <-c.Updates():
 			merged = merged.merge(u)
-			continue
-		default:
+		case <-deadline:
+			t.Fatalf("merged = %+v", merged)
 		}
-		break
 	}
 	if !merged.Msgs[general] || len(merged.New) < 5 {
 		t.Fatalf("merged = %+v", merged)

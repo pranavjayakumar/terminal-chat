@@ -3,7 +3,7 @@
 Team chat that lives in your terminal (and your herdr panes). One small binary, Mac + Linux.
 
 - Instant start from a local cache, works offline, sends when you're back
-- Channels, private channels, DMs, threads, reactions, edits, search
+- Channels, private channels, DMs, threads, reactions, edits, search, pinned messages
 - Sign in with your existing SSH key — no passwords, no accounts to manage
 - Pipe anything into chat: `make test 2>&1 | tc send '#backend'`
 
@@ -31,15 +31,16 @@ tc                                    # chat
 | `Ctrl-K` | jump to any channel or person |
 | `Alt-A` | activity: mentions, replies to you, reactions, DMs (Enter jumps) |
 | `Alt-↑/↓` | previous / next channel (`Alt-Shift` for unread) |
-| `↑` on empty input | select a message: `e` edit · `d` delete · `r` thread · `+` react · `y` copy |
+| `↑` on empty input | select a message: `e` edit · `d` delete · `r` thread · `+` react · `y` copy · `v` view full · `p` pin/unpin |
 | `Esc` | back out of anything |
 | `F1` or `/help` | all keys and commands |
 | `Ctrl-C` twice | quit |
 
-Commands: `/join #x` `/create #x [--private]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/activity` `/highlight [word…]` `/unhighlight word…` `/away [status]` `/back` `/share-pane [pane]` `/invite` (admin) `/webhook name` `/webhooks` `/webhook-delete id`.
+Commands: `/join #x` `/create #x [--private]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/pins` `/activity` `/highlight [word…]` `/unhighlight word…` `/group name @a @b` (admin) `/groups` `/remind <when> <text>` `/reminders` `/remind-delete id` `/away [status]` `/back` `/snippet file[:range]` `/share-pane [pane]` `/invite` (admin) `/webhook name` `/webhooks` `/webhook-delete id`.
 
 Unsent text is kept per channel and thread (a dim `✎` in the sidebar marks channels with a draft) and
-survives restarts. `/highlight deploy oncall` makes those words count like an @mention: marker, unread
+survives restarts. `/remind 10m stand up` or `/remind tomorrow 9am …` posts `⏰ …` in your private notes on time, even
+if tc is closed. An admin's `/group oncall @alice @bob` makes `@oncall` mention both. `/highlight deploy oncall` makes those words count like an @mention: marker, unread
 `@` badge and notification.
 
 From the shell:
@@ -47,6 +48,8 @@ From the shell:
 ```sh
 tc send '#general' deploy finished          # message
 kubectl logs pod/api | tc send @priya        # piped → code block (colors stripped)
+(git diff) | tc send '#review'               # a diff block, colored in tc
+tc send '#backend' --file pkg/db.go:40-60 look at this   # lines 40-60 as a code block + permalink
 tc tail '#deploys'                           # stream a channel
 ```
 

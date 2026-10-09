@@ -28,6 +28,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
   time/author. Day separators (`── Tue 9 Oct ──`). Wrapped bodies align under the body column.
 - Pending (outbox) messages render dim; failed ones show `! failed — r to retry, d to discard`.
 - Edited: dim ` (edited)`. Deleted: dim italic `message deleted`.
+- Pinned messages end with a dim `📌` on their footer line; the header shows a dim `📌 N` when the channel has pins.
 - Reactions on a line below: `👍 2  🎉 1` (your own reactions highlighted).
 - Thread roots show `↳ N replies`; threads open in a right pane (or full width below 100 cols).
 - Typing line above the input; nothing when nobody is typing.
@@ -42,6 +43,11 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
   when it only contains one of my highlight words.
 - Author colors: stable hash of user id into an 8-color palette that reads on dark and light terminals.
   Respect `NO_COLOR` (no colors, keep bold/dim).
+- Fenced blocks: an info string (```` ```go ````) shows a dim right-aligned label on the block's first line
+  when it fits next to that line's text (no syntax highlighting). A ```` ```diff ```` block, or an unlabeled
+  block that looks like a unified diff (`diff --git`, or `---`/`+++` headers plus `@@ -` hunk), colors `+` green,
+  `-` red, `@@` dim cyan, file headers dim bold; under `NO_COLOR` only the `+`/`-` markers remain. The full-message
+  viewer (`v`) colors diffs the same way. `git diff | tc send` produces a diff block automatically.
 - Width math uses display width (runewidth), never byte or rune counts.
 
 ## Keys
@@ -55,7 +61,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 | `Alt-Shift-↑/↓` | previous / next unread channel |
 | `PgUp/PgDn`, mouse wheel | scroll history (fetches older via History at top) |
 | `↑` on empty input | select messages mode (↑/↓ moves selection) |
-| in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (prompt for emoji; `+1`, `:tada:` shortcuts), `y` copy body (OSC 52), `Esc` leave |
+| in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (prompt for emoji; `+1`, `:tada:` shortcuts), `y` copy body (OSC 52), `p` pin / unpin (notice "pinned" / "unpinned"), `Esc` leave |
 | `Esc` | close thread / switcher / select mode; never quits |
 | `Ctrl-C` twice, or `/quit` | quit |
 | `F1` or `/help` | help overlay (`?` is just text, so messages can start with it) |
@@ -63,8 +69,10 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 ## Slash commands
 
 `/join #x`, `/leave`, `/create #x [--private]`, `/add @user`, `/topic text`, `/dm @a @b`,
-`/invite` (admin; prints code), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps),
-`/activity`, `/highlight [word…]`, `/unhighlight word…`, `/share-pane [pane]` (herdr only), `/quit`.
+`/invite` (admin; prints code), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps), `/pins` (overlay of this channel's pinned messages, newest pin first, as `author · preview`; Enter jumps, Esc closes),
+`/activity`, `/highlight [word…]`, `/unhighlight word…`, `/group name @a @b…` (admin), `/groups`,
+`/remind <when> <text>`, `/reminders`, `/remind-delete id`, `/snippet path[:range] [message]`,
+`/share-pane [pane]` (herdr only), `/quit`.
 Unknown command → inline error, input kept.
 
 ## Behavior
@@ -109,6 +117,34 @@ Unknown command → inline error, input kept.
   neither does text inside a fenced code block (pasted logs would match everything).
 - The words are re-read from the cache on every channel update, so a `/highlight` made in another pane
   takes effect here without a restart; `/highlight` and `/unhighlight` work on the fresh list.
+
+## User groups
+
+- `/group oncall @alice @bob` (admin) sets the group `@oncall` to exactly those people; `/group oncall` with
+  no people deletes it; `/groups` lists them in a read-only overlay (`↑/↓` move, `Esc` closes; it reads the
+  cache, so it works offline). Names follow the channel/user name rule, can't be a user's name and can't end
+  in `-bot`; at most 50 members.
+- A message **by a person** containing `@oncall` (whole word, like `@name`) counts as an `@mention` for each
+  member: `▎` gutter marker, `@` unread badge, activity view "mention" item, and the notification rules
+  below. Bots' messages and my own never do. The groups come from the client cache and follow
+  `group.update` events live.
+
+## Reminders
+
+- `/remind <when> <text>` asks the **server** to post `⏰ <text>` in my private notes (the DM with only
+  me) at that time, so it fires with tc closed; a reminder due while the server was down arrives when it
+  restarts. If set from a channel (not from the notes) the text gets ` (from #channel)` while I can still
+  read it.
+- `<when>`, optionally after `in` or `at`: `10m` `2h` `1d` `1w` `1h30m` (from now); `15:30`, `9:05`, `9am`,
+  `9:30pm` (the next time my wall clock shows that: today, or tomorrow if it has passed; `12am` is
+  midnight); `tomorrow 9am` / `tomorrow 15:30`. Times are the local zone's wall-clock time, converted to an
+  absolute time on this machine before sending; "tomorrow" is the next calendar day even across a
+  daylight-saving change. At most a year ahead, 4 KiB of text, 100 pending per user.
+- `/reminders` lists mine with ids in an overlay (`id  when  text (from #chan)`); `/remind-delete id`
+  cancels one.
+- A delivered reminder is my own message, which never notifies, with one exception: a message of mine in my
+  notes that starts with `⏰ ` notifies (`⏰ Reminder`, the text) unless I'm looking at the notes, and
+  counts as unread (`@` badge) until read.
 
 ## Activity view
 
@@ -182,6 +218,11 @@ and are not listed; they appear in the log as usual. Rows are kept for the newes
   --source recent --lines 60`) are stripped of escape sequences and shown in a preview that is
   exactly the message to be sent: ``📋 `label` `` + a fenced block. Enter sends to the current
   channel (or open thread), Esc cancels. Over 64 KiB keeps the tail with a `… (N bytes truncated)` note.
+- **`/snippet path[:start[-end]] [message]`**: reads the file (relative to the directory tc was started in),
+  `:N` = line N +/- 3, no range = whole file (error over ~63 KiB, binary or non-UTF-8). Builds the same message as
+  `tc send --file`: optional text, a header `` `path:40-60` `` plus a GitHub/GitLab permalink at HEAD (or
+  `(uncommitted)` and no link if the file is untracked or modified), and a fenced block with the language from the
+  extension. Shown in the /share-pane preview: Enter sends, Esc cancels.
 - **Auto-away**: after `TC_AWAY_MIN` minutes (default 15, `0` disables) without a key press the
   presence goes away; the next key brings it back. A manual `/away` is never overridden (only
   `/back` ends it).

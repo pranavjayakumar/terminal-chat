@@ -132,6 +132,7 @@ func (c *Client) activity(q dbtx, me proto.User, limit int) []ActivityItem {
 		return in && !bots[m.Author]
 	}
 	words := highlightsOf(q)
+	names := mentionNames(q, me)
 	floorID, floorTime := scanFloor(q)
 	seen := map[uint64]bool{}
 	var out []ActivityItem
@@ -142,12 +143,12 @@ func (c *Client) activity(q dbtx, me proto.User, limit int) []ActivityItem {
 	}
 
 	// Mentions and highlights.
-	filter, fargs := highlightFilter("m.body", me.Name, words)
+	filter, fargs := highlightFilter("m.body", names, words)
 	scanMsgs(q, `SELECT `+msgCols+` FROM msgs m WHERE m.id >= ? AND m.time >= ? AND m.author != ? AND m.deleted = 0 AND `+filter+` ORDER BY m.id DESC`,
 		append([]any{floorID, floorTime, me.ID}, fargs...), limit, func(m proto.Message) bool {
 			switch {
 			case !ok(m):
-			case mentions(m.Body, me.Name):
+			case Mentioned(m.Body, names):
 				add(ActMention, m)
 				return true
 			case Highlighted(m.Body, words):

@@ -789,7 +789,8 @@ func TestE2EChannelCreation(t *testing.T) {
 	if c := open(alice, bob.user.ID); !c.E2E || c.Epoch != 0 {
 		t.Fatalf("e2e1 DM %+v", c)
 	}
-	if c := open(alice); !c.E2E {
+	// Private notes stay plaintext: the server writes reminders into them.
+	if c := open(alice); c.E2E {
 		t.Fatalf("notes %+v", c)
 	}
 	if c := open(old, bob.user.ID); c.E2E {

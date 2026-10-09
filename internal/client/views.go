@@ -14,6 +14,7 @@ import (
 type Message struct {
 	proto.Message
 	Replies int
+	Pinned  bool // currently pinned in its channel
 	Pending bool
 	Failed  string
 	Local   int64
@@ -61,8 +62,9 @@ func (c *Client) Channels() []ChannelView {
 	// A mention is @me or one of my highlight keywords. The SQL narrows the
 	// rows; Go applies the exact whole-word rules.
 	words := c.Highlights()
+	names := c.MentionNames()
 	mention := map[uint64]bool{}
-	filter, fargs := highlightFilter("m.body", me.Name, words)
+	filter, fargs := highlightFilter("m.body", names, words)
 	if mrows, err := c.db.Query(`SELECT m.chan, m.body FROM msgs m LEFT JOIN reads r ON r.chan = m.chan
 		WHERE m.id > COALESCE(r.seq, 0) AND m.author != ? AND m.deleted = 0 AND `+filter+`
 		AND m.author NOT IN (SELECT id FROM users WHERE bot = 1)`,
@@ -70,20 +72,30 @@ func (c *Client) Channels() []ChannelView {
 		for mrows.Next() {
 			var ch uint64
 			var body string
-			if mrows.Scan(&ch, &body) == nil && !mention[ch] && (mentions(body, me.Name) || Highlighted(body, words)) {
+			if mrows.Scan(&ch, &body) == nil && !mention[ch] && (Mentioned(body, names) || Highlighted(body, words)) {
 				mention[ch] = true
 			}
 		}
 		mrows.Close()
 	}
 
+	pins := c.pinIDs()
 	for i := range out {
 		v := &out[i]
+		v.Pins = pins[v.ID]
 		v.Read, v.Last = reads[v.ID], last[v.ID]
 		v.Display = c.displayName(v.Channel, me.ID)
 		if v.Member {
 			v.Unread = int(unread[v.ID])
 			v.Mention = mention[v.ID] || (v.Kind == proto.ChanDM && human[v.ID] > 0)
+			// Reminders are my own messages, which never count as unread,
+			// but they exist to be noticed.
+			if v.Kind == proto.ChanDM && len(v.Members) == 1 {
+				if n := c.unreadReminders(v.ID, me.ID); n > 0 {
+					v.Unread += n
+					v.Mention = true
+				}
+			}
 		}
 	}
 	slices.SortFunc(out, func(a, b ChannelView) int {
@@ -175,6 +187,7 @@ func (c *Client) Messages(ch uint64, limit int) []Message {
 	}
 	out := c.queryMsgs(`SELECT `+msgCols+`, (SELECT COUNT(*) FROM msgs r WHERE r.thread = m.id)
 		FROM (SELECT * FROM msgs WHERE chan = ? AND thread = 0 ORDER BY id DESC LIMIT ?) m ORDER BY id`, ch, limit)
+	c.markPinned(out)
 	return append(out, c.outboxMsgs(`chan = ? AND thread = 0`, ch)...)
 }
 
@@ -183,6 +196,7 @@ func (c *Client) Thread(root uint64) []Message {
 	out := c.queryMsgs(`SELECT `+msgCols+`, (SELECT COUNT(*) FROM msgs r WHERE r.thread = m.id)
 		FROM msgs m WHERE id = ?`, root)
 	out = append(out, c.queryMsgs(`SELECT `+msgCols+`, 0 FROM msgs WHERE thread = ? ORDER BY id`, root)...)
+	c.markPinned(out)
 	return append(out, c.outboxMsgs(`thread = ?`, root)...)
 }
 

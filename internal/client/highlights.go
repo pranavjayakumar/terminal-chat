@@ -198,14 +198,19 @@ func containsWord(s, w string) bool {
 func isWordRune(r rune) bool { return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) }
 
 // highlightFilter is an SQL prefilter for messages that may mention the user
+// (by name or through a group, names)
 // or contain a keyword. LIKE is only case-insensitive for ASCII, so a
 // non-ASCII keyword is looked for in tc_lower(body), Go's strings.ToLower
 // as an SQL function: the same lowercasing the exact check uses, without
 // decoding the row into a Message first. The result is a parenthesised OR
 // with its arguments.
-func highlightFilter(col, meName string, words []string) (string, []any) {
-	conds := []string{col + ` LIKE ? ESCAPE '\'`}
-	args := []any{"%@" + likeEscape(meName) + "%"}
+func highlightFilter(col string, names, words []string) (string, []any) {
+	var conds []string
+	var args []any
+	for _, n := range names {
+		conds = append(conds, col+` LIKE ? ESCAPE '\'`)
+		args = append(args, "%@"+likeEscape(n)+"%")
+	}
 	for _, w := range words {
 		if !isASCII(w) {
 			conds = append(conds, `instr(tc_lower(`+col+`), ?) > 0`)
@@ -214,6 +219,9 @@ func highlightFilter(col, meName string, words []string) (string, []any) {
 		}
 		conds = append(conds, col+` LIKE ? ESCAPE '\'`)
 		args = append(args, "%"+likeEscape(w)+"%")
+	}
+	if len(conds) == 0 {
+		return "(0)", nil
 	}
 	return "(" + strings.Join(conds, " OR ") + ")", args
 }
