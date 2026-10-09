@@ -88,6 +88,14 @@ func (c *Client) Channels() []ChannelView {
 		if v.Member {
 			v.Unread = int(unread[v.ID])
 			v.Mention = mention[v.ID] || (v.Kind == proto.ChanDM && human[v.ID] > 0)
+			// Reminders are my own messages, which never count as unread,
+			// but they exist to be noticed.
+			if v.Kind == proto.ChanDM && len(v.Members) == 1 {
+				if n := c.unreadReminders(v.ID, me.ID); n > 0 {
+					v.Unread += n
+					v.Mention = true
+				}
+			}
 		}
 	}
 	slices.SortFunc(out, func(a, b ChannelView) int {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/skailama/tc/internal/proto"
 )
@@ -240,4 +241,14 @@ func sameDay(t time.Time, y int, m time.Month, d int) bool {
 	ty, tm, td := t.Date()
 	ny, nm, nd := time.Date(y, m, d, 0, 0, 0, 0, t.Location()).Date()
 	return ty == ny && tm == nm && td == nd
+}
+
+// unreadReminders counts delivered reminders in my notes ch after my read
+// marker.
+func (c *Client) unreadReminders(ch, me uint64) int {
+	var n int
+	_ = c.db.QueryRow(`SELECT COUNT(*) FROM msgs m LEFT JOIN reads r ON r.chan = m.chan
+		WHERE m.chan = ? AND m.author = ? AND m.deleted = 0 AND m.id > COALESCE(r.seq, 0)
+		AND substr(m.body, 1, ?) = ?`, ch, me, utf8.RuneCountInString(proto.RemindPrefix), proto.RemindPrefix).Scan(&n)
+	return n
 }
