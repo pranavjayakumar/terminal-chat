@@ -239,7 +239,7 @@ func TestKeyRotateRejects(t *testing.T) {
 	rot(alice, 999999, bundle(t, a1, sid, 999999, 1, nil, roster, a1, b1), proto.ErrNotFound)
 	rot(carol, ch.ID, bundle(t, c1, sid, ch.ID, 1, nil, roster, a1, b1), proto.ErrForbidden) // not a member
 	rot(alice, plain.Chan.ID, bundle(t, a1, sid, plain.Chan.ID, 1, nil, []uint64{alice.user.ID}, a1), proto.ErrBadRequest)
-	rot(alice, gen, bundle(t, a1, sid, gen, 1, nil, roster, a1, b1), proto.ErrBadRequest) // not encrypted
+	rot(alice, gen, bundle(t, a1, sid, gen, 1, nil, roster, a1, b1), proto.ErrBadRequest)    // not encrypted
 	rot(alice, ch.ID, bundle(t, b1, sid, ch.ID, 1, nil, roster, a1, b1), proto.ErrForbidden) // bob's device
 	rot(alice, ch.ID, bundle(t, a2, sid, ch.ID, 1, nil, roster, a1, b1), proto.ErrForbidden) // revoked device
 	rot(alice, ch.ID, bundle(t, newDevKeys(t), sid, ch.ID, 1, nil, roster, a1, b1), proto.ErrForbidden)
