@@ -150,7 +150,7 @@ func TestDeviceRegisteredOnceAndEventsApplied(t *testing.T) {
 	fc2.noReq(proto.OpDeviceRegister, 300*time.Millisecond)
 
 	// A restarted process reuses the same device keys.
-	keys1, err := loadDeviceKeys(home, testSID(), alice)
+	keys1, err := loadDeviceKeys(home, testSID(), alice, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,20 +206,132 @@ func TestDeviceFullListAfterUpgrade(t *testing.T) {
 
 func TestDeviceKeyFileReplacedForOtherLogin(t *testing.T) {
 	home := t.TempDir()
-	a, err := loadDeviceKeys(home, testSID(), alice)
+	a, err := loadDeviceKeys(home, testSID(), alice, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, err := loadDeviceKeys(home, testSID(), alice)
+	again, err := loadDeviceKeys(home, testSID(), alice, nil)
 	if err != nil || again.ID != a.ID {
 		t.Fatalf("reload: %v", err)
 	}
-	other, err := loadDeviceKeys(home, e2ecrypto.ServerID{1}, alice)
+	other, err := loadDeviceKeys(home, e2ecrypto.ServerID{1}, alice, nil)
 	if err != nil || other.ID == a.ID {
 		t.Fatalf("other server got the same device: %v", err)
 	}
-	b, err := loadDeviceKeys(home, e2ecrypto.ServerID{1}, bob)
+	b, err := loadDeviceKeys(home, e2ecrypto.ServerID{1}, bob, nil)
 	if err != nil || b.ID == other.ID {
 		t.Fatalf("other user got the same device: %v", err)
+	}
+}
+
+// A device whose revoke we can verify ourselves is retired: the client
+// re-keys and registers as a new device. A revoke we can't check is ignored.
+func TestRevokedDeviceReKeys(t *testing.T) {
+	testEnv(t)
+	fs := newFakeServer(t)
+	fs.caps.Store([]string{proto.CapE2E})
+	home := login(t, fs)
+	c := open(t, home)
+	run(t, c)
+	fc := fs.accept()
+	r := fc.expectReq(proto.OpSync, nil)
+	fc.ok(r.ID, proto.SyncRes{Head: 20, Reset: true})
+	r = fc.expectReq(proto.OpDevicesList, nil)
+	fc.ok(r.ID, proto.DevicesListRes{})
+	mine := fc.expectRegister(fs, 21)
+	old, _ := identity.PeekDeviceCert(identity.Signed(mine))
+
+	// Forged: "revoked" by a key that isn't ours.
+	_, _, strangerSSH := bobDevice(t)
+	fake, _ := identity.NewDeviceRevoke(strangerSSH, testSID(), alice, old.Dev, time.Now())
+	fc.conn.Close()
+	fc = fs.accept()
+	r = fc.expectReq(proto.OpSync, nil)
+	fc.ok(r.ID, proto.SyncRes{Head: 21})
+	r = fc.expectReq(proto.OpDevicesList, nil)
+	fc.ok(r.ID, proto.DevicesListRes{Certs: []proto.Signed{mine}, Revoked: []proto.Signed{proto.Signed(fake)}})
+	fc.noReq(proto.OpDeviceRegister, 300*time.Millisecond)
+
+	// Real: signed by our own SSH key.
+	signer, err := identity.Load(c.Config().KeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	real, _ := identity.NewDeviceRevoke(signer, testSID(), alice, old.Dev, time.Now())
+	fc.conn.Close()
+	fc = fs.accept()
+	r = fc.expectReq(proto.OpSync, nil)
+	fc.ok(r.ID, proto.SyncRes{Head: 21})
+	r = fc.expectReq(proto.OpDevicesList, nil)
+	fc.ok(r.ID, proto.DevicesListRes{Certs: []proto.Signed{mine}, Revoked: []proto.Signed{proto.Signed(real)}})
+	fresh := fc.expectRegister(fs, 22)
+	nc, _ := identity.PeekDeviceCert(identity.Signed(fresh))
+	if nc.Dev == old.Dev || nc.Ed25519.Equal(old.Ed25519) {
+		t.Fatal("revoked device registered again with its old keys")
+	}
+	if k, _ := loadDeviceKeys(home, testSID(), alice, nil); k.ID != nc.Dev {
+		t.Fatal("new keys not persisted")
+	}
+}
+
+// After a session without e2e1 (device events skipped), the next e2e1
+// session lists everyone again even if a full list was cached before.
+func TestDevicesFullClearedByNonE2ESession(t *testing.T) {
+	testEnv(t)
+	fs := newFakeServer(t)
+	fs.caps.Store([]string{proto.CapE2E})
+	home := login(t, fs)
+	c := open(t, home)
+	run(t, c)
+	fc := fs.accept()
+	r := fc.expectReq(proto.OpSync, nil)
+	fc.ok(r.ID, proto.SyncRes{Head: 20, Reset: true})
+	var la proto.DevicesListArgs
+	r = fc.expectReq(proto.OpDevicesList, &la)
+	if len(la.Users) != 1 {
+		t.Fatalf("after e2e1 reset: list %+v", la)
+	}
+	fc.ok(r.ID, proto.DevicesListRes{})
+	fc.expectRegister(fs, 21)
+	waitFor(t, "seq 21", func() bool { return lastSeq(t, c) == 21 })
+
+	fs.caps.Store([]string(nil))
+	fc.conn.Close()
+	fc = fs.accept()
+	r = fc.expectReq(proto.OpSync, nil)
+	fc.ok(r.ID, proto.SyncRes{Head: 30})
+	waitFor(t, "seq 30", func() bool { return lastSeq(t, c) == 30 })
+
+	fs.caps.Store([]string{proto.CapE2E})
+	fc.conn.Close()
+	fc = fs.accept()
+	r = fc.expectReq(proto.OpSync, nil)
+	fc.ok(r.ID, proto.SyncRes{Head: 30})
+	var again proto.DevicesListArgs
+	r = fc.expectReq(proto.OpDevicesList, &again)
+	if len(again.Users) != 0 {
+		t.Fatalf("after a non-e2e1 session: list %+v, want everyone", again)
+	}
+}
+
+func TestDeviceKeysConcurrentFirstUse(t *testing.T) {
+	home := t.TempDir()
+	ids := make(chan e2ecrypto.DevID, 8)
+	for range 8 {
+		go func() {
+			k, err := loadDeviceKeys(home, testSID(), alice, nil)
+			if err != nil {
+				t.Error(err)
+				ids <- e2ecrypto.DevID{}
+				return
+			}
+			ids <- k.ID
+		}()
+	}
+	first := <-ids
+	for range 7 {
+		if id := <-ids; id != first {
+			t.Fatal("concurrent first use produced different device keys")
+		}
 	}
 }

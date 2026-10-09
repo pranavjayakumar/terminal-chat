@@ -39,8 +39,15 @@ func (c *Client) syncHook(s *session) func(proto.Res) error {
 					return err
 				}
 			}
-			// An e2e1 reset snapshot carried every device.
-			if sr.Reset && s.e2e() {
+			// An e2e1 reset snapshot carried every device. A session without
+			// e2e1 skips device events while last_seq moves on, so the next
+			// e2e1 session must fetch the full list again.
+			switch {
+			case !s.e2e():
+				if _, err := tx.Exec(`DELETE FROM meta WHERE k = 'devices_full'`); err != nil {
+					return err
+				}
+			case sr.Reset:
 				if err := setMeta(tx, "devices_full", 1); err != nil {
 					return err
 				}
