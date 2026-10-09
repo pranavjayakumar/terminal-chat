@@ -178,8 +178,10 @@ Rules:
   it unless `name` already ends in it (`ci` → `ci-bot`); the result must follow the
   user-name rule (§9, so at most 32 bytes including `-bot`) or → `bad_request`. People can't
   register names ending in `-bot` (§4), so bots never squat a person's name. An existing bot
-  with that name is reused, otherwise one is created (`user.new`); a human with that name →
-  `conflict`. If the bot isn't a member of `chan` it is added (`chan.join`, actor = caller).
+  with that name is reused only by its owner (the user whose `hook.create` created it) or an
+  admin; anyone else → `conflict`. Otherwise a new bot is created (`user.new`) and owned by
+  the caller; a human with that name → `conflict`. If the bot isn't a member of `chan` it is
+  added (`chan.join`, actor = caller).
   The result's `name` is the bot's name.
   `url` is secret and returned only here. **hook.list** returns hooks in channels the caller
   currently belongs to (admins: all). **hook.delete**: the creator, an admin, or any current

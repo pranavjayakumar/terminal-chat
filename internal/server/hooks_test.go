@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -413,5 +415,63 @@ func TestHookText(t *testing.T) {
 	}
 	if !validHookToken(newHookToken()) || validHookToken("AAAAAAAAAAAAAAAAAAAAAAAAAA") {
 		t.Fatal("token shape")
+	}
+}
+
+// TestBotTakeover: a bot is reused only by its owner or an admin (M1).
+func TestBotTakeover(t *testing.T) {
+	ts := startHookServer(t)
+	admin := ts.register(t, "root", true)
+	admin.syncFresh()
+	alice := ts.register(t, "alice", false)
+	snap, _ := alice.syncFresh()
+	bob := ts.register(t, "bob", false)
+	bob.syncFresh()
+	gen := generalID(t, snap)
+
+	alice.createHook(gen, "deploy")
+	alice.createHook(gen, "deploy") // the owner may reuse it
+	bob.fail(proto.OpHookCreate, proto.HookCreateArgs{Chan: gen, Name: "deploy"}, proto.ErrConflict)
+	bob.fail(proto.OpHookCreate, proto.HookCreateArgs{Chan: gen, Name: "deploy-bot"}, proto.ErrConflict)
+	admin.createHook(gen, "deploy")
+	if h := bob.createHook(gen, "bobs"); h.Name != "bobs-bot" {
+		t.Fatalf("name %q", h.Name)
+	}
+}
+
+// TestBotOwnerMigration: bots from before owners existed belong to the
+// creator of their first hook.
+func TestBotOwnerMigration(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "tc.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The pre-owner shape of users and hooks.
+	for _, q := range []string{
+		`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, display TEXT NOT NULL DEFAULT '',
+			admin INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL,
+			bot INTEGER NOT NULL DEFAULT 0)`,
+		`CREATE TABLE hooks (id INTEGER PRIMARY KEY, token TEXT NOT NULL UNIQUE, chan INTEGER NOT NULL,
+			bot INTEGER NOT NULL, name TEXT NOT NULL, created_by INTEGER NOT NULL, created INTEGER NOT NULL)`,
+		`INSERT INTO users (id, name, created) VALUES (1, 'alice', 0), (2, 'bob', 0)`,
+		`INSERT INTO users (id, name, created, bot) VALUES (3, 'ci', 0, 1), (4, 'lost', 0, 1)`,
+		`INSERT INTO hooks (token, chan, bot, name, created_by, created) VALUES ('t1', 1, 3, 'ci', 2, 0), ('t2', 1, 3, 'ci', 1, 0)`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	st, err := openStore(filepath.Join(dir, "tc.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.close()
+	for id, want := range map[int]int{3: 2, 4: 0} {
+		var owner int
+		if err := st.db.QueryRow(`SELECT bot_owner FROM users WHERE id = ?`, id).Scan(&owner); err != nil || owner != want {
+			t.Fatalf("bot %d owner %d (%v), want %d", id, owner, err, want)
+		}
 	}
 }

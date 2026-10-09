@@ -36,19 +36,40 @@ const (
 	hookPerSec = 1
 )
 
-// migrateHooks adds the webhook tables and the users.bot column to
-// databases created before webhooks existed.
+// migrateHooks adds the webhook tables and the users.bot and users.bot_owner
+// columns to databases created before they existed.
 func migrateHooks(db *sql.DB) error {
 	if _, err := db.Exec(hooksSchema); err != nil {
 		return fmt.Errorf("creating hooks schema: %w", err)
 	}
+	if err := addColumn(db, "users", "bot", `INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	var had int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'bot_owner'`).Scan(&had); err != nil {
+		return err
+	}
+	if err := addColumn(db, "users", "bot_owner", `INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	if had == 0 {
+		// Bots made before owners existed belong to whoever made their first hook.
+		if _, err := db.Exec(`UPDATE users SET bot_owner = COALESCE(
+			(SELECT created_by FROM hooks WHERE hooks.bot = users.id ORDER BY id LIMIT 1), 0) WHERE bot = 1`); err != nil {
+			return fmt.Errorf("backfilling users.bot_owner: %w", err)
+		}
+	}
+	return nil
+}
+
+func addColumn(db *sql.DB, table, col, def string) error {
 	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'bot'`).Scan(&n); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, col).Scan(&n); err != nil {
 		return err
 	}
 	if n == 0 {
-		if _, err := db.Exec(`ALTER TABLE users ADD COLUMN bot INTEGER NOT NULL DEFAULT 0`); err != nil {
-			return fmt.Errorf("adding users.bot: %w", err)
+		if _, err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + col + ` ` + def); err != nil {
+			return fmt.Errorf("adding %s.%s: %w", table, col, err)
 		}
 	}
 	return nil
@@ -160,16 +181,19 @@ func (s *Server) opHookCreate(ctx context.Context, u proto.User, a proto.HookCre
 		}
 		now := s.now()
 		var evs []proto.Event
-		var botID uint64
+		var botID, owner uint64
 		var isBot, disabled bool
-		err := tx.QueryRowContext(ctx, `SELECT id, bot, disabled FROM users WHERE name = ?`, a.Name).Scan(&botID, &isBot, &disabled)
+		err := tx.QueryRowContext(ctx, `SELECT id, bot, disabled, bot_owner FROM users WHERE name = ?`, a.Name).Scan(&botID, &isBot, &disabled, &owner)
 		switch {
 		case err == nil && !isBot:
 			return nil, proto.Errf(proto.ErrConflict, "that name belongs to a person")
 		case err == nil && disabled:
 			return nil, proto.Errf(proto.ErrConflict, "that bot is disabled")
+		case err == nil && owner != u.ID && !u.Admin:
+			// Otherwise anyone could post as someone else's trusted bot.
+			return nil, proto.Errf(proto.ErrConflict, "that bot belongs to someone else; pick another name")
 		case errors.Is(err, sql.ErrNoRows):
-			r, err := tx.ExecContext(ctx, `INSERT INTO users (name, created, bot) VALUES (?, ?, 1)`, a.Name, now)
+			r, err := tx.ExecContext(ctx, `INSERT INTO users (name, created, bot, bot_owner) VALUES (?, ?, 1, ?)`, a.Name, now, u.ID)
 			if err != nil {
 				return nil, err
 			}
