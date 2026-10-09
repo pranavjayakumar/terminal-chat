@@ -188,10 +188,10 @@ type Client struct {
 	keyNeeds chan proto.Ephemeral
 	myDev    atomic.Pointer[e2ecrypto.DevID] // this device's id, once known (ourDev)
 	// under mu:
-	e2eSoft   map[uint64]string // channel → why its next bundle can't be judged yet
-	needSent  map[uint64]time.Time
-	shared    map[shareKey]time.Time
-	autoTried map[uint64]time.Time
+	e2eSoft      map[uint64]string // channel → why its next bundle can't be judged yet
+	needSent     map[uint64]time.Time
+	shared       map[shareKey]time.Time
+	autoTried    map[uint64]time.Time
 	badCerts     map[[32]byte]struct{} // hashes of certs that failed verification
 	needVerified time.Time             // last verifyDevices run from answerKeyNeed
 	certVerifies atomic.Int64          // cert signature checks (tests)

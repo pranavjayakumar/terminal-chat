@@ -89,7 +89,6 @@ const (
 	// needVerifyEvery: answerKeyNeed re-runs device verification for an
 	// unknown device at most this often.
 	needVerifyEvery = 10 * time.Second
-
 )
 
 func (s *session) serverID() (e2ecrypto.ServerID, bool) {
