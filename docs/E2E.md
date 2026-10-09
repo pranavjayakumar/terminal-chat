@@ -124,7 +124,7 @@ Libraries (all pure Go, keeps `CGO_ENABLED=0`): `crypto/ecdh`, `crypto/ed25519`,
 ```
 EpochBundle.b = {v:1, server_id, chan: u64, epoch: u32 (first = 1), prev: bin32 (H(prev b), 0 for 1),
   roster: [u64] sorted distinct, by: bin16 (rotator dev), time: i64, kc: bin32, eph: bin32,
-  boxes: [{dev: bin16, ct: bin48}], back?: bin56}
+  boxes: [{dev: bin16, ct: bin48}], back?: bin72}
 sig = Ed25519(by, "tc-epoch-v1\x00" || b);  eh = H(b)[:16]
 K random 32B; kc = HMAC-SHA256(K, "tc-kc-v1" || server_id || chan || epoch)
 box(d): ss = X25519(eph_priv, d.x25519); bk = HKDF(ss, salt = eph || d.x25519, info "tc-box-v1");
@@ -188,7 +188,7 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
 3. Client trust store `e2e.db`: survives reset; concurrent processes.
 4. Proto+server devices: `e2e1`, device ops/events, snapshot `devs`, limits (protocol-guardian).
 5. Server epochs: `key.rotate` CAS/roster/staleness, `key.fetch`, `key.epoch`, ordering, rate cap.
-6. Client bundle logic: verify chain/kc/backlinks, lazy decrypt queue, `key.need/share`.
+6. Client bundle logic: verify chain/kc/backlinks, lazy decrypt queue, `key.need/share`; reject bundles with duplicate recipient X25519 keys (one ephemeral + zero nonce per box means a duplicate would reuse key+nonce).
 7. Encrypted send e2e: outbox stores enc once, stale_epoch retry same nonce, DMs epoch 1, self-DM.
 8. Encrypted edit/delete/react, thread_ref, HMAC emoji, local FTS.
 9. `chan.add{bundle}`, `chan.remove`, `chan.encrypt`, disable → rotate; history via backlinks.
