@@ -874,3 +874,93 @@ func TestBackfillSeqs(t *testing.T) {
 		t.Fatalf("revoked_seq %v (want %d), active %v", rev, rs.Seq, live)
 	}
 }
+
+// Only a previous-roster user may extend the chain; epoch 1 only the
+// creator (any member of a DM).
+func TestKeyRotateAuthorization(t *testing.T) {
+	ts := startServer(t, "tcp")
+	fastClock(ts)
+	alice := ts.registerCaps(t, "alice", true, e2eCaps)
+	bob := ts.registerCaps(t, "bob", false, e2eCaps)
+	carol := ts.registerCaps(t, "carol", false, e2eCaps)
+	snap, _ := alice.syncFresh()
+	bob.syncFresh()
+	carol.syncFresh()
+	sid := ts.sid()
+	a1, _ := alice.registerDevice(ts)
+	b1, _ := bob.registerDevice(ts)
+	c1, _ := carol.registerDevice(ts)
+
+	ch := alice.createE2E("sec")
+	if ch.Creator != alice.user.ID {
+		t.Fatalf("creator %d, want %d", ch.Creator, alice.user.ID)
+	}
+	for _, c := range snap.Chans {
+		if c.Name == "general" && c.Creator != 0 {
+			t.Fatalf("#general creator %d", c.Creator)
+		}
+	}
+	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: bob.user.ID}, nil)
+	r1 := []uint64{alice.user.ID, bob.user.ID}
+	bob.fail(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: bundle(t, b1, sid, ch.ID, 1, nil, r1, a1, b1)}, proto.ErrForbidden)
+	e1 := bundle(t, a1, sid, ch.ID, 1, nil, r1, a1, b1)
+	alice.rotate(ch.ID, e1)
+
+	// carol joins: she isn't on epoch 1's roster, so she can't sign epoch 2.
+	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: carol.user.ID}, nil)
+	r2 := []uint64{alice.user.ID, bob.user.ID, carol.user.ID}
+	carol.fail(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: bundle(t, c1, sid, ch.ID, 2, &e1, r2, a1, b1, c1)}, proto.ErrForbidden)
+	e2 := bundle(t, b1, sid, ch.ID, 2, &e1, r2, a1, b1, c1)
+	bob.rotate(ch.ID, e2)
+	// Now she is.
+	carol.rotate(ch.ID, bundle(t, c1, sid, ch.ID, 3, &e2, r2, a1, b1, c1))
+
+	// DMs have no single owner: anyone in it may create epoch 1.
+	var dm proto.ChanRes
+	alice.ok(proto.OpDMOpen, proto.DMOpenArgs{Users: []uint64{bob.user.ID}}, &dm)
+	if dm.Chan.Creator != alice.user.ID {
+		t.Fatalf("DM creator %d", dm.Chan.Creator)
+	}
+	bob.rotate(dm.Chan.ID, bundle(t, b1, sid, dm.Chan.ID, 1, nil, r1, a1, b1))
+
+	// The creator is returned everywhere a Channel is.
+	c, err := getChannel(context.Background(), ts.st.db, ch.ID)
+	if err != nil || c.Creator != alice.user.ID {
+		t.Fatalf("stored creator %+v %v", c, err)
+	}
+	c2, _ := ts.connectCaps(t, carol.signer, "", "", e2eCaps)
+	s2, _ := c2.syncFresh()
+	var found bool
+	for _, sc := range s2.Chans {
+		if sc.ID == ch.ID {
+			found = sc.Creator == alice.user.ID
+		}
+	}
+	if !found {
+		t.Fatal("snapshot channel lacks creator")
+	}
+}
+
+// channels.creator is backfilled from chan.new for databases from before it.
+func TestMigrateCreator(t *testing.T) {
+	ts := startServer(t, "tcp")
+	alice := ts.registerCaps(t, "alice", true, e2eCaps)
+	alice.syncFresh()
+	ch := alice.createE2E("sec")
+	db := ts.st.db
+	if _, err := db.Exec(`ALTER TABLE channels DROP COLUMN creator`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateCreator(db); err != nil {
+		t.Fatal(err)
+	}
+	var creator, general uint64
+	db.QueryRow(`SELECT creator FROM channels WHERE id = ?`, ch.ID).Scan(&creator)
+	db.QueryRow(`SELECT creator FROM channels WHERE name = 'general'`).Scan(&general)
+	if creator != alice.user.ID || general != 0 {
+		t.Fatalf("backfilled creator %d, general %d", creator, general)
+	}
+	if err := migrateCreator(db); err != nil { // idempotent
+		t.Fatal(err)
+	}
+}

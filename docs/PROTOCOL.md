@@ -276,7 +276,7 @@ The server overwrites `user` in every C→S EPHEMERAL with the authenticated use
 ```
 User    = {id, name, display, admin: bool, disabled: bool, created: i64, bot?: bool}
 Channel = {id, name, kind: "public"|"private"|"dm", topic, members: [u64], created,
-           e2e?: bool, epoch?: u32}   (e2e/epoch: §13.3)
+           e2e?: bool, epoch?: u32, creator?: u64}   (e2e/epoch/creator: §13.3)
 Message = {id, chan, author, body, thread: u64 (0 = top level), time,
            edited: i64 (0 = never), deleted: bool, reactions: {emoji: [u64]}}
 ```
@@ -534,7 +534,9 @@ eh = H(b)[:16]        ChainHash = H(b) (the next bundle's prev)
   reject such bundles.
 
 `Channel` gains `e2e: bool` and `epoch: u32` (both omitted when false/0;
-`epoch` is 0 until the first `key.rotate`). The fields are present in every
+`epoch` is 0 until the first `key.rotate`), and `creator: u64`, the user
+who created it (omitted when 0: `#general`, and channels whose `chan.new`
+predates the field get it from that event's actor). The fields are present in every
 session's Channel objects; clients without `e2e1` ignore them (§11).
 
 Server rules (honest case) for **key.rotate** `{chan, bundle}` (write op,
@@ -554,6 +556,7 @@ so non-members can't make the server parse 16 KiB):
 | `by` is a registered, non-revoked device **of the caller** | `forbidden` |
 | `sig` verifies under `by`'s Ed25519 key | `bad_request` |
 | CAS: `epoch == current + 1` and `prev == ChainHash(current b)` | `stale_epoch` |
+| epoch > 1: the caller (`by`'s user) is in the current bundle's roster; epoch 1: the caller is `Channel.creator` (DMs: any member) | `forbidden` |
 | `roster` == current members that aren't disabled | `stale_epoch` |
 | every box goes to a registered device of a roster user, each at most once | `bad_request` |
 | no box goes to a device revoked after the current epoch's `key.epoch` seq (any revoked device at epoch 0): the rotator couldn't have seen that revoke | `stale_epoch` |
@@ -596,6 +599,18 @@ Client validity (step 6, not yet implemented): `sig`; `by` is a verified
 device of a previous-roster user (epoch 1: the creator / any DM member);
 the chain extends the pinned head (lower or forked → alarm); K matches
 `kc`; boxes only to verified devices.
+
+The chain link is about the signed bundle, not its keys: a bundle that
+verifies and whose `prev` is the pinned head is accepted and becomes the
+new head even if its box to this device is missing, fails to open or
+fails `kc`. The client then has no K for that epoch and recovers it via
+`key.need` / `key.share` (§13.7); it MUST NOT treat this as a fork. Only a
+second, different bundle for the same epoch (or one that doesn't chain to
+the pinned head) is a fork.
+
+Epoch 1 must be created by the channel's creator (any member of a DM).
+Clients rotate epoch 1 right after `chan.create`; an e2e channel whose
+creator leaves before that can't be keyed.
 
 ### 13.4 Encrypted payload *(not yet implemented)*
 

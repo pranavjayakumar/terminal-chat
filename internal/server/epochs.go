@@ -54,7 +54,32 @@ func migrateEpochs(db *sql.DB) error {
 			return err
 		}
 	}
+	if err := migrateCreator(db); err != nil {
+		return err
+	}
 	return backfillSeqs(db)
+}
+
+// migrateCreator adds channels.creator, backfilled from each channel's
+// chan.new actor (0 for #general, which the server creates).
+func migrateCreator(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('channels') WHERE name = 'creator'`).Scan(&n); err != nil || n > 0 {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`ALTER TABLE channels ADD COLUMN creator INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return fmt.Errorf("adding channels.creator: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE channels SET creator = e.actor FROM events e
+		WHERE e.kind = ? AND e.chan = channels.id`, proto.KChanNew); err != nil {
+		return fmt.Errorf("backfilling channels.creator: %w", err)
+	}
+	return tx.Commit()
 }
 
 // backfillSeqs fills epochs.seq and devices.revoked_seq for rows written
@@ -320,6 +345,26 @@ func (s *Server) opKeyRotate(ctx context.Context, u proto.User, a proto.KeyRotat
 		copy(prev[:], head.hash)
 		if eb.Epoch != head.epoch+1 || eb.Prev != prev {
 			return nil, staleEpoch(fmt.Sprintf("channel is at epoch %d", head.epoch))
+		}
+		// Who may extend the chain: a previous-roster user (the caller, since
+		// by is the caller's device); for epoch 1 the creator, or any member
+		// of a DM. Clients check the same (§13.3).
+		if head.bundle != nil {
+			old, err := identity.PeekEpochBundle(identity.Signed(*head.bundle))
+			if err != nil {
+				return nil, err
+			}
+			if !slices.Contains(old.Roster, u.ID) {
+				return nil, proto.Errf(proto.ErrForbidden, "only members of the previous epoch may rotate")
+			}
+		} else if s.kinds[a.Chan] != proto.ChanDM {
+			var creator uint64
+			if err := tx.QueryRowContext(ctx, `SELECT creator FROM channels WHERE id = ?`, a.Chan).Scan(&creator); err != nil {
+				return nil, err
+			}
+			if creator != u.ID {
+				return nil, proto.Errf(proto.ErrForbidden, "only the channel's creator may create epoch 1")
+			}
 		}
 		roster, err := rosterOf(ctx, tx, a.Chan)
 		if err != nil {

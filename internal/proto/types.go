@@ -244,6 +244,9 @@ type Channel struct {
 	// epoch, 0 until the first key.rotate.
 	E2E   bool   `msgpack:"e2e,omitempty"`
 	Epoch uint32 `msgpack:"epoch,omitempty"`
+	// Creator created the channel; 0 for #general and for some old DMs.
+	// Only it may sign epoch 1 of a non-DM e2e channel (§13.3).
+	Creator uint64 `msgpack:"creator,omitempty"`
 }
 
 type Message struct {

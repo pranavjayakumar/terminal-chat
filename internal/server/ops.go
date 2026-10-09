@@ -481,13 +481,13 @@ func createChannel(ctx context.Context, tx *sql.Tx, now int64, actor uint64, nam
 	if kind == proto.ChanDM {
 		dmkey = dmKey(members)
 	}
-	r, err := tx.ExecContext(ctx, `INSERT INTO channels (name, kind, topic, created, dmkey, e2e) VALUES (?, ?, ?, ?, ?, ?)`,
-		name, kind, topic, now, dmkey, e2e)
+	r, err := tx.ExecContext(ctx, `INSERT INTO channels (name, kind, topic, created, dmkey, e2e, creator) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		name, kind, topic, now, dmkey, e2e, actor)
 	if err != nil {
 		return proto.Channel{}, proto.Event{}, err
 	}
 	id, _ := r.LastInsertId()
-	c := proto.Channel{ID: uint64(id), Name: name, Kind: kind, Topic: topic, Members: members, Created: now, E2E: e2e}
+	c := proto.Channel{ID: uint64(id), Name: name, Kind: kind, Topic: topic, Members: members, Created: now, E2E: e2e, Creator: actor}
 	if c.Members == nil {
 		c.Members = []uint64{}
 	}

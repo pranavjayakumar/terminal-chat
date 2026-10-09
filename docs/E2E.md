@@ -133,6 +133,9 @@ back = nonce24 || XChaCha20-Poly1305(HKDF(K, "tc-back-v1"), nonce, K_prev, AD = 
 ```
 Client validity: sig; `by` is a verified device of a previous-roster user (epoch 1: creator / any DM
 member); chain extends pinned head (lower/forked → alarm); K matches kc; boxes only to verified devices.
+The server enforces the same `by` rule (`forbidden`), using additive `Channel.creator` (0 for #general;
+backfilled from the `chan.new` actor). A bundle that chains correctly but whose box is unusable to a
+recipient is still accepted as the new head; that recipient recovers K via `key.share`, not a fork alarm.
 
 ### 13.4 Encrypted payload
 ```
@@ -177,7 +180,7 @@ excludes e2e. Webhooks into e2e forbidden. Delete/edit scrub messages AND origin
 ### 13.6 Events
 `device.new {cert, endorse?}` (all) · `device.revoke {revoke}` (all) · `key.epoch {bundle}` (members at
 seq; after chan.join, after chan.leave) · `key.share` (members) · `msg.*`/`react.*` gain `enc?`.
-`Channel += {e2e, epoch}`; `Message += {enc?}` (body "" when enc). Snapshot += `devs`, `revoked`, `keys`.
+`Channel += {e2e, epoch, creator?}`; `Message += {enc?}` (body "" when enc). Snapshot += `devs`, `revoked`, `keys`.
 
 ### 13.7–13.8
 Ephemeral `key.need {chan, epoch, dev}` (≤ 1/chan/30 s) → members answer with `key.share`.
