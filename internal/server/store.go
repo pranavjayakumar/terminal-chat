@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS reads (
 	PRIMARY KEY (user, chan)
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5(body, content='messages', content_rowid='id');
+INSERT INTO msg_fts(msg_fts, rank) VALUES('secure-delete', 1);
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
 	INSERT INTO msg_fts(rowid, body) VALUES (new.id, new.body);
 END;
@@ -107,7 +108,7 @@ type store struct {
 }
 
 func openStore(path string) (*store, error) {
-	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)"
+	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)&_pragma=secure_delete(ON)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening db: %w", err)
