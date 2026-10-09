@@ -18,7 +18,7 @@ func TestDeletedTextGoneFromDisk(t *testing.T) {
 	gen := generalID(t, snap)
 	const secret = "zqhunter2launchcodesqz"
 	msg := alice.send(gen, "the password is "+secret).Msg
-	alice.ok(proto.OpEdit, proto.EditArgs{Msg: msg, Body: "edited "+secret}, nil)
+	alice.ok(proto.OpEdit, proto.EditArgs{Msg: msg, Body: "edited " + secret}, nil)
 	alice.ok(proto.OpDelete, proto.MsgArgs{Msg: msg}, nil)
 	if _, err := ts.st.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
 		t.Fatal(err)
