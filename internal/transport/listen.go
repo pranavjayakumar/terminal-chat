@@ -4,11 +4,11 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"syscall"
 	"fmt"
 	"net"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/quic-go/quic-go"
