@@ -1,0 +1,823 @@
+package client
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"errors"
+	"slices"
+	"sync"
+	"testing"
+	"time"
+
+	"golang.org/x/crypto/ssh"
+
+	"github.com/skailama/tc/internal/e2ecrypto"
+	"github.com/skailama/tc/internal/identity"
+	"github.com/skailama/tc/internal/proto"
+	"github.com/skailama/tc/internal/trust"
+)
+
+// Malicious-server tests for the client's e2e key handling: a scripted fake
+// server feeds the real client certs, revokes and bundles, and the tests
+// check what the client trusts.
+
+const priv = 102 // a private e2e channel created by alice
+
+// peer is another user's device: its SSH key, device keys and cert.
+type peer struct {
+	user uint64
+	ssh  ssh.Signer
+	dev  *e2ecrypto.DeviceKeys
+	cert proto.Signed
+}
+
+func newSSH(t *testing.T) ssh.Signer {
+	t.Helper()
+	_, pk, _ := ed25519.GenerateKey(rand.Reader)
+	s, err := ssh.NewSignerFromKey(pk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// newPeer makes a device of user signed by key (a fresh key if nil).
+func newPeer(t *testing.T, user uint64, key ssh.Signer) peer {
+	t.Helper()
+	if key == nil {
+		key = newSSH(t)
+	}
+	d, err := e2ecrypto.Generate(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc, err := identity.NewDeviceCert(key, testSID(), user, d, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return peer{user, key, d, proto.Signed(sc)}
+}
+
+func rcpt(ds ...*e2ecrypto.DeviceKeys) []identity.Recipient {
+	var out []identity.Recipient
+	for _, d := range ds {
+		out = append(out, identity.Recipient{Dev: d.ID, X25519: d.X25519Pub})
+	}
+	return out
+}
+
+// mkBundle builds a valid bundle for ch at epoch on top of prev (nil for
+// epoch 1) with key k (prevK for the backlink), signed by by.
+func mkBundle(t *testing.T, by *e2ecrypto.DeviceKeys, ch uint64, epoch uint32, prev *proto.Signed,
+	roster []uint64, k e2ecrypto.Key, prevK *e2ecrypto.Key, to ...*e2ecrypto.DeviceKeys) proto.Signed {
+	t.Helper()
+	p := identity.EpochParams{ServerID: testSID(), Chan: ch, Epoch: epoch, Roster: roster,
+		Time: time.Now().UnixMilli(), K: k, PrevK: prevK, Recipients: rcpt(to...)}
+	if prev != nil {
+		p.Prev = e2ecrypto.ChainHash(prev.B)
+	}
+	if epoch > 1 && prevK == nil {
+		pk := newK(t)
+		p.PrevK = &pk
+	}
+	s, err := identity.NewEpochBundle(rand.Reader, by, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return proto.Signed(s)
+}
+
+func newK(t *testing.T) e2ecrypto.Key {
+	t.Helper()
+	k, err := e2ecrypto.NewEpochKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k
+}
+
+// rawBundle mirrors identity's bundle b, for tampering.
+type rawBox struct {
+	Dev []byte `msgpack:"dev"`
+	CT  []byte `msgpack:"ct"`
+}
+
+type rawBundle struct {
+	V        uint32   `msgpack:"v"`
+	ServerID []byte   `msgpack:"server_id"`
+	Chan     uint64   `msgpack:"chan"`
+	Epoch    uint32   `msgpack:"epoch"`
+	Prev     []byte   `msgpack:"prev"`
+	Roster   []uint64 `msgpack:"roster"`
+	By       []byte   `msgpack:"by"`
+	Time     int64    `msgpack:"time"`
+	KC       []byte   `msgpack:"kc"`
+	Eph      []byte   `msgpack:"eph"`
+	Boxes    []rawBox `msgpack:"boxes"`
+	Back     []byte   `msgpack:"back,omitempty"`
+}
+
+// retamper decodes s's b, lets mod change it and re-signs it with by.
+func retamper(t *testing.T, s proto.Signed, by *e2ecrypto.DeviceKeys, mod func(*rawBundle)) proto.Signed {
+	t.Helper()
+	var w rawBundle
+	if err := proto.Unmarshal(s.B, &w); err != nil {
+		t.Fatal(err)
+	}
+	mod(&w)
+	b := proto.MustRaw(w)
+	sig, err := e2ecrypto.SignEd25519(by.Ed25519, identity.CtxEpoch, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return proto.Signed{B: b, Sig: sig}
+}
+
+// ---- scripted fake server ----
+
+type e2eFake struct {
+	t  *testing.T
+	fc *fakeConn
+
+	mu       sync.Mutex
+	seq      uint64
+	devs     proto.DevicesListRes
+	bundles  map[uint64]map[uint32]proto.EpochKey // key.fetch answers
+	onRotate func(f *e2eFake, id uint32, a proto.KeyRotateArgs)
+
+	registered chan proto.Signed
+	rotates    chan proto.KeyRotateArgs
+	shares     chan proto.KeyShareArgs
+	needs      chan proto.Ephemeral
+}
+
+func (f *e2eFake) write(t proto.FrameType, v any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fc.codec.Write(t, v)
+}
+
+// event appends an event at the next seq and returns the seq.
+func (f *e2eFake) event(kind string, ch, actor uint64, data any) uint64 {
+	f.mu.Lock()
+	f.seq++
+	seq := f.seq
+	f.fc.codec.Write(proto.TEvent, proto.Event{Seq: seq, Kind: kind, Chan: ch, Actor: actor, Time: 1, Data: proto.MustRaw(data)})
+	f.mu.Unlock()
+	return seq
+}
+
+func (f *e2eFake) ok(id uint32, data any) {
+	f.write(proto.TRes, proto.Res{ID: id, OK: true, Data: proto.MustRaw(data)})
+}
+
+// addBundle makes b (at event seq) available to key.fetch.
+func (f *e2eFake) addBundle(ch uint64, b proto.Signed, seq uint64) {
+	eb, err := identity.PeekEpochBundle(identity.Signed(b))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.bundles[ch] == nil {
+		f.bundles[ch] = map[uint32]proto.EpochKey{}
+	}
+	f.bundles[ch][eb.Epoch] = proto.EpochKey{Bundle: b, Seq: seq}
+}
+
+// keyEpoch sends a key.epoch event for b and makes it fetchable.
+func (f *e2eFake) keyEpoch(ch, actor uint64, b proto.Signed) uint64 {
+	f.mu.Lock()
+	seq := f.seq + 1
+	f.mu.Unlock()
+	f.addBundle(ch, b, seq)
+	return f.event(proto.KKeyEpoch, ch, actor, proto.KeyEpoch{Bundle: b})
+}
+
+// startE2E accepts the client's connection, answers sync with snapshot
+// (a reset at head 20) and then serves e2e requests in the background.
+func startE2E(t *testing.T, fs *fakeServer, sn proto.Snapshot, devs proto.DevicesListRes) *e2eFake {
+	t.Helper()
+	fc := fs.accept()
+	f := &e2eFake{t: t, fc: fc, seq: 20, devs: devs, bundles: map[uint64]map[uint32]proto.EpochKey{},
+		registered: make(chan proto.Signed, 4), rotates: make(chan proto.KeyRotateArgs, 16),
+		shares: make(chan proto.KeyShareArgs, 16), needs: make(chan proto.Ephemeral, 64)}
+	for _, k := range sn.Keys {
+		f.addBundle(0, k.Bundle, k.Seq)
+	}
+	r := fc.expectReq(proto.OpSync, nil)
+	if sn.Users == nil {
+		sn.Users = append(users, proto.User{ID: carol, Name: "carol"})
+	}
+	f.write(proto.TSnapshot, sn)
+	f.ok(r.ID, proto.SyncRes{Head: 20, Reset: true})
+	go f.serve()
+	return f
+}
+
+func (f *e2eFake) serve() {
+	for fr := range f.fc.in {
+		switch fr.Type {
+		case proto.TEphemeral:
+			var e proto.Ephemeral
+			if fr.Decode(&e) == nil && e.Kind == proto.EphKeyNeed {
+				select {
+				case f.needs <- e:
+				default:
+				}
+			}
+		case proto.TReq:
+			var r proto.Req
+			if fr.Decode(&r) != nil {
+				continue
+			}
+			switch r.Op {
+			case proto.OpDevicesList:
+				f.mu.Lock()
+				res := f.devs
+				f.mu.Unlock()
+				f.ok(r.ID, res)
+			case proto.OpDeviceRegister:
+				var a proto.DeviceRegisterArgs
+				proto.Unmarshal(r.Args, &a)
+				seq := f.event(proto.KDeviceNew, 0, alice, a)
+				f.ok(r.ID, proto.SeqRes{Seq: seq})
+				select {
+				case f.registered <- a.Cert:
+				default:
+				}
+			case proto.OpKeyFetch:
+				var a proto.KeyFetchArgs
+				proto.Unmarshal(r.Args, &a)
+				res := proto.KeyFetchRes{Bundles: []proto.Signed{}, Seqs: []uint64{}}
+				f.mu.Lock()
+				for e := a.From; e <= a.To && e >= a.From; e++ {
+					if k, ok := f.bundles[a.Chan][e]; ok {
+						res.Bundles = append(res.Bundles, k.Bundle)
+						res.Seqs = append(res.Seqs, k.Seq)
+					}
+				}
+				f.mu.Unlock()
+				f.ok(r.ID, res)
+			case proto.OpKeyRotate:
+				var a proto.KeyRotateArgs
+				proto.Unmarshal(r.Args, &a)
+				select {
+				case f.rotates <- a:
+				default:
+				}
+				f.mu.Lock()
+				on := f.onRotate
+				f.mu.Unlock()
+				if on != nil {
+					on(f, r.ID, a)
+				} else {
+					seq := f.keyEpoch(a.Chan, alice, a.Bundle)
+					f.ok(r.ID, proto.SeqRes{Seq: seq})
+				}
+			case proto.OpKeyShare:
+				var a proto.KeyShareArgs
+				proto.Unmarshal(r.Args, &a)
+				f.event(proto.KKeyShare, a.Chan, alice, a)
+				f.ok(r.ID, proto.Empty{})
+				select {
+				case f.shares <- a:
+				default:
+				}
+			default:
+				f.ok(r.ID, proto.Empty{})
+			}
+		}
+	}
+}
+
+// e2eClient logs alice in against fs with cap e2e1 and starts her client.
+func e2eClient(t *testing.T) (*fakeServer, *Client) {
+	t.Helper()
+	testEnv(t)
+	fs := newFakeServer(t)
+	fs.caps.Store([]string{proto.CapE2E})
+	c := open(t, login(t, fs))
+	c.timing.keyNeed = 200 * time.Millisecond
+	return fs, c
+}
+
+// myKeys waits for alice's device registration and returns her device keys.
+func (f *e2eFake) myKeys(c *Client) *e2ecrypto.DeviceKeys {
+	f.t.Helper()
+	select {
+	case <-f.registered:
+	case <-time.After(5 * time.Second):
+		f.t.Fatal("device not registered")
+	}
+	k, err := c.Trust().DeviceKeys(testSID(), alice)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	waitFor(f.t, "own device verified", func() bool {
+		_, ok, _ := c.Trust().Device(testSID(), k.ID)
+		return ok
+	})
+	return k
+}
+
+func status(c *Client, ch uint64, want E2EState) func() bool {
+	return func() bool { return c.E2EStatus(ch).State == want }
+}
+
+func dmChan(epoch uint32) proto.Channel {
+	return proto.Channel{ID: dm, Kind: proto.ChanDM, Members: []uint64{alice, bob}, E2E: true, Epoch: epoch, Creator: bob}
+}
+
+func headOf(t *testing.T, c *Client, ch uint64) uint32 {
+	t.Helper()
+	h, _, err := c.Trust().ChainHead(testSID(), ch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h.Epoch
+}
+
+// ---- device trust ----
+
+// bob's first key is pinned on first sight; a second key endorsed by it is
+// accepted; a third, unendorsed key is a pending key change; forged certs
+// and revokes count for nothing. The auto-created epoch 1 of alice's
+// channel seals only to the devices that verified.
+func TestE2EDeviceTrust(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	b1 := newPeer(t, bob, nil)
+	b2 := newPeer(t, bob, nil)
+	endorse, err := identity.NewKeyEndorse(b1.ssh, testSID(), bob, b2.ssh.PublicKey(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b3 := newPeer(t, bob, nil) // unendorsed key: a key change
+	// Forged: claims b1's key, signed by b3's.
+	forged := newPeer(t, bob, b3.ssh)
+	var fw struct {
+		V        uint32 `msgpack:"v"`
+		ServerID []byte `msgpack:"server_id"`
+		User     uint64 `msgpack:"user"`
+		Dev      []byte `msgpack:"dev"`
+		X25519   []byte `msgpack:"x25519"`
+		Ed25519  []byte `msgpack:"ed25519"`
+		SSH      []byte `msgpack:"ssh"`
+		Created  int64  `msgpack:"created"`
+	}
+	proto.Unmarshal(forged.cert.B, &fw)
+	fw.SSH = b1.ssh.PublicKey().Marshal()
+	forged.cert.B = proto.MustRaw(fw)
+	b4 := newPeer(t, bob, b1.ssh) // later revoked by b1's key
+	b5 := newPeer(t, bob, b1.ssh) // "revoked" by a stranger's key
+	realRevoke, _ := identity.NewDeviceRevoke(b1.ssh, testSID(), bob, b4.dev.ID, time.Now())
+	fakeRevoke, _ := identity.NewDeviceRevoke(b3.ssh, testSID(), bob, b5.dev.ID, time.Now())
+	c1 := newPeer(t, carol, nil)
+
+	f := startE2E(t, fs, proto.Snapshot{
+		Chans: []proto.Channel{{ID: priv, Name: "sec", Kind: proto.ChanPrivate, Members: []uint64{alice, bob}, E2E: true, Creator: alice}},
+		Devs: []proto.Device{{Cert: b1.cert}, {Cert: b2.cert, Endorse: (*proto.Signed)(&endorse)}, {Cert: b3.cert},
+			{Cert: forged.cert}, {Cert: b4.cert}, {Cert: b5.cert}, {Cert: c1.cert}},
+		Revoked:     []proto.Signed{proto.Signed(realRevoke), proto.Signed(fakeRevoke)},
+		RevokedSeqs: []uint64{15, 16},
+	}, proto.DevicesListRes{})
+	me := f.myKeys(c)
+
+	sid := testSID()
+	ts := c.Trust()
+	var a proto.KeyRotateArgs
+	select {
+	case a = <-f.rotates:
+	case <-time.After(5 * time.Second):
+		t.Fatal("epoch 1 of our channel not created")
+	}
+	devs, _ := ts.Devices(sid, bob)
+	got := map[e2ecrypto.DevID]trust.Device{}
+	for _, d := range devs {
+		got[d.ID] = d
+	}
+	for name, want := range map[string]struct {
+		p                peer
+		verified, revoke bool
+	}{
+		"first key (TOFU)": {b1, true, false}, "endorsed key": {b2, true, false},
+		"key change": {b3, false, false}, "forged": {forged, false, false},
+		"revoked": {b4, true, true}, "forged revoke": {b5, true, false},
+	} {
+		d, ok := got[want.p.dev.ID]
+		if ok != want.verified || d.Revoked != want.revoke {
+			t.Errorf("%s: verified=%v revoked=%v, want %v %v", name, ok, d.Revoked, want.verified, want.revoke)
+		}
+	}
+	if d := got[b4.dev.ID]; d.RevokedSeq != 15 {
+		t.Errorf("revoke seq %d, want 15", d.RevokedSeq)
+	}
+	pend, _ := ts.PendingKeyChanges(sid)
+	if len(pend) != 1 || pend[0].User != bob || pend[0].Fingerprint != ssh.FingerprintSHA256(b3.ssh.PublicKey()) {
+		t.Fatalf("pending key changes = %+v", pend)
+	}
+	if pins, _ := ts.PinnedKeys(sid, alice); len(pins) != 1 || pins[0].How != trust.Verified {
+		t.Fatalf("own key pin = %+v", pins)
+	}
+
+	// Epoch 1: alice's device and bob's verified, live devices only.
+	eb, err := identity.PeekEpochBundle(identity.Signed(a.Bundle))
+	if err != nil || eb.Epoch != 1 || !slices.Equal(eb.Roster, []uint64{alice, bob}) {
+		t.Fatalf("epoch 1 = %+v %v", eb, err)
+	}
+	boxed := eb.BoxDevs()
+	slices.SortFunc(boxed, func(x, y e2ecrypto.DevID) int { return slices.Compare(x[:], y[:]) })
+	want := []e2ecrypto.DevID{me.ID, b1.dev.ID, b2.dev.ID, b5.dev.ID}
+	slices.SortFunc(want, func(x, y e2ecrypto.DevID) int { return slices.Compare(x[:], y[:]) })
+	if !slices.Equal(boxed, want) {
+		t.Fatalf("boxed %x, want %x", boxed, want)
+	}
+	waitFor(t, "channel ok", status(c, priv, E2EOK))
+	// bob's device gets the same K.
+	k1, _, _ := ts.Epoch(sid, priv, 1)
+	for _, bx := range eb.Boxes {
+		if bx.Dev == b1.dev.ID {
+			k, err := e2ecrypto.OpenKey(b1.dev.X25519, eb.Eph, e2ecrypto.BoxAD{ServerID: sid, Chan: priv, Epoch: 1, Recipient: b1.dev.ID, By: me.ID}, bx.CT[:])
+			if err != nil || k1.Key == nil || k != *k1.Key {
+				t.Fatalf("bob's box: %v", err)
+			}
+		}
+	}
+
+	// Acknowledging the key change makes b3 a verified device.
+	if err := ts.AcknowledgeKeyChange(sid, bob, pend[0].Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	f.event(proto.KUserUpdate, 0, bob, users[1]) // any kick
+	waitFor(t, "b3 verified after ack", func() bool { _, ok, _ := ts.Device(sid, b3.dev.ID); return ok })
+}
+
+// A member whose devices we can't verify blocks a rotation, by name.
+func TestE2ERotateRefusesUnverifiedMember(t *testing.T) {
+	fs, c := e2eClient(t)
+	// bob's key was pinned before; now the server shows only a device under
+	// another key.
+	old := newSSH(t)
+	if err := c.Trust().PinKey(testSID(), bob, ssh.FingerprintSHA256(old.PublicKey()), old.PublicKey().Marshal(), trust.TOFU); err != nil {
+		t.Fatal(err)
+	}
+	run(t, c)
+	b := newPeer(t, bob, nil)
+	f := startE2E(t, fs, proto.Snapshot{
+		Chans: []proto.Channel{dmChan(0)},
+		Devs:  []proto.Device{{Cert: b.cert}},
+	}, proto.DevicesListRes{})
+	f.myKeys(c)
+	waitFor(t, "online", online(c))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := c.RotateKey(ctx, dm)
+	var ue *UnverifiedMembersError
+	if !errors.As(err, &ue) || !slices.Equal(ue.Users, []uint64{bob}) || ue.Error() != "can't verify any device of: @bob" {
+		t.Fatalf("rotate = %v", err)
+	}
+	select {
+	case a := <-f.rotates:
+		t.Fatalf("rotated anyway: %+v", a)
+	default:
+	}
+}
+
+// ---- epoch chain ----
+
+// Each bad bundle raises an alarm and leaves the head where it was.
+func TestE2EBundleAlarms(t *testing.T) {
+	type setup struct {
+		b1, c1 peer
+		me     *e2ecrypto.DeviceKeys
+		e1     proto.Signed
+		k1     e2ecrypto.Key
+	}
+	cases := []struct {
+		name string
+		// chans for the snapshot, and the bad bundle(s) to send once the
+		// client verified epoch 1 of the DM (head 1).
+		bad      func(t *testing.T, s setup) []proto.Signed
+		wantHead uint32
+	}{
+		{"bad signature", func(t *testing.T, s setup) []proto.Signed {
+			e2 := mkBundle(t, s.b1.dev, dm, 2, &s.e1, []uint64{alice, bob}, newK(t), &s.k1, s.me, s.b1.dev)
+			e2.Sig[3] ^= 1
+			return []proto.Signed{e2}
+		}, 1},
+		{"wrong prev", func(t *testing.T, s setup) []proto.Signed {
+			other := mkBundle(t, s.b1.dev, dm, 1, nil, []uint64{alice, bob}, newK(t), nil, s.me)
+			return []proto.Signed{mkBundle(t, s.b1.dev, dm, 2, &other, []uint64{alice, bob}, newK(t), &s.k1, s.me)}
+		}, 1},
+		{"rotator not in previous roster", func(t *testing.T, s setup) []proto.Signed {
+			return []proto.Signed{mkBundle(t, s.c1.dev, dm, 2, &s.e1, []uint64{alice, bob, carol}, newK(t), &s.k1, s.me, s.c1.dev)}
+		}, 1},
+		{"fork", func(t *testing.T, s setup) []proto.Signed {
+			return []proto.Signed{mkBundle(t, s.b1.dev, dm, 1, nil, []uint64{alice, bob}, newK(t), nil, s.me)}
+		}, 1},
+		{"two valid next bundles", func(t *testing.T, s setup) []proto.Signed {
+			return []proto.Signed{
+				mkBundle(t, s.b1.dev, dm, 2, &s.e1, []uint64{alice, bob}, newK(t), &s.k1, s.me),
+				mkBundle(t, s.b1.dev, dm, 2, &s.e1, []uint64{alice, bob}, newK(t), &s.k1, s.me),
+			}
+		}, 1},
+		{"sealed to a non-member", func(t *testing.T, s setup) []proto.Signed {
+			return []proto.Signed{mkBundle(t, s.b1.dev, dm, 2, &s.e1, []uint64{alice, bob}, newK(t), &s.k1, s.me, s.c1.dev)}
+		}, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fs, c := e2eClient(t)
+			run(t, c)
+			b1, c1 := newPeer(t, bob, nil), newPeer(t, carol, nil)
+			f := startE2E(t, fs, proto.Snapshot{
+				Chans: []proto.Channel{dmChan(0)},
+				Devs:  []proto.Device{{Cert: b1.cert}, {Cert: c1.cert}},
+			}, proto.DevicesListRes{})
+			me := f.myKeys(c)
+			k1 := newK(t)
+			e1 := mkBundle(t, b1.dev, dm, 1, nil, []uint64{alice, bob}, k1, nil, me, b1.dev)
+			f.keyEpoch(dm, bob, e1)
+			waitFor(t, "epoch 1 ok", status(c, dm, E2EOK))
+			for _, b := range tc.bad(t, setup{b1, c1, me, e1, k1}) {
+				seq := f.event(proto.KKeyEpoch, dm, bob, proto.KeyEpoch{Bundle: b})
+				f.addBundle(dm, b, seq)
+			}
+			waitFor(t, "alarm", status(c, dm, E2EAlarm))
+			if h := headOf(t, c, dm); h != tc.wantHead {
+				t.Fatalf("head moved to %d", h)
+			}
+			// Sticky: a good epoch 2 afterwards doesn't clear it.
+			f.keyEpoch(dm, bob, mkBundle(t, b1.dev, dm, 2, &e1, []uint64{alice, bob}, newK(t), &k1, me))
+			time.Sleep(100 * time.Millisecond)
+			if st := c.E2EStatus(dm); st.State != E2EAlarm || headOf(t, c, dm) != tc.wantHead {
+				t.Fatalf("after a good bundle: %+v head %d", st, headOf(t, c, dm))
+			}
+		})
+	}
+}
+
+// Epoch 1 of a non-DM channel must come from its creator.
+func TestE2EEpoch1NotByCreator(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	b1 := newPeer(t, bob, nil)
+	e1 := mkBundle(t, b1.dev, priv, 1, nil, []uint64{alice, bob}, newK(t), nil, b1.dev)
+	f := startE2E(t, fs, proto.Snapshot{
+		Chans: []proto.Channel{{ID: priv, Name: "sec", Kind: proto.ChanPrivate, Members: []uint64{alice, bob}, E2E: true, Epoch: 1, Creator: alice}},
+		Devs:  []proto.Device{{Cert: b1.cert}},
+		Keys:  []proto.EpochKey{{Bundle: e1, Seq: 12}},
+	}, proto.DevicesListRes{})
+	f.myKeys(c)
+	waitFor(t, "alarm", status(c, priv, E2EAlarm))
+	if st := c.E2EStatus(priv); headOf(t, c, priv) != 0 || st.Detail != "epoch 1: not created by the channel's creator" {
+		t.Fatalf("status %+v head %d", st, headOf(t, c, priv))
+	}
+}
+
+// A bundle signed by a device revoked before it is an alarm; one from
+// before the revoke stays valid history.
+func TestE2ERevokedRotator(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	b1 := newPeer(t, bob, nil)
+	b2 := newPeer(t, bob, b1.ssh)
+	f := startE2E(t, fs, proto.Snapshot{
+		Chans: []proto.Channel{dmChan(0)},
+		Devs:  []proto.Device{{Cert: b1.cert}, {Cert: b2.cert}},
+	}, proto.DevicesListRes{})
+	me := f.myKeys(c)
+	k1 := newK(t)
+	e1 := mkBundle(t, b2.dev, dm, 1, nil, []uint64{alice, bob}, k1, nil, me, b1.dev, b2.dev)
+	f.keyEpoch(dm, bob, e1)
+	waitFor(t, "epoch 1 ok", status(c, dm, E2EOK))
+	rev, _ := identity.NewDeviceRevokeByDevice(b1.dev, testSID(), bob, b2.dev.ID, time.Now())
+	f.event(proto.KDeviceRevoke, 0, bob, proto.DeviceRevokeArgs{Revoke: proto.Signed(rev)})
+	waitFor(t, "revoked", func() bool { d, _, _ := c.Trust().Device(testSID(), b2.dev.ID); return d.Revoked })
+	f.keyEpoch(dm, bob, mkBundle(t, b2.dev, dm, 2, &e1, []uint64{alice, bob}, newK(t), &k1, me, b1.dev))
+	waitFor(t, "alarm", status(c, dm, E2EAlarm))
+	if st := c.E2EStatus(dm); headOf(t, c, dm) != 1 || st.Detail != "epoch 2: signed by a revoked device" {
+		t.Fatalf("status %+v", st)
+	}
+}
+
+// A server that shows an older epoch than the one we verified (after a
+// forced reset) is rolling us back.
+func TestE2ERollback(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	b1 := newPeer(t, bob, nil)
+	f := startE2E(t, fs, proto.Snapshot{Chans: []proto.Channel{dmChan(0)}, Devs: []proto.Device{{Cert: b1.cert}}}, proto.DevicesListRes{})
+	me := f.myKeys(c)
+	k1, k2 := newK(t), newK(t)
+	e1 := mkBundle(t, b1.dev, dm, 1, nil, []uint64{alice, bob}, k1, nil, me)
+	f.keyEpoch(dm, bob, e1)
+	e2 := mkBundle(t, b1.dev, dm, 2, &e1, []uint64{alice, bob}, k2, &k1, me)
+	f.keyEpoch(dm, bob, e2)
+	waitFor(t, "epoch 2", func() bool { return headOf(t, c, dm) == 2 && c.E2EStatus(dm).State == E2EOK })
+
+	f.fc.conn.Close()
+	f2 := startE2E(t, fs, proto.Snapshot{
+		Chans: []proto.Channel{dmChan(1)}, Devs: []proto.Device{{Cert: b1.cert}},
+		Keys: []proto.EpochKey{{Bundle: e1, Seq: 5}},
+	}, proto.DevicesListRes{})
+	_ = f2
+	waitFor(t, "alarm", status(c, dm, E2EAlarm))
+	if headOf(t, c, dm) != 2 {
+		t.Fatal("head rolled back")
+	}
+}
+
+// ---- keys ----
+
+// A box that doesn't match kc leaves the chain accepted but no key: the
+// client asks with key.need and takes only a share that matches kc.
+func TestE2EKCMismatchWaitsForShare(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	b1 := newPeer(t, bob, nil)
+	f := startE2E(t, fs, proto.Snapshot{Chans: []proto.Channel{dmChan(0)}, Devs: []proto.Device{{Cert: b1.cert}}}, proto.DevicesListRes{})
+	me := f.myKeys(c)
+	boxed, committed := newK(t), newK(t)
+	e1 := mkBundle(t, b1.dev, dm, 1, nil, []uint64{alice, bob}, boxed, nil, me, b1.dev)
+	e1 = retamper(t, e1, b1.dev, func(w *rawBundle) {
+		kc := e2ecrypto.KeyCommitment(committed, testSID(), dm, 1)
+		w.KC = kc[:]
+	})
+	f.keyEpoch(dm, bob, e1)
+	var need proto.Ephemeral
+	select {
+	case need = <-f.needs:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no key.need")
+	}
+	if need.Chan != dm || need.Epoch != 1 || e2ecrypto.DevID(need.Dev) != me.ID {
+		t.Fatalf("key.need = %+v", need)
+	}
+	if st := c.E2EStatus(dm); st.State != E2EWaitingKey || st.Epoch != 1 {
+		t.Fatalf("status %+v", st)
+	}
+	share := func(k e2ecrypto.Key) {
+		eph, ct, err := e2ecrypto.SealShare(rand.Reader, me.X25519Pub, e2ecrypto.ShareAD{ServerID: testSID(), Chan: dm, Epoch: 1, Recipient: me.ID}, k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.event(proto.KKeyShare, dm, bob, proto.KeyShareArgs{Chan: dm, Epoch: 1, Dev: me.ID[:], Eph: eph[:], CT: ct[:]})
+	}
+	share(boxed) // the K from the box: doesn't match kc either
+	time.Sleep(150 * time.Millisecond)
+	if st := c.E2EStatus(dm); st.State != E2EWaitingKey {
+		t.Fatalf("bad share accepted: %+v", st)
+	}
+	// It keeps asking (rate limited).
+	select {
+	case <-f.needs:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no repeated key.need")
+	}
+	share(committed)
+	waitFor(t, "ok after a matching share", status(c, dm, E2EOK))
+	if e, _, _ := c.Trust().Epoch(testSID(), dm, 1); e.Key == nil || *e.Key != committed {
+		t.Fatal("wrong K stored")
+	}
+}
+
+// Without a box in older epochs, backlinks from the newest K recover them.
+func TestE2EBacklinksRecoverOlderKeys(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	b1 := newPeer(t, bob, nil)
+	f := startE2E(t, fs, proto.Snapshot{Chans: []proto.Channel{dmChan(0)}, Devs: []proto.Device{{Cert: b1.cert}}}, proto.DevicesListRes{})
+	me := f.myKeys(c)
+	k1, k2, k3 := newK(t), newK(t), newK(t)
+	e1 := mkBundle(t, b1.dev, dm, 1, nil, []uint64{alice, bob}, k1, nil, b1.dev)
+	e2 := mkBundle(t, b1.dev, dm, 2, &e1, []uint64{alice, bob}, k2, &k1, b1.dev)
+	e3 := mkBundle(t, b1.dev, dm, 3, &e2, []uint64{alice, bob}, k3, &k2, b1.dev, me)
+	f.addBundle(dm, e1, 30)
+	f.addBundle(dm, e2, 31)
+	// Only the head arrives (as after a snapshot); 1 and 2 come by key.fetch.
+	f.keyEpoch(dm, bob, e3)
+	waitFor(t, "ok", status(c, dm, E2EOK))
+	waitFor(t, "older keys", func() bool { m, _ := c.Trust().MissingKeys(testSID(), dm); return len(m) == 0 })
+	for e, want := range map[uint32]e2ecrypto.Key{1: k1, 2: k2, 3: k3} {
+		got, ok, _ := c.Trust().Epoch(testSID(), dm, e)
+		if !ok || got.Key == nil || *got.Key != want {
+			t.Fatalf("epoch %d key not recovered", e)
+		}
+	}
+	select {
+	case n := <-f.needs:
+		t.Fatalf("asked for a key it could recover: %+v", n)
+	default:
+	}
+}
+
+// key.need from a verified device of a roster member is answered with a
+// share that opens to K; from anyone else it isn't.
+func TestE2EAnswersKeyNeed(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	b1, b2 := newPeer(t, bob, nil), newPeer(t, bob, nil) // b2: unendorsed key
+	c1 := newPeer(t, carol, nil)
+	f := startE2E(t, fs, proto.Snapshot{Chans: []proto.Channel{dmChan(0)},
+		Devs: []proto.Device{{Cert: b1.cert}, {Cert: b2.cert}, {Cert: c1.cert}}}, proto.DevicesListRes{})
+	me := f.myKeys(c)
+	k1 := newK(t)
+	f.keyEpoch(dm, bob, mkBundle(t, b1.dev, dm, 1, nil, []uint64{alice, bob}, k1, nil, me, b1.dev))
+	waitFor(t, "ok", status(c, dm, E2EOK))
+
+	need := func(user uint64, dev e2ecrypto.DevID, epoch uint32) {
+		f.write(proto.TEphemeral, proto.Ephemeral{Kind: proto.EphKeyNeed, Chan: dm, User: user, Epoch: epoch, Dev: dev[:]})
+	}
+	need(carol, c1.dev.ID, 1) // verified device, not in the roster
+	need(bob, b2.dev.ID, 1)   // in the roster, device not verified
+	need(carol, b1.dev.ID, 1) // device of someone else than the asker
+	need(bob, b1.dev.ID, 2)   // epoch we don't have
+	select {
+	case s := <-f.shares:
+		t.Fatalf("answered a bad key.need: %+v", s)
+	case <-time.After(300 * time.Millisecond):
+	}
+	need(bob, b1.dev.ID, 1)
+	var s proto.KeyShareArgs
+	select {
+	case s = <-f.shares:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no key.share")
+	}
+	k, err := e2ecrypto.OpenShare(b1.dev.X25519, [32]byte(s.Eph), e2ecrypto.ShareAD{ServerID: testSID(), Chan: dm, Epoch: 1, Recipient: b1.dev.ID}, s.CT)
+	if err != nil || k != k1 || s.Epoch != 1 || e2ecrypto.DevID(s.Dev) != b1.dev.ID {
+		t.Fatalf("share: %v", err)
+	}
+	// Not twice in a row.
+	need(bob, b1.dev.ID, 1)
+	select {
+	case s := <-f.shares:
+		t.Fatalf("answered again at once: %+v", s)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// RotateKey builds on the verified head; a stale_epoch (bob rotated first)
+// is retried once on top of bob's epoch.
+func TestE2ERotateStaleRetry(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	b1 := newPeer(t, bob, nil)
+	f := startE2E(t, fs, proto.Snapshot{Chans: []proto.Channel{dmChan(0)}, Devs: []proto.Device{{Cert: b1.cert}}}, proto.DevicesListRes{})
+	me := f.myKeys(c)
+	k1, k2 := newK(t), newK(t)
+	e1 := mkBundle(t, b1.dev, dm, 1, nil, []uint64{alice, bob}, k1, nil, me, b1.dev)
+	f.keyEpoch(dm, bob, e1)
+	waitFor(t, "ok", status(c, dm, E2EOK))
+	e2 := mkBundle(t, b1.dev, dm, 2, &e1, []uint64{alice, bob}, k2, &k1, me, b1.dev)
+	f.mu.Lock()
+	f.onRotate = func(f *e2eFake, id uint32, a proto.KeyRotateArgs) {
+		eb, _ := identity.PeekEpochBundle(identity.Signed(a.Bundle))
+		if eb.Epoch == 2 { // lose the race: bob's epoch 2 first, then stale
+			f.keyEpoch(dm, bob, e2)
+			f.write(proto.TRes, proto.Res{ID: id, Err: proto.Errf(proto.ErrStaleEpoch, "channel is at epoch 2")})
+			return
+		}
+		seq := f.keyEpoch(a.Chan, alice, a.Bundle)
+		f.ok(id, proto.SeqRes{Seq: seq})
+	}
+	f.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.RotateKey(ctx, dm); err != nil {
+		t.Fatal(err)
+	}
+	<-f.rotates
+	a := <-f.rotates
+	eb, err := identity.Signed(a.Bundle).VerifyEpochBundle(testSID(), me.Ed25519Pub)
+	if err != nil || eb.Epoch != 3 || eb.Prev != e2ecrypto.ChainHash(e2.B) || eb.By != me.ID {
+		t.Fatalf("retry bundle %+v %v", eb, err)
+	}
+	// Its backlink is bob's K2, and bob can open his box.
+	k3, ok, _ := c.Trust().Epoch(testSID(), dm, 3)
+	if !ok || k3.Key == nil {
+		t.Fatal("own epoch 3 not verified")
+	}
+	if back, err := e2ecrypto.OpenBack(*k3.Key, testSID(), dm, 3, eb.Back[:]); err != nil || back != k2 {
+		t.Fatalf("backlink: %v", err)
+	}
+	if st := c.E2EStatus(dm); st.State != E2EOK || st.Epoch != 3 {
+		t.Fatalf("status %+v", st)
+	}
+	// A second stale_epoch is not retried forever.
+	f.mu.Lock()
+	f.onRotate = func(f *e2eFake, id uint32, a proto.KeyRotateArgs) {
+		f.write(proto.TRes, proto.Res{ID: id, Err: proto.Errf(proto.ErrStaleEpoch, "nope")})
+	}
+	f.mu.Unlock()
+	var pe *proto.Error
+	if err := c.RotateKey(ctx, dm); !errors.As(err, &pe) || pe.Code != proto.ErrStaleEpoch {
+		t.Fatalf("double stale: %v", err)
+	}
+	if n := len(f.rotates); n != 2 {
+		t.Fatalf("%d attempts, want 2", n)
+	}
+}
