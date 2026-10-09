@@ -131,6 +131,9 @@ func decodeDeviceCert(b []byte) (DeviceCert, error) {
 		!copyFixed(c.X25519[:], w.X25519) || len(w.Ed25519) != ed25519.PublicKeySize {
 		return DeviceCert{}, e2ecrypto.ErrMalformed
 	}
+	if c.X25519 == ([32]byte{}) {
+		return DeviceCert{}, e2ecrypto.ErrLowOrder // an all-zero key would make every box's shared secret zero
+	}
 	c.Ed25519 = ed25519.PublicKey(w.Ed25519)
 	return c, nil
 }

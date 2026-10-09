@@ -445,3 +445,11 @@ func TestDevicesListPages(t *testing.T) {
 	}
 	alice.fail(proto.OpDevicesList, proto.DevicesListArgs{Users: make([]uint64, maxListUsers+1)}, proto.ErrBadRequest)
 }
+
+func TestDevicesListRejectsOutOfRangeIDs(t *testing.T) {
+	ts := startServer(t, "tcp")
+	alice := ts.registerCaps(t, "alice", true, e2eCaps)
+	alice.syncFresh()
+	alice.fail(proto.OpDevicesList, proto.DevicesListArgs{After: 1 << 63}, proto.ErrBadRequest)
+	alice.fail(proto.OpDevicesList, proto.DevicesListArgs{Users: []uint64{1 << 63}}, proto.ErrBadRequest)
+}
