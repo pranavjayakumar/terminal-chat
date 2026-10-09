@@ -3,6 +3,13 @@
 A lightweight team chat that lives in the terminal (and in herdr panes).
 One Go binary is both client (`tc`) and server (`tc server`). Mac + Linux.
 
+## Product bar (from the owner)
+
+Lightweight · feature-rich but shipped iteratively (every feature lands with no known bugs) ·
+battle-tested (adversarial + chaos + live tests, not just unit tests) · seamless to use ·
+one-step onboarding · end-to-end encrypted · blazing fast. When these conflict, prefer
+correctness and speed over adding another feature.
+
 ## Principles
 
 1. **Small and fast.** Cold start < 50 ms, idle RSS < 30 MB, binary < 20 MB. No new
@@ -78,9 +85,10 @@ Local two-user test: `make dev`, then in two panes
 
 - **M0** scaffold, spec, agents, CI  ✓
 - **M1** core text chat: server, auth, channels, DMs, sync, reconnect, TUI  ← current
-- **M2** threads, reactions, search, notifications, herdr integration, `tc send/tail`, webhooks
-- **M3** voice huddles (QUIC datagrams, Opus)
-- **M4** distribution: goreleaser, install.sh, brew tap, `tc update`, deploy guide
+- **M2** herdr, notifications, webhooks, display names, `tc notify`, activity view (docs/ROADMAP.md)
+- **M3** end-to-end encryption for DMs + private channels (docs/E2E.md)
+- **M4** zero-setup onboarding: install-command invites, `tc join`, brew, `tc update`
+- **M5** voice huddles (QUIC datagrams, Opus)
 
 ## Herdr
 
