@@ -249,6 +249,10 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    so such old messages also show as inserted. The server refuses plaintext `edit` in e2e channels too
    and the client refuses edits there until step 8. The cache (and outbox) holds plaintext: as
    sensitive as the conversation.
+   Decisions (step 7 review): pre-step-7 plaintext after epoch 1 showing as "inserted by server" is accepted
+   (nothing was deployed); thread_ref = 16 zero bytes for a plaintext root, and a reply to a deleted root seen
+   only after a reset shows invalid (documented edge); sends failed for lack of a key are requeued when the key
+   arrives; invalid/inserted messages count as unread but never notify or count as mentions.
 8. Encrypted edit/delete/react, thread_ref, HMAC emoji, local FTS.
 9. `chan.add{bundle}`, `chan.remove`, `chan.encrypt`, disable → rotate; history via backlinks.
 10. TUI: key-change banner + send block, fork alarm, "⚠ unencrypted", "waiting for key", `/verify`.
