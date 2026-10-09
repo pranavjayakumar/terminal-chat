@@ -39,11 +39,12 @@ const (
 	// SecInvalid: failed a check (forged, replayed, moved, control
 	// characters). Never shown as text.
 	SecInvalid
-	// SecLegacy: plaintext in an encrypted channel from before its first
-	// epoch (sent before encrypted sends existed).
+	// SecLegacy: plaintext in an encrypted channel that this client had
+	// cached before it first saw the channel encrypted (trust store legacy
+	// cutoff). Unauthenticated.
 	SecLegacy
-	// SecInserted: plaintext in an encrypted channel after its first epoch:
-	// only the server can have put it there. Untrusted.
+	// SecInserted: any other plaintext in an encrypted channel: only the
+	// server can have put it there. Untrusted.
 	SecInserted
 )
 
@@ -51,12 +52,21 @@ func (s Sec) String() string {
 	return [...]string{"plain", "e2e", "waiting", "invalid", "legacy", "inserted"}[s]
 }
 
-// Trusted reports whether the message's text may be treated as its author's.
-func (s Sec) Trusted() bool { return s == SecPlain || s == SecE2E || s == SecLegacy }
+// trustedSecs is Trusted() as an SQL list: (SecPlain, SecE2E).
+var trustedSecs = fmt.Sprintf("(%d, %d)", SecPlain, SecE2E)
+
+// Trusted reports whether the message's text may be treated as its
+// author's (notifications, mentions). Plaintext in an encrypted channel,
+// legacy or not, is unauthenticated.
+func (s Sec) Trusted() bool { return s == SecPlain || s == SecE2E }
 
 // noKeyReason is the outbox failure when we can't get the channel's key;
 // such messages are requeued when the key arrives.
 const noKeyReason = "no key yet — waiting for a member"
+
+// rotateReason is the outbox failure when the channel needs a new key and
+// we couldn't make one (retry by hand).
+const rotateReason = "couldn't start a new key for this channel — retry"
 
 // ErrE2EAlarm refuses sends into an encrypted channel in alarm.
 var ErrE2EAlarm = errors.New("sending is blocked: this channel's encryption is in alarm")
@@ -145,27 +155,88 @@ func (c *Client) chanIsE2E(q dbtx, sid e2ecrypto.ServerID, hasSID bool, ch uint6
 	return was
 }
 
-// plainSec classifies plaintext message id in encrypted channel ch: before
-// the seq of its verified epoch 1 (or with none known) it is legacy,
-// otherwise the server inserted it.
-func (c *Client) plainSec(sid e2ecrypto.ServerID, ch, id uint64, memo *keyMemo) Sec {
-	if e := memo.epoch(c.trust, sid, ch, 1); e != nil && e.Seq != 0 && id >= e.Seq {
-		return SecInserted
+// legacyCutoff is ch's legacy cutoff (trust store, set once: the newest
+// message id cached when we first saw ch encrypted). ok is false without a
+// server id.
+func (c *Client) legacyCutoff(q dbtx, ch uint64) (uint64, bool) {
+	sid, ok := qServerID(q)
+	if !ok {
+		return 0, false
 	}
-	return SecLegacy
+	var newest uint64
+	if err := q.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM msgs WHERE chan = ?`, ch).Scan(&newest); err != nil {
+		return 0, false
+	}
+	cut, err := c.trust.LegacyCutoff(sid, ch, newest)
+	return cut, err == nil
+}
+
+// noteE2EChan records the legacy cutoff of an encrypted channel the moment
+// the client first sees it so (no-op afterwards).
+func (c *Client) noteE2EChan(q dbtx, ch proto.Channel) {
+	if ch.E2E {
+		c.legacyCutoff(q, ch.ID)
+	}
+}
+
+// storeChanE2E stores a channel from the server and, the first time it is
+// seen encrypted, records its legacy cutoff.
+func (c *Client) storeChanE2E(q dbtx, ch proto.Channel) error {
+	if err := storeChan(q, ch); err != nil {
+		return err
+	}
+	c.noteE2EChan(q, ch)
+	return nil
+}
+
+// plainSec classifies plaintext message id in encrypted channel ch: at or
+// below the legacy cutoff it predates encryption, above it only the server
+// can have put it there. Neither is authenticated.
+func (c *Client) plainSec(q dbtx, ch, id uint64) Sec {
+	if cut, ok := c.legacyCutoff(q, ch); ok && id <= cut {
+		return SecLegacy
+	}
+	return SecInserted
 }
 
 // prepMsg judges a message from the server (§13.4 "Receiving"): it
 // decrypts m.Enc into m.Body and returns the verdict and the enc's mid (nil
-// without enc). It only reads q.
+// without enc). It only reads q (and sets a channel's legacy cutoff).
 func (c *Client) prepMsg(q dbtx, m *proto.Message, memo *keyMemo) (Sec, []byte) {
+	sec, mid, _ := c.judge(q, m, memo)
+	return sec, mid
+}
+
+// judge is prepMsg; keep reports that the cached row must stay as it is: a
+// copy that tries to change a verified message's channel, author, thread or
+// bytes is invalid, not an update.
+func (c *Client) judge(q dbtx, m *proto.Message, memo *keyMemo) (sec Sec, mid []byte, keep bool) {
 	sid, hasSID := qServerID(q)
 	if m.Enc == nil {
 		if m.Deleted || !c.chanIsE2E(q, sid, hasSID, m.Chan) {
-			return SecPlain, nil
+			return SecPlain, nil, false
 		}
-		return c.plainSec(sid, m.Chan, m.ID, memo), nil
+		return c.plainSec(q, m.Chan, m.ID), nil, false
 	}
+	sec, mid = c.judgeEnc(q, sid, hasSID, m, memo)
+	if sec == SecInvalid {
+		m.Body = ""
+	}
+	var old struct {
+		enc              []byte
+		sec              Sec
+		ch, author, thrd uint64
+	}
+	if q.QueryRow(`SELECT enc, sec, chan, author, thread FROM msgs WHERE id = ?`, m.ID).
+		Scan(&old.enc, &old.sec, &old.ch, &old.author, &old.thrd) == nil && old.sec == SecE2E &&
+		(old.ch != m.Chan || old.author != m.Author || old.thrd != m.Thread || !bytes.Equal(old.enc, m.Enc)) {
+		m.Body = ""
+		return SecInvalid, mid, true
+	}
+	return sec, mid, false
+}
+
+func (c *Client) judgeEnc(q dbtx, sid e2ecrypto.ServerID, hasSID bool, m *proto.Message, memo *keyMemo) (Sec, []byte) {
 	body := m.Body
 	m.Body = ""
 	e, err := e2ecrypto.ParseEnc(m.Enc)
@@ -173,12 +244,16 @@ func (c *Client) prepMsg(q dbtx, m *proto.Message, memo *keyMemo) (Sec, []byte) 
 		return SecInvalid, nil
 	}
 	mid := e2ecrypto.MID(m.Enc)
-	// The same bytes judged before keep their verdict (history refetches).
+	// The same bytes judged before, for the same message, keep their
+	// verdict (history refetches).
 	var oldEnc []byte
 	var oldSec Sec
 	var oldBody string
-	if q.QueryRow(`SELECT enc, sec, body FROM msgs WHERE id = ?`, m.ID).Scan(&oldEnc, &oldSec, &oldBody) == nil &&
-		bytes.Equal(oldEnc, m.Enc) && oldSec != SecWaiting {
+	var oldCh, oldAuthor, oldThread uint64
+	if q.QueryRow(`SELECT enc, sec, body, chan, author, thread FROM msgs WHERE id = ?`, m.ID).
+		Scan(&oldEnc, &oldSec, &oldBody, &oldCh, &oldAuthor, &oldThread) == nil &&
+		bytes.Equal(oldEnc, m.Enc) && oldSec != SecWaiting &&
+		oldCh == m.Chan && oldAuthor == m.Author && oldThread == m.Thread {
 		m.Body = oldBody
 		return oldSec, mid[:]
 	}
@@ -212,6 +287,11 @@ func (c *Client) prepMsg(q dbtx, m *proto.Message, memo *keyMemo) (Sec, []byte) 
 	if proto.Unmarshal(raw, &p) != nil || p.T != "msg" || !validText(p.Body) {
 		return SecInvalid, mid[:]
 	}
+	// A revoke whose seq we don't know is judged by its signed time, with
+	// the same clock skew as bundles (§13.3).
+	if d.Revoked && d.RevokedTime != 0 && p.TS > d.RevokedTime+revokeSkew.Milliseconds() {
+		return SecInvalid, mid[:]
+	}
 	if m.Thread == 0 {
 		if p.ThreadRef != nil {
 			return SecInvalid, mid[:]
@@ -236,12 +316,23 @@ func (c *Client) prepMsg(q dbtx, m *proto.Message, memo *keyMemo) (Sec, []byte) 
 // saveMsg stores a message from the server after judging it; m.Body is the
 // text to show (decrypted, or "" when it can't be shown).
 func (c *Client) saveMsg(q dbtx, m *proto.Message, replace bool, memo *keyMemo) (Sec, error) {
-	sec, mid := c.prepMsg(q, m, memo)
+	sec, mid, keep := c.judge(q, m, memo)
 	if sec == SecInvalid || sec == SecWaiting {
 		m.Body = ""
 	}
+	if keep {
+		return sec, nil // the verified copy stays
+	}
 	if err := storeMsg(q, *m, sec, mid, replace); err != nil {
 		return sec, err
+	}
+	if mid != nil {
+		// Lowest id wins whatever the arrival order: a copy of this enc
+		// under a later id is a replay.
+		if _, err := q.Exec(`UPDATE msgs SET sec = ?, body = '' WHERE mid = ? AND id > ? AND sec != ?`,
+			SecInvalid, mid, m.ID, SecInvalid); err != nil {
+			return sec, err
+		}
 	}
 	if sec == SecWaiting {
 		c.kickE2E() // the key may be arriving right now
@@ -257,18 +348,16 @@ func (c *Client) reopenMsgs(sid e2ecrypto.ServerID, chans []proto.Channel) {
 	memo := newKeyMemo()
 	var u Update
 	for _, ch := range chans {
-		// Rows cached before step 7, or before the channel was known as
-		// encrypted, are plain: classify them.
-		res1, _ := c.db.Exec(`UPDATE msgs SET sec = ? WHERE chan = ? AND sec = ? AND enc IS NULL AND deleted = 0`,
-			SecLegacy, ch.ID, SecPlain)
-		var n2 int64
-		if e := memo.epoch(c.trust, sid, ch.ID, 1); e != nil && e.Seq != 0 {
-			res2, _ := c.db.Exec(`UPDATE msgs SET sec = ? WHERE chan = ? AND sec = ? AND id >= ?`, SecInserted, ch.ID, SecLegacy, e.Seq)
-			if res2 != nil {
-				n2, _ = res2.RowsAffected()
-			}
+		// Plaintext rows cached before the channel was known as encrypted
+		// are plain: classify them against the legacy cutoff.
+		cut, ok := c.legacyCutoff(c.db, ch.ID)
+		if !ok {
+			continue
 		}
-		if n1, _ := rowsAffected(res1); n1+n2 > 0 {
+		res, _ := c.db.Exec(`UPDATE msgs SET sec = CASE WHEN id <= ?1 THEN ?2 ELSE ?3 END
+			WHERE chan = ?4 AND enc IS NULL AND deleted = 0 AND sec IN (?5, ?2, ?3)
+			AND sec != CASE WHEN id <= ?1 THEN ?2 ELSE ?3 END`, cut, SecLegacy, SecInserted, ch.ID, SecPlain)
+		if n, _ := rowsAffected(res); n > 0 {
 			u.msgs(ch.ID)
 		}
 	}
@@ -426,6 +515,29 @@ func (c *Client) sealOffline(e outboxEntry) []byte {
 	return enc
 }
 
+// encCurrent reports whether a queued entry's enc is still for the
+// channel's verified head, whose roster is still the current members.
+func (c *Client) encCurrent(e outboxEntry) bool {
+	h, err := e2ecrypto.ParseEnc(e.enc)
+	if err != nil {
+		return false
+	}
+	sid, ok := c.cacheServerID()
+	if !ok {
+		return false
+	}
+	ch, ok, err := getChan(c.db, e.chan_)
+	if err != nil || !ok {
+		return false
+	}
+	head, ok, err := c.trust.ChainHead(sid, e.chan_)
+	if err != nil || !ok || head.Epoch != h.Epoch || head.EH != h.EH {
+		return false
+	}
+	ep, ok, err := c.trust.Epoch(sid, e.chan_, head.Epoch)
+	return err == nil && ok && ep.Key != nil && slices.Equal(ep.Roster, c.rosterNow(ch))
+}
+
 // sealEntry encrypts an outbox entry for sending (§13.4 "Sending"): it
 // catches up on the channel's chain, rotates first when the bundle is
 // stale (none yet, the roster changed, or after a stale_epoch the server
@@ -541,6 +653,10 @@ func (c *Client) sealEntry(ctx context.Context, s *session, e outboxEntry, prev 
 		}
 		if !hasHead {
 			return nil, failErr{noKeyReason}
+		}
+		if rotate {
+			// Still stale after every try: never seal to the old key.
+			return nil, failErr{rotateReason}
 		}
 		ep, ok, err := c.trust.Epoch(sid, ch.ID, head.Epoch)
 		if err != nil || !ok {

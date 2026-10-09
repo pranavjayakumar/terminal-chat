@@ -786,6 +786,7 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 	if err := ts.MarkChannelE2E(sid, ch.ID); err != nil {
 		return false
 	}
+	c.legacyCutoff(c.db, ch.ID)
 	if _, ok, _ := ts.Alarm(sid, ch.ID); ok {
 		return false
 	}

@@ -269,9 +269,9 @@ func printMsg(w io.Writer, c *client.Client, m client.Message) {
 	case m.Sec == client.SecInvalid:
 		body = "⚠ invalid encrypted message (not shown)"
 	case m.Sec == client.SecInserted:
-		body = "⚠ unencrypted, inserted by server: " + body
+		body = "⚠ inserted by server: " + body
 	case m.Sec == client.SecLegacy:
-		body = "(unencrypted, legacy) " + body
+		body = "⚠ unauthenticated (legacy): " + body
 	}
 	if m.Thread != 0 {
 		name += " ↳"

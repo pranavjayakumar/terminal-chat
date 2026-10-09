@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -143,12 +144,14 @@ type e2eFake struct {
 	t  *testing.T
 	fc *fakeConn
 
-	mu       sync.Mutex
-	seq      uint64
-	devs     proto.DevicesListRes
-	bundles  map[uint64]map[uint32]proto.EpochKey // key.fetch answers
-	onRotate func(f *e2eFake, id uint32, a proto.KeyRotateArgs)
-	onSend   func(f *e2eFake, id uint32, a proto.SendArgs) // nil: store and answer (encmsg_test.go)
+	mu        sync.Mutex
+	seq       uint64
+	devs      proto.DevicesListRes
+	bundles   map[uint64]map[uint32]proto.EpochKey // key.fetch answers
+	onRotate  func(f *e2eFake, id uint32, a proto.KeyRotateArgs)
+	onSend    func(f *e2eFake, id uint32, a proto.SendArgs) // nil: store and answer (encmsg_test.go)
+	searchRes proto.MsgsRes
+	searched  atomic.Int32
 
 	registered chan proto.Signed
 	sends      chan proto.SendArgs
@@ -305,6 +308,12 @@ func (f *e2eFake) serve() {
 					seq := f.keyEpoch(a.Chan, alice, a.Bundle)
 					f.ok(r.ID, proto.SeqRes{Seq: seq})
 				}
+			case proto.OpSearch:
+				f.searched.Add(1)
+				f.mu.Lock()
+				res := f.searchRes
+				f.mu.Unlock()
+				f.ok(r.ID, res)
 			case proto.OpSend:
 				var a proto.SendArgs
 				proto.Unmarshal(r.Args, &a)

@@ -117,7 +117,7 @@ func (c *Client) applySnapshot(s *session, sn proto.Snapshot) error {
 			}
 		}
 		for _, ch := range sn.Chans {
-			if err := storeChan(tx, ch); err != nil {
+			if err := c.storeChanE2E(tx, ch); err != nil {
 				return err
 			}
 		}
@@ -373,7 +373,7 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		if !decode(&ch) || ch.ID == 0 {
 			return nil
 		}
-		if err := storeChan(tx, ch); err != nil {
+		if err := c.storeChanE2E(tx, ch); err != nil {
 			return err
 		}
 		u.Channels = true
@@ -386,7 +386,7 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 			if !slices.Contains(d.Chan.Members, d.User) {
 				d.Chan.Members = append(d.Chan.Members, d.User)
 			}
-			if err := storeChan(tx, d.Chan); err != nil {
+			if err := c.storeChanE2E(tx, d.Chan); err != nil {
 				return err
 			}
 		} else if err := setMember(tx, ev.Chan, d.User, true); err != nil {

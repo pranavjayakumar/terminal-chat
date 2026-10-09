@@ -91,7 +91,10 @@ func openCache(path string) (*sql.DB, error) {
 	}
 	// IMMEDIATE transactions take the write lock up front, so busy_timeout
 	// covers writer contention (e.g. `tc tail` and the TUI sharing a cache).
-	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_txlock=immediate"
+	// secure_delete: deleted rows (a discarded or sent outbox entry's
+	// plaintext, a message deleted for everyone) are zeroed, not left in
+	// free pages.
+	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=secure_delete(ON)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening cache: %w", err)
@@ -393,13 +396,14 @@ type outboxEntry struct {
 	// re-encrypting with the same encNonce (encmsg.go).
 	enc      []byte
 	encNonce []byte
+	sent     uint64 // 0: never handed to the server
 }
 
-const outboxCols = `id, nonce, chan, thread, body, time, failed, msg, enc, encnonce`
+const outboxCols = `id, nonce, chan, thread, body, time, failed, msg, enc, encnonce, sent`
 
 func scanOutbox(sc interface{ Scan(...any) error }) (outboxEntry, error) {
 	var e outboxEntry
-	err := sc.Scan(&e.id, &e.nonce, &e.chan_, &e.thread, &e.body, &e.time, &e.failed, &e.msg, &e.enc, &e.encNonce)
+	err := sc.Scan(&e.id, &e.nonce, &e.chan_, &e.thread, &e.body, &e.time, &e.failed, &e.msg, &e.enc, &e.encNonce, &e.sent)
 	return e, err
 }
 

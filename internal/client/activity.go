@@ -144,7 +144,7 @@ func (c *Client) activity(q dbtx, me proto.User, limit int) []ActivityItem {
 
 	// Mentions and highlights.
 	filter, fargs := highlightFilter("m.body", names, words)
-	scanMsgs(q, `SELECT `+msgCols+` FROM msgs m WHERE m.id >= ? AND m.time >= ? AND m.author != ? AND m.deleted = 0 AND `+filter+` ORDER BY m.id DESC`,
+	scanMsgs(q, `SELECT `+msgCols+` FROM msgs m WHERE m.id >= ? AND m.time >= ? AND m.author != ? AND m.deleted = 0 AND m.sec IN `+trustedSecs+` AND `+filter+` ORDER BY m.id DESC`,
 		append([]any{floorID, floorTime, me.ID}, fargs...), limit, func(m proto.Message) bool {
 			switch {
 			case !ok(m):
@@ -179,7 +179,7 @@ func (c *Client) activity(q dbtx, me proto.User, limit int) []ActivityItem {
 		}
 		return v
 	}
-	scanMsgs(q, `SELECT `+msgCols+` FROM msgs r WHERE r.id >= ? AND r.time >= ? AND r.thread != 0 AND r.author != ? AND r.deleted = 0 ORDER BY r.id DESC`,
+	scanMsgs(q, `SELECT `+msgCols+` FROM msgs r WHERE r.id >= ? AND r.time >= ? AND r.thread != 0 AND r.author != ? AND r.deleted = 0 AND r.sec IN `+trustedSecs+` ORDER BY r.id DESC`,
 		[]any{floorID, floorTime, me.ID}, limit, func(m proto.Message) bool {
 			if seen[m.ID] || !ok(m) || !(tookPart(m.Thread, m.ID) || isMyRoot(m.Thread)) {
 				return false
@@ -189,7 +189,7 @@ func (c *Client) activity(q dbtx, me proto.User, limit int) []ActivityItem {
 		})
 
 	// Direct messages.
-	scanMsgs(q, `SELECT `+msgCols+` FROM msgs m WHERE m.id >= ? AND m.time >= ? AND m.author != ? AND m.deleted = 0
+	scanMsgs(q, `SELECT `+msgCols+` FROM msgs m WHERE m.id >= ? AND m.time >= ? AND m.author != ? AND m.deleted = 0 AND m.sec IN `+trustedSecs+`
 		AND m.chan IN (SELECT id FROM chans WHERE kind = ?) ORDER BY m.id DESC`,
 		[]any{floorID, floorTime, me.ID, proto.ChanDM}, limit, func(m proto.Message) bool {
 			if seen[m.ID] || !ok(m) || chanKind[m.Chan] != proto.ChanDM {

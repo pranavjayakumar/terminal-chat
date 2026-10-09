@@ -64,8 +64,8 @@ func TestE2EMarkersFit(t *testing.T) {
 	run(m, m.applyUpdate(client.Update{Channels: true}))
 	run(m, m.openChannel(20))
 	v := ansi.Strip(checkView(t, m, "e2e dm"))
-	for _, want := range []string{"@bob 🔒", "unencrypted (legacy)", "🔒 waiting for key", "⚠ invalid encrypted message",
-		"⚠ unencrypted, inserted by server", "a real secret"} {
+	for _, want := range []string{"@bob 🔒", "⚠ unauthenticated (legacy)", "🔒 waiting for key", "⚠ invalid encrypted message",
+		"⚠ inserted by server", "a real secret"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("missing %q in\n%s", want, v)
 		}
@@ -85,6 +85,26 @@ func TestE2EMarkersFit(t *testing.T) {
 	run(m, m.openChannel(10))
 	if v := ansi.Strip(m.headerLine(m.w)); strings.Contains(v, "🔒") {
 		t.Errorf("plaintext channel header %q", v)
+	}
+}
+
+// Plaintext in an encrypted channel, legacy or inserted, never notifies;
+// a verified message does.
+func TestE2EUnauthenticatedNeverNotifies(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	e2eFake(f, client.E2EStatus{State: client.E2EOK})
+	run(m, m.applyUpdate(client.Update{Channels: true}))
+	nt := notes(m)
+	x := func(id uint64, sec client.Sec) client.Message {
+		return client.Message{Message: proto.Message{ID: id, Chan: 20, Author: 2, Body: "@alice look"}, Sec: sec}
+	}
+	run(m, m.applyUpdate(client.Update{New: []client.Message{x(400, client.SecLegacy), x(401, client.SecInserted), x(402, client.SecInvalid)}}))
+	if got := nt.got(); len(got) != 0 {
+		t.Fatalf("notified: %v", got)
+	}
+	run(m, m.applyUpdate(client.Update{New: []client.Message{x(403, client.SecE2E)}}))
+	if got := nt.got(); len(got) != 1 {
+		t.Fatalf("verified message: %v", got)
 	}
 }
 

@@ -410,7 +410,9 @@ func (r *renderer) body(m client.Message, bw int) []string {
 	case client.SecInvalid:
 		return []string{st.failed.Render(truncate("⚠ invalid encrypted message (hidden)", bw))}
 	case client.SecInserted:
-		out = append(out, st.failed.Render(truncate("⚠ unencrypted, inserted by server", bw)))
+		out = append(out, st.failed.Render(truncate("⚠ inserted by server", bw)))
+	case client.SecLegacy:
+		out = append(out, st.failed.Render(truncate("⚠ unauthenticated (legacy)", bw)))
 	}
 	text := sanitize.Text(m.Body)
 	lastCode := false
@@ -451,9 +453,6 @@ func (r *renderer) body(m client.Message, bw int) []string {
 	}
 	if m.Edited != 0 {
 		suffix(st.edited.Render(truncate("(edited)", bw)))
-	}
-	if m.Sec == client.SecLegacy {
-		suffix(st.dim.Render(truncate("unencrypted (legacy)", bw)))
 	}
 	return out
 }

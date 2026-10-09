@@ -50,12 +50,16 @@ func (c *Client) Send(ch uint64, body string, thread uint64) error {
 	return nil
 }
 
-// RetryFailed requeues a failed outbox message (same nonce).
+// RetryFailed requeues a failed outbox message (same nonce). A failed send
+// stored nothing, so an encrypted one is encrypted afresh for the channel
+// as it is now.
 func (c *Client) RetryFailed(local int64) error {
-	return c.editOutbox(`UPDATE outbox SET failed = '', msg = 0 WHERE id = ? AND failed != '' RETURNING chan`, local)
+	return c.editOutbox(`UPDATE outbox SET failed = '', msg = 0, enc = NULL, encnonce = NULL
+		WHERE id = ? AND failed != '' RETURNING chan`, local)
 }
 
-// DiscardFailed drops a failed outbox message.
+// DiscardFailed drops a failed outbox message (the cache uses
+// secure_delete, so its text doesn't linger in free pages).
 func (c *Client) DiscardFailed(local int64) error {
 	return c.editOutbox(`DELETE FROM outbox WHERE id = ? AND failed != '' RETURNING chan`, local)
 }
@@ -135,6 +139,18 @@ func (c *Client) sendEntry(ctx context.Context, s *session, e outboxEntry) error
 	}
 	if !s.e2e() {
 		return failErr{"not sent: the server stopped offering end-to-end encryption"}
+	}
+	if st := c.E2EStatus(e.chan_); st.State == E2EAlarm {
+		return failErr{"not sent: encryption alarm: " + sanitize.Line(st.Detail)}
+	}
+	// An entry encrypted while queued but never handed to the server is
+	// re-encrypted if the channel moved on meanwhile (new head, other
+	// members). Once sent, only a stale_epoch may change its bytes.
+	if e.enc != nil && e.sent == 0 && !c.encCurrent(e) {
+		e.enc = nil
+		if _, err := c.db.Exec(`UPDATE outbox SET enc = NULL WHERE id = ?`, e.id); err != nil {
+			return err
+		}
 	}
 	if len(e.encNonce) != e2ecrypto.NonceSize {
 		e.encNonce, e.enc = newEncNonce(), nil
@@ -299,9 +315,20 @@ func (c *Client) call(ctx context.Context, op string, args, out any, hook func(p
 
 // Edit changes the body of one of our messages.
 func (c *Client) Edit(ctx context.Context, msg uint64, body string) error {
+	// Never send new text in the clear without knowing where it goes: the
+	// message must be cached, in a channel that isn't (and wasn't) encrypted.
+	c.mu.Lock()
+	online := c.sess != nil
+	c.mu.Unlock()
+	if !online {
+		return ErrOffline
+	}
 	var ch uint64
-	if c.db.QueryRow(`SELECT chan FROM msgs WHERE id = ?`, msg).Scan(&ch) == nil && c.needsEnc(ch) {
-		return ErrEncryptedEdit // never send the new text in the clear
+	if err := c.db.QueryRow(`SELECT chan FROM msgs WHERE id = ?`, msg).Scan(&ch); err != nil {
+		return proto.Errf(proto.ErrNotFound, "message not loaded")
+	}
+	if c.needsEnc(ch) {
+		return ErrEncryptedEdit
 	}
 	return c.call(ctx, proto.OpEdit, proto.EditArgs{Msg: msg, Body: body}, nil, nil)
 }
@@ -336,7 +363,7 @@ func (c *Client) chanHook(r proto.Res) error {
 		if _, ok, err := getChan(tx, cr.Chan.ID); err != nil || ok {
 			return err
 		}
-		return storeChan(tx, cr.Chan)
+		return c.storeChanE2E(tx, cr.Chan)
 	})
 	if err == nil {
 		c.post(Update{Channels: true})
@@ -435,17 +462,24 @@ func (c *Client) saveMsgs(ms []proto.Message) error {
 // server can't search. Newest first; results are not cached. Offline, only
 // the local part runs (ErrOffline if it finds nothing).
 func (c *Client) Search(ctx context.Context, q string, ch uint64) ([]proto.Message, error) {
+	local := c.searchLocal(q, ch, proto.MaxSearch)
+	if ch != 0 && c.needsEnc(ch) {
+		return local, nil // the query of an encrypted channel never leaves this device
+	}
 	var r proto.MsgsRes
 	err := c.call(ctx, proto.OpSearch, proto.SearchArgs{Q: q, Chan: ch, Limit: proto.MaxSearch}, &r, nil)
-	local := c.searchLocal(q, ch, proto.MaxSearch)
 	if err != nil && (!errors.Is(err, ErrOffline) || len(local) == 0) {
 		return nil, err
 	}
-	if len(local) == 0 {
-		return r.Msgs, nil
+	// The server shouldn't return encrypted channels' messages; if it does,
+	// they're not ours to trust. Local rows come first so they win ids.
+	out := local
+	for _, m := range r.Msgs {
+		if !c.needsEnc(m.Chan) {
+			out = append(out, m)
+		}
 	}
-	out := append(r.Msgs, local...)
-	slices.SortFunc(out, func(a, b proto.Message) int {
+	slices.SortStableFunc(out, func(a, b proto.Message) int {
 		switch {
 		case a.ID > b.ID:
 			return -1

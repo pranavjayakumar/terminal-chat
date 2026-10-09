@@ -5,11 +5,15 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/skailama/tc/internal/e2ecrypto"
+	"github.com/skailama/tc/internal/identity"
 	"github.com/skailama/tc/internal/proto"
 )
 
@@ -257,9 +261,287 @@ func TestEncReceiveChecks(t *testing.T) {
 			t.Errorf("%s: %+v (found %v), want %s %q", tc.name, m, ok, tc.want, tc.body)
 		}
 	}
-	waitFor(t, "legacy plaintext", func() bool { m, ok := findMsg(c, 5); return ok && m.Sec == SecLegacy })
-	if m, _ := findMsg(c, 5); m.Body != "old plaintext" {
-		t.Errorf("legacy plaintext %+v", m)
+	// Plaintext in the first snapshot of a channel that was already
+	// encrypted: we never had it cached as legacy, so it's unauthenticated
+	// and flagged as inserted.
+	if m, ok := findMsg(c, 5); !ok || m.Sec != SecInserted || m.Body != "old plaintext" {
+		t.Errorf("snapshot plaintext %+v", m)
+	}
+}
+
+// Legacy is only what this client had cached when it first saw the channel
+// encrypted (sticky cutoff in the trust store); anything later is inserted,
+// and neither counts as a mention.
+func TestEncLegacyCutoff(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	b1 := newPeer(t, bob, nil)
+	plainDM := dmChan(0)
+	plainDM.E2E = false
+	f := startE2E(t, fs, proto.Snapshot{Chans: []proto.Channel{plainDM}, Devs: []proto.Device{{Cert: b1.cert}},
+		Msgs: []proto.Message{{ID: 5, Chan: dm, Author: bob, Body: "@alice before encryption"}}}, proto.DevicesListRes{})
+	f.myKeys(c)
+	f.event(proto.KChanUpdate, dm, bob, dmChan(0)) // now encrypted
+	waitFor(t, "cached plaintext is legacy", func() bool { m, _ := findMsg(c, 5); return m.Sec == SecLegacy })
+	late := f.post(proto.Message{Chan: dm, Author: bob, Body: "@alice trust me"})
+	waitFor(t, "applied", func() bool { return lastSeq(t, c) >= late })
+	if m, _ := findMsg(c, late); m.Sec != SecInserted {
+		t.Fatalf("later plaintext %+v", m)
+	}
+	if cut, err := c.Trust().LegacyCutoff(testSID(), dm, 999); err != nil || cut != 5 {
+		t.Fatalf("cutoff %d %v", cut, err)
+	}
+	if v := chanView(t, c, dm); v.Mention {
+		t.Fatal("unauthenticated plaintext counts as a mention")
+	}
+	if Sec(SecLegacy).Trusted() || Sec(SecInserted).Trusted() {
+		t.Fatal("plaintext in an encrypted channel is trusted")
+	}
+}
+
+// A refetch (history) can't move a verified message to another channel,
+// author or thread, or swap its bytes: the stored copy stays.
+func TestEncRefetchKeepsVerified(t *testing.T) {
+	d := newEncDM(t, proto.Snapshot{})
+	enc := sealAs(t, d.b1.dev, d.k1, 1, d.e1, plainMsg{T: "msg", TS: 1, Body: "original"})
+	id := d.f.post(proto.Message{Chan: dm, Author: bob, Enc: enc})
+	waitFor(t, "applied", func() bool { m, _ := findMsg(d.c, id); return m.Sec == SecE2E })
+	other := sealAs(t, d.b1.dev, d.k1, 1, d.e1, plainMsg{T: "msg", TS: 1, Body: "swapped"})
+	for name, m := range map[string]proto.Message{
+		"author":  {ID: id, Chan: dm, Author: carol, Enc: enc},
+		"thread":  {ID: id, Chan: dm, Author: bob, Thread: 3, Enc: enc},
+		"channel": {ID: id, Chan: general, Author: bob, Enc: enc},
+		"bytes":   {ID: id, Chan: dm, Author: bob, Enc: other},
+	} {
+		if err := d.c.saveMsgs([]proto.Message{m}); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := findMsg(d.c, id)
+		if !ok || got.Sec != SecE2E || got.Body != "original" || got.Author != bob || got.Chan != dm || got.Thread != 0 {
+			t.Fatalf("%s changed the verified row: %+v", name, got)
+		}
+	}
+}
+
+// For one enc the lowest id wins, whatever arrives first.
+func TestEncReplayLowestIDWins(t *testing.T) {
+	d := newEncDM(t, proto.Snapshot{})
+	enc := sealAs(t, d.b1.dev, d.k1, 1, d.e1, plainMsg{T: "msg", TS: 1, Body: "once"})
+	high := d.f.post(proto.Message{Chan: dm, Author: bob, Enc: enc})
+	waitFor(t, "applied", func() bool { m, _ := findMsg(d.c, high); return m.Sec == SecE2E })
+	low := high - 3 // an older copy that only shows up in history
+	if err := d.c.saveMsgs([]proto.Message{{ID: low, Chan: dm, Author: bob, Enc: enc}}); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := findMsg(d.c, low); m.Sec != SecE2E || m.Body != "once" {
+		t.Fatalf("lower id %+v", m)
+	}
+	if m, _ := findMsg(d.c, high); m.Sec != SecInvalid || m.Body != "" {
+		t.Fatalf("higher id still shown: %+v", m)
+	}
+}
+
+// A device revoked at an unknown seq: its messages signed (Plain.ts) more
+// than 5 minutes after the revoke's time are rejected.
+func TestEncRevokedDeviceByTime(t *testing.T) {
+	d := newEncDM(t, proto.Snapshot{})
+	revoked := time.Now().Add(-time.Hour).UnixMilli()
+	if err := d.c.Trust().RevokeDeviceAtTime(testSID(), d.b1.dev.ID, 0, revoked); err != nil {
+		t.Fatal(err)
+	}
+	before := d.f.post(proto.Message{Chan: dm, Author: bob, Enc: sealAs(t, d.b1.dev, d.k1, 1, d.e1,
+		plainMsg{T: "msg", TS: revoked - 1000, Body: "before"})})
+	after := d.f.post(proto.Message{Chan: dm, Author: bob, Enc: sealAs(t, d.b1.dev, d.k1, 1, d.e1,
+		plainMsg{T: "msg", TS: revoked + 6*60*1000, Body: "after"})})
+	waitFor(t, "applied", func() bool { return lastSeq(t, d.c) >= after })
+	if m, _ := findMsg(d.c, before); m.Sec != SecE2E {
+		t.Fatalf("before the revoke: %+v", m)
+	}
+	if m, _ := findMsg(d.c, after); m.Sec != SecInvalid {
+		t.Fatalf("after the revoke: %+v", m)
+	}
+}
+
+// If the channel still needs a new key on the last attempt, the message
+// fails: it is never sealed to the old key.
+func TestEncNeverSealsToStaleKey(t *testing.T) {
+	d := newEncDM(t, proto.Snapshot{})
+	d.f.mu.Lock()
+	d.f.onRotate = func(f *e2eFake, id uint32, a proto.KeyRotateArgs) {
+		f.write(proto.TRes, proto.Res{ID: id, Err: proto.Errf(proto.ErrStaleEpoch, "nope")})
+	}
+	d.f.mu.Unlock()
+	d.f.event(proto.KChanJoin, dm, alice, proto.ChanJoin{User: carol}) // roster changed
+	waitFor(t, "carol joined", func() bool { return len(chanView(t, d.c, dm).Members) == 3 })
+	if err := d.c.Send(dm, "for the old members only?", 0); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := d.c.Flush(ctx); err == nil || !strings.Contains(err.Error(), rotateReason) {
+		t.Fatalf("flush: %v", err)
+	}
+	if n := len(d.f.sends); n != 0 {
+		t.Fatalf("%d sends", n)
+	}
+}
+
+// An entry encrypted while queued is re-encrypted before its first send if
+// the channel moved on (here: a member joined), never sent as it was.
+func TestEncQueuedEncRevalidated(t *testing.T) {
+	d := newEncDM(t, proto.Snapshot{})
+	d.f.fc.conn.Close()
+	waitFor(t, "offline", func() bool { return d.c.Status().State != Online })
+	if err := d.c.Send(dm, "queued", 0); err != nil {
+		t.Fatal(err)
+	}
+	var queued []byte
+	d.c.db.QueryRow(`SELECT enc FROM outbox`).Scan(&queued)
+	if h, err := e2ecrypto.ParseEnc(queued); err != nil || h.Epoch != 1 {
+		t.Fatalf("not encrypted while queued: %v", err)
+	}
+	f2 := resumeE2E(t, d.fs, d.f, func(f *e2eFake) {
+		f.event(proto.KChanJoin, dm, alice, proto.ChanJoin{User: carol})
+	})
+	a := nextSend(t, f2)
+	if h, err := e2ecrypto.ParseEnc(a.Enc); err != nil || h.Epoch != 2 || bytes.Equal(a.Enc, queued) {
+		t.Fatalf("sent the queued bytes (epoch %d): %v", h.Epoch, err)
+	}
+	select {
+	case r := <-f2.rotates:
+		if eb, _ := identity.PeekEpochBundle(identity.Signed(r.Bundle)); !slices.Equal(eb.Roster, []uint64{alice, bob, carol}) {
+			t.Fatalf("rotated to %v", eb.Roster)
+		}
+	default:
+		t.Fatal("no rotation")
+	}
+	flush(t, d.c)
+}
+
+// A queued message into a channel that went into alarm isn't sent.
+func TestEncQueuedBlockedByAlarm(t *testing.T) {
+	d := newEncDM(t, proto.Snapshot{})
+	d.f.fc.conn.Close()
+	waitFor(t, "offline", func() bool { return d.c.Status().State != Online })
+	if err := d.c.Send(dm, "queued", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.c.Trust().RaiseAlarm(testSID(), dm, "fork: test"); err != nil {
+		t.Fatal(err)
+	}
+	f2 := resumeE2E(t, d.fs, d.f, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := d.c.Flush(ctx); err == nil || !strings.Contains(err.Error(), "alarm") {
+		t.Fatalf("flush: %v", err)
+	}
+	if n := len(f2.sends); n != 0 {
+		t.Fatalf("%d sends", n)
+	}
+}
+
+// RetryFailed encrypts afresh; DiscardFailed leaves no plaintext in the
+// cache file.
+func TestEncRetryAndDiscard(t *testing.T) {
+	d := newEncDM(t, proto.Snapshot{})
+	fail := true
+	d.f.setOnSend(func(f *e2eFake, id uint32, a proto.SendArgs) {
+		if fail {
+			f.write(proto.TRes, proto.Res{ID: id, Err: proto.Errf(proto.ErrForbidden, "nope")})
+			return
+		}
+		f.ok(id, proto.SendRes{Msg: f.msgNew(a, alice)})
+	})
+	if err := d.c.Send(dm, "try again", 0); err != nil {
+		t.Fatal(err)
+	}
+	a1 := nextSend(t, d.f)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := d.c.Flush(ctx); err == nil {
+		t.Fatal("no failure")
+	}
+	ms := msgsOf(d.c, dm)
+	fail = false
+	if err := d.c.RetryFailed(ms[0].Local); err != nil {
+		t.Fatal(err)
+	}
+	a2 := nextSend(t, d.f)
+	h1, _ := e2ecrypto.ParseEnc(a1.Enc)
+	h2, _ := e2ecrypto.ParseEnc(a2.Enc)
+	if !bytes.Equal(a1.Nonce, a2.Nonce) || h1.Nonce == h2.Nonce {
+		t.Fatal("retry didn't encrypt afresh")
+	}
+	flush(t, d.c)
+
+	fail = true
+	secret := "discard-me-" + strings.Repeat("q", 20)
+	if err := d.c.Send(dm, secret, 0); err != nil {
+		t.Fatal(err)
+	}
+	nextSend(t, d.f)
+	if err := d.c.Flush(ctx); err == nil {
+		t.Fatal("no failure")
+	}
+	for _, m := range msgsOf(d.c, dm) {
+		if m.Failed != "" {
+			if err := d.c.DiscardFailed(m.Local); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := d.c.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(d.c.Home(), "cache.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte(secret)) {
+		t.Fatal("discarded plaintext still in cache.db")
+	}
+}
+
+// Search never sends an encrypted channel's query to the server, drops
+// server results from encrypted channels, and prefers the local copy.
+func TestEncSearchScope(t *testing.T) {
+	d := newEncDM(t, proto.Snapshot{Chans: []proto.Channel{{ID: general, Name: "general", Kind: proto.ChanPublic, Members: []uint64{alice, bob}}}})
+	id := d.f.post(proto.Message{Chan: dm, Author: bob, Enc: sealAs(t, d.b1.dev, d.k1, 1, d.e1, plainMsg{T: "msg", TS: 1, Body: "zebra local"})})
+	waitFor(t, "applied", func() bool { return lastSeq(t, d.c) >= id })
+	d.f.mu.Lock()
+	d.f.searchRes = proto.MsgsRes{Msgs: []proto.Message{
+		{ID: id, Chan: dm, Author: bob, Body: "zebra from the server"},
+		{ID: id + 100, Chan: dm, Author: bob, Body: "zebra planted"},
+		{ID: 7, Chan: general, Author: bob, Body: "zebra public"},
+	}}
+	d.f.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	got, err := d.c.Search(ctx, "zebra", dm)
+	if err != nil || len(got) != 1 || got[0].Body != "zebra local" {
+		t.Fatalf("channel search %+v %v", got, err)
+	}
+	if n := d.f.searched.Load(); n != 0 {
+		t.Fatalf("%d searches reached the server", n)
+	}
+	got, err = d.c.Search(ctx, "zebra", 0)
+	if err != nil || len(got) != 2 || got[0].Body != "zebra local" || got[1].Body != "zebra public" {
+		t.Fatalf("global search %+v %v", got, err)
+	}
+}
+
+// Edits of uncached messages and reminders into encrypted channels are
+// refused before anything goes out.
+func TestEncEditAndRemindRefused(t *testing.T) {
+	d := newEncDM(t, proto.Snapshot{})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var pe *proto.Error
+	if err := d.c.Edit(ctx, 4242, "x"); !errors.As(err, &pe) || pe.Code != proto.ErrNotFound {
+		t.Fatalf("uncached edit: %v", err)
+	}
+	if _, err := d.c.Remind(ctx, time.Now().Add(time.Hour), "look at the DM", dm); !errors.Is(err, ErrRemindEncrypted) {
+		t.Fatalf("remind: %v", err)
 	}
 }
 

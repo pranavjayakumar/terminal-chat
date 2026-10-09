@@ -189,6 +189,11 @@ func isDigits(s string, min, max int) bool {
 // Remind asks the server to post text in my notes at at (optionally noting
 // the channel ch it was set in). It returns the reminder's id.
 func (c *Client) Remind(ctx context.Context, at time.Time, text string, ch uint64) (uint64, error) {
+	// The server keeps reminder text in the clear; it mustn't be about an
+	// encrypted conversation.
+	if ch != 0 && c.needsEnc(ch) {
+		return 0, ErrRemindEncrypted
+	}
 	if err := c.requireCap(proto.CapRemind, "reminders"); err != nil {
 		return 0, err
 	}
@@ -196,6 +201,9 @@ func (c *Client) Remind(ctx context.Context, at time.Time, text string, ch uint6
 	err := c.call(ctx, proto.OpRemindCreate, proto.RemindCreateArgs{At: at.UnixMilli(), Text: text, Chan: ch}, &r, nil)
 	return r.ID, err
 }
+
+// ErrRemindEncrypted refuses a reminder that points into an encrypted channel.
+var ErrRemindEncrypted = errors.New("reminders can't point into encrypted channels")
 
 // Reminders lists my pending reminders, soonest first.
 func (c *Client) Reminders(ctx context.Context) ([]proto.Reminder, error) {
