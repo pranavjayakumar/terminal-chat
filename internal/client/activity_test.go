@@ -3,6 +3,7 @@ package client
 import (
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -376,5 +377,101 @@ func TestActivitySeenPersistsAndOnlyMovesForward(t *testing.T) {
 	}
 	if got := c.ActivitySeen(); got != 0 {
 		t.Fatalf("after switching servers: %d", got)
+	}
+}
+
+// The scans look at the newest scanMessages messages only, and at those not
+// older than scanAge before the newest one.
+func TestActivityScansAreBounded(t *testing.T) {
+	t.Run("message count", func(t *testing.T) {
+		old := scanMessages
+		scanMessages = 20
+		t.Cleanup(func() { scanMessages = old })
+		c, _ := localClient(t)
+		seedLocal(t, c)
+		for id := uint64(1); id <= 60; id++ {
+			m := proto.Message{ID: id, Chan: general, Author: bob, Body: "filler", Time: int64(id) * 1000}
+			switch id {
+			case 5:
+				m.Body = "old @alice"
+			case 6:
+				m.Chan, m.Body = dm, "old dm"
+			case 7:
+				m.Author, m.Body = bob, "old reply in my thread"
+				m.Thread = 4
+			case 4:
+				m.Author, m.Body = alice, "my old thread root"
+			case 45:
+				m.Body = "recent @alice"
+			case 46:
+				m.Chan, m.Body = dm, "recent dm"
+			case 47:
+				m.Thread, m.Body = 44, "recent reply in my thread"
+			case 44:
+				m.Author, m.Body = alice, "my recent thread root"
+			}
+			addMsg(t, c, m)
+		}
+		var got []string
+		for _, it := range c.Activity(100) {
+			got = append(got, fmt.Sprintf("%s:%d", it.Kind, it.Msg))
+		}
+		want := []string{"reply:47", "dm:46", "mention:45"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("got %v, want %v (nothing older than the newest 20 messages)", got, want)
+		}
+	})
+	t.Run("age", func(t *testing.T) {
+		c, _ := localClient(t)
+		seedLocal(t, c)
+		day := int64(24 * 3600 * 1000)
+		base := int64(1_700_000_000_000)
+		addMsg(t, c, proto.Message{ID: 1, Chan: general, Author: bob, Body: "ancient @alice", Time: base})
+		addMsg(t, c, proto.Message{ID: 2, Chan: dm, Author: bob, Body: "ancient dm", Time: base + 1})
+		addMsg(t, c, proto.Message{ID: 3, Chan: general, Author: bob, Body: "recent @alice", Time: base + 40*day})
+		addMsg(t, c, proto.Message{ID: 4, Chan: general, Author: carol, Body: "newest", Time: base + 41*day})
+		items := c.Activity(100)
+		if len(items) != 1 || items[0].Msg != 3 {
+			t.Fatalf("got %+v, want only message 3 (31+ days older than the newest is out)", items)
+		}
+		// Relative to the newest message, not the clock: an idle cache keeps its last month.
+		addMsg(t, c, proto.Message{ID: 5, Chan: general, Author: bob, Body: "@alice again", Time: base + 41*day + 1})
+		if items := c.Activity(100); len(items) != 2 {
+			t.Fatalf("got %+v", items)
+		}
+	})
+}
+
+// A non-ASCII keyword is matched in SQL (lowercased), so the scan doesn't
+// have to decode every row.
+func TestNonASCIIKeywordIsFilteredInSQL(t *testing.T) {
+	c, _ := localClient(t)
+	seedLocal(t, c)
+	for id := uint64(1); id <= 100; id++ {
+		addMsg(t, c, proto.Message{ID: id, Chan: general, Author: bob, Body: fmt.Sprintf("filler %d", id), Time: int64(id)})
+	}
+	addMsg(t, c, proto.Message{ID: 101, Chan: general, Author: bob, Body: "ÜNÏ here", Time: 101})
+	addMsg(t, c, proto.Message{ID: 102, Chan: general, Author: bob, Body: "süni no", Time: 102})
+	addMsg(t, c, proto.Message{ID: 103, Chan: general, Author: bob, Body: "Straße und STRASSE", Time: 103})
+	filter, args := highlightFilter("m.body", "alice", []string{"ünï"})
+	var n int
+	if err := c.db.QueryRow(`SELECT COUNT(*) FROM msgs m WHERE `+filter, args...).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n > 2 { // the exact whole-word check stays in Go; SQL may keep süni
+		t.Fatalf("the prefilter lets %d of 103 rows through", n)
+	}
+	if _, err := c.AddHighlight("ünï"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.AddHighlight("Straße"); err != nil {
+		t.Fatal(err)
+	}
+	items := c.Activity(10)
+	if len(items) != 2 || items[0].Msg != 103 || items[1].Msg != 101 || items[0].Kind != ActHighlight {
+		t.Fatalf("activity = %+v", items)
+	}
+	if v := chanView(t, c, general); !v.Mention {
+		t.Fatal("the channel should be flagged")
 	}
 }

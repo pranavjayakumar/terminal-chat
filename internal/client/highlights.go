@@ -2,13 +2,31 @@ package client
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"modernc.org/sqlite"
 )
+
+// The SQL driver's function table is process-wide, so this is registered
+// once, here, for every connection.
+func init() {
+	sqlite.MustRegisterDeterministicScalarFunction("tc_lower", 1,
+		func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+			switch v := args[0].(type) {
+			case string:
+				return strings.ToLower(v), nil
+			case []byte:
+				return strings.ToLower(string(v)), nil
+			}
+			return "", nil
+		})
+}
 
 // Highlight keywords are words the user wants treated like an @mention:
 // they are stored in the local cache (never sent anywhere), matched
@@ -180,15 +198,19 @@ func containsWord(s, w string) bool {
 func isWordRune(r rune) bool { return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) }
 
 // highlightFilter is an SQL prefilter for messages that may mention the user
-// or contain a keyword: LIKE is only case-insensitive for ASCII, so a
-// non-ASCII keyword disables the filter and Go decides. The result is a
-// parenthesised OR with its arguments.
+// or contain a keyword. LIKE is only case-insensitive for ASCII, so a
+// non-ASCII keyword is looked for in tc_lower(body), Go's strings.ToLower
+// as an SQL function: the same lowercasing the exact check uses, without
+// decoding the row into a Message first. The result is a parenthesised OR
+// with its arguments.
 func highlightFilter(col, meName string, words []string) (string, []any) {
 	conds := []string{col + ` LIKE ? ESCAPE '\'`}
 	args := []any{"%@" + likeEscape(meName) + "%"}
 	for _, w := range words {
 		if !isASCII(w) {
-			return "(1)", nil
+			conds = append(conds, `instr(tc_lower(`+col+`), ?) > 0`)
+			args = append(args, strings.ToLower(w))
+			continue
 		}
 		conds = append(conds, col+` LIKE ? ESCAPE '\'`)
 		args = append(args, "%"+likeEscape(w)+"%")

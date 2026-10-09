@@ -59,6 +59,16 @@ const (
 	previewRunes = 200
 )
 
+// The mention, reply and DM scans only look at recent history: the newest
+// scanMessages messages that are also within scanAge of the newest one. That
+// bounds the work (and the rows decoded) whatever the cache holds, and an
+// item older than that is no longer "activity" anyway. Variables so tests
+// can use small bounds.
+var (
+	scanMessages       = 5000
+	scanAge      int64 = 30 * 24 * 3600 * 1000 // ms
+)
+
 // maxReacts bounds the reactions table: only the newest are ever shown.
 // A variable so a test can use a small bound.
 var maxReacts = 1000
@@ -122,6 +132,7 @@ func (c *Client) activity(q dbtx, me proto.User, limit int) []ActivityItem {
 		return in && !bots[m.Author]
 	}
 	words := highlightsOf(q)
+	floorID, floorTime := scanFloor(q)
 	seen := map[uint64]bool{}
 	var out []ActivityItem
 	add := func(kind ActivityKind, m proto.Message) {
@@ -132,8 +143,8 @@ func (c *Client) activity(q dbtx, me proto.User, limit int) []ActivityItem {
 
 	// Mentions and highlights.
 	filter, fargs := highlightFilter("m.body", me.Name, words)
-	scanMsgs(q, `SELECT `+msgCols+` FROM msgs m WHERE m.author != ? AND m.deleted = 0 AND `+filter+` ORDER BY m.id DESC`,
-		append([]any{me.ID}, fargs...), limit, func(m proto.Message) bool {
+	scanMsgs(q, `SELECT `+msgCols+` FROM msgs m WHERE m.id >= ? AND m.time >= ? AND m.author != ? AND m.deleted = 0 AND `+filter+` ORDER BY m.id DESC`,
+		append([]any{floorID, floorTime, me.ID}, fargs...), limit, func(m proto.Message) bool {
 			switch {
 			case !ok(m):
 			case mentions(m.Body, me.Name):
@@ -146,17 +157,16 @@ func (c *Client) activity(q dbtx, me proto.User, limit int) []ActivityItem {
 			return false
 		})
 
-	// Replies in threads I started or took part in (before the reply). One
-	// aggregate finds where I replied; roots are checked once per thread.
-	first := map[uint64]uint64{} // thread → my first reply
-	if rows, err := q.Query(`SELECT thread, MIN(id) FROM msgs WHERE author = ? AND thread != 0 GROUP BY thread`, me.ID); err == nil {
-		for rows.Next() {
-			var th, id uint64
-			if rows.Scan(&th, &id) == nil {
-				first[th] = id
-			}
+	// Replies in threads I started or took part in (before the reply). Each
+	// thread is checked once, by the (thread, id) index and by primary key.
+	firstReply := map[uint64]uint64{} // thread → my first reply, 0 if none
+	tookPart := func(thread, before uint64) bool {
+		f, known := firstReply[thread]
+		if !known {
+			_ = q.QueryRow(`SELECT COALESCE(MIN(id), 0) FROM msgs WHERE thread = ? AND author = ?`, thread, me.ID).Scan(&f)
+			firstReply[thread] = f
 		}
-		rows.Close()
+		return f != 0 && f < before
 	}
 	myRoot := map[uint64]bool{}
 	isMyRoot := func(thread uint64) bool {
@@ -168,12 +178,9 @@ func (c *Client) activity(q dbtx, me proto.User, limit int) []ActivityItem {
 		}
 		return v
 	}
-	scanMsgs(q, `SELECT `+msgCols+` FROM msgs r WHERE r.thread != 0 AND r.author != ? AND r.deleted = 0 ORDER BY r.id DESC`,
-		[]any{me.ID}, limit, func(m proto.Message) bool {
-			if seen[m.ID] || !ok(m) {
-				return false
-			}
-			if f, in := first[m.Thread]; (!in || f > m.ID) && !isMyRoot(m.Thread) {
+	scanMsgs(q, `SELECT `+msgCols+` FROM msgs r WHERE r.id >= ? AND r.time >= ? AND r.thread != 0 AND r.author != ? AND r.deleted = 0 ORDER BY r.id DESC`,
+		[]any{floorID, floorTime, me.ID}, limit, func(m proto.Message) bool {
+			if seen[m.ID] || !ok(m) || !(tookPart(m.Thread, m.ID) || isMyRoot(m.Thread)) {
 				return false
 			}
 			add(ActReply, m)
@@ -181,9 +188,9 @@ func (c *Client) activity(q dbtx, me proto.User, limit int) []ActivityItem {
 		})
 
 	// Direct messages.
-	scanMsgs(q, `SELECT `+msgCols+` FROM msgs m WHERE m.author != ? AND m.deleted = 0
+	scanMsgs(q, `SELECT `+msgCols+` FROM msgs m WHERE m.id >= ? AND m.time >= ? AND m.author != ? AND m.deleted = 0
 		AND m.chan IN (SELECT id FROM chans WHERE kind = ?) ORDER BY m.id DESC`,
-		[]any{me.ID, proto.ChanDM}, limit, func(m proto.Message) bool {
+		[]any{floorID, floorTime, me.ID, proto.ChanDM}, limit, func(m proto.Message) bool {
 			if seen[m.ID] || !ok(m) || chanKind[m.Chan] != proto.ChanDM {
 				return false
 			}
@@ -226,6 +233,19 @@ func (c *Client) activity(q dbtx, me proto.User, limit int) []ActivityItem {
 		out = out[:limit]
 	}
 	return out
+}
+
+// scanFloor is the oldest message id and time the scans may look at: the
+// scanMessages-th newest id (a walk down the primary key) and scanAge before
+// the newest message's time. Relative to the newest message, not the clock, so
+// an idle cache still shows its last activity.
+func scanFloor(q dbtx) (id uint64, ms int64) {
+	var newest int64
+	if q.QueryRow(`SELECT time FROM msgs ORDER BY id DESC LIMIT 1`).Scan(&newest) != nil {
+		return 0, 0
+	}
+	_ = q.QueryRow(`SELECT id FROM msgs ORDER BY id DESC LIMIT 1 OFFSET ?`, scanMessages-1).Scan(&id)
+	return id, newest - scanAge
 }
 
 // scanMsgs streams a message query and stops once take has returned true
