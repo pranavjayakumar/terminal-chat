@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"sync"
 	"time"
 
@@ -47,6 +48,7 @@ type session struct {
 	done    chan struct{}
 
 	synced       bool
+	e2e          bool // both sides advertised proto.CapE2E
 	lastTyping   map[uint64]time.Time
 	lastPresence time.Time
 	lastRecv     time.Time
@@ -83,7 +85,7 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 	}
 	defer s.unregister(sess)
 	if err := sess.codec.Write(proto.TWelcome, proto.Welcome{
-		Server: Version, Caps: []string{}, ServerID: s.st.serverID, User: user, Time: s.now(),
+		Server: Version, Caps: []string{proto.CapE2E}, ServerID: s.st.serverID, User: user, Time: s.now(),
 	}); err != nil {
 		return
 	}
@@ -104,6 +106,7 @@ func (s *Server) handshake(ctx context.Context, sess *session) (proto.User, stri
 	if err := f.Decode(&h); err != nil {
 		return proto.User{}, proto.ByeProtocolError, "bad HELLO"
 	}
+	sess.e2e = slices.Contains(h.Caps, proto.CapE2E)
 	exp, err := sess.conn.Exporter()
 	if err != nil {
 		return proto.User{}, proto.ByeProtocolError, "no TLS exporter"
@@ -549,7 +552,7 @@ func (s *Server) sync(ctx context.Context, sess *session, args proto.Raw) (proto
 		return proto.SyncRes{Head: h, Reset: true}, s.sendSnapshot(ctx, tx, sess)
 	}
 	for since := a.Since; ; {
-		evs, err := visibleEvents(ctx, tx, u, since, h, replayPage)
+		evs, err := visibleEvents(ctx, tx, u, since, h, replayPage, sess.e2e)
 		if err != nil {
 			return proto.SyncRes{}, err
 		}
@@ -602,6 +605,12 @@ func (s *Server) sendSnapshot(ctx context.Context, tx *sql.Tx, sess *session) er
 	}
 	if len(cpart) > 0 {
 		if err := sess.pushSnapshot(proto.Snapshot{Chans: cpart}); err != nil {
+			return err
+		}
+	}
+
+	if sess.e2e {
+		if err := sess.snapshotDevices(ctx, tx); err != nil {
 			return err
 		}
 	}

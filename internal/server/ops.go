@@ -45,10 +45,19 @@ var writeOps = map[string]bool{
 	proto.OpRead: true, proto.OpChanCreate: true, proto.OpChanJoin: true, proto.OpChanAdd: true,
 	proto.OpChanLeave: true, proto.OpChanTopic: true, proto.OpDMOpen: true,
 	proto.OpInviteCreate: true, proto.OpUserDisable: true, proto.OpUserUpdate: true,
+	proto.OpDeviceRegister: true, proto.OpDeviceRevoke: true,
+}
+
+// e2eOps exist only in sessions that negotiated proto.CapE2E.
+var e2eOps = map[string]bool{
+	proto.OpDeviceRegister: true, proto.OpDeviceRevoke: true, proto.OpDevicesList: true,
 }
 
 func (s *Server) dispatch(ctx context.Context, sess *session, op string, args proto.Raw) (any, error) {
 	u := sess.user
+	if e2eOps[op] && !sess.e2e {
+		return nil, proto.Errf(proto.ErrUnknownOp, "")
+	}
 	s.mu.Lock()
 	disabled := s.disabled[u.ID]
 	limited := writeOps[op] && !s.allowWrite(u.ID)
@@ -97,6 +106,12 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 		return withArgs(args, func(a proto.UserUpdateArgs) (any, error) { return s.opUserUpdate(ctx, u, a) })
 	case proto.OpUserDisable:
 		return withArgs(args, func(a proto.UserArgs) (any, error) { return s.opUserDisable(ctx, u, a) })
+	case proto.OpDeviceRegister:
+		return withArgs(args, func(a proto.DeviceRegisterArgs) (any, error) { return s.opDeviceRegister(ctx, u, a) })
+	case proto.OpDeviceRevoke:
+		return withArgs(args, func(a proto.DeviceRevokeArgs) (any, error) { return s.opDeviceRevoke(ctx, u, a) })
+	case proto.OpDevicesList:
+		return withArgs(args, func(a proto.DevicesListArgs) (any, error) { return s.opDevicesList(ctx, a) })
 	}
 	return nil, proto.Errf(proto.ErrUnknownOp, "")
 }
