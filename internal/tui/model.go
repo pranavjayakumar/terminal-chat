@@ -29,6 +29,8 @@ const (
 	modeSearch
 	modeConfirmDelete
 	modeReact
+	modePanePick
+	modeSharePreview
 )
 
 // pane is a scrollable message list: a channel (root 0) or a thread.
@@ -97,8 +99,21 @@ type Model struct {
 
 	focused    bool
 	lastTyping time.Time
-	lastBell   time.Time
 	now        func() time.Time
+
+	notes      map[uint64]*pendingNote
+	noteGen    int
+	lastNotify time.Time
+
+	badge                *badgeWriter
+	badgeWant, badgeSent string
+	badgeGen             int
+
+	share shareState
+
+	lastKey              time.Time
+	autoAway, manualAway bool
+	awayRun              bool
 }
 
 // ---- tea messages ----
@@ -132,7 +147,6 @@ const (
 	pageLimit  = 100
 	maxInputH  = 6
 	reqTimeout = 30 * time.Second
-	bellEvery  = time.Second
 	infoTTL    = 4 * time.Second
 	errTTL     = 8 * time.Second
 	escWindow  = 2 * time.Second
@@ -153,7 +167,9 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 		limits: map[uint64]int{}, histBusy: map[uint64]bool{}, histDone: map[uint64]bool{},
 		focused: true, now: time.Now,
 		main: pane{sel: -1}, thread: pane{sel: -1},
+		notes: map[uint64]*pendingNote{}, badge: &badgeWriter{},
 	}
+	m.lastKey = m.now()
 	m.r = renderer{st: st, name: func(id uint64) string { return m.users[id].Name }}
 	m.input = newInput(st)
 	m.line = newLine(st)
@@ -184,7 +200,7 @@ func (m *Model) defaultChannelExcept(skip uint64) uint64 {
 
 // Init starts listening for client updates.
 func (m *Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.waitUpdate(), textarea.Blink}
+	cmds := []tea.Cmd{m.waitUpdate(), textarea.Blink, m.awayTick()}
 	if m.active != 0 && len(m.main.msgs) < 30 {
 		cmds = append(cmds, m.fetchHistory(m.active))
 	}
@@ -378,6 +394,7 @@ func (m *Model) openChannel(ch uint64) tea.Cmd {
 		return m.markRead()
 	}
 	m.active = ch
+	m.seen(ch)
 	m.main = pane{ch: ch, sel: -1}
 	m.closeThread()
 	if m.mode == modeSelect || m.mode == modeConfirmDelete || m.mode == modeReact {
@@ -596,36 +613,7 @@ func (m *Model) noticeTick() tea.Cmd {
 	return tea.Tick(d, func(time.Time) tea.Msg { return noticeExpireMsg{gen} })
 }
 
-// ---- bell / clipboard ----
-
-func (m *Model) bellFor(news []proto.Message) tea.Cmd {
-	if !m.opt.Bell || m.opt.Out == nil {
-		return nil
-	}
-	ring := false
-	for _, x := range news {
-		if x.Author == m.me.ID || x.Deleted {
-			continue
-		}
-		if x.Chan == m.active && m.focused {
-			continue
-		}
-		v, ok := m.chanView(x.Chan)
-		if (ok && v.Kind == proto.ChanDM) || mentionsMe(x.Body, m.me.Name) {
-			ring = true
-			break
-		}
-	}
-	if !ring || m.now().Sub(m.lastBell) < bellEvery {
-		return nil
-	}
-	m.lastBell = m.now()
-	out := m.opt.Out
-	return func() tea.Msg {
-		_, _ = out.Write([]byte("\a"))
-		return noopMsg{}
-	}
-}
+// ---- clipboard ----
 
 // copyCmd puts text on the clipboard with OSC 52. Most terminals support
 // it; tmux needs set-clipboard on.
@@ -652,6 +640,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if t := m.noticeTick(); t != nil {
 		cmd = tea.Batch(cmd, t)
 	}
+	if t := m.badgeTick(); t != nil {
+		cmd = tea.Batch(cmd, t)
+	}
 	return m, cmd
 }
 
@@ -665,6 +656,17 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case okMsg:
 		m.clearErr()
 		return m, nil
+	case notifyFlushMsg:
+		return m, m.flushNote(msg)
+	case badgeMsg:
+		return m, m.reportBadge(msg)
+	case awayTickMsg:
+		return m, m.checkAway()
+	case panesMsg:
+		return m, m.gotPanes(msg)
+	case paneReadMsg:
+		m.gotPaneText(msg)
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
 		m.layoutInput()
@@ -673,6 +675,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.FocusMsg:
 		m.focused = true
+		m.seen(m.active)
 		return m, m.markRead()
 	case tea.BlurMsg:
 		m.focused = false
@@ -787,7 +790,7 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 		f := u.Failed[len(u.Failed)-1]
 		m.setNotice("message not sent: "+f.Failed, true, false, 0)
 	}
-	cmds = append(cmds, m.bellFor(u.New))
+	cmds = append(cmds, m.notifyFor(u.New))
 	if u.Msgs[m.active] || u.Channels {
 		cmds = append(cmds, m.markRead())
 	}
@@ -797,6 +800,13 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 // ---- keys ----
 
 func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
+	if cmd := m.keyActivity(); cmd != nil {
+		return tea.Batch(cmd, m.handleKey1(k))
+	}
+	return m.handleKey1(k)
+}
+
+func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 	key := keyName(k)
 	if key == kQuit {
 		if m.ctrlC {
@@ -834,6 +844,10 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 		return nil
 	case modeReact:
 		return m.reactKey(k)
+	case modePanePick:
+		return m.panePickKey(key)
+	case modeSharePreview:
+		return m.sharePreviewKey(key)
 	case modeSelect:
 		if cmd, handled := m.selectKey(k); handled {
 			return cmd

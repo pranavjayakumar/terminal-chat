@@ -55,7 +55,7 @@ func (s *syncBuf) String() string {
 func newTestModelFake(t *testing.T, w, h int) (*Model, *fakeClient) {
 	t.Helper()
 	f := newFake()
-	m := New(context.Background(), f, Options{Out: &syncBuf{}, Bell: true, styles: testStyles(true)})
+	m := New(context.Background(), f, Options{Out: &syncBuf{}, Notifier: &fakeNotifier{}, styles: testStyles(true)})
 	m.Update(tea.WindowSizeMsg{Width: w, Height: h})
 	return m, f
 }
@@ -305,35 +305,6 @@ func TestSelectModeActions(t *testing.T) {
 	run(m, m.handleKey(keyMsg("esc")))
 	if m.mode != modeNormal {
 		t.Fatal("esc should leave select mode")
-	}
-}
-
-func TestBell(t *testing.T) {
-	m, _ := newTestModelFake(t, 80, 24)
-	out := m.opt.Out.(*syncBuf)
-	dm := proto.Message{ID: 301, Chan: 20, Author: 2, Body: "hi"}
-	run(m, m.applyUpdate(client.Update{New: []proto.Message{dm}}))
-	if strings.Count(out.String(), "\a") != 1 {
-		t.Fatalf("want one bell for a DM, got %q", out.String())
-	}
-	m.lastBell = m.lastBell.Add(-2 * bellEvery)
-	run(m, m.applyUpdate(client.Update{New: []proto.Message{
-		{ID: 302, Chan: 10, Author: 2, Body: "@alice in focused channel"},
-		{ID: 303, Chan: 11, Author: 1, Body: "@alice my own"},
-		{ID: 304, Chan: 11, Author: 2, Body: "no mention"},
-	}}))
-	if strings.Count(out.String(), "\a") != 1 {
-		t.Fatalf("unexpected bell: %q", out.String())
-	}
-	run(m, m.applyUpdate(client.Update{New: []proto.Message{{ID: 305, Chan: 11, Author: 2, Body: "hey @alice"}}}))
-	if strings.Count(out.String(), "\a") != 2 {
-		t.Fatalf("no bell for mention: %q", out.String())
-	}
-	m.opt.Bell = false
-	m.lastBell = m.lastBell.Add(-2 * bellEvery)
-	run(m, m.applyUpdate(client.Update{New: []proto.Message{dm}}))
-	if strings.Count(out.String(), "\a") != 2 {
-		t.Fatal("bell rang with TC_BELL=0")
 	}
 }
 

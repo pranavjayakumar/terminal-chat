@@ -353,9 +353,16 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 		}), nil
 	case "away":
 		status := c.rest
+		m.manualAway, m.autoAway = true, false
 		return m.call("away", func(context.Context) error { return be.SetAway(true, status) }), nil
 	case "back":
-		return m.call("back", func(context.Context) error { return be.SetAway(false, "") }), nil
+		m.manualAway, m.autoAway = false, false
+		return tea.Batch(m.call("back", func(context.Context) error { return be.SetAway(false, "") }), m.awayTick()), nil
+	case "share-pane":
+		if len(c.args) > 1 {
+			return nil, errors.New("usage: /share-pane [pane id or label]")
+		}
+		return m.sharePane(c.rest)
 	case "search":
 		if c.rest == "" {
 			return nil, errors.New("usage: /search terms")

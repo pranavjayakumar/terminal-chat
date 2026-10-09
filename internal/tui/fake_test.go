@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/skailama/tc/internal/client"
+	"github.com/skailama/tc/internal/notify"
 	"github.com/skailama/tc/internal/proto"
 )
 
@@ -29,6 +31,7 @@ type fakeClient struct {
 	history  int
 	histMore bool
 	calls    []string
+	aways    []bool
 }
 
 func newFake() *fakeClient {
@@ -183,8 +186,75 @@ func (f *fakeClient) Search(ctx context.Context, q string, ch uint64) ([]proto.M
 func (f *fakeClient) CreateInvite(ctx context.Context, user uint64) (string, error) {
 	return "tc1-invite", nil
 }
-func (f *fakeClient) SendTyping(ch uint64) error             { return nil }
-func (f *fakeClient) SetAway(away bool, status string) error { f.record("away"); return nil }
+func (f *fakeClient) SendTyping(ch uint64) error { return nil }
+func (f *fakeClient) SetAway(away bool, status string) error {
+	if away {
+		f.record("away")
+	} else {
+		f.record("back")
+	}
+	f.mu.Lock()
+	f.aways = append(f.aways, away)
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *fakeClient) awayCalls() []bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.aways)
+}
+
+// fakeNotifier records notifications.
+type fakeNotifier struct {
+	mu    sync.Mutex
+	notes [][2]string
+}
+
+func (n *fakeNotifier) Notify(title, body string) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.notes = append(n.notes, [2]string{title, body})
+	return true
+}
+
+func (n *fakeNotifier) got() [][2]string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return slices.Clone(n.notes)
+}
+
+// fakeHerdr is an in-memory herdr CLI.
+type fakeHerdr struct {
+	mu     sync.Mutex
+	panes  []notify.Pane
+	text   map[string]string
+	reads  []string
+	titles []string
+}
+
+func (h *fakeHerdr) Self() string    { return "w1:p1" }
+func (h *fakeHerdr) SelfTab() string { return "w1:t1" }
+func (h *fakeHerdr) Panes(ctx context.Context) ([]notify.Pane, error) {
+	return slices.Clone(h.panes), nil
+}
+func (h *fakeHerdr) ReadPane(ctx context.Context, id string, lines int) (string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.reads = append(h.reads, id+":"+strconv.Itoa(lines))
+	return h.text[id], nil
+}
+func (h *fakeHerdr) SetTitle(ctx context.Context, title string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.titles = append(h.titles, title)
+	return nil
+}
+func (h *fakeHerdr) gotTitles() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.titles)
+}
 
 // run executes cmd and feeds every resulting message back into m, giving
 // up on commands that block (cursor blink ticks).
