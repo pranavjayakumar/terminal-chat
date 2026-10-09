@@ -69,6 +69,7 @@ var helpLines = [][2]string{
 	{"/search terms", "search; Enter jumps"},
 	{"/away [status], /back", "presence"},
 	{"/invite", "invite code (admin)"},
+	{"/share-pane [pane]", "send a herdr pane's output (preview first)"},
 	{"//text", "send text starting with /"},
 }
 

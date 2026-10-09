@@ -218,6 +218,10 @@ func (m *Model) bodyLines(d dims) []string {
 		return m.switcherLines(w, h)
 	case modeSearch:
 		return m.searchLines(w, h)
+	case modePanePick:
+		return m.panePickLines(w, h)
+	case modeSharePreview:
+		return m.sharePreviewLines(w, h)
 	}
 	unread := 0
 	if v, ok := m.chanView(m.active); ok {
@@ -606,6 +610,40 @@ func (m *Model) searchLines(w, h int) []string {
 		} else {
 			out = append(out, fit(truncate(l, w), w))
 		}
+	}
+	return padLines(out, w, h)
+}
+
+func (m *Model) panePickLines(w, h int) []string {
+	s := &m.share
+	out := []string{fit(m.st.overlayTitle.Render(truncate("share a pane — ↑/↓ pick, Enter previews, Esc cancels", w)), w)}
+	start, end := window(len(s.panes), s.sel, h-1)
+	for i := start; i < end; i++ {
+		p := s.panes[i]
+		l := " " + p.Name() + m.st.dim.Render("  "+sanitize.Line(p.ID))
+		if i == s.sel {
+			out = append(out, fit(m.st.overlaySel.Render(fit(truncate(" "+p.Name()+"  "+sanitize.Line(p.ID), w), w)), w))
+		} else {
+			out = append(out, fit(truncate(l, w), w))
+		}
+	}
+	return padLines(out, w, h)
+}
+
+// sharePreviewLines shows exactly the message Enter will send, bottom
+// first.
+func (m *Model) sharePreviewLines(w, h int) []string {
+	s := &m.share
+	title := fmt.Sprintf("send to %s? Enter sends · Esc cancels · ↑/↓ scroll", m.chanTitle(s.ch))
+	out := []string{fit(m.st.overlayTitle.Render(truncate(title, w)), w)}
+	rows := h - 1
+	if rows <= 0 {
+		return padLines(out, w, h)
+	}
+	end := len(s.lines) - min(max(s.scroll, 0), max(len(s.lines)-rows, 0))
+	start := max(end-rows, 0)
+	for _, l := range s.lines[start:end] {
+		out = append(out, fit(truncate(sanitize.Line(l), w), w))
 	}
 	return padLines(out, w, h)
 }

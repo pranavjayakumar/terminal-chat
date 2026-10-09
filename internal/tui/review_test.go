@@ -24,7 +24,7 @@ func typeText(m *Model, s string) {
 // for the active channel when blurred.
 func TestMarkReadWhileBlurred(t *testing.T) {
 	m, f := newTestModelFake(t, 80, 24)
-	out := m.opt.Out.(*syncBuf)
+	nt := m.opt.Notifier.(*fakeNotifier)
 	m.Update(tea.BlurMsg{})
 	x := client.Message{Message: proto.Message{ID: 160, Chan: 10, Author: 2, Body: "while away", Time: f.msgs[10][len(f.msgs[10])-3].Time + 1000}}
 	f.msgs[10] = append(f.msgs[10], x)
@@ -34,8 +34,8 @@ func TestMarkReadWhileBlurred(t *testing.T) {
 		t.Fatalf("blurred pane at bottom should mark read, got %d", f.reads[10])
 	}
 	run(m, m.applyUpdate(client.Update{New: []proto.Message{{ID: 161, Chan: 10, Author: 2, Body: "@alice ping"}}}))
-	if !strings.Contains(out.String(), "\a") {
-		t.Fatal("mention in the active channel should ring while the terminal is blurred")
+	if len(nt.got()) != 1 {
+		t.Fatal("mention in the active channel should notify while the terminal is blurred")
 	}
 }
 

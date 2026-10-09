@@ -35,7 +35,7 @@ tc                                    # chat
 | `?` or `/help` | all keys and commands |
 | `Ctrl-C` twice | quit |
 
-Commands: `/join #x` `/create #x [--private]` `/add @user` `/dm @a @b` `/topic …` `/search …` `/away [status]` `/back` `/invite` (admin).
+Commands: `/join #x` `/create #x [--private]` `/add @user` `/dm @a @b` `/topic …` `/search …` `/away [status]` `/back` `/share-pane [pane]` `/invite` (admin).
 
 From the shell:
 
@@ -44,6 +44,17 @@ tc send '#general' deploy finished          # message
 kubectl logs pod/api | tc send @priya        # piped → code block (colors stripped)
 tc tail '#deploys'                           # stream a channel
 ```
+
+## herdr
+
+Run tc in a herdr pane and it notices (`HERDR_ENV=1`):
+
+- mentions and DMs pop up as herdr notifications (outside herdr: macOS/Linux desktop notifications, else the bell)
+- the pane title shows your unread count, e.g. `tc · 3 unread · 1@`
+- `/share-pane` picks another pane in the workspace and, after a preview, posts its last 60 lines as a code block
+
+`TC_NOTIFY=auto|herdr|os|bell|off` picks the notification backend; `TC_AWAY_MIN=15` sets
+auto-away (0 disables). Details in [docs/TUI.md](docs/TUI.md).
 
 ## Development
 

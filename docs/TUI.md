@@ -62,14 +62,42 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 
 `/join #x`, `/leave`, `/create #x [--private]`, `/add @user`, `/topic text`, `/dm @a @b`,
 `/invite` (admin; prints code), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps),
-`/quit`. Unknown command → inline error, input kept.
+`/share-pane [pane]` (herdr only), `/quit`. Unknown command → inline error, input kept.
 
 ## Behavior
 
 - Opening a channel marks it read up to the newest message (MarkRead) when the view is at the bottom.
   Scrolled up → don't mark read; show `↓ N new` pill.
 - Unread counts in sidebar; `@` instead of count when there's a mention or it's a DM.
-- Notifications (M2 adds herdr): for M1, ring the terminal bell (`\a`) on a mention or DM message while
-  that channel isn't focused. Configurable off with `TC_BELL=0`.
+- Notifications: see "Notifications & herdr" below.
 - Never block the UI on network: all client calls run in `tea.Cmd`s.
 - Startup renders from cache immediately, before connecting.
+
+## Notifications & herdr
+
+- **When**: a DM or a message that @mentions me, not my own, and either the terminal is blurred
+  (focus reporting) or the message is in a channel that isn't the active one.
+- **What**: title `#chan · alice` or `alice (DM)`, body = first non-empty line. Title ≤ 60 runes,
+  body ≤ 160, both through `sanitize.Line`.
+- **Coalescing**: the first message in a channel notifies at once and opens a 5 s window; more
+  messages in that window become one `N new messages` notification when it closes. At most one
+  notification per 2 s overall (a message over the cap waits for its window). Opening the channel
+  drops what's pending for it.
+- **Backend** (`internal/notify`), chosen by `TC_NOTIFY=auto|herdr|os|bell|off` (default `auto`):
+  auto = `herdr notification show` when `HERDR_ENV=1` and `herdr` is in PATH, else the OS
+  (`osascript` on macOS — text passed as argv to an `on run argv` script, never interpolated;
+  `notify-send` on Linux), else the terminal bell. `TC_BELL=0` still turns the bell off.
+  Every backend runs via exec argv (no shell), async, 2 s timeout, one at a time (extra ones dropped).
+- **Unread badge** (herdr only): the pane's herdr title is set to `tc · 3 unread · 1@` (same
+  counts as the header summary) with `herdr pane report-metadata <pane> --source tc --title …`,
+  or `--clear-title` when nothing is unread. Reported only when the text changes, 1 s after the
+  last change, off the UI loop; cleared on exit.
+- **`/share-pane [pane]`** (herdr only; otherwise an error): no argument opens a picker of the
+  other panes in this workspace (current tab first, my pane excluded; label/agent/title + id);
+  an argument matches a pane id or label. The pane's last 60 lines (`herdr pane read <id>
+  --source recent --lines 60`) are stripped of escape sequences and shown in a preview that is
+  exactly the message to be sent: ``📋 `label` `` + a fenced block. Enter sends to the current
+  channel (or open thread), Esc cancels. Over 64 KiB keeps the tail with a `… (N bytes truncated)` note.
+- **Auto-away**: after `TC_AWAY_MIN` minutes (default 15, `0` disables) without a key press the
+  presence goes away; the next key brings it back. A manual `/away` is never overridden (only
+  `/back` ends it).

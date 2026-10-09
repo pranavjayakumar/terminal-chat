@@ -12,10 +12,14 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strconv"
+	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/skailama/tc/internal/client"
+	"github.com/skailama/tc/internal/notify"
 	"github.com/skailama/tc/internal/proto"
 )
 
@@ -59,7 +63,13 @@ var _ Backend = (*client.Client)(nil)
 // Run shows the UI until the user quits or ctx is cancelled. The caller
 // runs c.Run(ctx) separately; the UI works from the cache while offline.
 func Run(ctx context.Context, c *client.Client) error {
-	m := New(ctx, c, Options{Out: os.Stdout, Bell: os.Getenv("TC_BELL") != "0"})
+	env := notify.OSEnv()
+	o := Options{Out: os.Stdout, Notifier: notify.New(env, os.Stdout), AwayAfter: awayAfter(os.Getenv("TC_AWAY_MIN"))}
+	if h := notify.DetectHerdr(env); h != nil {
+		o.Herdr = h
+	}
+	m := New(ctx, c, o)
+	defer m.Close()
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus(),
 		tea.WithContext(ctx), tea.WithOutput(os.Stdout))
 	_, err := p.Run()
@@ -75,8 +85,26 @@ type Options struct {
 	// terminal the program draws on. Both are single short writes made
 	// between renderer frames; neither moves the cursor, so they don't
 	// disturb the alt screen.
-	Out  io.Writer
-	Bell bool // ring on mentions/DMs outside the focused channel
+	Out io.Writer
+	// Notifier gets mentions and DMs the user isn't looking at; nil: none.
+	Notifier Notifier
+	// Herdr is set when running inside herdr: unread badge, /share-pane.
+	Herdr Herdr
+	// AwayAfter sets presence to away after this long without a key; 0: never.
+	AwayAfter time.Duration
 
 	styles *styles // nil: from Out and NO_COLOR
+}
+
+// awayAfter parses TC_AWAY_MIN (minutes, default 15, 0 disables).
+func awayAfter(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 15 * time.Minute
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return time.Duration(n * float64(time.Minute))
 }
