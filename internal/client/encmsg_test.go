@@ -386,6 +386,11 @@ func TestEncEditRefused(t *testing.T) {
 	if err := d.c.Edit(ctx, id, "fixed"); !errors.Is(err, ErrEncryptedEdit) {
 		t.Fatalf("edit: %v", err)
 	}
+	// Text the server can't vet is checked before it's encrypted.
+	var pe *proto.Error
+	if err := d.c.Send(dm, "bell \a", 0); !errors.As(err, &pe) || pe.Code != proto.ErrBadRequest {
+		t.Fatalf("control characters: %v", err)
+	}
 }
 
 // A send into a channel in alarm is refused at once.

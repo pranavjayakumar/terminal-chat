@@ -32,6 +32,11 @@ func (c *Client) Send(ch uint64, body string, thread uint64) error {
 	e := outboxEntry{nonce: make([]byte, 16), chan_: ch, thread: thread, body: body, time: time.Now().UnixMilli()}
 	rand.Read(e.nonce)
 	if c.needsEnc(ch) {
+		// The server can't check encrypted text (§10): receivers would
+		// reject it as invalid, so refuse it here.
+		if !validText(body) {
+			return proto.Errf(proto.ErrBadRequest, "message is empty or contains control characters")
+		}
 		// Encrypted once, here if we can (works offline), else by the outbox
 		// before the first send; retries send the same bytes.
 		e.encNonce = newEncNonce()
