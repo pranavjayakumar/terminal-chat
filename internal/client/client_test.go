@@ -904,3 +904,23 @@ func TestCloseStopsEverything(t *testing.T) {
 	for range c.Updates() { // drained, then closed
 	}
 }
+
+func TestScrubbedEditIgnored(t *testing.T) {
+	testEnv(t)
+	fs := newFakeServer(t)
+	c := open(t, login(t, fs))
+	run(t, c)
+	fc := fs.accept()
+	fc.bootstrap()
+	// Replay of a superseded edit (body scrubbed), then the latest one.
+	fc.event(21, proto.KMsgEdit, general, bob, proto.MsgEdit{Msg: 10, Body: "", Edited: 5})
+	waitFor(t, "scrubbed edit", func() bool { return lastSeq(t, c) == 21 })
+	if got := bodies(c.Messages(general, 50)); got != "first,mine" {
+		t.Errorf("after scrubbed edit = %q", got)
+	}
+	fc.event(22, proto.KMsgEdit, general, bob, proto.MsgEdit{Msg: 10, Body: "first!", Edited: 6})
+	waitFor(t, "edit", func() bool { return lastSeq(t, c) == 22 })
+	if got := bodies(c.Messages(general, 50)); got != "first!,mine" {
+		t.Errorf("after edit = %q", got)
+	}
+}
