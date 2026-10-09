@@ -609,3 +609,26 @@ func TestShareRoundTripAndBinding(t *testing.T) {
 		t.Fatalf("short: %v", err)
 	}
 }
+
+func TestVerifyEnc(t *testing.T) {
+	f := newFixture(t)
+	enc := f.encrypt(t, []byte("hi"))
+	if h, err := VerifyEnc(f.alice.Ed25519Pub, f.sid, f.ch, enc); err != nil || h.Dev != f.alice.ID {
+		t.Fatalf("valid enc: %v", err)
+	}
+	other, _ := Generate(rand.Reader)
+	if _, err := VerifyEnc(other.Ed25519Pub, f.sid, f.ch, enc); !errors.Is(err, ErrBadSignature) {
+		t.Fatalf("wrong signer: %v", err)
+	}
+	if _, err := VerifyEnc(f.alice.Ed25519Pub, f.sid, f.ch+1, enc); !errors.Is(err, ErrBadSignature) {
+		t.Fatalf("other channel: %v", err)
+	}
+	e := bytes.Clone(enc)
+	e[EncHeaderSize] ^= 1
+	if _, err := VerifyEnc(f.alice.Ed25519Pub, f.sid, f.ch, e); !errors.Is(err, ErrBadSignature) {
+		t.Fatalf("flipped ct: %v", err)
+	}
+	if _, err := VerifyEnc(f.alice.Ed25519Pub, f.sid, f.ch, enc[:10]); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("short: %v", err)
+	}
+}
