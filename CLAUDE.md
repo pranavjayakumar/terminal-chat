@@ -55,7 +55,7 @@ appear to hang. Pick dependency versions whose `go` directive is ≤ 1.25.
 ```
 make build        # ./bin/tc
 make test         # go test -race ./...
-make fuzz         # short fuzz run on proto decoder + sanitizer
+make fuzz         # short fuzz run on proto decoder, sanitizer, e2ecrypto
 make lint         # go vet + staticcheck (if installed)
 make dev          # local server on :7443 with ./dev-data
 ```
