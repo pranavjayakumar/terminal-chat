@@ -733,6 +733,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.checkAway()
 	case panesMsg:
 		return m, m.gotPanes(msg)
+	case snippetMsg:
+		m.gotSnippet(msg)
+		return m, nil
 	case paneReadMsg:
 		m.gotPaneText(msg)
 		return m, nil

@@ -83,6 +83,7 @@ var helpLines = [][2]string{
 	{"/remind 10m text", "remind me in my notes (2h, 1d, 15:30, 9am, tomorrow 9am)"},
 	{"/reminders", "pending reminders with ids"},
 	{"/remind-delete id", "cancel a reminder"},
+	{"/snippet file[:range]", "send file lines as a code block (preview first)"},
 	{"/webhook name", "webhook here; copies curl"},
 	{"/webhooks", "list webhooks"},
 	{"/webhook-delete id", "delete a webhook"},

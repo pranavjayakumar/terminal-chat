@@ -403,26 +403,27 @@ func (r *renderer) body(m client.Message, bw int) []string {
 	}
 	text := sanitize.Text(m.Body)
 	var out []string
-	inCode := false
 	lastCode := false
-	for _, ln := range strings.Split(text, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(ln), "```") {
-			inCode = !inCode
-			continue
-		}
-		if inCode {
+	for _, sg := range splitFences(strings.Split(text, "\n")) {
+		if sg.code {
 			bar := st.codeBar.Render("┃") + " "
-			out = append(out, bar+r.style(fCode, m.Pending).Render(truncate(ln, bw-2)))
-			lastCode = true
+			for _, l := range r.codeLines(sg, bw-2, m.Pending) {
+				out = append(out, bar+l)
+			}
+			if len(sg.lines) > 0 {
+				lastCode = true
+			}
 			continue
 		}
-		lastCode = false
-		for _, l := range wrapSpans(parseInline(ln, r.me.Name), bw) {
-			var b strings.Builder
-			for _, sp := range l {
-				b.WriteString(r.style(sp.f, m.Pending).Render(sp.text))
+		for _, ln := range sg.lines {
+			lastCode = false
+			for _, l := range wrapSpans(parseInline(ln, r.me.Name), bw) {
+				var b strings.Builder
+				for _, sp := range l {
+					b.WriteString(r.style(sp.f, m.Pending).Render(sp.text))
+				}
+				out = append(out, b.String())
 			}
-			out = append(out, b.String())
 		}
 	}
 	if len(out) == 0 {

@@ -18,7 +18,7 @@ Every milestone ships behind green CI, adversarial + chaos tests, and a live her
 | Activity view (`Ctrl-A`) ✓ | mentions, replies in your threads, reactions to you, DMs |
 | Per-channel drafts ✓, keyword highlights ✓ | local only |
 | `/pin` `/pins` ✓, `/remind` ✓, user groups `@oncall` ✓ | server-scheduled reminders; groups mention client-side |
-| Diff + `file:line` aware snippets | `git diff \| tc send`, `tc send --file a.go:40-60` |
+| Diff + `file:line` aware snippets ✓ | `git diff \| tc send`, `tc send --file a.go:40-60` |
 | UI gaps from M1 | `?` no longer eats messages, long-line viewer |
 
 ## M3 — end-to-end encryption
