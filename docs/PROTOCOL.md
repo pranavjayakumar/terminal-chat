@@ -137,17 +137,18 @@ session **before** the RES. The `seq` in a RES is informational: clients advance
 | `edit` | `{msg, body: str}` | `{seq}` |
 | `delete` | `{msg}` | `{seq}` |
 | `react` / `unreact` | `{msg, emoji: str}` | `{seq}` |
-| `history` | `{chan, before: u64 (0 = latest), limit ≤ 200}` | `{msgs: [Message], more: bool}` |
+| `history` | `{chan, before: u64 (0 = latest), limit ≤ 200, thread?: u64}` | `{msgs: [Message], more: bool}` — with `thread`, that thread's replies only |
 | `search` | `{q: str, chan?: u64, limit ≤ 50}` | `{msgs: [Message]}` |
 | `read` | `{chan, seq}` | `{}` |
 | `chan.create` | `{name, private: bool, topic?: str}` | `{chan: Channel}` |
 | `chan.join` / `chan.leave` | `{chan}` | `{}` |
 | `chan.add` | `{chan, user}` | `{}` |
 | `chan.topic` | `{chan, topic: str}` | `{seq}` |
-| `dm.open` | `{users: [u64]}` (1–7 others) | `{chan: Channel}` |
+| `dm.open` | `{users: [u64]}` (0–7 others; 0 = your private notes) | `{chan: Channel}` |
 | `users.list` | `{}` | `{users: [User]}` |
 | `invite.create` | `{user?: u64}` (admin) | `{code: str}` |
 | `user.disable` | `{user}` (admin) | `{}` — closes their sessions with BYE `revoked` |
+| `user.update` | `{display: str}` (self) | `{seq}` — emits `user.update`; unchanged → `{seq: 0}` |
 
 Rules:
 - **send idempotency**: `(author, nonce)` is permanently unique. A repeat returns

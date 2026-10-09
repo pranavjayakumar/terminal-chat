@@ -28,6 +28,8 @@ func runClient(cmd string, args []string) error {
 		return cmdSend(args)
 	case "tail":
 		return cmdTail(args)
+	case "notify":
+		return cmdNotify(args)
 	}
 	return errUsage
 }
@@ -114,6 +116,9 @@ func resolve(ctx context.Context, c *client.Client, target string) (uint64, erro
 			}
 		}
 		return 0, fmt.Errorf("no channel #%s", name)
+	case target == "@me":
+		notes, err := c.OpenNotes(ctx)
+		return notes.ID, err
 	case strings.HasPrefix(target, "@"):
 		name := target[1:]
 		for _, u := range c.Users() {
@@ -124,7 +129,7 @@ func resolve(ctx context.Context, c *client.Client, target string) (uint64, erro
 		}
 		return 0, fmt.Errorf("no user @%s", name)
 	}
-	return 0, fmt.Errorf("target must be #channel or @user, got %q", target)
+	return 0, fmt.Errorf("target must be #channel, @user or @me, got %q", target)
 }
 
 func cmdSend(args []string) error {

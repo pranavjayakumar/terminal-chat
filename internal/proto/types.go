@@ -319,6 +319,8 @@ type HistoryArgs struct {
 	Chan   uint64 `msgpack:"chan"`
 	Before uint64 `msgpack:"before"`
 	Limit  int    `msgpack:"limit"`
+	// Thread, if set, returns that thread's replies instead of the channel.
+	Thread uint64 `msgpack:"thread,omitempty"`
 }
 
 type HistoryRes struct {
