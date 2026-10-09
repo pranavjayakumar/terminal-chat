@@ -286,6 +286,9 @@ func (c *Client) Close() error {
 // Trust is the E2E trust store, open for the Client's lifetime.
 func (c *Client) Trust() *trust.Store { return c.trust }
 
+// Home is the client's TC_HOME.
+func (c *Client) Home() string { return c.home }
+
 // Config returns the loaded configuration.
 func (c *Client) Config() Config { return c.cfg }
 

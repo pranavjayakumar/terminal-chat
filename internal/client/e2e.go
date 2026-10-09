@@ -150,12 +150,13 @@ func storeShare(q dbtx, ch uint64, d proto.KeyShareArgs) error {
 }
 
 type cachedBundle struct {
-	b   identity.Signed
-	seq uint64
+	b    identity.Signed
+	seq  uint64
+	hash []byte // cache key
 }
 
 func (c *Client) cachedBundles(ch uint64, epoch uint32) ([]cachedBundle, error) {
-	rows, err := c.db.Query(`SELECT bundle, seq FROM epochs WHERE chan = ? AND epoch = ? ORDER BY seq, hash`, ch, epoch)
+	rows, err := c.db.Query(`SELECT bundle, seq, hash FROM epochs WHERE chan = ? AND epoch = ? ORDER BY seq, hash`, ch, epoch)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +165,7 @@ func (c *Client) cachedBundles(ch uint64, epoch uint32) ([]cachedBundle, error) 
 	for rows.Next() {
 		var raw []byte
 		var cb cachedBundle
-		if err := rows.Scan(&raw, &cb.seq); err != nil {
+		if err := rows.Scan(&raw, &cb.seq, &cb.hash); err != nil {
 			return nil, err
 		}
 		var s proto.Signed
@@ -274,6 +275,10 @@ func (c *Client) e2eChannels(me uint64) ([]proto.Channel, error) {
 	}
 	return out, nil
 }
+
+// ServerID is the server's id as cached by the last snapshot; ok is false
+// before the first sync. Trust store rows are keyed by it.
+func (c *Client) ServerID() (e2ecrypto.ServerID, bool) { return c.cacheServerID() }
 
 func (c *Client) cacheServerID() (e2ecrypto.ServerID, bool) {
 	var sid e2ecrypto.ServerID
@@ -417,11 +422,13 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 	}
 
 	done := make([]bool, len(certs))
-	selfValid := make([]bool, len(certs))
 	for i, cr := range certs {
+		if d, ok, _ := ts.Device(sid, cr.dc.Dev); ok && bytes.Equal(d.Cert, cr.raw) {
+			done[i] = true // verified in an earlier pass
+			continue
+		}
 		_, err := cr.s.VerifyDeviceCert(sid, cr.dc.SSH)
-		selfValid[i] = err == nil
-		done[i] = !selfValid[i] // forged: never counts
+		done[i] = err != nil // forged: never counts
 	}
 	for round := 0; round < 8; round++ {
 		progress := false
@@ -667,16 +674,16 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 
 	// Bundles for epochs we already verified must be the ones we verified.
 	if hasHead {
-		rows, err := c.db.Query(`SELECT epoch, bundle FROM epochs WHERE chan = ? AND epoch <= ?`, ch.ID, head.Epoch)
+		rows, err := c.db.Query(`SELECT epoch, bundle, hash FROM epochs WHERE chan = ? AND epoch <= ?`, ch.ID, head.Epoch)
 		if err == nil {
 			type old struct {
-				epoch uint32
-				raw   []byte
+				epoch     uint32
+				raw, hash []byte
 			}
 			var olds []old
 			for rows.Next() {
 				var o old
-				if rows.Scan(&o.epoch, &o.raw) == nil {
+				if rows.Scan(&o.epoch, &o.raw, &o.hash) == nil {
 					olds = append(olds, o)
 				}
 			}
@@ -689,8 +696,9 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 				if ep, ok, _ := ts.Epoch(sid, ch.ID, o.epoch); ok && e2ecrypto.ChainHash(b.B) != ep.Hash {
 					return c.alarm(sid, ch.ID, fmt.Sprintf("fork: a second bundle for epoch %d", o.epoch))
 				}
+				// Only rows we checked: one arriving meanwhile gets checked next pass.
+				c.db.Exec(`DELETE FROM epochs WHERE chan = ? AND epoch = ? AND hash = ?`, ch.ID, o.epoch, o.hash)
 			}
-			c.db.Exec(`DELETE FROM epochs WHERE chan = ? AND epoch <= ?`, ch.ID, head.Epoch)
 		}
 	}
 
@@ -719,6 +727,14 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 			}
 			prev = &p
 		}
+		// An honest server has exactly one bundle per epoch.
+		distinct := map[[32]byte]bool{}
+		for _, cb := range cands {
+			distinct[e2ecrypto.ChainHash(cb.b.B)] = true
+		}
+		if len(distinct) > 1 {
+			return c.alarm(sid, ch.ID, fmt.Sprintf("fork: %d different bundles for epoch %d", len(distinct), next))
+		}
 		var valid []identity.EpochBundle
 		var validB []cachedBundle
 		var hard error
@@ -739,16 +755,11 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 				hard = err
 			}
 		}
-		switch {
-		case hard != nil:
+		if hard != nil {
 			return c.alarm(sid, ch.ID, hard.Error())
-		case len(valid) > 1:
-			return c.alarm(sid, ch.ID, fmt.Sprintf("fork: two valid bundles for epoch %d", next))
-		case len(valid) == 0:
-			// soft is set: wait for the rotator's device to verify.
 		}
 		if len(valid) == 0 {
-			break
+			break // soft is set: wait for the rotator's device to verify
 		}
 		soft = ""
 		eb := valid[0]
@@ -764,7 +775,9 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 			break // another process advanced meanwhile; the next pass catches up
 		}
 		changed = true
-		c.db.Exec(`DELETE FROM epochs WHERE chan = ? AND epoch <= ?`, ch.ID, next)
+		for _, cb := range cands {
+			c.db.Exec(`DELETE FROM epochs WHERE chan = ? AND epoch = ? AND hash = ?`, ch.ID, next, cb.hash)
+		}
 	}
 	if c.setSoft(ch.ID, soft) {
 		changed = true
@@ -889,6 +902,11 @@ func (c *Client) answerKeyNeed(ctx context.Context, s *session, sid e2ecrypto.Se
 	}
 	c.e2eMu.Lock()
 	d, ok, err := c.trust.Device(sid, dev)
+	if err == nil && !ok {
+		// Its device.new came just before; the worker may not have run yet.
+		c.verifyDevices(sid, s.sshPub, c.Me().ID)
+		d, ok, err = c.trust.Device(sid, dev)
+	}
 	if err != nil || !ok || d.Revoked || d.User != e.User {
 		c.e2eMu.Unlock()
 		return
