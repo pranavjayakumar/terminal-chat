@@ -176,7 +176,7 @@ func cmdSend(args []string) error {
 // (logs are often colored), keeps the tail if it's too long, and wraps it in
 // a code block so it renders as a snippet.
 func pipedBody(s string, raw bool) string {
-	s = strings.TrimRight(stripANSI(s), "\n")
+	s = strings.TrimRight(sanitize.StripANSI(s), "\n")
 	limit := proto.MaxBody - 64
 	if len(s) > limit {
 		cut := len(s) - limit
@@ -189,41 +189,6 @@ func pipedBody(s string, raw bool) string {
 		return s
 	}
 	return "```\n" + strings.ReplaceAll(s, "```", "ʼʼʼ") + "\n```"
-}
-
-// stripANSI removes CSI/OSC escape sequences and other control characters
-// that the server would reject, keeping newlines and tabs.
-func stripANSI(s string) string {
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == 0x1b && i+1 < len(s) {
-			switch s[i+1] {
-			case '[': // CSI: ends at a byte in 0x40–0x7E
-				j := i + 2
-				for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
-					j++
-				}
-				i = j
-				continue
-			case ']': // OSC: ends at BEL or ESC \
-				j := i + 2
-				for j < len(s) && s[j] != 0x07 && !(s[j] == 0x1b && j+1 < len(s) && s[j+1] == '\\') {
-					j++
-				}
-				if j < len(s) && s[j] == 0x1b {
-					j++
-				}
-				i = j
-				continue
-			}
-		}
-		if c == '\r' {
-			continue
-		}
-		b.WriteByte(c)
-	}
-	return sanitize.Text(b.String())
 }
 
 func cmdTail(args []string) error {
