@@ -7,6 +7,7 @@
 //	func Open(home string) (*Client, error)   // config + cache only, no network
 //	func (c *Client) Run(ctx context.Context) // connect/sync/reconnect until ctx or Close
 //	func (c *Client) Close() error
+//	func (c *Client) Trust() *trust.Store    // e2e.db, never touched by cache resets
 //	func DefaultHome() string                 // $TC_HOME or ~/.config/tc
 //
 // State and notifications:
@@ -63,6 +64,7 @@ import (
 
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
+	"github.com/skailama/tc/internal/trust"
 )
 
 var (
@@ -120,9 +122,10 @@ type Config struct {
 // Client owns one user's connection and cache. All methods are safe for
 // concurrent use.
 type Client struct {
-	home string
-	cfg  Config
-	db   *sql.DB
+	home  string
+	cfg   Config
+	db    *sql.DB
+	trust *trust.Store // e2e.db: separate from the cache so no reset reaches it
 	// procSeq is the highest event seq this process has handled. Only the
 	// read goroutine touches it.
 	procSeq uint64
@@ -212,8 +215,13 @@ func Open(home string) (*Client, error) {
 		db.Close()
 		return nil, fmt.Errorf("loading cache: %w", err)
 	}
+	ts, err := trust.Open(home)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
 	c := &Client{
-		home: home, cfg: cfg, db: db, users: users,
+		home: home, cfg: cfg, db: db, trust: ts, users: users,
 		typing: map[uint64]map[uint64]time.Time{}, typingTimers: map[uint64]*time.Timer{}, presence: map[uint64]Presence{},
 		typed:   map[uint64]time.Time{},
 		updates: make(chan Update, 1), obKick: make(chan struct{}, 1),
@@ -227,7 +235,7 @@ func Open(home string) (*Client, error) {
 	return c, nil
 }
 
-// Close stops Run, waits for it, and closes the cache and Updates channel.
+// Close stops Run, waits for it, and closes the cache, trust store and Updates channel.
 func (c *Client) Close() error {
 	c.cancel()
 	c.mu.Lock()
@@ -242,8 +250,11 @@ func (c *Client) Close() error {
 		close(c.updates)
 	}
 	c.updMu.Unlock()
-	return c.db.Close()
+	return errors.Join(c.db.Close(), c.trust.Close())
 }
+
+// Trust is the E2E trust store, open for the Client's lifetime.
+func (c *Client) Trust() *trust.Store { return c.trust }
 
 // Config returns the loaded configuration.
 func (c *Client) Config() Config { return c.cfg }
