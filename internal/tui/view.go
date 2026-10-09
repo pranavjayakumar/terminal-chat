@@ -361,6 +361,17 @@ func (m *Model) headerLeft(w int) string {
 	}
 	v, _ := m.chanView(m.active)
 	b.WriteString(m.st.header.Render(m.chanTitle(m.active)))
+	if st, ok := m.e2e[m.active]; ok {
+		b.WriteString(" 🔒")
+		switch st.State {
+		case client.E2EWaitingKey:
+			b.WriteString(m.st.dim.Render(" waiting for key"))
+		case client.E2EUnverified:
+			b.WriteString(m.st.dim.Render(" unverified"))
+		case client.E2EAlarm:
+			b.WriteString(m.st.noticeErr.Render(" ⚠ alarm: " + sanitize.Line(st.Detail)))
+		}
+	}
 	if n := len(v.Pins); n > 0 {
 		b.WriteString(m.st.dim.Render(" 📌 " + strconv.Itoa(n)))
 	}

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -143,13 +144,17 @@ type e2eFake struct {
 	t  *testing.T
 	fc *fakeConn
 
-	mu       sync.Mutex
-	seq      uint64
-	devs     proto.DevicesListRes
-	bundles  map[uint64]map[uint32]proto.EpochKey // key.fetch answers
-	onRotate func(f *e2eFake, id uint32, a proto.KeyRotateArgs)
+	mu        sync.Mutex
+	seq       uint64
+	devs      proto.DevicesListRes
+	bundles   map[uint64]map[uint32]proto.EpochKey // key.fetch answers
+	onRotate  func(f *e2eFake, id uint32, a proto.KeyRotateArgs)
+	onSend    func(f *e2eFake, id uint32, a proto.SendArgs) // nil: store and answer (encmsg_test.go)
+	searchRes proto.MsgsRes
+	searched  atomic.Int32
 
 	registered chan proto.Signed
+	sends      chan proto.SendArgs
 	rotates    chan proto.KeyRotateArgs
 	shares     chan proto.KeyShareArgs
 	needs      chan proto.Ephemeral
@@ -169,6 +174,30 @@ func (f *e2eFake) event(kind string, ch, actor uint64, data any) uint64 {
 	f.fc.codec.Write(proto.TEvent, proto.Event{Seq: seq, Kind: kind, Chan: ch, Actor: actor, Time: 1, Data: proto.MustRaw(data)})
 	f.mu.Unlock()
 	return seq
+}
+
+// post appends a msg.new for m (its id = the event's seq) and returns the id.
+func (f *e2eFake) post(m proto.Message) uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seq++
+	m.ID = f.seq
+	if m.Time == 0 {
+		m.Time = 1
+	}
+	f.fc.codec.Write(proto.TEvent, proto.Event{Seq: m.ID, Kind: proto.KMsgNew, Chan: m.Chan, Actor: m.Author, Time: 1, Data: proto.MustRaw(m)})
+	return m.ID
+}
+
+// msgNew stores a send by author like a server would and returns the id.
+func (f *e2eFake) msgNew(a proto.SendArgs, author uint64) uint64 {
+	return f.post(proto.Message{Chan: a.Chan, Author: author, Body: a.Body, Thread: a.Thread, Enc: a.Enc})
+}
+
+func (f *e2eFake) setOnSend(fn func(f *e2eFake, id uint32, a proto.SendArgs)) {
+	f.mu.Lock()
+	f.onSend = fn
+	f.mu.Unlock()
 }
 
 func (f *e2eFake) ok(id uint32, data any) {
@@ -204,7 +233,7 @@ func startE2E(t *testing.T, fs *fakeServer, sn proto.Snapshot, devs proto.Device
 	t.Helper()
 	fc := fs.accept()
 	f := &e2eFake{t: t, fc: fc, seq: 20, devs: devs, bundles: map[uint64]map[uint32]proto.EpochKey{},
-		registered: make(chan proto.Signed, 4), rotates: make(chan proto.KeyRotateArgs, 16),
+		registered: make(chan proto.Signed, 4), rotates: make(chan proto.KeyRotateArgs, 16), sends: make(chan proto.SendArgs, 16),
 		shares: make(chan proto.KeyShareArgs, 16), needs: make(chan proto.Ephemeral, 64)}
 	for _, k := range sn.Keys {
 		f.addBundle(0, k.Bundle, k.Seq)
@@ -278,6 +307,27 @@ func (f *e2eFake) serve() {
 				} else {
 					seq := f.keyEpoch(a.Chan, alice, a.Bundle)
 					f.ok(r.ID, proto.SeqRes{Seq: seq})
+				}
+			case proto.OpSearch:
+				f.searched.Add(1)
+				f.mu.Lock()
+				res := f.searchRes
+				f.mu.Unlock()
+				f.ok(r.ID, res)
+			case proto.OpSend:
+				var a proto.SendArgs
+				proto.Unmarshal(r.Args, &a)
+				select {
+				case f.sends <- a:
+				default:
+				}
+				f.mu.Lock()
+				on := f.onSend
+				f.mu.Unlock()
+				if on != nil {
+					on(f, r.ID, a)
+				} else {
+					f.ok(r.ID, proto.SendRes{Msg: f.msgNew(a, alice)})
 				}
 			case proto.OpKeyShare:
 				var a proto.KeyShareArgs

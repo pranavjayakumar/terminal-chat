@@ -33,7 +33,7 @@ func TestMarkReadWhileBlurred(t *testing.T) {
 	if f.reads[10] != 160 {
 		t.Fatalf("blurred pane at bottom should mark read, got %d", f.reads[10])
 	}
-	run(m, m.applyUpdate(client.Update{New: []proto.Message{{ID: 161, Chan: 10, Author: 2, Body: "@alice ping"}}}))
+	run(m, m.applyUpdate(client.Update{New: news(proto.Message{ID: 161, Chan: 10, Author: 2, Body: "@alice ping"})}))
 	if len(nt.got()) != 1 {
 		t.Fatal("mention in the active channel should notify while the terminal is blurred")
 	}

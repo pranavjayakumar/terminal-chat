@@ -62,6 +62,8 @@ const (
 	MaxBundleBoxes = 128
 	// MaxKeyFetch is the most epochs one key.fetch may ask for.
 	MaxKeyFetch = 256
+	// MaxEnc bounds an encrypted message payload (Message.Enc, SendArgs.Enc).
+	MaxEnc = 64<<10 + 1<<10
 )
 
 // KeyRotateArgs is key.rotate's args.

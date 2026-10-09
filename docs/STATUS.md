@@ -9,7 +9,7 @@ Last updated: 2026-10-10 (end of session 1; branch `m2-activity` adds drafts, hi
 | M0 scaffold, spec, agents, CI | ✅ done |
 | M1 core chat (server, client, TUI, sync, offline outbox) | ✅ done, battle-tested (chaos + adversarial + live herdr) |
 | M2 collaboration | ✅ essentially done: notifications, herdr badge, `/share-pane`, auto-away, `tc notify`, notes, `/name`, threads, webhooks + bots, privacy scrubbing, drafts, `/highlight`, activity (Alt-A), message viewer (`v`), pins (`p`, `/pins`), user groups (`@oncall`), reminders (`/remind`), diff/snippets (`tc send --file`, `/snippet`) |
-| M3 end-to-end encryption | steps 1–5 merged (#9 crypto, #10 certs, #11 trust store, #13 server devices, #16 server epochs); **step 6 (client verification, key.need/share, RotateKey) in PR** from branch `e2e/client-bundles` |
+| M3 end-to-end encryption | steps 1–6 merged (#9 crypto, #10 certs, #11 trust store, #13 server devices, #16 server epochs, #25 client bundles); **step 7 (encrypted send/receive) on branch `e2e/encrypted-send`** |
 | M4 zero-setup onboarding | not started |
 | M5 voice | not started |
 
@@ -17,17 +17,17 @@ Release tag: `v0.1.0` = M1. No newer tag yet.
 
 ## Resume checklist (do in order)
 
-1. **E2E step 6** (`e2e/client-bundles`, worktree `.claude/worktrees/kiro-verify`): client verifies certs
-   (TOFU + endorsements), epoch chain (sig, prev, roster, by-authorization, rollback/fork alarms), opens boxes
-   (kc), backlinks, `key.need`/`key.share`, `Client.RotateKey`, moves device key into `internal/trust`.
-   Review fixes landed (server identity pin + e2e1 downgrade alarm / `TrustAlarm`, `UnverifiedUsers`, revoke seq
-   0 = unknown, 5 min skew, bounded caches, archived device keys; trust schema v7). Step 7 must refuse
-   plaintext into e2e channels (placeholder `TestPlaintextIntoE2ERefused`).
-   Review with protocol-guardian + security-reviewer, then merge.
-2. **E2E steps 7–12** per `docs/E2E.md`: 7 encrypted send/outbox (DMs created as e2e since step 5 still send
-   plaintext until this lands — handle that history), 8 edit/delete/react + local FTS, 9 membership changes +
+1. **E2E step 7** (branch `e2e/encrypted-send`): `send`/`Message` + `enc`; server refuses plaintext
+   send/edit in e2e channels, dedupes before `stale_epoch`, checks enc signer = caller's active device;
+   search skips e2e; webhooks forbidden (403). Client encrypts once into the outbox, stale_epoch → re-encrypt
+   with the same nonces, rotates when stale, "no key yet" failure + key.need + requeue; decrypts/verifies
+   incoming (lazy queue for missing keys/devices/roots), legacy vs server-inserted plaintext (trust schema
+   v8: epochs.seq), local search, `Update.New` is `[]client.Message` with `Sec`. TUI: 🔒 header + key
+   state, per-message markers, no sends in alarm. `tc send/notify/tail` covered. Decisions in `docs/E2E.md`
+   step 7. Review with protocol-guardian + security-reviewer + tui-reviewer + breaker, then merge.
+2. **E2E steps 8–12** per `docs/E2E.md`: 8 edit/delete/react + local FTS, 9 membership changes +
    `chan.remove` + `chan.encrypt` (legacy DMs), 10 TUI warnings + `/verify`, 11 malicious-server suite,
-   12 security pass + chaos. Webhooks must be forbidden into e2e channels (step 7).
+   12 security pass + chaos.
 3. **Finish M2**: diff and `file:line` snippets. (Long-line viewer, `/pins`, `/remind` and user groups
    `@team` are done.)
 4. **Deploy**: waiting on the droplet IP → `docs/DEPLOY.md`, then real-network tests.

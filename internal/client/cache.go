@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS chans (
 CREATE TABLE IF NOT EXISTS msgs (
 	id INTEGER PRIMARY KEY, chan INTEGER NOT NULL, author INTEGER NOT NULL, body TEXT NOT NULL,
 	thread INTEGER NOT NULL, time INTEGER NOT NULL, edited INTEGER NOT NULL,
-	deleted INTEGER NOT NULL, reactions TEXT NOT NULL);
+	deleted INTEGER NOT NULL, reactions TEXT NOT NULL,
+	enc BLOB, sec INTEGER NOT NULL DEFAULT 0, mid BLOB);
 CREATE INDEX IF NOT EXISTS msgs_chan ON msgs (chan, thread, id);
 CREATE INDEX IF NOT EXISTS msgs_thread ON msgs (thread, id);
 CREATE TABLE IF NOT EXISTS reads (
@@ -35,7 +36,8 @@ CREATE TABLE IF NOT EXISTS reads (
 CREATE TABLE IF NOT EXISTS outbox (
 	id INTEGER PRIMARY KEY AUTOINCREMENT, nonce BLOB NOT NULL UNIQUE, chan INTEGER NOT NULL,
 	thread INTEGER NOT NULL, body TEXT NOT NULL, time INTEGER NOT NULL,
-	failed TEXT NOT NULL DEFAULT '', msg INTEGER NOT NULL DEFAULT 0, sent INTEGER NOT NULL DEFAULT 0);
+	failed TEXT NOT NULL DEFAULT '', msg INTEGER NOT NULL DEFAULT 0, sent INTEGER NOT NULL DEFAULT 0,
+	enc BLOB, encnonce BLOB);
 -- Server-provided E2E objects (msgpack Signed), unverified; see devices.go.
 CREATE TABLE IF NOT EXISTS devices (cert BLOB PRIMARY KEY, dev BLOB NOT NULL, user INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS devices_dev ON devices (dev);
@@ -89,7 +91,10 @@ func openCache(path string) (*sql.DB, error) {
 	}
 	// IMMEDIATE transactions take the write lock up front, so busy_timeout
 	// covers writer contention (e.g. `tc tail` and the TUI sharing a cache).
-	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_txlock=immediate"
+	// secure_delete: deleted rows (a discarded or sent outbox entry's
+	// plaintext, a message deleted for everyone) are zeroed, not left in
+	// free pages.
+	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=secure_delete(ON)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening cache: %w", err)
@@ -280,13 +285,21 @@ func setMember(q dbtx, chanID, user uint64, in bool) error {
 
 const msgCols = `id, chan, author, body, thread, time, edited, deleted, reactions`
 
+// upsertMsg stores a message of a plaintext channel as is (tests; server
+// messages go through Client.saveMsg, which judges encrypted ones).
 func upsertMsg(q dbtx, m proto.Message, replace bool) error {
+	return storeMsg(q, m, SecPlain, nil, replace)
+}
+
+// storeMsg stores m with its verdict; m.Body is the text to show and m.Enc
+// the ciphertext, if any (kept so a waiting message can be opened later).
+func storeMsg(q dbtx, m proto.Message, sec Sec, mid []byte, replace bool) error {
 	verb := "INSERT OR REPLACE"
 	if !replace {
 		verb = "INSERT OR IGNORE"
 	}
-	_, err := q.Exec(verb+` INTO msgs (`+msgCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.Chan, m.Author, m.Body, m.Thread, m.Time, m.Edited, m.Deleted, encodeReactions(m.Reactions))
+	_, err := q.Exec(verb+` INTO msgs (`+msgCols+`, enc, sec, mid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.Chan, m.Author, m.Body, m.Thread, m.Time, m.Edited, m.Deleted, encodeReactions(m.Reactions), m.Enc, sec, mid)
 	return err
 }
 
@@ -378,13 +391,19 @@ type outboxEntry struct {
 	time   int64
 	failed string
 	msg    uint64
+	// enc is what we send into an encrypted channel (nil until encrypted):
+	// every retry sends these exact bytes; only a stale_epoch replaces it,
+	// re-encrypting with the same encNonce (encmsg.go).
+	enc      []byte
+	encNonce []byte
+	sent     uint64 // 0: never handed to the server
 }
 
-const outboxCols = `id, nonce, chan, thread, body, time, failed, msg`
+const outboxCols = `id, nonce, chan, thread, body, time, failed, msg, enc, encnonce, sent`
 
 func scanOutbox(sc interface{ Scan(...any) error }) (outboxEntry, error) {
 	var e outboxEntry
-	err := sc.Scan(&e.id, &e.nonce, &e.chan_, &e.thread, &e.body, &e.time, &e.failed, &e.msg)
+	err := sc.Scan(&e.id, &e.nonce, &e.chan_, &e.thread, &e.body, &e.time, &e.failed, &e.msg, &e.enc, &e.encNonce, &e.sent)
 	return e, err
 }
 

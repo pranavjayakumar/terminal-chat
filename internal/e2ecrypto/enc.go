@@ -127,17 +127,26 @@ func ParseEnc(enc []byte) (Enc, error) {
 	return e, nil
 }
 
+// VerifyEnc checks enc's framing and its signature by pub without any key
+// (what a server can check: the enc came from that device, for this channel).
+func VerifyEnc(pub ed25519.PublicKey, sid ServerID, ch uint64, enc []byte) (Enc, error) {
+	e, err := ParseEnc(enc)
+	if err != nil {
+		return e, err
+	}
+	if !VerifyEd25519(pub, CtxMsgSig, sigBody(sid, ch, enc[:len(enc)-SigSize]), e.Sig[:]) {
+		return e, ErrBadSignature
+	}
+	return e, nil
+}
+
 // Decrypt verifies enc's signature by pub, then decrypts with the epoch key k
 // (the caller picks k by ParseEnc(enc).Epoch). The signature is checked first so
 // a member holding K still can't pass off a message as another device's.
 func Decrypt(k Key, pub ed25519.PublicKey, sid ServerID, ch uint64, enc []byte) ([]byte, error) {
-	e, err := ParseEnc(enc)
+	e, err := VerifyEnc(pub, sid, ch, enc)
 	if err != nil {
 		return nil, err
-	}
-	signed := enc[:len(enc)-SigSize]
-	if !VerifyEd25519(pub, CtxMsgSig, sigBody(sid, ch, signed), e.Sig[:]) {
-		return nil, ErrBadSignature
 	}
 	mk, err := msgKey(k, sid, ch, e.Epoch)
 	if err != nil {

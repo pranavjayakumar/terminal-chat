@@ -301,7 +301,11 @@ func (c *Client) e2ePass(ctx context.Context, s *session, sid e2ecrypto.ServerID
 		if c.syncChannel(ctx, s, sid, ch) {
 			changed = true
 		}
+		if c.e2eStatus(sid, ch).State == E2EOK {
+			c.requeueNoKey(ch.ID)
+		}
 	}
+	c.reopenMsgs(sid, chans)
 	if changed {
 		c.post(Update{Channels: true})
 	}
@@ -782,6 +786,7 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 	if err := ts.MarkChannelE2E(sid, ch.ID); err != nil {
 		return false
 	}
+	c.legacyCutoff(c.db, ch.ID)
 	if _, ok, _ := ts.Alarm(sid, ch.ID); ok {
 		return false
 	}
@@ -900,7 +905,7 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 		soft = ""
 		eb := valid[0]
 		e := trust.Epoch{Epoch: next, Hash: e2ecrypto.ChainHash(validB[0].b.B), KC: eb.KC, Roster: eb.Roster,
-			Key: openBox(sid, eb, s.myDevice())}
+			Key: openBox(sid, eb, s.myDevice()), Seq: validB[0].seq}
 		if eb.Back != nil {
 			e.Back = eb.Back[:]
 		}

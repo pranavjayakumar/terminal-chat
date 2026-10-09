@@ -60,15 +60,65 @@ func migrateEpochs(db *sql.DB) error {
 		{"epochs", "seq", `INTEGER NOT NULL DEFAULT 0`},
 		{"epochs", "state", `BLOB`},
 		{"devices", "revoked_seq", `INTEGER`},
+		{"messages", "enc", `BLOB`}, // §13.4; never in msg_fts (body is "" then)
+		{"messages", "mid", `BLOB`}, // e2ecrypto.MID(enc): one message per enc and channel
 	} {
 		if err := addColumn(db, c[0], c[1], c[2]); err != nil {
 			return err
 		}
 	}
+	if err := backfillMids(db); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS messages_mid ON messages(chan, mid) WHERE mid IS NOT NULL`); err != nil {
+		return fmt.Errorf("creating messages_mid: %w", err)
+	}
 	if err := migrateCreator(db); err != nil {
 		return err
 	}
 	return backfillSeqs(db)
+}
+
+// backfillMids fills messages.mid for encrypted messages stored before it
+// existed. A replayed enc (a second row with the same mid in a channel)
+// keeps NULL, so the unique index can still be built.
+func backfillMids(db *sql.DB) error {
+	rows, err := db.Query(`SELECT id, chan, enc FROM messages WHERE enc IS NOT NULL AND mid IS NULL ORDER BY id`)
+	if err != nil {
+		return err
+	}
+	type row struct {
+		id, ch uint64
+		mid    e2ecrypto.MsgID
+	}
+	var todo []row
+	for rows.Next() {
+		var r row
+		var enc []byte
+		if err := rows.Scan(&r.id, &r.ch, &enc); err != nil {
+			rows.Close()
+			return err
+		}
+		r.mid = e2ecrypto.MID(enc)
+		todo = append(todo, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil || len(todo) == 0 {
+		return err
+	}
+	seen := map[[2]any]bool{}
+	for _, r := range todo {
+		k := [2]any{r.ch, r.mid}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		if _, err := db.Exec(`UPDATE messages SET mid = ? WHERE id = ? AND NOT EXISTS
+			(SELECT 1 FROM messages WHERE chan = ? AND mid = ?)`, r.mid[:], r.id, r.ch, r.mid[:]); err != nil {
+			return fmt.Errorf("backfilling messages.mid: %w", err)
+		}
+	}
+	return nil
 }
 
 // migrateCreator adds channels.creator, backfilled from each channel's
@@ -540,6 +590,45 @@ func epochStale(ctx context.Context, q querier, ch uint64) (bool, error) {
 	var revoked int
 	err = q.QueryRowContext(ctx, revokedBoxesQuery(len(devs)), args...).Scan(&revoked)
 	return revoked > 0, err
+}
+
+// errHookE2E: webhooks can't post into encrypted channels (their text
+// comes from outside, and only members' devices can encrypt).
+var errHookE2E = proto.Errf(proto.ErrForbidden, "webhooks can't post into end-to-end encrypted channels")
+
+// checkEnc applies the encrypted-send rules (§13.5) that follow the
+// idempotency lookup: stale_epoch if enc isn't for the channel's current
+// epoch or that epoch's bundle is stale, then enc must be signed by an
+// active device of the caller. The server can't check anything inside it.
+func checkEnc(ctx context.Context, tx *sql.Tx, sid e2ecrypto.ServerID, user uint64, a proto.SendArgs,
+	e e2ecrypto.Enc, head epochHead) error {
+	if head.epoch == 0 || e.Epoch != head.epoch {
+		return staleEpoch(fmt.Sprintf("channel is at epoch %d", head.epoch))
+	}
+	stale, err := epochStale(ctx, tx, a.Chan)
+	if err != nil {
+		return err
+	}
+	if stale {
+		return staleEpoch("the channel's key must be rotated first")
+	}
+	if !bytes.Equal(e.EH[:], head.hash[:min(len(head.hash), e2ecrypto.IDSize)]) {
+		return badRequest("enc names another bundle of this epoch")
+	}
+	var owner uint64
+	var edPub, revoked []byte
+	err = tx.QueryRowContext(ctx, `SELECT user, ed25519, revoked FROM devices WHERE dev = ?`, e.Dev[:]).
+		Scan(&owner, &edPub, &revoked)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && (owner != user || revoked != nil)) {
+		return badRequest("enc is not from one of your active devices")
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := e2ecrypto.VerifyEnc(ed25519.PublicKey(edPub), sid, a.Chan, a.Enc); err != nil {
+		return badRequest("enc signature does not verify")
+	}
+	return nil
 }
 
 // revokedBoxesQuery counts the revoked devices among n bound ids: n point

@@ -117,7 +117,7 @@ func (c *Client) applySnapshot(s *session, sn proto.Snapshot) error {
 			}
 		}
 		for _, ch := range sn.Chans {
-			if err := storeChan(tx, ch); err != nil {
+			if err := c.storeChanE2E(tx, ch); err != nil {
 				return err
 			}
 		}
@@ -127,8 +127,9 @@ func (c *Client) applySnapshot(s *session, sn proto.Snapshot) error {
 			}
 		}
 		me := c.Me().ID
+		memo := newKeyMemo()
 		for _, m := range sn.Msgs {
-			if err := upsertMsg(tx, m, true); err != nil {
+			if _, err := c.saveMsg(tx, &m, true, memo); err != nil {
 				return err
 			}
 			if m.Author == me {
@@ -262,9 +263,14 @@ func (c *Client) appliedElsewhere(ev proto.Event) Update {
 		}
 		u.Users = true
 	case proto.KMsgNew:
+		// The other process judged it: show what the cache says.
 		var m proto.Message
 		if proto.Unmarshal(ev.Data, &m) == nil {
-			u.New = append(u.New, m)
+			var sec Sec
+			if c.db.QueryRow(`SELECT body, sec FROM msgs WHERE id = ?`, m.ID).Scan(&m.Body, &sec) == nil && sec != SecWaiting {
+				m.Enc = nil
+				u.New = append(u.New, Message{Message: m, Sec: sec})
+			}
 		}
 	case proto.KGroupUpdate:
 		u.Channels = true
@@ -293,7 +299,8 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		if m.Chan == 0 {
 			m.Chan = ev.Chan
 		}
-		if err := upsertMsg(tx, m, true); err != nil {
+		sec, err := c.saveMsg(tx, &m, true, nil)
+		if err != nil {
 			return err
 		}
 		if m.Author == me {
@@ -303,7 +310,10 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		}
 		u.msgs(m.Chan)
 		u.Channels = true
-		u.New = append(u.New, m)
+		if sec != SecWaiting { // a waiting one is announced once it opens
+			m.Enc = nil
+			u.New = append(u.New, Message{Message: m, Sec: sec})
+		}
 	case proto.KMsgEdit:
 		var d proto.MsgEdit
 		// An empty body marks an edit the server scrubbed because a later
@@ -311,7 +321,9 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		if !decode(&d) || d.Body == "" {
 			return nil
 		}
-		if _, err := tx.Exec(`UPDATE msgs SET body = ?, edited = ? WHERE id = ?`, d.Body, d.Edited, d.Msg); err != nil {
+		// Plaintext edits never touch messages of encrypted channels (the
+		// server refuses them; encrypted edits are step 8).
+		if _, err := tx.Exec(`UPDATE msgs SET body = ?, edited = ? WHERE id = ? AND sec = ?`, d.Body, d.Edited, d.Msg, SecPlain); err != nil {
 			return err
 		}
 		u.msgs(c.msgChan(tx, d.Msg, ev.Chan))
@@ -321,7 +333,8 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		if !decode(&d) {
 			return nil
 		}
-		if _, err := tx.Exec(`UPDATE msgs SET body = '', deleted = 1 WHERE id = ?`, d.Msg); err != nil {
+		// mid stays: replies keep naming it as their thread root.
+		if _, err := tx.Exec(`UPDATE msgs SET body = '', enc = NULL, deleted = 1 WHERE id = ?`, d.Msg); err != nil {
 			return err
 		}
 		u.msgs(c.msgChan(tx, d.Msg, ev.Chan))
@@ -360,7 +373,7 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		if !decode(&ch) || ch.ID == 0 {
 			return nil
 		}
-		if err := storeChan(tx, ch); err != nil {
+		if err := c.storeChanE2E(tx, ch); err != nil {
 			return err
 		}
 		u.Channels = true
@@ -373,7 +386,7 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 			if !slices.Contains(d.Chan.Members, d.User) {
 				d.Chan.Members = append(d.Chan.Members, d.User)
 			}
-			if err := storeChan(tx, d.Chan); err != nil {
+			if err := c.storeChanE2E(tx, d.Chan); err != nil {
 				return err
 			}
 		} else if err := setMember(tx, ev.Chan, d.User, true); err != nil {

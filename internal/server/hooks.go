@@ -296,6 +296,13 @@ func (s *Server) opHookCreate(ctx context.Context, u proto.User, a proto.HookCre
 		case kind == proto.ChanDM:
 			return nil, badRequest("webhooks can't post into DMs")
 		}
+		var e2e bool
+		if err := tx.QueryRowContext(ctx, `SELECT e2e FROM channels WHERE id = ?`, a.Chan).Scan(&e2e); err != nil {
+			return nil, err
+		}
+		if e2e {
+			return nil, errHookE2E
+		}
 		var mine, inChan int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FILTER (WHERE created_by = ?), COUNT(*) FILTER (WHERE chan = ?) FROM hooks`,
 			u.ID, a.Chan).Scan(&mine, &inChan); err != nil {

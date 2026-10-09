@@ -222,11 +222,18 @@ func cmdTail(args []string) error {
 	if err != nil {
 		return err
 	}
+	return tail(ctx, c, ch, os.Stdout)
+}
+
+// tail prints ch's recent messages, then new ones as they arrive.
+// Encrypted messages arrive decrypted; one still waiting for its key is
+// printed once it opens (it comes again in Updates().New).
+func tail(ctx context.Context, c *client.Client, ch uint64, w io.Writer) error {
 	seen := map[uint64]bool{}
 	for _, m := range c.Messages(ch, 20) {
 		if m.ID != 0 {
-			seen[m.ID] = true
-			printMsg(c, m.Message)
+			seen[m.ID] = m.Sec != client.SecWaiting
+			printMsg(w, c, m)
 		}
 	}
 	for {
@@ -240,7 +247,7 @@ func cmdTail(args []string) error {
 			for _, m := range u.New {
 				if m.Chan == ch && !seen[m.ID] {
 					seen[m.ID] = true
-					printMsg(c, m)
+					printMsg(w, c, m)
 				}
 			}
 			if st := c.Status(); st.Stopped {
@@ -250,16 +257,25 @@ func cmdTail(args []string) error {
 	}
 }
 
-func printMsg(c *client.Client, m proto.Message) {
+func printMsg(w io.Writer, c *client.Client, m client.Message) {
 	t := time.UnixMilli(m.Time).Format("15:04")
 	name := sanitize.Line(c.User(m.Author).Name)
 	body := sanitize.Text(m.Body)
-	if m.Deleted {
+	switch {
+	case m.Deleted:
 		body = "(deleted)"
+	case m.Sec == client.SecWaiting:
+		body = "🔒 waiting for key"
+	case m.Sec == client.SecInvalid:
+		body = "⚠ invalid encrypted message (not shown)"
+	case m.Sec == client.SecInserted:
+		body = "⚠ inserted by server: " + body
+	case m.Sec == client.SecLegacy:
+		body = "⚠ unauthenticated (legacy): " + body
 	}
 	if m.Thread != 0 {
 		name += " ↳"
 	}
 	indent := strings.Repeat(" ", len(t)+len(name)+3)
-	fmt.Printf("%s %s: %s\n", t, name, strings.ReplaceAll(body, "\n", "\n"+indent))
+	fmt.Fprintf(w, "%s %s: %s\n", t, name, strings.ReplaceAll(body, "\n", "\n"+indent))
 }

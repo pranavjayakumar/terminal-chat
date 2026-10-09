@@ -138,20 +138,20 @@ func (c *Client) markPinned(ms []Message) {
 // A pinned message we never loaded shows only after FetchPins.
 func (c *Client) Pins(ch uint64) []Message {
 	cols := "m." + strings.ReplaceAll(msgCols, ", ", ", m.")
-	rows, err := c.db.Query(`SELECT p.data, `+cols+` FROM pins p LEFT JOIN msgs m ON m.id = p.msg
+	rows, err := c.db.Query(`SELECT p.data, `+cols+`, m.sec FROM pins p LEFT JOIN msgs m ON m.id = p.msg
 		WHERE p.chan = ? ORDER BY p.id DESC`, ch)
 	if err != nil {
 		return nil
 	}
-	defer rows.Close()
 	var out []Message
+	var unjudged []int // pins.list copies of encrypted messages we don't cache
 	for rows.Next() {
 		var data []byte
-		var id, mch, author, thread, time, edited sql.NullInt64
+		var id, mch, author, thread, time, edited, sec sql.NullInt64
 		var body, reactions sql.NullString
 		var deleted sql.NullBool
-		if err := rows.Scan(&data, &id, &mch, &author, &body, &thread, &time, &edited, &deleted, &reactions); err != nil {
-			return out
+		if err := rows.Scan(&data, &id, &mch, &author, &body, &thread, &time, &edited, &deleted, &reactions, &sec); err != nil {
+			break
 		}
 		var m proto.Message
 		switch {
@@ -162,13 +162,26 @@ func (c *Client) Pins(ch uint64) []Message {
 				_ = json.Unmarshal([]byte(reactions.String), &m.Reactions)
 			}
 		case len(data) > 0 && proto.Unmarshal(data, &m) == nil:
+			sec.Int64 = -1
 		default:
 			continue
 		}
 		if m.Deleted {
 			continue
 		}
-		out = append(out, Message{Message: m})
+		if sec.Int64 == -1 {
+			unjudged = append(unjudged, len(out))
+		}
+		out = append(out, Message{Message: m, Sec: Sec(max(sec.Int64, 0))})
+	}
+	rows.Close()
+	for _, i := range unjudged {
+		m := &out[i]
+		sec, _ := c.prepMsg(c.db, &m.Message, nil)
+		if sec == SecWaiting || sec == SecInvalid {
+			m.Body = ""
+		}
+		m.Sec, m.Enc = sec, nil
 	}
 	return out
 }

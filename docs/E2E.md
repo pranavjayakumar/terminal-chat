@@ -90,6 +90,17 @@ What a malicious server can and cannot do today, and what closes each gap:
   an epoch's roster. A server can add a member it controls (who then gets keys sealed to their
   verified devices) or hide a leave. Clients check that each rotator was in the previous roster
   and seal only to verified devices, but the roster itself comes from the server.
+- **Whether a channel is encrypted** comes from the server for a channel this device has never
+  seen: a server could present a new channel (one created by someone else) as plaintext, and a
+  client would then send plaintext into it. Once the trust store has seen a channel encrypted, the
+  flag is sticky (a later "plaintext" is an alarm and nothing is sent in the clear). DMs and
+  channels we create are encrypted by our own choice (`dm.open` from an `e2e1` client, `chan.create
+  e2e`; `CreateEncryptedChannel` refuses a plaintext answer). An existing DM returned by `dm.open`
+  may legitimately be a legacy plaintext DM, so its flag is the server's word until step 9's
+  `chan.encrypt`. Signed channel metadata would close the gap.
+- **Plaintext in encrypted channels** is never authenticated: what was cached before the client
+  first saw the channel encrypted is "legacy" (sticky cutoff), anything else "inserted by server";
+  neither notifies or counts as a mention (step 7).
 - **Server identity is pinned** per address + TLS pin; a changed `server_id` stops the client
   instead of starting trust over, and dropping `e2e1` after speaking it is a sticky alarm.
 - **Revocation timing**: a bundle is rejected if the server's seq order or its signed time (with
@@ -234,6 +245,34 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    rate-limited event so offline devices get keys; TOFU on the first valid cert in arrival order is accepted
    until invite-anchored pins (M4).
 7. Encrypted send e2e: outbox stores enc once, stale_epoch retry same nonce, DMs epoch 1, self-DM.
+   Decisions (step 7): Plain = `{t: "msg", ts, body, thread_ref?}`; `thread_ref` = the root's mid, or 16
+   zero bytes for a plaintext (legacy) root. "Same nonce" on stale_epoch = same send nonce AND same enc
+   nonce (safe: the epoch key differs; same epoch → identical bytes). A message is encrypted at `Send`
+   when the verified head's K is here (offline too), else by the outbox before the first send; only a
+   stale_epoch re-encrypts (at most twice in a row, then retry later), never a reconnect, so a lost RES
+   finds its bytes by nonce. The sender rotates first when there's no bundle (DM member / creator) or the
+   roster changed, and after a stale_epoch at the server's current epoch (e.g. a boxed device was
+   revoked). No K → failed "no key yet — waiting for a member" + key.need, requeued when K arrives.
+   Receivers: undecidable messages (no K, unknown device, thread root not cached) wait as ciphertext and
+   are re-judged by the e2e worker; invalid ones are never shown; first mid wins. Plaintext in an e2e
+   channel is legacy below epoch 1's `key.epoch` seq (stored in the trust store, schema v8; unknown →
+   legacy) and "inserted by server" at or above it — note step-6 clients sent plaintext after epoch 1,
+   so such old messages also show as inserted. The server refuses plaintext `edit` in e2e channels too
+   and the client refuses edits there until step 8. The cache (and outbox) holds plaintext: as
+   sensitive as the conversation.
+   Decisions (step 7 review): pre-step-7 plaintext after epoch 1 showing as "inserted by server" is accepted
+   (nothing was deployed); thread_ref = 16 zero bytes for a plaintext root, and a reply to a deleted root seen
+   only after a reset shows invalid (documented edge); sends failed for lack of a key are requeued when the key
+   arrives; invalid/inserted messages count as unread but never notify or count as mentions.
+   Security review fixes: legacy vs inserted is decided by a sticky per-channel **legacy cutoff** in the
+   trust store (the newest message id cached when the client first saw the channel encrypted), not by epoch
+   seqs; both are unauthenticated (no notifications, mentions or activity) and render loudly. Future
+   improvement: carry a signed cutoff in the epoch-1 bundle so every member agrees on what is legacy. The
+   lowest id wins for a mid (server: unique (chan, mid), replays → conflict); a verified row's chan/author/
+   thread/bytes never change on refetch; revokes with unknown seq reject messages whose Plain.ts is > 5 min
+   after the revoke time; the outbox never seals to a stale key, re-encrypts queued-but-unsent encs when
+   the head or members changed, and refuses everything in alarm; e2e-scoped search stays local; edits of
+   uncached messages and reminders into e2e channels are refused; the cache uses secure_delete.
 8. Encrypted edit/delete/react, thread_ref, HMAC emoji, local FTS.
 9. `chan.add{bundle}`, `chan.remove`, `chan.encrypt`, disable → rotate; history via backlinks.
 10. TUI: key-change banner + send block, fork alarm, "⚠ unencrypted", "waiting for key", `/verify`.

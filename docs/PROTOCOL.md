@@ -136,7 +136,7 @@ session **before** the RES. The `seq` in a RES is informational: clients advance
 | op | args | data |
 |---|---|---|
 | `sync` | `{since: u64, server_id?: bin16}` | `{head: u64, reset: bool}` (see §6) |
-| `send` | `{chan, body: str, nonce: bin16, thread?: u64}` | `{msg: u64}` |
+| `send` | `{chan, body: str, nonce: bin16, thread?: u64, enc?: bin}` | `{msg: u64}` (`enc`: e2e channels, §13.5) |
 | `edit` | `{msg, body: str}` | `{seq}` |
 | `delete` | `{msg}` | `{seq}` |
 | `react` / `unreact` | `{msg, emoji: str}` | `{seq}` |
@@ -166,11 +166,15 @@ session **before** the RES. The `seq` in a RES is informational: clients advance
 Rules:
 - **send idempotency**: `(author, nonce)` is permanently unique. A repeat returns
   the original `{msg}` (even if since deleted). Same nonce with different
-  `chan`/`body`/`thread` → `conflict`. Clients retry from their outbox freely.
+  `chan`/`body`/`enc`/`thread` → `conflict`. Clients retry from their outbox freely.
+  This lookup comes before every other check except argument validation, so
+  a repeat is found even if the channel's epoch moved on since (§13.5).
 - **thread** must be a top-level message in the same `chan`; no nested threads.
 - **edit**: author, while a member of the channel (else `not_found`). **delete**: the author (even after
   leaving) or any admin; deleted messages keep their
-  id with `body = ""`, `deleted = true`. Edit or react on a deleted message → `not_found`.
+  id with `body = ""`, no `enc`, `deleted = true`. Edit or react on a deleted message → `not_found`.
+  A (plaintext) `edit` in an encrypted channel, or of a message with `enc`, is `bad_request`
+  (encrypted edits: `docs/E2E.md` step 8).
 - **react/unreact/delete** are set-semantics: a no-op returns ok `{seq: 0}` and emits nothing.
 - **read** only moves forward (server keeps the max) and is clamped to the channel's newest message id.
 - **pin/unpin** are set-semantics like react: a no-op returns ok `{seq: 0}` and emits nothing. The caller
@@ -333,8 +337,12 @@ User    = {id, name, display, admin: bool, disabled: bool, created: i64, bot?: b
 Channel = {id, name, kind: "public"|"private"|"dm", topic, members: [u64], created,
            e2e?: bool, epoch?: u32, creator?: u64, pins?: [u64]}   (e2e/epoch/creator: §13.3)
 Message = {id, chan, author, body, thread: u64 (0 = top level), time,
-           edited: i64 (0 = never), deleted: bool, reactions: {emoji: [u64]}}
+           edited: i64 (0 = never), deleted: bool, reactions: {emoji: [u64]}, enc?: bin}
 ```
+
+`Message.enc` (omitted when absent) is the encrypted payload of a message in an
+encrypted channel (§13.4); `body` is `""` then. Clients without `e2e1` see an
+empty body.
 
 `Channel.pins` (cap `pins`; omitted when empty) lists the ids of the channel's pinned messages, newest pin
 first; snapshots and `chan.*` events carry it, and `pin.add`/`pin.remove` keep it current. The server
@@ -451,12 +459,17 @@ the channel, and that its bot is enabled and still a member; otherwise the reque
 the same 404 as an unknown token (a hook whose creator left is dormant until they rejoin
 or someone deletes it).
 
+**Encrypted channels.** `hook.create` in an encrypted channel (§13) is `forbidden`; a live
+hook whose channel is encrypted (e.g. converted later) gets 403 and posts nothing. The
+server never encrypts on anyone's behalf.
+
 **Responses** (JSON, `Cache-Control: no-store`):
 
 | status | body | when |
 |---|---|---|
 | 200 | `{"msg": u64}` | posted (or idempotent repeat) |
 | 400 | `{"error": "bad_request", "msg": str}` | bad JSON, invalid UTF-8, empty |
+| 403 | `{"error": "forbidden", "msg": str}` | the hook's channel is end-to-end encrypted |
 | 404 | `{"error": "not_found"}` | anything but `POST /hooks/<live token>` — unknown and deleted tokens are indistinguishable |
 | 409 | `{"error": "conflict"}` | Idempotency-Key reused with different text |
 | 413 | `{"error": "too_large"}` | body or text over the limits |
@@ -488,8 +501,8 @@ identity changed — log in again to trust it"); trust state is never reset
 for it. `tc login` explicitly re-trusts (a new record for the invite's
 address and pin). A client that ever saw a server with `e2e1` keeps that
 fact; a later WELCOME without `e2e1` is a sticky alarm for the server and
-every encrypted channel, and clients must not send plaintext into
-encrypted channels (enforced with encrypted sends, step 7).
+every encrypted channel, and clients never send plaintext into
+encrypted channels: queued messages for them fail instead (§13.4).
 
 ### 13.1 Signed objects
 
@@ -721,9 +734,9 @@ and `private: true` (else `bad_request`). `dm.open` creates a new DM with
 is returned unchanged, whoever reopens it. So a legacy caller (no `e2e1`)
 creates a plaintext DM even when every other member speaks `e2e1`; it stays
 plaintext until converted with `chan.encrypt` (step 9). Neither op creates
-an epoch. Once encrypted sends land (step 7), a plaintext `send` into an
-e2e channel is `bad_request` "upgrade tc", so legacy clients can read
-channel metadata but not post into encrypted DMs or channels.
+an epoch. A plaintext `send` (or `edit`) into an e2e channel is
+`bad_request` "upgrade tc" (§13.5), so legacy clients can read channel
+metadata but not post into encrypted DMs or channels.
 
 Client validity: bundles are checked in epoch order, from epoch 1 (or the
 epoch after the pinned head), fetching gaps with `key.fetch`. Each must:
@@ -754,25 +767,126 @@ Epoch 1 must be created by the channel's creator (any member of a DM).
 Clients rotate epoch 1 right after `chan.create`; an e2e channel whose
 creator leaves before that can't be keyed.
 
-### 13.4 Encrypted payload *(not yet implemented)*
+### 13.4 Encrypted payload *(messages: implemented; edit/delete/react: step 8)*
 
-`enc` layout and rules: `docs/E2E.md` §13.4. Until it lands, sends into
-e2e channels are plaintext as before; with it, a plaintext `send` into an
-e2e channel is `bad_request` "upgrade tc" (§13.3).
+Messages in an encrypted channel carry `enc` instead of `body`:
+
+```
+enc   = 0x01 || epoch(u32) || eh(16) || dev(16) || nonce(24) || ct || sig(64)
+mk    = HKDF-SHA256(K_epoch, info "tc-msg-v1" || server_id || chan || epoch)
+ct    = XChaCha20-Poly1305(mk, nonce, pad256(msgpack Plain), AD = "tc-msg-v1" || server_id || chan || enc[0:61])
+sig   = Ed25519(dev, "tc-sig-v1\x00" || server_id || chan || enc[0:61] || ct)
+mid   = H(enc)[:16]
+pad256(p) = p || 0x80 || 0x00* up to a multiple of 256
+Plain = {t: "msg", ts: i64, body: str, thread_ref?: bin16}
+```
+
+`eh` is the eh (§13.3) of the epoch's bundle, `dev` the sending device,
+`nonce` 24 random bytes, `ts` the sender's clock (Unix ms). `thread_ref` is
+present exactly when the message is a thread reply: the `mid` of the thread
+root's `enc`, or 16 zero bytes if the root has no `enc` (a legacy plaintext
+root, below). Later step-8 types (`edit`, `del`, `react`) extend Plain with
+`ref`, `v`, `emoji`, `add`.
+
+**Sending.** A client encrypts a message once, with the K of the newest
+epoch it verified, and keeps the resulting `enc` (with the plaintext) in its
+outbox; every retry sends the identical bytes, so `(author, nonce)`
+idempotency (§5) holds across reconnects and rotations. Before encrypting it
+catches up on the channel's chain, and rotates first (§13.3) when the
+current bundle is stale as far as it can tell: there is none yet (epoch 1:
+only the creator, or any DM member), or its roster isn't the current
+non-disabled members. Only a `stale_epoch` RES (proof the message wasn't
+stored) makes it encrypt again: it applies the events that came before the
+RES, fetches missing bundles, rotates if it holds the current epoch yet the
+server calls it stale (e.g. it boxes a revoked device), and re-encrypts the
+same plaintext and `ts` with the **same send nonce and the same enc nonce**
+(safe: the epoch key differs) — at most twice in a row, then it waits and
+tries again later. If the channel still needs a rotation after its last
+try, the message fails: it is never sealed to the old K. An entry encrypted
+while queued and not yet handed to the server is re-encrypted if the
+verified head or the members changed meanwhile. A client that can't get K for the epoch (no box, no
+share yet, can't rotate) marks the message failed ("no key yet — waiting for
+a member"), sends `key.need`, and requeues it when the key arrives; a failed
+message the user retries is encrypted afresh. It never
+sends plaintext into a channel that is, or that it once saw as, encrypted
+(also not after a downgrade alarm, §13), refuses to send into (or flush
+queued messages into) a channel with an alarm, never sends a plaintext
+`edit` there (nor of a message it hasn't cached), and refuses reminders
+(`remind.create` `chan`) that point into one.
+
+**Receiving.** A client accepts a message with `enc` only if: the enc
+parses; it holds the verified K of `enc.epoch` and `enc.eh` is that epoch's
+eh; `enc.dev` is a device it verified that belongs to `Message.author` (and
+wasn't revoked before the message's id, nor — for a revoke whose seq it
+doesn't know — signed with a Plain `ts` more than 5 minutes after the
+revoke's signed time); the signature and AEAD check out;
+Plain decodes with `t = "msg"`; `body` passes §10 (valid UTF-8, no control
+characters but `\n`/`\t`, not blank, ≤ 64 KiB); `thread_ref` matches
+`Message.thread` as above; and no message with a lower id carries the same
+`mid` (the lowest id wins whatever arrives first: a later-id copy is a
+replay and becomes invalid when the lower one shows up). Anything that fails is
+kept and shown as invalid, never as text. A message it can't judge yet (no
+K for the epoch, the sending device or the thread root not known yet) is
+stored as ciphertext, still advances `last_seq`, shows as "waiting for
+key", and is decrypted when what it lacked arrives. Once verified, a
+message's channel, author, thread and bytes are fixed: a refetched copy
+(history, snapshot) that differs is invalid and the stored one stays.
+
+**Plaintext in encrypted channels.** DMs created as encrypted before
+encrypted sends existed may hold plaintext messages. When a client first
+sees a channel as encrypted it records, once, a **legacy cutoff**: the
+newest message id it had cached in it. A message without `enc` at or below
+the cutoff is shown as "⚠ unauthenticated (legacy)"; any other can only have
+been inserted by the server (honest servers refuse plaintext sends there)
+and is shown as "⚠ inserted by server". Neither is authenticated: neither
+notifies nor counts as a mention. The client's cache keeps decrypted
+bodies (and the outbox plaintext): it is as sensitive as the conversation.
+Search in encrypted channels is local, over the decrypted cache: a search
+scoped to one never reaches the server, and a global search drops any
+server result from an encrypted channel (the server never returns them).
 
 ### 13.5 Ops
 
 Implemented: `device.register`, `device.revoke`, `devices.list` (§13.2),
 `key.rotate`, `key.fetch` (§13.3), `key.share` (§13.7), `chan.create + e2e?`,
 `dm.open` (e2e DMs; a DM with no other members — private notes — is never e2e, because the server
-posts reminders into it). Not yet: `send/edit/delete/react + enc`, `chan.add +
+posts reminders into it), `send + enc`. Not yet: `edit/delete/react + enc`, `chan.add +
 bundle`, `chan.remove`, `chan.encrypt` (`docs/E2E.md` §13.5).
 
 | op | args | data |
 |---|---|---|
+| `send` | `{chan, nonce, thread?, enc: bin, body: ""}` (exactly one of `body`/`enc`) | `{msg}` |
 | `key.rotate` | `{chan, bundle: Signed}` | `{seq}` |
 | `key.fetch` | `{chan, from: u32, to: u32}` | `{bundles: [Signed], seqs: [u64]}` |
 | `key.share` | `{chan, epoch: u32, dev: bin16, eph: bin32, ct: bin48}` | `{}` |
+
+Server rules (honest case) for **send**, in this order:
+
+| check | error |
+|---|---|
+| `nonce` is 16 bytes | `bad_request` |
+| with `enc`: `body` is empty | `bad_request` |
+| `len(enc)` ≤ 64 KiB + 1 KiB | `too_large` |
+| `enc` framing parses (version, sizes, whole pad blocks) | `bad_request` |
+| without `enc`: the §9/§10 body rules | `bad_request` / `too_large` |
+| `(author, nonce)` already stored: same `chan`, `thread` and `body`/`enc` bytes (unless since edited or deleted) → the original `{msg}`, else | `conflict` |
+| caller is a member | `forbidden` |
+| a webhook into an encrypted channel (§12) | `forbidden` |
+| encrypted channel without `enc` ("this channel is end-to-end encrypted — upgrade tc") | `bad_request` |
+| `enc` into a plaintext channel | `bad_request` |
+| `enc.epoch` is the channel's current epoch (epoch 0: never) | `stale_epoch` |
+| the current bundle isn't stale (§13.3) | `stale_epoch` |
+| `enc.eh` is the eh of the current bundle | `bad_request` |
+| `enc.dev` is a registered, non-revoked device of the caller | `bad_request` |
+| `enc`'s signature verifies under that device's Ed25519 key | `bad_request` |
+| no message in the channel has the same `mid` (a replay under a new nonce) | `conflict` |
+| then the usual thread and rate-limit checks (§5, §9) | |
+
+The stored message and its `msg.new` carry `enc` byte for byte with
+`body = ""`; `history`, thread history, `pins.list` and snapshots return it
+as is. `enc` is never indexed for search, and `search` skips encrypted
+channels altogether. `delete` clears `enc` with the body (and in the
+`msg.new` event, §6).
 
 ### 13.6 Events
 
@@ -785,8 +899,9 @@ Implemented: `device.new`, `device.revoke` (§13.2), and:
 
 Snapshot (§6) adds `keys: [{bundle: Signed, seq: u64}]` for `e2e1` sessions: the current
 bundle of every encrypted channel the user is a member of, with the seq of its
-`key.epoch` event (channels at epoch 0 have none), possibly over several parts. Not yet:
-`enc` in `msg.*`/`react.*`.
+`key.epoch` event (channels at epoch 0 have none), possibly over several parts.
+`msg.new` (and snapshot messages) carry `Message.enc` in encrypted channels
+(§13.4). Not yet: `enc` in `msg.edit`/`msg.delete`/`react.*` (step 8).
 
 ### 13.7 Key requests
 
@@ -836,8 +951,11 @@ registered device (`not_found`), not revoked, of a current member
 ### 13.8 Errors & limits
 
 - `stale_epoch` (RES error code): the bundle doesn't build on the channel's
-  current epoch, roster or devices. Retryable after catching up.
-- Limits: EpochBundle `len(b) + len(sig)` ≤ 16 KiB and ≤ 128 boxes;
+  current epoch, roster or devices; for `send`, the `enc` isn't for the
+  channel's current epoch or that epoch's bundle is stale (§13.5). Nothing
+  was stored. Retryable after catching up: a sender re-encrypts with the
+  same nonces (§13.4).
+- Limits: `enc` ≤ 64 KiB + 1 KiB (Plain ≤ the padded capacity); EpochBundle `len(b) + len(sig)` ≤ 16 KiB and ≤ 128 boxes;
   `key.fetch` ≤ 256 epochs per call; ≤ 1 `key.rotate` per channel per user
   per 10 s and ≤ 1 per channel per 2 s, both waived when the roster or its
   active devices changed since the current epoch (§13.3; plus the §9 write bucket).

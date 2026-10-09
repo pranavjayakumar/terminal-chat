@@ -848,6 +848,52 @@ func TestMigrateV1(t *testing.T) {
 	}
 }
 
+// v8 adds epochs.seq: old rows read as unknown (0), new rows keep theirs.
+func TestMigrateV7EpochSeq(t *testing.T) {
+	s, home := newStore(t)
+	if err := s.AdvanceEpoch(sidA, 1, Epoch{Epoch: 1, Roster: []uint64{bob}, Seq: 42}); err != nil {
+		t.Fatal(err)
+	}
+	if e, _, _ := s.Epoch(sidA, 1, 1); e.Seq != 42 {
+		t.Fatalf("seq %d", e.Seq)
+	}
+	for _, q := range []string{`ALTER TABLE epochs DROP COLUMN seq`, `PRAGMA user_version = 7`} {
+		if _, err := s.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+	s = open(t, home)
+	e, ok, err := s.Epoch(sidA, 1, 1)
+	if err != nil || !ok || e.Seq != 0 {
+		t.Fatalf("after migration %+v %v %v", e, ok, err)
+	}
+	if err := s.AdvanceEpoch(sidA, 1, Epoch{Epoch: 2, Roster: []uint64{bob}, Seq: 50}); err != nil {
+		t.Fatal(err)
+	}
+	if e, _, _ := s.Epoch(sidA, 1, 2); e.Seq != 50 {
+		t.Fatalf("new seq %d", e.Seq)
+	}
+}
+
+// The legacy cutoff is set once; later calls can't move it.
+func TestLegacyCutoffSticky(t *testing.T) {
+	s, home := newStore(t)
+	if c, err := s.LegacyCutoff(sidA, 7, 40); err != nil || c != 40 {
+		t.Fatalf("first: %d %v", c, err)
+	}
+	if c, _ := s.LegacyCutoff(sidA, 7, 900); c != 40 {
+		t.Fatalf("moved to %d", c)
+	}
+	if c, _ := s.LegacyCutoff(sidB, 7, 3); c != 3 {
+		t.Fatalf("other server: %d", c)
+	}
+	s.Close()
+	if c, _ := open(t, home).LegacyCutoff(sidA, 7, 0); c != 40 {
+		t.Fatalf("after reopen: %d", c)
+	}
+}
+
 func TestRevokeSeqKeepsEarliest(t *testing.T) {
 	s, _ := newStore(t)
 	d := device(t, bob)

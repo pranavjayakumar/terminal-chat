@@ -6,8 +6,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
+	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
 )
@@ -24,22 +26,40 @@ func (c *Client) Send(ch uint64, body string, thread uint64) error {
 	if len(body) > proto.MaxBody {
 		return proto.Errf(proto.ErrTooLarge, "message is over 64 KiB")
 	}
-	nonce := make([]byte, 16)
-	rand.Read(nonce)
-	if _, err := c.db.Exec(`INSERT INTO outbox (nonce, chan, thread, body, time) VALUES (?, ?, ?, ?, ?)`,
-		nonce, ch, thread, body, time.Now().UnixMilli()); err != nil {
+	if err := c.sendAllowed(ch); err != nil {
+		return err
+	}
+	e := outboxEntry{nonce: make([]byte, 16), chan_: ch, thread: thread, body: body, time: time.Now().UnixMilli()}
+	rand.Read(e.nonce)
+	if c.needsEnc(ch) {
+		// The server can't check encrypted text (§10): receivers would
+		// reject it as invalid, so refuse it here.
+		if !validText(body) {
+			return proto.Errf(proto.ErrBadRequest, "message is empty or contains control characters")
+		}
+		// Encrypted once, here if we can (works offline), else by the outbox
+		// before the first send; retries send the same bytes.
+		e.encNonce = newEncNonce()
+		e.enc = c.sealOffline(e)
+	}
+	if _, err := c.db.Exec(`INSERT INTO outbox (nonce, chan, thread, body, time, enc, encnonce) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		e.nonce, ch, thread, body, e.time, e.enc, e.encNonce); err != nil {
 		return fmt.Errorf("queueing message: %w", err)
 	}
 	c.outboxChanged(ch, nil)
 	return nil
 }
 
-// RetryFailed requeues a failed outbox message (same nonce).
+// RetryFailed requeues a failed outbox message (same nonce). A failed send
+// stored nothing, so an encrypted one is encrypted afresh for the channel
+// as it is now.
 func (c *Client) RetryFailed(local int64) error {
-	return c.editOutbox(`UPDATE outbox SET failed = '', msg = 0 WHERE id = ? AND failed != '' RETURNING chan`, local)
+	return c.editOutbox(`UPDATE outbox SET failed = '', msg = 0, enc = NULL, encnonce = NULL
+		WHERE id = ? AND failed != '' RETURNING chan`, local)
 }
 
-// DiscardFailed drops a failed outbox message.
+// DiscardFailed drops a failed outbox message (the cache uses
+// secure_delete, so its text doesn't linger in free pages).
 func (c *Client) DiscardFailed(local int64) error {
 	return c.editOutbox(`DELETE FROM outbox WHERE id = ? AND failed != '' RETURNING chan`, local)
 }
@@ -104,7 +124,62 @@ func (c *Client) Flush(ctx context.Context) error {
 
 // permanent reports whether a send error won't go away by retrying.
 func permanent(code string) bool {
-	return code != proto.ErrRateLimited && code != proto.ErrInternal
+	return code != proto.ErrRateLimited && code != proto.ErrInternal && code != proto.ErrStaleEpoch
+}
+
+// sendEntry sends one outbox entry: as is into a plaintext channel, or
+// encrypted (encrypting it first if it isn't yet) into an encrypted one.
+// A stale_epoch means nothing was stored: catch up, re-encrypt with the
+// same nonces and try again, twice at most.
+func (c *Client) sendEntry(ctx context.Context, s *session, e outboxEntry) error {
+	if !c.needsEnc(e.chan_) {
+		_, err := s.call(ctx, proto.OpSend,
+			proto.SendArgs{Chan: e.chan_, Body: e.body, Nonce: e.nonce, Thread: e.thread}, c.sentHook(e))
+		return err
+	}
+	if !s.e2e() {
+		return failErr{"not sent: the server stopped offering end-to-end encryption"}
+	}
+	if st := c.E2EStatus(e.chan_); st.State == E2EAlarm {
+		return failErr{"not sent: encryption alarm: " + sanitize.Line(st.Detail)}
+	}
+	// An entry encrypted while queued but never handed to the server is
+	// re-encrypted if the channel moved on meanwhile (new head, other
+	// members). Once sent, only a stale_epoch may change its bytes.
+	if e.enc != nil && e.sent == 0 && !c.encCurrent(e) {
+		e.enc = nil
+		if _, err := c.db.Exec(`UPDATE outbox SET enc = NULL WHERE id = ?`, e.id); err != nil {
+			return err
+		}
+	}
+	if len(e.encNonce) != e2ecrypto.NonceSize {
+		e.encNonce, e.enc = newEncNonce(), nil
+		if _, err := c.db.Exec(`UPDATE outbox SET encnonce = ?, enc = NULL WHERE id = ?`, e.encNonce, e.id); err != nil {
+			return err
+		}
+	}
+	var stale []byte
+	for attempt := 0; ; attempt++ {
+		if e.enc == nil {
+			enc, err := c.sealEntry(ctx, s, e, stale)
+			if err != nil {
+				return err
+			}
+			// Stored before it goes out: a lost RES must find these bytes.
+			if _, err := c.db.Exec(`UPDATE outbox SET enc = ? WHERE id = ?`, enc, e.id); err != nil {
+				return err
+			}
+			e.enc = enc
+		}
+		_, err := s.call(ctx, proto.OpSend,
+			proto.SendArgs{Chan: e.chan_, Nonce: e.nonce, Thread: e.thread, Enc: e.enc}, c.sentHook(e))
+		var pe *proto.Error
+		if attempt < 2 && errors.As(err, &pe) && pe.Code == proto.ErrStaleEpoch {
+			stale, e.enc = e.enc, nil
+			continue
+		}
+		return err
+	}
 }
 
 // outboxLoop sends the outbox oldest first, one at a time, which keeps
@@ -127,17 +202,29 @@ func (c *Client) outboxLoop(ctx context.Context, s *session) {
 				WHERE id = ? AND sent = 0`, e.id)
 		}
 		if err == nil {
-			_, err = s.call(ctx, proto.OpSend,
-				proto.SendArgs{Chan: e.chan_, Body: e.body, Nonce: e.nonce, Thread: e.thread}, c.sentHook(e))
+			err = c.sendEntry(ctx, s, e)
 		}
 		var perr *proto.Error
+		var ferr failErr
+		reason := ""
+		switch {
+		case errors.As(err, &ferr):
+			reason = ferr.reason
+		case errors.As(err, &perr) && permanent(perr.Code):
+			reason = sanitize.Line(perr.Error())
+		}
 		switch {
 		case err == nil:
-		case errors.As(err, &perr) && permanent(perr.Code):
-			if _, err := c.db.Exec(`UPDATE outbox SET failed = ?, msg = 0 WHERE id = ?`, sanitize.Line(perr.Error()), e.id); err == nil {
-				e.failed = sanitize.Line(perr.Error())
+		case reason != "":
+			if _, err := c.db.Exec(`UPDATE outbox SET failed = ?, msg = 0 WHERE id = ?`, reason, e.id); err == nil {
+				e.failed = reason
 				m := e.message(c.Me().ID)
 				c.outboxChanged(e.chan_, &m)
+			}
+			if reason == noKeyReason {
+				if sid, ok := s.serverID(); ok {
+					c.sendKeyNeed(s, sid, e.chan_)
+				}
 			}
 		case errors.Is(err, ErrOffline) || ctx.Err() != nil:
 			return
@@ -228,8 +315,27 @@ func (c *Client) call(ctx context.Context, op string, args, out any, hook func(p
 
 // Edit changes the body of one of our messages.
 func (c *Client) Edit(ctx context.Context, msg uint64, body string) error {
+	// Never send new text in the clear without knowing where it goes: the
+	// message must be cached, in a channel that isn't (and wasn't) encrypted.
+	c.mu.Lock()
+	online := c.sess != nil
+	c.mu.Unlock()
+	if !online {
+		return ErrOffline
+	}
+	var ch uint64
+	if err := c.db.QueryRow(`SELECT chan FROM msgs WHERE id = ?`, msg).Scan(&ch); err != nil {
+		return proto.Errf(proto.ErrNotFound, "message not loaded")
+	}
+	if c.needsEnc(ch) {
+		return ErrEncryptedEdit
+	}
 	return c.call(ctx, proto.OpEdit, proto.EditArgs{Msg: msg, Body: body}, nil, nil)
 }
+
+// ErrEncryptedEdit: editing messages of encrypted channels comes with
+// encrypted edits (docs/E2E.md step 8).
+var ErrEncryptedEdit = errors.New("editing messages in encrypted channels isn't supported yet")
 
 // Delete deletes a message (ours, or any as admin). Deleting twice is ok.
 func (c *Client) Delete(ctx context.Context, msg uint64) error {
@@ -257,7 +363,7 @@ func (c *Client) chanHook(r proto.Res) error {
 		if _, ok, err := getChan(tx, cr.Chan.ID); err != nil || ok {
 			return err
 		}
-		return storeChan(tx, cr.Chan)
+		return c.storeChanE2E(tx, cr.Chan)
 	})
 	if err == nil {
 		c.post(Update{Channels: true})
@@ -278,6 +384,14 @@ func (c *Client) CreateChannel(ctx context.Context, name string, private bool, t
 func (c *Client) CreateEncryptedChannel(ctx context.Context, name, topic string) (proto.Channel, error) {
 	var r proto.ChanRes
 	err := c.call(ctx, proto.OpChanCreate, proto.ChanCreateArgs{Name: name, Private: true, Topic: topic, E2E: true}, &r, c.chanHook)
+	if err == nil && !r.Chan.E2E {
+		return r.Chan, errors.New("the server created the channel without encryption")
+	}
+	if err == nil {
+		if sid, ok := c.cacheServerID(); ok {
+			_ = c.trust.MarkChannelE2E(sid, r.Chan.ID) // our choice: sticky from now on
+		}
+	}
 	c.kickE2E()
 	return r.Chan, err
 }
@@ -324,14 +438,7 @@ func (c *Client) History(ctx context.Context, ch, before uint64) (more bool, err
 		}
 		// The RES is ordered after every event we've applied, so its copies
 		// are at least as new as the cache.
-		err := c.tx(func(tx *sql.Tx) error {
-			for _, m := range hr.Msgs {
-				if err := upsertMsg(tx, m, true); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
+		err := c.saveMsgs(hr.Msgs)
 		if err == nil {
 			c.post(Update{Msgs: map[uint64]bool{ch: true}, Channels: true})
 		}
@@ -341,12 +448,56 @@ func (c *Client) History(ctx context.Context, ch, before uint64) (more bool, err
 	return r.More, err
 }
 
-// Search searches messages on the server (ch 0 = everywhere). Results are
-// not cached.
+// saveMsgs stores messages from a RES (history), judging encrypted ones.
+// The RES is ordered after every event we've applied, so its copies are
+// at least as new as the cache.
+func (c *Client) saveMsgs(ms []proto.Message) error {
+	memo := newKeyMemo()
+	err := c.tx(func(tx *sql.Tx) error {
+		for _, m := range ms {
+			if _, err := c.saveMsg(tx, &m, true, memo); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	c.kickE2E() // thread roots may have arrived for waiting replies
+	return err
+}
+
+// Search searches messages (ch 0 = everywhere): on the server, plus the
+// decrypted messages of encrypted channels in the local cache, which the
+// server can't search. Newest first; results are not cached. Offline, only
+// the local part runs (ErrOffline if it finds nothing).
 func (c *Client) Search(ctx context.Context, q string, ch uint64) ([]proto.Message, error) {
+	local := c.searchLocal(q, ch, proto.MaxSearch)
+	if ch != 0 && c.needsEnc(ch) {
+		return local, nil // the query of an encrypted channel never leaves this device
+	}
 	var r proto.MsgsRes
 	err := c.call(ctx, proto.OpSearch, proto.SearchArgs{Q: q, Chan: ch, Limit: proto.MaxSearch}, &r, nil)
-	return r.Msgs, err
+	if err != nil && (!errors.Is(err, ErrOffline) || len(local) == 0) {
+		return nil, err
+	}
+	// The server shouldn't return encrypted channels' messages; if it does,
+	// they're not ours to trust. Local rows come first so they win ids.
+	out := local
+	for _, m := range r.Msgs {
+		if !c.needsEnc(m.Chan) {
+			out = append(out, m)
+		}
+	}
+	slices.SortStableFunc(out, func(a, b proto.Message) int {
+		switch {
+		case a.ID > b.ID:
+			return -1
+		case a.ID < b.ID:
+			return 1
+		}
+		return 0
+	})
+	out = slices.CompactFunc(out, func(a, b proto.Message) bool { return a.ID == b.ID })
+	return out[:min(len(out), proto.MaxSearch)], nil
 }
 
 // CreateInvite (admin) returns an invite code: a new-user invite, or with
@@ -426,14 +577,7 @@ func (c *Client) ThreadHistory(ctx context.Context, ch, root, before uint64) (mo
 		if !res.OK || len(res.Data) == 0 || proto.Unmarshal(res.Data, &hr) != nil {
 			return nil
 		}
-		err := c.tx(func(tx *sql.Tx) error {
-			for _, m := range hr.Msgs {
-				if err := upsertMsg(tx, m, true); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
+		err := c.saveMsgs(hr.Msgs)
 		if err == nil {
 			c.post(Update{Msgs: map[uint64]bool{ch: true}})
 		}

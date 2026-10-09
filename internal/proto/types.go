@@ -268,6 +268,9 @@ type Message struct {
 	Edited    int64               `msgpack:"edited"`
 	Deleted   bool                `msgpack:"deleted"`
 	Reactions map[string][]uint64 `msgpack:"reactions,omitempty"`
+	// Enc is the encrypted payload of a message in an e2e channel
+	// (PROTOCOL.md §13.4); Body is "" then.
+	Enc []byte `msgpack:"enc,omitempty"`
 }
 
 // ---- event data ----
@@ -318,6 +321,9 @@ type SendArgs struct {
 	Body   string `msgpack:"body"`
 	Nonce  []byte `msgpack:"nonce"`
 	Thread uint64 `msgpack:"thread,omitempty"`
+	// Enc (cap e2e1) replaces Body in e2e channels: exactly one of the two
+	// is set (§13.4).
+	Enc []byte `msgpack:"enc,omitempty"`
 }
 
 type SendRes struct {
