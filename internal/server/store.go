@@ -134,9 +134,9 @@ func openStore(path string) (*store, error) {
 		db.Close()
 		return nil, err
 	}
-	if _, err := db.Exec(pinsSchema); err != nil {
+	if _, err := db.Exec(pinsSchema + groupsSchema + remindSchema); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("creating pins schema: %w", err)
+		return nil, fmt.Errorf("creating pins/groups/reminders schema: %w", err)
 	}
 	if err := migrateEpochs(db); err != nil {
 		db.Close()
@@ -435,7 +435,7 @@ func visibleEvents(ctx context.Context, q querier, u, since, h uint64, limit int
 	rows, err := q.QueryContext(ctx, `
 		SELECT seq, kind, COALESCE(chan, 0), time, actor, data FROM events e
 		WHERE seq > ?1 AND seq <= ?2 AND (
-			kind IN ('user.new', 'user.update')
+			kind IN ('user.new', 'user.update', 'group.update')
 			OR (?5 AND kind IN ('device.new', 'device.revoke'))
 			OR (kind = 'read.update' AND actor = ?3)
 			OR (kind IN ('chan.join', 'chan.leave') AND about = ?3)

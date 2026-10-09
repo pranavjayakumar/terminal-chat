@@ -42,6 +42,7 @@ func decodeArgs[T any](raw proto.Raw) (T, error) {
 // writeOps are rate limited by allowWrite (send has its own limit).
 var writeOps = map[string]bool{
 	proto.OpEdit: true, proto.OpDelete: true, proto.OpReact: true, proto.OpUnreact: true, proto.OpPin: true, proto.OpUnpin: true,
+	proto.OpGroupSet: true, proto.OpRemindCreate: true, proto.OpRemindDelete: true,
 	proto.OpRead: true, proto.OpChanCreate: true, proto.OpChanJoin: true, proto.OpChanAdd: true,
 	proto.OpChanLeave: true, proto.OpChanTopic: true, proto.OpDMOpen: true,
 	proto.OpInviteCreate: true, proto.OpUserDisable: true, proto.OpUserUpdate: true,
@@ -83,6 +84,16 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 		return withArgs(args, func(a proto.MsgArgs) (any, error) { return s.opPin(ctx, u, a, op == proto.OpPin) })
 	case proto.OpPinsList:
 		return withArgs(args, func(a proto.ChanArgs) (any, error) { return s.opPinsList(ctx, u, a) })
+	case proto.OpGroupSet:
+		return withArgs(args, func(a proto.GroupSetArgs) (any, error) { return s.opGroupSet(ctx, u, a) })
+	case proto.OpGroupsList:
+		return s.opGroupsList(ctx)
+	case proto.OpRemindCreate:
+		return withArgs(args, func(a proto.RemindCreateArgs) (any, error) { return s.opRemindCreate(ctx, u, a) })
+	case proto.OpRemindList:
+		return s.opRemindList(ctx, u)
+	case proto.OpRemindDelete:
+		return withArgs(args, func(a proto.RemindDeleteArgs) (any, error) { return s.opRemindDelete(ctx, u, a) })
 	case proto.OpHistory:
 		return withArgs(args, func(a proto.HistoryArgs) (any, error) { return s.opHistory(ctx, u, a) })
 	case proto.OpSearch:
