@@ -17,6 +17,7 @@ form of this document; if they disagree, that is a bug.
 |---|---|---|
 | QUIC (UDP) | 7443 | Primary. ALPN `tc/1`. Client opens **one bidirectional stream** for frames. Voice (v2) uses QUIC datagrams on the same connection. |
 | TLS over TCP | 7443 | Fallback when UDP is blocked. ALPN `tc/1`. Same frames. |
+| HTTPS (TLS over TCP) | 7443 | Webhooks only (§12). ALPN `http/1.1` on the same TCP listener. |
 
 Client dials both, giving QUIC a 300 ms head start, uses whichever finishes the
 TLS handshake first and cancels the other. No persisted preference.
@@ -149,6 +150,9 @@ session **before** the RES. The `seq` in a RES is informational: clients advance
 | `invite.create` | `{user?: u64}` (admin) | `{code: str}` |
 | `user.disable` | `{user}` (admin) | `{}` — closes their sessions with BYE `revoked` |
 | `user.update` | `{display: str}` (self) | `{seq}` — emits `user.update`; unchanged → `{seq: 0}` |
+| `hook.create` | `{chan, name}` | `{id: u64, url: str, curl: str}` (cap `hooks`, §12) |
+| `hook.list` | `{}` | `{hooks: [{id, chan, name, created_by: u64, created: i64}]}` |
+| `hook.delete` | `{id}` | `{}` |
 
 Rules:
 - **send idempotency**: `(author, nonce)` is permanently unique. A repeat returns
@@ -167,6 +171,14 @@ Rules:
 - **chan.join** works on public channels only (private → `forbidden`).
   **chan.add**: any member of a public channel; members of a private channel.
   DMs can't be joined, added to, or left.
+- **hook.create**: caller must be a member of `chan` (else `forbidden`); DMs → `bad_request`.
+  `name` follows the user-name rule (§9) and names the hook's **bot user**: an existing bot
+  with that name is reused, otherwise one is created (`user.new`); a human with that name →
+  `conflict`. If the bot isn't a member of `chan` it is added (`chan.join`, actor = caller).
+  `url` is secret and returned only here. **hook.list** returns hooks in channels the caller
+  currently belongs to (admins: all). **hook.delete**: the creator or an admin (a member who
+  isn't → `forbidden`, anyone else → `not_found`); the URL stops working at once. The bot
+  user and its messages stay. `hook.create`/`hook.delete` count as write ops for rate limits.
 - **dm.open** returns the existing DM for that exact member set (caller included)
   or creates it. DMs have `name = ""`.
 
@@ -235,11 +247,14 @@ The server overwrites `user` in every C→S EPHEMERAL with the authenticated use
 ## 8. Objects
 
 ```
-User    = {id, name, display, admin: bool, disabled: bool, created: i64}
+User    = {id, name, display, admin: bool, disabled: bool, created: i64, bot?: bool}
 Channel = {id, name, kind: "public"|"private"|"dm", topic, members: [u64], created}
 Message = {id, chan, author, body, thread: u64 (0 = top level), time,
            edited: i64 (0 = never), deleted: bool, reactions: {emoji: [u64]}}
 ```
+
+`User.bot` (omitted when false) marks a webhook bot user (§12). Bots have no keys, never
+log in (add-key invites can't target them) and never have presence.
 
 `Message.id` is the seq of its `msg.new` event, so ids order chronologically
 and map directly onto read markers.
@@ -285,3 +300,48 @@ never drive a terminal.
 - Additive change → new `caps` string, optional fields, new ops/kinds/frame types.
 - Clients ignore unknown event kinds, fields and frame types.
 - Servers return `unknown_op` for unknown ops and never close the connection for it.
+
+## 12. Webhooks (HTTP)
+
+Cap `hooks`. Lets scripts, CI jobs and agents post into a channel with a plain HTTPS
+request — no tc install, no SSH key.
+
+**Endpoint.** The TLS-over-TCP listener offers ALPN `tc/1` and `http/1.1` (in that
+order). Connections that negotiate `http/1.1` — or no ALPN at all, which a tc client
+never does — are served by an HTTP/1.1 server; `tc/1` gets the frame protocol; any other
+offer fails the TLS handshake. QUIC stays `tc/1` only, and tc clients offer only `tc/1`.
+
+```
+POST https://<host>:<port>/hooks/<token>
+```
+
+`token` = 16 random bytes, lowercase base32 without padding (like invites); the server
+stores only its SHA-256. The URL **is** the credential. The server certificate is the
+self-signed one from §2, so callers pin it: curl
+`-k --pinnedpubkey 'sha256//<b64>'`, where `<b64>` is the same SPKI SHA-256 as the pin
+but in standard base64 with padding (`-k` only skips CA/hostname checks; the pin is
+still enforced). `hook.create` returns a ready-made `curl` command.
+
+**Request.** `Content-Type: application/json` → body `{"text": str}`; any other type →
+the raw body is the text. Reads at most 128 KiB (→ 413). The text must be valid UTF-8
+(→ 400); ANSI CSI/OSC sequences and `` are stripped, other control characters removed
+(`sanitize.StripANSI`), trailing whitespace trimmed; then the normal message rules apply
+(empty → 400, > 64 KiB → 413). Optional `Idempotency-Key` header (≤ 256 B): the send
+nonce becomes the first 16 bytes of `SHA-256(u64be(hook id) || key)`, so retries return
+the original message (send idempotency, §5); the same key with different text → 409.
+
+**Effect.** Exactly a `send` by the hook's bot user into the hook's channel: a
+`msg.new` with `author` = bot, same event log, fan-out and visibility.
+
+**Responses** (JSON, `Cache-Control: no-store`):
+
+| status | body | when |
+|---|---|---|
+| 200 | `{"msg": u64}` | posted (or idempotent repeat) |
+| 400 | `{"error": "bad_request", "msg": str}` | bad JSON, invalid UTF-8, empty |
+| 404 | `{"error": "not_found"}` | anything but `POST /hooks/<live token>` — unknown and deleted tokens are indistinguishable |
+| 409 | `{"error": "conflict"}` | Idempotency-Key reused with different text |
+| 413 | `{"error": "too_large"}` | body or text over the limits |
+| 429 | `{"error": "rate_limited"}` + `Retry-After: <s>` | per hook: burst 20, refill 1/s |
+
+The HTTP server sets header/read/write/idle timeouts and caps headers at 16 KiB.

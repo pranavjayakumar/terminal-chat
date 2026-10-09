@@ -225,6 +225,7 @@ type User struct {
 	Admin    bool   `msgpack:"admin"`
 	Disabled bool   `msgpack:"disabled"`
 	Created  int64  `msgpack:"created"`
+	Bot      bool   `msgpack:"bot,omitempty"` // webhook author; never logs in
 }
 
 type Channel struct {
