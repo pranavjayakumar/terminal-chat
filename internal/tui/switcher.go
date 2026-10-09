@@ -160,7 +160,7 @@ func (m *Model) openSwitcher() {
 }
 
 func (m *Model) switcherKey(k tea.KeyMsg) tea.Cmd {
-	switch k.String() {
+	switch keyName(k) {
 	case kEsc, kSwitcher:
 		m.mode = modeNormal
 		return nil
@@ -204,7 +204,7 @@ type searchState struct {
 
 func (m *Model) searchKey(k tea.KeyMsg) tea.Cmd {
 	s := &m.search
-	switch k.String() {
+	switch keyName(k) {
 	case kEsc, "q":
 		m.mode = modeNormal
 	case kUp, "ctrl+p":

@@ -1,5 +1,7 @@
 package tui
 
+import tea "github.com/charmbracelet/bubbletea"
+
 // Key names as Bubble Tea v1 spells them (tea.KeyMsg.String()).
 const (
 	kQuit       = "ctrl+c"
@@ -68,4 +70,15 @@ var helpLines = [][2]string{
 	{"/away [status], /back", "presence"},
 	{"/invite", "invite code (admin)"},
 	{"//text", "send text starting with /"},
+}
+
+// keyName is the key's name for matching against the constants above.
+// Bubble Tea delivers fast typing, IME input and pastes as one KeyRunes
+// message whose String() is the text itself, so typing "down" or "end"
+// would otherwise act as the ↓ or End key. Only a single rune can name a key.
+func keyName(k tea.KeyMsg) string {
+	if k.Type == tea.KeyRunes && (len(k.Runes) != 1 || k.Paste) {
+		return ""
+	}
+	return k.String()
 }
