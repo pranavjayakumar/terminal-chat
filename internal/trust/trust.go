@@ -38,8 +38,9 @@ const FileName = "e2e.db"
 // and server_alarms; v5 makes revoked_devices.seq nullable (NULL = unknown;
 // v1–v4 stored unknown as 0, which the migration turns into NULL); v6 adds
 // key_changes.last_seen (pending key changes are an LRU of maxKeyChanges);
-// v7 adds archived_device_keys.
-const schemaVersion = 7
+// v7 adds archived_device_keys; v8 adds epochs.seq (the key.epoch seq of a
+// verified bundle; NULL = unknown).
+const schemaVersion = 8
 
 // maxKeyChanges bounds the pending key changes kept per user and server; the
 // least recently seen is dropped (it is re-recorded if seen again).
@@ -70,7 +71,7 @@ CREATE TABLE IF NOT EXISTS e2e_chans (
 	server_id BLOB NOT NULL, chan INTEGER NOT NULL, PRIMARY KEY (server_id, chan));
 CREATE TABLE IF NOT EXISTS epochs (
 	server_id BLOB NOT NULL, chan INTEGER NOT NULL, epoch INTEGER NOT NULL, hash BLOB NOT NULL,
-	kc BLOB NOT NULL, roster BLOB NOT NULL, back BLOB, k BLOB, PRIMARY KEY (server_id, chan, epoch));
+	kc BLOB NOT NULL, roster BLOB NOT NULL, back BLOB, k BLOB, seq INTEGER, PRIMARY KEY (server_id, chan, epoch));
 CREATE TABLE IF NOT EXISTS chan_alarms (
 	server_id BLOB NOT NULL, chan INTEGER NOT NULL, detail TEXT NOT NULL, time INTEGER NOT NULL,
 	PRIMARY KEY (server_id, chan));
@@ -285,6 +286,17 @@ func initSchema(tx *sql.Tx) error {
 		}
 		if n == 0 {
 			if _, err := tx.Exec(`ALTER TABLE key_changes ADD COLUMN last_seen INTEGER NOT NULL DEFAULT 0`); err != nil {
+				return fmt.Errorf("migrating trust store v%d: %w", v, err)
+			}
+		}
+	}
+	if v >= 1 && v <= 7 {
+		var n int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('epochs') WHERE name = 'seq'`).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			if _, err := tx.Exec(`ALTER TABLE epochs ADD COLUMN seq INTEGER`); err != nil {
 				return fmt.Errorf("migrating trust store v%d: %w", v, err)
 			}
 		}
@@ -815,6 +827,10 @@ type Epoch struct {
 	Roster []uint64
 	Back   []byte         // the bundle's backlink (K of the epoch before, under K); nil for epoch 1
 	Key    *e2ecrypto.Key // K, once this device has it
+	// Seq is the seq of the bundle's key.epoch event as the server gave it
+	// (0 = unknown). Not evidence of anything: it orders messages against
+	// the epoch (plaintext after epoch 1 is suspect, PROTOCOL §13.4).
+	Seq uint64
 }
 
 func packRoster(r []uint64) []byte {
@@ -870,10 +886,14 @@ func (s *Store) AdvanceEpoch(sid e2ecrypto.ServerID, ch uint64, e Epoch) error {
 		if e.Key != nil {
 			k = e.Key[:]
 		}
-		if _, err := tx.Exec(`INSERT INTO epochs (server_id, chan, epoch, hash, kc, roster, back, k) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		var seq any
+		if e.Seq != 0 {
+			seq = i64(e.Seq)
+		}
+		if _, err := tx.Exec(`INSERT INTO epochs (server_id, chan, epoch, hash, kc, roster, back, k, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (server_id, chan, epoch) DO UPDATE SET hash = excluded.hash, kc = excluded.kc,
-				roster = excluded.roster, back = excluded.back, k = excluded.k`,
-			sid[:], i64(ch), int64(e.Epoch), e.Hash[:], e.KC[:], packRoster(e.Roster), e.Back, k); err != nil {
+				roster = excluded.roster, back = excluded.back, k = excluded.k, seq = excluded.seq`,
+			sid[:], i64(ch), int64(e.Epoch), e.Hash[:], e.KC[:], packRoster(e.Roster), e.Back, k, seq); err != nil {
 			return err
 		}
 		_, err = tx.Exec(`INSERT INTO chain_heads (server_id, chan, epoch, hash, eh) VALUES (?, ?, ?, ?, ?)
@@ -890,8 +910,10 @@ func (s *Store) AdvanceEpoch(sid e2ecrypto.ServerID, ch uint64, e Epoch) error {
 // Epoch returns a verified epoch of the channel; ok is false if none is recorded.
 func (s *Store) Epoch(sid e2ecrypto.ServerID, ch uint64, epoch uint32) (e Epoch, ok bool, err error) {
 	var hash, kc, roster, k []byte
-	err = s.db.QueryRow(`SELECT hash, kc, roster, back, k FROM epochs WHERE server_id = ? AND chan = ? AND epoch = ?`,
-		sid[:], i64(ch), int64(epoch)).Scan(&hash, &kc, &roster, &e.Back, &k)
+	var seq sql.NullInt64
+	err = s.db.QueryRow(`SELECT hash, kc, roster, back, k, seq FROM epochs WHERE server_id = ? AND chan = ? AND epoch = ?`,
+		sid[:], i64(ch), int64(epoch)).Scan(&hash, &kc, &roster, &e.Back, &k, &seq)
+	e.Seq = uint64(seq.Int64)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Epoch{}, false, nil
 	}
