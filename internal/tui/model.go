@@ -185,7 +185,6 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 	m.input = newInput(st)
 	m.line = newLine(st)
 	m.loadDrafts()
-	m.highlights = c.Highlights()
 	m.reloadAll()
 	if ch := m.defaultChannel(); ch != 0 {
 		m.openChannel(ch)
@@ -283,6 +282,7 @@ func (m *Model) reloadPresence() {
 
 func (m *Model) reloadChans() {
 	m.chans = m.c.Channels()
+	m.refreshHighlights()
 	if m.active != 0 {
 		if v, ok := m.chanView(m.active); !ok || (!v.Member && v.Kind != proto.ChanPublic) {
 			// Left or removed: fall back to something we're in.

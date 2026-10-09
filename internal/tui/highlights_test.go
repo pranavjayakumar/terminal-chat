@@ -197,3 +197,41 @@ func TestHighlightViewsFitAllSizes(t *testing.T) {
 		checkView(t, m, "list")
 	}
 }
+
+// Another tc on the same cache changes the keywords: the log's markers,
+// notifications and /unhighlight follow without a restart.
+func TestHighlightsFollowAnotherPane(t *testing.T) {
+	m, f := highlightModel(t, 100, 50)
+	if !strings.Contains(strings.Join(markedLines(m), "\n"), "Deploy is broken") {
+		t.Fatal("setup: keyword not marked")
+	}
+	f.words = []string{"nothing"} // /unhighlight deploy + /highlight nothing, elsewhere
+	m.Update(updateMsg(client.Update{Channels: true}))
+	if !slices.Equal(m.highlights, []string{"nothing"}) {
+		t.Fatalf("highlights = %v", m.highlights)
+	}
+	marked := strings.Join(markedLines(m), "\n")
+	if strings.Contains(marked, "Deploy is broken") || !strings.Contains(marked, "nothing to see") {
+		t.Fatalf("markers didn't follow:\n%s", marked)
+	}
+	if !m.shouldNotify(proto.Message{ID: 600, Chan: 11, Author: 2, Body: "nothing here"}) {
+		t.Error("new keyword doesn't notify")
+	}
+	if m.shouldNotify(proto.Message{ID: 601, Chan: 11, Author: 2, Body: "deploy"}) {
+		t.Error("removed keyword still notifies")
+	}
+}
+
+func TestUnhighlightChecksTheFreshList(t *testing.T) {
+	m, f := highlightModel(t, 100, 50)
+	f.words = []string{"deploy", "extra"} // added by another pane
+	submitCmd(m, "/unhighlight extra")
+	if m.noticeErr || slices.Contains(f.words, "extra") {
+		t.Fatalf("a word from another pane can't be removed: err=%v %q words=%v", m.noticeErr, m.notice, f.words)
+	}
+	f.words = nil // removed by another pane
+	submitCmd(m, "/unhighlight deploy")
+	if !m.noticeErr || !strings.Contains(m.notice, "isn't a highlight word") {
+		t.Fatalf("removing a word that is gone: err=%v %q", m.noticeErr, m.notice)
+	}
+}

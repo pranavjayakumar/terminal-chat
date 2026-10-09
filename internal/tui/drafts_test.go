@@ -319,7 +319,7 @@ func TestRestoredDraftIsSanitized(t *testing.T) {
 func TestDraftWrittenByAnotherProcessIsPickedUp(t *testing.T) {
 	m, f := newTestModelFake(t, 80, 24)
 	f.SetDraft(13, 0, "typed in the other pane\u202e") // plus a bidi override, to be dropped
-	press(m, "ctrl+n") // general → secret
+	press(m, "ctrl+n")                                 // general → secret
 	if m.active != 13 || m.input.Value() != "typed in the other pane" {
 		t.Fatalf("in %d input %q", m.active, m.input.Value())
 	}

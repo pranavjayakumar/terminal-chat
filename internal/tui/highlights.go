@@ -13,6 +13,9 @@ import (
 // highlightCommand runs /highlight and /unhighlight; ok is false for other
 // commands. Keywords are local to this machine (the client's cache).
 func (m *Model) highlightCommand(c command) (ok bool, err error) {
+	if c.name == "highlight" || c.name == "unhighlight" {
+		m.refreshHighlights() // another pane may have changed them
+	}
 	switch c.name {
 	case "highlight":
 		if len(c.args) == 0 {
@@ -80,8 +83,18 @@ func (m *Model) highlightCommand(c command) (ok bool, err error) {
 // afterHighlights re-reads the keywords and everything derived from them:
 // the mention state of channels and the markers in the open panes.
 func (m *Model) afterHighlights() {
-	m.highlights = m.c.Highlights()
 	m.reloadChans()
+}
+
+// refreshHighlights re-reads the keywords from the cache, which another tc
+// on the same cache may have changed; the log's markers are laid out again
+// when they differ.
+func (m *Model) refreshHighlights() {
+	words := m.c.Highlights()
+	if slices.Equal(words, m.highlights) {
+		return
+	}
+	m.highlights = words
 	m.main.ver++
 	m.thread.ver++
 }
