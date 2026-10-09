@@ -1,6 +1,7 @@
 // Package identity provides the user's SSH key as a tc identity: loading a
 // signer (ssh-agent first, then key files) and building/verifying the auth
-// signature defined in PROTOCOL.md §4.
+// signature defined in PROTOCOL.md §4, plus the SSH-signed E2E identity
+// objects (device certs, key endorsements, device revokes; E2E.md §12.2).
 package identity
 
 import (
@@ -13,12 +14,21 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 )
 
 const authContext = "tc-auth-v1\x00"
+
+// SSH signing contexts for E2E identity objects (E2E.md §12.2), used with
+// SignContext/VerifyContext.
+const (
+	CtxDevice  = "tc-device-v1\x00"
+	CtxEndorse = "tc-endorse-v1\x00"
+	CtxRevoke  = "tc-revoke-v1\x00"
+)
 
 // Accepted key and signature algorithms (PROTOCOL.md §4). DSA and
 // ssh-rsa/SHA-1 signatures are rejected.
@@ -45,21 +55,80 @@ func AuthPayload(exporter []byte) []byte {
 // Sign produces the wire signature (ssh.Signature, ssh wire-encoded) over the
 // auth payload. RSA keys sign with SHA-256; SHA-1 is never used.
 func Sign(s ssh.Signer, exporter []byte) ([]byte, error) {
-	var sig *ssh.Signature
-	var err error
-	if as, ok := s.(ssh.AlgorithmSigner); ok && s.PublicKey().Type() == ssh.KeyAlgoRSA {
-		sig, err = as.SignWithAlgorithm(rand.Reader, AuthPayload(exporter), ssh.KeyAlgoRSASHA256)
-	} else {
-		sig, err = s.Sign(rand.Reader, AuthPayload(exporter))
-	}
+	sig, err := signRaw(s, AuthPayload(exporter))
 	if err != nil {
 		return nil, fmt.Errorf("signing auth payload: %w", err)
 	}
-	return ssh.Marshal(sig), nil
+	return sig, nil
 }
 
 // Verify checks a wire signature from Sign against a wire-encoded public key.
 func Verify(pubkey, sig, exporter []byte) (ssh.PublicKey, error) {
+	return verifyRaw(pubkey, sig, AuthPayload(exporter))
+}
+
+// SignContext signs context || b with the §4 algorithm rules. context must be
+// a domain-separation tag ending in its only NUL byte (e.g. "tc-device-v1\x00"),
+// which keeps all contexts prefix-free so no signature verifies under two of them.
+func SignContext(s ssh.Signer, context string, b []byte) ([]byte, error) {
+	if err := checkContext(context); err != nil {
+		return nil, err
+	}
+	sig, err := signRaw(s, withContext(context, b))
+	if err != nil {
+		return nil, fmt.Errorf("signing %q: %w", strings.TrimSuffix(context, "\x00"), err)
+	}
+	return sig, nil
+}
+
+// VerifyContext checks a SignContext signature by the wire-encoded pubkey over
+// context || b.
+func VerifyContext(pubkey, sig []byte, context string, b []byte) (ssh.PublicKey, error) {
+	if err := checkContext(context); err != nil {
+		return nil, err
+	}
+	return verifyRaw(pubkey, sig, withContext(context, b))
+}
+
+func checkContext(context string) error {
+	if len(context) < 2 || strings.IndexByte(context, 0) != len(context)-1 {
+		return fmt.Errorf("invalid signature context %q", context)
+	}
+	return nil
+}
+
+func withContext(context string, b []byte) []byte {
+	m := make([]byte, 0, len(context)+len(b))
+	return append(append(m, context...), b...)
+}
+
+func signRaw(s ssh.Signer, msg []byte) ([]byte, error) {
+	typ := s.PublicKey().Type()
+	if !allowedKey[typ] {
+		return nil, fmt.Errorf("key type %s not accepted", typ)
+	}
+	var sig *ssh.Signature
+	var err error
+	if typ == ssh.KeyAlgoRSA {
+		// A plain Signer would produce ssh-rsa (SHA-1), which Verify rejects.
+		as, ok := s.(ssh.AlgorithmSigner)
+		if !ok {
+			return nil, errors.New("RSA signer cannot sign with rsa-sha2-256")
+		}
+		sig, err = as.SignWithAlgorithm(rand.Reader, msg, ssh.KeyAlgoRSASHA256)
+	} else {
+		sig, err = s.Sign(rand.Reader, msg)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ssh.Marshal(sig), nil
+}
+
+// skFlagUserPresence is the FIDO "user present" bit in an sk-* signature's flags.
+const skFlagUserPresence = 0x01
+
+func verifyRaw(pubkey, sig, msg []byte) (ssh.PublicKey, error) {
 	pk, err := ssh.ParsePublicKey(pubkey)
 	if err != nil {
 		return nil, fmt.Errorf("parsing public key: %w", err)
@@ -71,7 +140,24 @@ func Verify(pubkey, sig, exporter []byte) (ssh.PublicKey, error) {
 	if !allowedSig[s.Format] || !allowedKey[pk.Type()] {
 		return nil, fmt.Errorf("key type %s / signature %s not accepted", pk.Type(), s.Format)
 	}
-	if err := pk.Verify(AuthPayload(exporter), &s); err != nil {
+	// sk-* signatures carry flags(1) || counter(u32) after the blob
+	// (openssh PROTOCOL.u2f); other formats carry nothing. Checked here rather
+	// than relying on x/crypto's default so a touch-less signature is refused
+	// regardless of library version.
+	switch pk.Type() {
+	case ssh.KeyAlgoSKED25519, ssh.KeyAlgoSKECDSA256:
+		if len(s.Rest) != 5 {
+			return nil, errors.New("malformed security-key signature")
+		}
+		if s.Rest[0]&skFlagUserPresence == 0 {
+			return nil, errors.New("security-key signature without user presence")
+		}
+	default:
+		if len(s.Rest) != 0 {
+			return nil, errors.New("trailing data in signature")
+		}
+	}
+	if err := pk.Verify(msg, &s); err != nil {
 		return nil, fmt.Errorf("verifying signature: %w", err)
 	}
 	return pk, nil
