@@ -1,6 +1,7 @@
 package e2ecrypto
 
 import (
+	"bytes"
 	"crypto/ecdh"
 	"crypto/hkdf"
 	"crypto/hmac"
@@ -30,6 +31,29 @@ func KeyCommitment(k Key, sid ServerID, ch uint64, ep uint32) [32]byte {
 	var kc [32]byte
 	m.Sum(kc[:0])
 	return kc
+}
+
+// probeScalar is any fixed X25519 private key. Clamping makes it a multiple
+// of the cofactor, so its shared secret with every low-order point (in any
+// encoding) is zero.
+var probeScalar = func() *ecdh.PrivateKey {
+	k, err := ecdh.X25519().NewPrivateKey(bytes.Repeat([]byte{0x5a}, 32))
+	if err != nil {
+		panic(err)
+	}
+	return k
+}()
+
+// ValidX25519 reports whether pub is usable as a box recipient: not a
+// low-order point, whose shared secret with any ephemeral key is zero.
+// Such a device could never be sealed to, so rotations including it fail.
+func ValidX25519(pub [32]byte) bool {
+	pk, err := ecdh.X25519().NewPublicKey(pub[:])
+	if err != nil {
+		return false
+	}
+	ss, err := probeScalar.ECDH(pk)
+	return err == nil && subtle.ConstantTimeCompare(ss, make([]byte, len(ss))) == 0
 }
 
 // NewEphemeral returns a bundle's ephemeral X25519 key, shared by all of its boxes.

@@ -453,3 +453,20 @@ func TestDevicesListRejectsOutOfRangeIDs(t *testing.T) {
 	alice.fail(proto.OpDevicesList, proto.DevicesListArgs{After: 1 << 63}, proto.ErrBadRequest)
 	alice.fail(proto.OpDevicesList, proto.DevicesListArgs{Users: []uint64{1 << 63}}, proto.ErrBadRequest)
 }
+
+// A member with a low-order X25519 key could never be sealed to, and every
+// rotation must box all members' devices: the server refuses such certs.
+func TestDeviceRegisterRejectsLowOrderX25519(t *testing.T) {
+	ts := startServer(t, "tcp")
+	alice := ts.registerCaps(t, "alice", true, e2eCaps)
+	alice.syncFresh()
+	for _, k := range [][32]byte{{}, {1}} {
+		d := newDevKeys(t)
+		d.X25519Pub = k
+		sc, err := identity.NewDeviceCert(alice.signer, ts.sid(), alice.user.ID, d, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		alice.fail(proto.OpDeviceRegister, proto.DeviceRegisterArgs{Cert: proto.Signed(sc)}, proto.ErrBadRequest)
+	}
+}

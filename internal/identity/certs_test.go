@@ -464,3 +464,34 @@ func TestDeviceCertZeroX25519Rejected(t *testing.T) {
 		t.Fatal("peek accepted an all-zero X25519 key")
 	}
 }
+
+// Every low-order point, canonical or not, is rejected: nobody could seal
+// an epoch key to such a device, so it would block every rotation.
+func TestDeviceCertLowOrderX25519Rejected(t *testing.T) {
+	signers := allSigners(t)
+	p := [32]byte{0xed, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+		0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f} // 2^255-19
+	order8 := [32]byte{0xe0, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0xae, 0x16, 0x56, 0xe3, 0xfa, 0xf1, 0x9f, 0xc4, 0x6a,
+		0xda, 0x09, 0x8d, 0xeb, 0x9c, 0x32, 0xb1, 0xfd, 0x86, 0x62, 0x05, 0x16, 0x5f, 0x49, 0xb8, 0x00}
+	pPlus1 := p
+	pPlus1[0]++
+	for name, k := range map[string][32]byte{
+		"zero": {}, "one": {1}, "order 8": order8, "p (≡ 0)": p, "p+1 (≡ 1)": pPlus1,
+	} {
+		dev := newDevice(t)
+		dev.X25519Pub = k
+		sc, err := NewDeviceCert(signers[0].s, testSID, 42, dev, testNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := sc.VerifyDeviceCert(testSID, signers[0].s.PublicKey().Marshal()); err == nil {
+			t.Errorf("%s: cert accepted", name)
+		}
+		if _, err := PeekDeviceCert(sc); err == nil {
+			t.Errorf("%s: peek accepted", name)
+		}
+	}
+	if !e2ecrypto.ValidX25519(newDevice(t).X25519Pub) {
+		t.Fatal("a real key is rejected")
+	}
+}

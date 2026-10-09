@@ -134,6 +134,10 @@ func openStore(path string) (*store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrateEpochs(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	s := &store{db: db}
 	err = db.QueryRow(`SELECT v FROM meta WHERE k = 'server_id'`).Scan(&s.serverID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -293,8 +297,8 @@ func prefixCols(p, cols string) string {
 
 func getChannel(ctx context.Context, q querier, id uint64) (proto.Channel, error) {
 	var c proto.Channel
-	err := q.QueryRowContext(ctx, `SELECT id, name, kind, topic, created FROM channels WHERE id = ?`, id).
-		Scan(&c.ID, &c.Name, &c.Kind, &c.Topic, &c.Created)
+	err := q.QueryRowContext(ctx, `SELECT id, name, kind, topic, created, e2e, epoch, creator FROM channels WHERE id = ?`, id).
+		Scan(&c.ID, &c.Name, &c.Kind, &c.Topic, &c.Created, &c.E2E, &c.Epoch, &c.Creator)
 	if err != nil {
 		return c, err
 	}
@@ -418,7 +422,8 @@ func isMember(ctx context.Context, q querier, ch, u uint64) (bool, error) {
 }
 
 // visibleEvents returns events in (since, h] that u may see (PROTOCOL.md §6
-// Visibility); device events only when e2e (§13).
+// Visibility); e2e-only kinds (§13) only when e2e. Keep in step with
+// Server.visibleLocked.
 func visibleEvents(ctx context.Context, q querier, u, since, h uint64, limit int, e2e bool) ([]proto.Event, error) {
 	rows, err := q.QueryContext(ctx, `
 		SELECT seq, kind, COALESCE(chan, 0), time, actor, data FROM events e
@@ -429,7 +434,7 @@ func visibleEvents(ctx context.Context, q querier, u, since, h uint64, limit int
 			OR (kind IN ('chan.join', 'chan.leave') AND about = ?3)
 			OR (kind IN ('chan.new', 'chan.update')
 				AND EXISTS (SELECT 1 FROM channels c WHERE c.id = e.chan AND c.kind = 'public'))
-			OR (kind != 'read.update' AND chan IS NOT NULL AND EXISTS (
+			OR (kind != 'read.update' AND (?5 OR kind != 'key.epoch') AND chan IS NOT NULL AND EXISTS (
 				SELECT 1 FROM membership m WHERE m.chan = e.chan AND m.user = ?3
 				AND m.join_seq <= e.seq AND (m.leave_seq IS NULL OR e.seq < m.leave_seq)))
 		)

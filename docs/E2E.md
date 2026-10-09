@@ -112,6 +112,7 @@ Libraries (all pure Go, keeps `CGO_ENABLED=0`): `crypto/ecdh`, `crypto/ed25519`,
 
 ### 13.1 Signed objects
 `Signed = {b: bin, sig: bin}`; sig over `context || b`; verify before decoding b; H = SHA-256; big-endian.
+b is canonical msgpack: unknown fields are rejected (not ignored), so any format extension needs `v: 2`.
 
 ### 13.2 Devices
 - `DeviceCert.b = {v:1, server_id: bin16, user: u64, dev: bin16, x25519: bin32, ed25519: bin32, ssh: bin, created: i64}`;
@@ -124,7 +125,7 @@ Libraries (all pure Go, keeps `CGO_ENABLED=0`): `crypto/ecdh`, `crypto/ed25519`,
 ```
 EpochBundle.b = {v:1, server_id, chan: u64, epoch: u32 (first = 1), prev: bin32 (H(prev b), 0 for 1),
   roster: [u64] sorted distinct, by: bin16 (rotator dev), time: i64, kc: bin32, eph: bin32,
-  boxes: [{dev: bin16, ct: bin48}], back?: bin72}
+  boxes: [{dev: bin16, ct: bin48}], back?: bin72}   // back required for epoch > 1, absent for epoch 1
 sig = Ed25519(by, "tc-epoch-v1\x00" || b);  eh = H(b)[:16]
 K random 32B; kc = HMAC-SHA256(K, "tc-kc-v1" || server_id || chan || epoch)
 box(d): ss = X25519(eph_priv, d.x25519); bk = HKDF(ss, salt = eph || d.x25519, info "tc-box-v1");
@@ -133,6 +134,9 @@ back = nonce24 || XChaCha20-Poly1305(HKDF(K, "tc-back-v1"), nonce, K_prev, AD = 
 ```
 Client validity: sig; `by` is a verified device of a previous-roster user (epoch 1: creator / any DM
 member); chain extends pinned head (lower/forked → alarm); K matches kc; boxes only to verified devices.
+The server enforces the same `by` rule (`forbidden`), using additive `Channel.creator` (0 for #general;
+backfilled from the `chan.new` actor). A bundle that chains correctly but whose box is unusable to a
+recipient is still accepted as the new head; that recipient recovers K via `key.share`, not a fork alarm.
 
 ### 13.4 Encrypted payload
 ```
@@ -154,7 +158,7 @@ and higher v; first mid wins. Decrypted text must pass §10 checks. Undecryptabl
 | `device.revoke` | `{revoke: Signed}` | `{seq}` |
 | `devices.list` | `{users?: [u64]}` | `{certs, endorse, revoked}` |
 | `key.rotate` | `{chan, bundle: Signed}` | `{seq}` |
-| `key.fetch` | `{chan, from: u32, to: u32}` (≤ 256) | `{bundles}` |
+| `key.fetch` | `{chan, from: u32, to: u32}` (≤ 256) | `{bundles, seqs}` (seqs[i] = key.epoch seq of bundles[i]) |
 | `key.share` | `{chan, epoch, dev, eph, ct}` | `{}` |
 | `send` | `+ enc?: bin` (exactly one of body/enc) | `{msg}` |
 | `edit` / `delete` / `react` | `+ enc?` (e2e react emoji = "~"+b64url(HMAC(mk,"tc-react"‖mid‖emoji)[:12])) | |
@@ -165,15 +169,22 @@ and higher v; first mid wins. Decrypted text must pass §10 checks. Undecryptabl
 
 Server (honest case): dedupe (author, nonce) first (conflict compares enc bytes), then `stale_epoch`
 if enc.epoch ≠ current or bundle stale, then verify sig vs a registered device of the caller.
-Plaintext into e2e → `bad_request`. `key.rotate` CAS `epoch == cur+1 && prev == H(cur.b)`, roster ==
-non-disabled members, boxes only for registered non-revoked roster devices; losing RES after the
-winning `key.epoch` event; ≤ 1 rotate / chan / 10 s / user unless roster/devices changed. Search
+Plaintext into e2e → `bad_request` "upgrade tc" (step 7). DMs: `dm.open` makes a new DM e2e iff the caller
+advertises `e2e1`; a legacy caller creates a plaintext DM, later convertible by `chan.encrypt` (step 9). `key.rotate` (channel/membership/e2e checked before decoding the bundle) CAS `epoch == cur+1 && prev == H(cur.b)`, roster ==
+non-disabled members, boxes only for registered non-revoked roster devices (a subset is fine — clients seal
+only to devices they verified, the remaining devices get K via `key.share`; but ≥ 1 box per roster user
+who has an active device, else `bad_request`; decided in step 5 review; a box to an unknown, non-roster or
+already-revoked device is `bad_request`, and `stale_epoch` is only for races: CAS, roster change, a
+boxed device revoked after the current head's `key.epoch`); losing RES after the
+winning `key.epoch` event; ≤ 1 rotate / chan / 10 s / user and ≤ 1 / chan / 2 s, both waived only if a
+hash of (sorted roster ‖ sorted active device ids of roster users), stored per epoch at rotation time,
+differs now (not judged by what the bundle boxed: an unboxed device must not exempt). Search
 excludes e2e. Webhooks into e2e forbidden. Delete/edit scrub messages AND original event data.
 
 ### 13.6 Events
 `device.new {cert, endorse?}` (all) · `device.revoke {revoke}` (all) · `key.epoch {bundle}` (members at
 seq; after chan.join, after chan.leave) · `key.share` (members) · `msg.*`/`react.*` gain `enc?`.
-`Channel += {e2e, epoch}`; `Message += {enc?}` (body "" when enc). Snapshot += `devs`, `revoked`, `keys`.
+`Channel += {e2e, epoch, creator?}`; `Message += {enc?}` (body "" when enc). Snapshot += `devs`, `revoked`, `keys: [{bundle, seq}]`. A device revoke invalidates only bundles whose seq is after the revoke event's seq.
 
 ### 13.7–13.8
 Ephemeral `key.need {chan, epoch, dev}` (≤ 1/chan/30 s) → members answer with `key.share`.
@@ -189,8 +200,8 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
 4. Proto+server devices: `e2e1`, device ops/events, snapshot `devs`, limits (protocol-guardian).
 5. Server epochs: `key.rotate` CAS/roster/staleness, `key.fetch`, `key.epoch`, ordering, rate cap.
    Decision (PR #13 review): `user.disable` does not emit device revokes; instead rosters exclude
-   disabled users and their devices count as revoked for sealing and staleness. All-zero X25519 keys are
-   rejected in certs; clients drop unverified objects for another server_id and keep ≤ 64 per user per kind.
+   disabled users and their devices count as revoked for sealing and staleness. Low-order X25519 keys (all-zero or
+   any other, which would make every box undecryptable and block rotations) are rejected in certs; clients drop unverified objects for another server_id and keep ≤ 64 per user per kind.
 6. Client bundle logic: verify chain/kc/backlinks, lazy decrypt queue, `key.need/share`; reject bundles with duplicate recipient X25519 keys (one ephemeral + zero nonce per box means a duplicate would reuse key+nonce).
 7. Encrypted send e2e: outbox stores enc once, stale_epoch retry same nonce, DMs epoch 1, self-DM.
 8. Encrypted edit/delete/react, thread_ref, HMAC emoji, local FTS.

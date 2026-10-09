@@ -57,7 +57,7 @@ The server key never rotates in v1; rotating means re-issuing invites.
 | 0x11 | RES | S→C | `{id: u32, ok: bool, data?: any, err?: {code: str, msg: str}}` |
 | 0x20 | EVENT | S→C | `Event` (persistent, carries `seq`) |
 | 0x21 | EPHEMERAL | both | `{kind: str, ...}` (typing, presence; never stored) |
-| 0x22 | SNAPSHOT | S→C | `{users?: [User], chans?: [Channel], msgs?: [Message], read?: {chan: seq}, devs?, revoked?}` (one part; `devs`/`revoked` §13.2) |
+| 0x22 | SNAPSHOT | S→C | `{users?: [User], chans?: [Channel], msgs?: [Message], read?: {chan: seq}, devs?, revoked?, keys?}` (one part; `devs`/`revoked` §13.2, `keys` §13.6) |
 | 0x30 | PING | both | `{t: i64}` |
 | 0x31 | PONG | both | `{t: i64}` (echo) |
 | 0x40 | VOICE | both | reserved for v2 (TCP fallback only; QUIC uses datagrams) |
@@ -125,7 +125,7 @@ handshake_timeout, protocol_error, slow_consumer, server_shutdown, revoked`.
 
 Every REQ gets exactly one RES with the same `id`. Client chooses ids. Error codes:
 `bad_request, unauthorized, forbidden, not_found, conflict, rate_limited,
-too_large, unknown_op, internal`.
+too_large, unknown_op, internal`, and `stale_epoch` (§13.8).
 
 `sync` MUST be the first REQ, once per connection. Other REQs before its RES → `bad_request`.
 
@@ -143,7 +143,7 @@ session **before** the RES. The `seq` in a RES is informational: clients advance
 | `history` | `{chan, before: u64 (0 = latest), limit ≤ 200, thread?: u64}` | `{msgs: [Message], more: bool}` — with `thread`, that thread's replies only |
 | `search` | `{q: str, chan?: u64, limit ≤ 50}` | `{msgs: [Message]}` |
 | `read` | `{chan, seq}` | `{}` |
-| `chan.create` | `{name, private: bool, topic?: str}` | `{chan: Channel}` |
+| `chan.create` | `{name, private: bool, topic?: str, e2e?: bool}` | `{chan: Channel}` (`e2e`: §13.3) |
 | `chan.join` / `chan.leave` | `{chan}` | `{}` |
 | `chan.add` | `{chan, user}` | `{}` |
 | `chan.topic` | `{chan, topic: str}` | `{seq}` |
@@ -275,7 +275,8 @@ The server overwrites `user` in every C→S EPHEMERAL with the authenticated use
 
 ```
 User    = {id, name, display, admin: bool, disabled: bool, created: i64, bot?: bool}
-Channel = {id, name, kind: "public"|"private"|"dm", topic, members: [u64], created}
+Channel = {id, name, kind: "public"|"private"|"dm", topic, members: [u64], created,
+           e2e?: bool, epoch?: u32, creator?: u64}   (e2e/epoch/creator: §13.3)
 Message = {id, chan, author, body, thread: u64 (0 = top level), time,
            edited: i64 (0 = never), deleted: bool, reactions: {emoji: [u64]}}
 ```
@@ -423,7 +424,11 @@ Signed = {b: bin, sig: bin}
 names the object type. Verify `sig` before decoding `b`; `b` is never
 re-encoded (forward it byte for byte). `b` is a msgpack map in canonical form:
 the exact encoding `internal/proto` produces (fields in the listed order,
-smallest int encodings, no extra keys); anything else is rejected. H =
+smallest int encodings, no extra keys); anything else is rejected. In
+particular an unknown field in `b` is rejected, not ignored (unlike the
+additive frame fields of §11): a field one verifier ignores and another
+honours would give one signature two meanings. Format extensions therefore
+need a new `v` (e.g. `v: 2`), which older verifiers reject. H =
 SHA-256; integers in binary layouts are big-endian. Ids are `bin16`, keys
 `bin32`, times Unix ms.
 
@@ -473,7 +478,8 @@ Server rules (honest case):
   server stores and forwards it but does not register `new_ssh` as a login key.
   `dev` already registered → `conflict`, except an exact repeat of the
   same cert and endorse by the same user, which is ok `{seq: 0}` and
-  emits nothing. An `x25519` or `ed25519` key already used by any device →
+  emits nothing. A low-order `x25519` point (any encoding; its shared secret with every
+  key is zero) is malformed → `bad_request`. An `x25519` or `ed25519` key already used by any device →
   `conflict` (clients must check this too: a shared X25519 key would reuse
   key and nonce in epoch boxes). A user may have at most 8 non-revoked devices and register
   at most 32 ever (`bad_request`). Emits `device.new`.
@@ -502,6 +508,179 @@ but ignored.
 Limits: `Signed` objects here ≤ 4 KiB; ≤ 8 non-revoked devices per user;
 ≤ 32 device registrations per user, ever.
 
-### 13.3+ Epochs and encrypted messages
+### 13.3 Epoch bundles *(implemented: format, server rules)*
 
-See `docs/E2E.md` (in progress).
+An encrypted channel (`Channel.e2e`) has a chain of epochs. **Epoch = roster
+version**: each epoch fixes the members and a fresh 32-byte key K, sealed to
+every device of the roster.
+
+```
+EpochBundle.b   = {v: 1, server_id: bin16, chan: u64, epoch: u32 (first = 1),
+                   prev: bin32, roster: [u64], by: bin16, time: i64, kc: bin32,
+                   eph: bin32, boxes: [{dev: bin16, ct: bin48}], back?: bin72}
+EpochBundle.sig = Ed25519 by device `by`, context "tc-epoch-v1\x00"
+eh = H(b)[:16]        ChainHash = H(b) (the next bundle's prev)
+```
+
+- `prev` = ChainHash of the previous epoch's `b`; all zero for epoch 1.
+  `roster` is sorted ascending with no duplicates and non-empty; `boxes` is
+  non-empty, at most 128, with distinct `dev`. `back` is REQUIRED for epoch
+  > 1 and MUST be absent for epoch 1 (every e2e channel shares history).
+  Anything else (including non-canonical msgpack or an unknown field,
+  §13.1) is malformed; extending the bundle format needs `v: 2`.
+- `kc = HMAC-SHA256(K, "tc-kc-v1" || server_id || chan || epoch)`; one
+  ephemeral X25519 key `eph` per bundle; per box
+  `ss = X25519(eph_priv, d.x25519)`,
+  `bk = HKDF-SHA256(ss, salt = eph || d.x25519, info "tc-box-v1")`,
+  `ct = XChaCha20-Poly1305(bk, nonce 0^24, K, AD = server_id || chan || epoch || d.dev || by)`.
+- `back = nonce24 || XChaCha20-Poly1305(HKDF(K, "tc-back-v1"), nonce, K_prev, AD = server_id || chan || epoch)`.
+- Two boxes to devices with the same X25519 key would reuse key and nonce:
+  the server refuses to register such devices (§13.2) and clients MUST
+  reject such bundles.
+
+`Channel` gains `e2e: bool` and `epoch: u32` (both omitted when false/0;
+`epoch` is 0 until the first `key.rotate`), and `creator: u64`, the user
+who created it (omitted when 0: `#general`, and channels whose `chan.new`
+predates the field get it from that event's actor). The fields are present in every
+session's Channel objects; clients without `e2e1` ignore them (§11).
+
+Server rules (honest case) for **key.rotate** `{chan, bundle}` (write op,
+rate limited), checked in this order inside the write transaction (the
+bundle is decoded only after the channel, membership and encryption checks,
+so non-members can't make the server parse 16 KiB):
+
+| check | error |
+|---|---|
+| `len(b) + len(sig)` ≤ 16 KiB | `too_large` |
+| channel exists | `not_found` |
+| caller is a current member | `forbidden` |
+| channel is encrypted | `bad_request` |
+| `b` well formed (canonical, §13.1) | `bad_request` |
+| ≤ 128 boxes | `too_large` |
+| `server_id` is this server's; `chan` equals the arg | `bad_request` |
+| `by` is a registered, non-revoked device **of the caller** | `forbidden` |
+| `sig` verifies under `by`'s Ed25519 key | `bad_request` |
+| CAS: `epoch == current + 1` and `prev == ChainHash(current b)` | `stale_epoch` |
+| epoch > 1: the caller (`by`'s user) is in the current bundle's roster; epoch 1: the caller is `Channel.creator` (DMs: any member) | `forbidden` |
+| `roster` == current members that aren't disabled | `stale_epoch` |
+| every box goes to a registered device of a roster user, each at most once | `bad_request` |
+| no box goes to a device revoked after the current epoch's `key.epoch` seq (any revoked device at epoch 0): the rotator couldn't have seen that revoke | `stale_epoch` |
+| no box goes to any other revoked device (its revoke came before the head the rotator built on) | `bad_request` |
+| no two boxes share an X25519 key | `bad_request` |
+| at least one box for every roster user who has an active device ("every member with a device needs at least one box") | `bad_request` |
+| rate cap, below | `rate_limited` |
+
+Rate cap: with each epoch the server stores `state = H("tc-epoch-state-v1\x00"
+|| u32 len(roster) || roster ids as u64 || sorted active device ids of the
+roster users)` as of that rotation. When the state now equals the current
+epoch's stored state (nothing changed), a rotation is refused if the
+channel's last rotation was < 2 s ago (whoever made it) or the caller's last
+rotation of this channel was < 10 s ago. When it differs (a member joined,
+left or was disabled, or one of their devices was registered or revoked),
+neither cap applies. The comparison is with the server's record, not with
+what the current bundle boxed, so never-boxed devices don't exempt
+anyone. Epoch 1, and epochs stored before `state` existed, are uncapped.
+
+On success the server stores the bundle, sets `Channel.epoch`, appends a
+`key.epoch` event (actor = caller) and answers `{seq}`. Writes are
+serialized and each write's events are fanned out before its RES, so the
+loser of a concurrent rotation always receives the winner's `key.epoch`
+before its own `stale_epoch` RES. `stale_epoch` means "your view of the
+channel is behind": apply pending events (or `key.fetch`), rebuild, retry.
+It is returned only for races (the CAS, a roster change, a boxed device
+revoked after the head); a bundle that is wrong for the state the client
+must already have seen is `bad_request`, so retrying it can't loop.
+Boxes may be missing for some devices: clients seal only to devices they
+verified, and the rest get the key via `key.share` (§13.7). But every roster
+user who has an active device needs at least one box, so someone of theirs
+can answer `key.need` for their other devices; a user with no devices yet
+needs none.
+
+**key.fetch** `{chan, from: u32, to: u32}`: current members only (else
+`forbidden`, also for unknown channels); `1 ≤ from ≤ to` and `to − from < 256` (else `bad_request`).
+Returns `{bundles: [Signed], seqs: [u64]}`: the stored bundles in that range in epoch
+order, and (same length) the seq of each bundle's `key.epoch` event,
+possibly stopping early at ~768 KiB: ask again from the last epoch + 1.
+
+**Revocation vs epochs.** A `device.revoke` at seq r invalidates only
+bundles whose `key.epoch` seq is after r (they should not have boxed that
+device); bundles at or before r stay valid, and the revoked device's
+earlier keys are expected history. Clients order the two by these seqs
+(`key.fetch` `seqs`, snapshot `keys[].seq`, event seqs).
+
+A channel's current bundle is **stale** (encrypted sends will need a
+rotation first, §13.4) when there is none yet, its roster isn't the current
+non-disabled members, or it boxes a revoked device. A newly registered
+device doesn't make it stale (it gets K via `key.share`, §13.7).
+
+Creating encrypted channels: `chan.create {…, e2e: true}` requires `e2e1`
+and `private: true` (else `bad_request`). `dm.open` creates a new DM with
+`e2e = true` if and only if the caller's session has `e2e1`; an existing DM
+is returned unchanged, whoever reopens it. So a legacy caller (no `e2e1`)
+creates a plaintext DM even when every other member speaks `e2e1`; it stays
+plaintext until converted with `chan.encrypt` (step 9). Neither op creates
+an epoch. Once encrypted sends land (step 7), a plaintext `send` into an
+e2e channel is `bad_request` "upgrade tc", so legacy clients can read
+channel metadata but not post into encrypted DMs or channels.
+
+Client validity (step 6, not yet implemented): `sig`; `by` is a verified
+device of a previous-roster user (epoch 1: the creator / any DM member);
+the chain extends the pinned head (lower or forked → alarm); K matches
+`kc`; boxes only to verified devices.
+
+The chain link is about the signed bundle, not its keys: a bundle that
+verifies and whose `prev` is the pinned head is accepted and becomes the
+new head even if its box to this device is missing, fails to open or
+fails `kc`. The client then has no K for that epoch and recovers it via
+`key.need` / `key.share` (§13.7); it MUST NOT treat this as a fork. Only a
+second, different bundle for the same epoch (or one that doesn't chain to
+the pinned head) is a fork.
+
+Epoch 1 must be created by the channel's creator (any member of a DM).
+Clients rotate epoch 1 right after `chan.create`; an e2e channel whose
+creator leaves before that can't be keyed.
+
+### 13.4 Encrypted payload *(not yet implemented)*
+
+`enc` layout and rules: `docs/E2E.md` §13.4. Until it lands, sends into
+e2e channels are plaintext as before; with it, a plaintext `send` into an
+e2e channel is `bad_request` "upgrade tc" (§13.3).
+
+### 13.5 Ops
+
+Implemented: `device.register`, `device.revoke`, `devices.list` (§13.2),
+`key.rotate`, `key.fetch` (§13.3), `chan.create + e2e?`, `dm.open` (e2e
+DMs). Not yet: `key.share`, `send/edit/delete/react + enc`, `chan.add +
+bundle`, `chan.remove`, `chan.encrypt` (`docs/E2E.md` §13.5).
+
+| op | args | data |
+|---|---|---|
+| `key.rotate` | `{chan, bundle: Signed}` | `{seq}` |
+| `key.fetch` | `{chan, from: u32, to: u32}` | `{bundles: [Signed], seqs: [u64]}` |
+
+### 13.6 Events
+
+Implemented: `device.new`, `device.revoke` (§13.2), and:
+
+| event kind | chan | data | visible to |
+|---|---|---|---|
+| `key.epoch` | the channel | `{bundle: Signed}` | `e2e1` sessions of users who are members at its seq (§6): after `chan.join` the joiner sees it, after `chan.leave` the leaver doesn't — identically live and on replay |
+
+Snapshot (§6) adds `keys: [{bundle: Signed, seq: u64}]` for `e2e1` sessions: the current
+bundle of every encrypted channel the user is a member of, with the seq of its
+`key.epoch` event (channels at epoch 0 have none), possibly over several parts. Not yet: `key.share`,
+`enc` in `msg.*`/`react.*`.
+
+### 13.7 Key requests *(not yet implemented)*
+
+Ephemeral `key.need` and op/event `key.share`: `docs/E2E.md` §13.7.
+
+### 13.8 Errors & limits
+
+- `stale_epoch` (RES error code): the bundle doesn't build on the channel's
+  current epoch, roster or devices. Retryable after catching up.
+- Limits: EpochBundle `len(b) + len(sig)` ≤ 16 KiB and ≤ 128 boxes;
+  `key.fetch` ≤ 256 epochs per call; ≤ 1 `key.rotate` per channel per user
+  per 10 s and ≤ 1 per channel per 2 s, both waived when the roster or its
+  active devices changed since the current epoch (§13.3; plus the §9 write bucket).
+  Signed device objects ≤ 4 KiB (§13.2).
