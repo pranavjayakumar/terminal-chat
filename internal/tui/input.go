@@ -376,6 +376,9 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 			return searchMsg{q, res, err}
 		}, nil
 	}
+	if cmd, ok, err := m.hookCommand(c); ok {
+		return cmd, err
+	}
 	return nil, fmt.Errorf("unknown command /%s", sanitize.Line(c.name))
 }
 
