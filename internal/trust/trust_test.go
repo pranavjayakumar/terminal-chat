@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -151,7 +152,7 @@ func TestRefusesNewerSchema(t *testing.T) {
 
 func TestDeviceKeysPersist(t *testing.T) {
 	s, home := newStore(t)
-	k1, err := s.DeviceKeys(sidA)
+	k1, err := s.DeviceKeys(sidA, bob)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +160,7 @@ func TestDeviceKeysPersist(t *testing.T) {
 	if k1.ID == (e2ecrypto.DevID{}) {
 		t.Fatal("zero device id")
 	}
-	again, err := s.DeviceKeys(sidA)
+	again, err := s.DeviceKeys(sidA, bob)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +170,7 @@ func TestDeviceKeysPersist(t *testing.T) {
 	s.Close()
 
 	s = open(t, home)
-	re, err := s.DeviceKeys(sidA)
+	re, err := s.DeviceKeys(sidA, bob)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +180,7 @@ func TestDeviceKeysPersist(t *testing.T) {
 	if !bytes.Equal(re.Ed25519Pub, k1.Ed25519Pub) || re.X25519Pub != k1.X25519Pub {
 		t.Fatal("public keys differ")
 	}
-	other, err := s.DeviceKeys(sidB)
+	other, err := s.DeviceKeys(sidB, bob)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +202,7 @@ func TestDeviceKeysConcurrentFirstUse(t *testing.T) {
 			if i%2 == 1 {
 				s = s2
 			}
-			k, err := s.DeviceKeys(sidA)
+			k, err := s.DeviceKeys(sidA, bob)
 			if err != nil {
 				t.Error(err)
 				return
@@ -746,5 +747,197 @@ func TestLargeIDs(t *testing.T) {
 	}
 	if ok, _ := s.ChannelE2E(sidA, big); !ok {
 		t.Fatal("big channel flag")
+	}
+}
+
+// ---- step 6 additions ----
+
+func TestDeviceKeysBoundToUser(t *testing.T) {
+	s, _ := newStore(t)
+	k1, err := s.DeviceKeys(sidA, bob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DeviceKeys(sidA, 0); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("user 0: %v", err)
+	}
+	// TC_HOME re-used for another login on the same server: fresh keys.
+	k3, err := s.DeviceKeys(sidA, 3)
+	if err != nil || k3.ID == k1.ID {
+		t.Fatalf("other user kept the device: %v", err)
+	}
+	// Retiring a device that is no longer current is a no-op.
+	same, err := s.RetireDeviceKeys(sidA, 3, k1.ID)
+	if err != nil || same.ID != k3.ID {
+		t.Fatalf("retire of a stale id replaced keys: %v", err)
+	}
+	fresh, err := s.RetireDeviceKeys(sidA, 3, k3.ID)
+	if err != nil || fresh.ID == k3.ID {
+		t.Fatalf("retire: %v", err)
+	}
+	again, err := s.DeviceKeys(sidA, 3)
+	if err != nil || again.ID != fresh.ID {
+		t.Fatalf("retired keys not persisted: %v", err)
+	}
+}
+
+func TestImportDeviceKeys(t *testing.T) {
+	s, _ := newStore(t)
+	k, _ := e2ecrypto.Generate(rand.Reader)
+	if ok, err := s.ImportDeviceKeys(sidA, bob, k); !ok || err != nil {
+		t.Fatalf("import: %v %v", ok, err)
+	}
+	other, _ := e2ecrypto.Generate(rand.Reader)
+	if ok, err := s.ImportDeviceKeys(sidA, bob, other); ok || err != nil {
+		t.Fatalf("second import overwrote: %v %v", ok, err)
+	}
+	got, err := s.DeviceKeys(sidA, bob)
+	if err != nil || got.ID != k.ID {
+		t.Fatalf("imported keys not used: %v", err)
+	}
+}
+
+// A v1 file (step 3) gains the v2 columns and tables; its device keys are
+// claimed by the first user that asks.
+func TestMigrateV1(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "tc")
+	os.MkdirAll(home, 0o700)
+	db, err := sql.Open("sqlite", filepath.Join(home, FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, _ := e2ecrypto.Generate(rand.Reader)
+	raw, _ := k.MarshalBinary()
+	for _, q := range []string{
+		`CREATE TABLE device_keys (server_id BLOB PRIMARY KEY, keys BLOB NOT NULL, created INTEGER NOT NULL)`,
+		`CREATE TABLE revoked_devices (server_id BLOB NOT NULL, dev BLOB NOT NULL, PRIMARY KEY (server_id, dev))`,
+		`PRAGMA user_version = 1`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO device_keys VALUES (?, ?, 1)`, sidA[:], raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO revoked_devices VALUES (?, ?)`, sidA[:], []byte{1}); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	s := open(t, home)
+	got, err := s.DeviceKeys(sidA, bob)
+	if err != nil || got.ID != k.ID {
+		t.Fatalf("v1 keys lost: %v", err)
+	}
+	if err := s.AdvanceEpoch(sidA, 1, Epoch{Epoch: 1, Roster: []uint64{bob}}); err != nil {
+		t.Fatalf("epochs table missing: %v", err)
+	}
+	var v int
+	s.db.QueryRow(`PRAGMA user_version`).Scan(&v)
+	if v != schemaVersion {
+		t.Fatalf("user_version = %d", v)
+	}
+}
+
+func TestRevokeSeqKeepsEarliest(t *testing.T) {
+	s, _ := newStore(t)
+	d := device(t, bob)
+	if err := s.PutDevice(sidA, d); err != nil {
+		t.Fatal(err)
+	}
+	for _, seq := range []uint64{50, 30, 70} {
+		if err := s.RevokeDeviceAt(sidA, d.ID, seq); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, _, _ := s.Device(sidA, d.ID)
+	if !got.Revoked || got.RevokedSeq != 30 {
+		t.Fatalf("revoked %v at %d, want 30", got.Revoked, got.RevokedSeq)
+	}
+	if err := s.RevokeDevice(sidA, d.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.Device(sidA, d.ID); got.RevokedSeq != 0 {
+		t.Fatalf("unknown-seq revoke didn't win: %d", got.RevokedSeq)
+	}
+}
+
+func TestEpochsAndKeys(t *testing.T) {
+	s, home := newStore(t)
+	const ch = 4
+	k1 := e2ecrypto.Key{1}
+	e1 := Epoch{Epoch: 1, Hash: sha256.Sum256([]byte("e1")), KC: e2ecrypto.KeyCommitment(k1, sidA, ch, 1), Roster: []uint64{2, 5}}
+	if err := s.AdvanceEpoch(sidA, ch, Epoch{Epoch: 2, Hash: e1.Hash, KC: e1.KC, Roster: e1.Roster}); !errors.Is(err, ErrGap) {
+		t.Fatalf("epoch 2 without a head: %v", err)
+	}
+	bad := e1
+	bad.Key = &e2ecrypto.Key{9}
+	if err := s.AdvanceEpoch(sidA, ch, bad); !errors.Is(err, ErrKeyMismatch) {
+		t.Fatalf("bad key: %v", err)
+	}
+	if err := s.AdvanceEpoch(sidA, ch, e1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AdvanceEpoch(sidA, ch, e1); err != nil {
+		t.Fatalf("same head again: %v", err)
+	}
+	fork := e1
+	fork.Hash[0] ^= 1
+	if err := s.AdvanceEpoch(sidA, ch, fork); !errors.Is(err, ErrFork) {
+		t.Fatalf("fork: %v", err)
+	}
+	if err := s.SetEpochKey(sidA, ch, 1, e2ecrypto.Key{2}); !errors.Is(err, ErrKeyMismatch) {
+		t.Fatalf("kc mismatch: %v", err)
+	}
+	if err := s.SetEpochKey(sidA, ch, 2, k1); !errors.Is(err, ErrUnknownEpoch) {
+		t.Fatalf("unknown epoch: %v", err)
+	}
+	if m, _ := s.MissingKeys(sidA, ch); len(m) != 1 || m[0] != 1 {
+		t.Fatalf("missing = %v", m)
+	}
+	if err := s.SetEpochKey(sidA, ch, 1, k1); err != nil {
+		t.Fatal(err)
+	}
+	k2 := e2ecrypto.Key{3}
+	e2 := Epoch{Epoch: 2, Hash: sha256.Sum256([]byte("e2")), KC: e2ecrypto.KeyCommitment(k2, sidA, ch, 2), Roster: []uint64{5}, Key: &k2}
+	if err := s.AdvanceEpoch(sidA, ch, e2); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AdvanceEpoch(sidA, ch, e1); !errors.Is(err, ErrRollback) {
+		t.Fatalf("rollback: %v", err)
+	}
+	s.Close()
+
+	s = open(t, home)
+	got, ok, err := s.Epoch(sidA, ch, 1)
+	if err != nil || !ok || got.Key == nil || *got.Key != k1 || !reflect.DeepEqual(got.Roster, e1.Roster) || got.Hash != e1.Hash {
+		t.Fatalf("epoch 1 = %+v %v %v", got, ok, err)
+	}
+	if h, _, _ := s.ChainHead(sidA, ch); h.Epoch != 2 || h.Hash != e2.Hash {
+		t.Fatalf("head = %+v", h)
+	}
+	if m, _ := s.MissingKeys(sidA, ch); len(m) != 0 {
+		t.Fatalf("missing = %v", m)
+	}
+	if _, ok, _ := s.Epoch(sidB, ch, 1); ok {
+		t.Fatal("epoch leaked across servers")
+	}
+}
+
+func TestAlarmsSticky(t *testing.T) {
+	s, home := newStore(t)
+	if _, ok, err := s.Alarm(sidA, 3); ok || err != nil {
+		t.Fatalf("fresh alarm: %v %v", ok, err)
+	}
+	s.RaiseAlarm(sidA, 3, "fork at epoch 2")
+	s.RaiseAlarm(sidA, 3, "later")
+	s.Close()
+	s = open(t, home)
+	if d, ok, err := s.Alarm(sidA, 3); !ok || err != nil || d != "fork at epoch 2" {
+		t.Fatalf("alarm = %q %v %v", d, ok, err)
+	}
+	if _, ok, _ := s.Alarm(sidB, 3); ok {
+		t.Fatal("alarm leaked across servers")
 	}
 }

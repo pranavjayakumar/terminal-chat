@@ -16,6 +16,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -31,11 +32,14 @@ import (
 // FileName is the trust store's file name inside TC_HOME.
 const FileName = "e2e.db"
 
-const schemaVersion = 1
+// Schema history: v1 = step 3; v2 adds device_keys.user, revoked_devices.seq,
+// epochs and chan_alarms.
+const schemaVersion = 2
 
 const schema = `
 CREATE TABLE IF NOT EXISTS device_keys (
-	server_id BLOB PRIMARY KEY, keys BLOB NOT NULL, created INTEGER NOT NULL);
+	server_id BLOB PRIMARY KEY, keys BLOB NOT NULL, created INTEGER NOT NULL,
+	user INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS pinned_keys (
 	server_id BLOB NOT NULL, user INTEGER NOT NULL, fp TEXT NOT NULL, wire BLOB NOT NULL,
 	how TEXT NOT NULL, first_seen INTEGER NOT NULL, PRIMARY KEY (server_id, user, fp));
@@ -46,13 +50,26 @@ CREATE TABLE IF NOT EXISTS devices (
 	server_id BLOB NOT NULL, dev BLOB NOT NULL, user INTEGER NOT NULL, x25519 BLOB NOT NULL,
 	ed25519 BLOB NOT NULL, cert BLOB NOT NULL, PRIMARY KEY (server_id, dev));
 CREATE TABLE IF NOT EXISTS revoked_devices (
-	server_id BLOB NOT NULL, dev BLOB NOT NULL, PRIMARY KEY (server_id, dev));
+	server_id BLOB NOT NULL, dev BLOB NOT NULL, seq INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (server_id, dev));
 CREATE TABLE IF NOT EXISTS chain_heads (
 	server_id BLOB NOT NULL, chan INTEGER NOT NULL, epoch INTEGER NOT NULL, hash BLOB NOT NULL,
 	eh BLOB NOT NULL, PRIMARY KEY (server_id, chan));
 CREATE TABLE IF NOT EXISTS e2e_servers (server_id BLOB PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS e2e_chans (
 	server_id BLOB NOT NULL, chan INTEGER NOT NULL, PRIMARY KEY (server_id, chan));
+CREATE TABLE IF NOT EXISTS epochs (
+	server_id BLOB NOT NULL, chan INTEGER NOT NULL, epoch INTEGER NOT NULL, hash BLOB NOT NULL,
+	kc BLOB NOT NULL, roster BLOB NOT NULL, k BLOB, PRIMARY KEY (server_id, chan, epoch));
+CREATE TABLE IF NOT EXISTS chan_alarms (
+	server_id BLOB NOT NULL, chan INTEGER NOT NULL, detail TEXT NOT NULL, time INTEGER NOT NULL,
+	PRIMARY KEY (server_id, chan));
+`
+
+// migrateV1 adds the v2 columns to a v1 file (the v2 tables come from schema).
+const migrateV1 = `
+ALTER TABLE device_keys ADD COLUMN user INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE revoked_devices ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;
 `
 
 var (
@@ -73,6 +90,12 @@ var (
 	ErrDeviceConflict = errors.New("trust: device id conflict")
 	// ErrInvalid means malformed arguments.
 	ErrInvalid = errors.New("trust: invalid argument")
+	// ErrGap means an epoch was offered that isn't the one after the head.
+	ErrGap = errors.New("trust: epoch does not follow the head")
+	// ErrUnknownEpoch means no verified bundle is recorded for the epoch.
+	ErrUnknownEpoch = errors.New("trust: epoch not verified")
+	// ErrKeyMismatch means a key doesn't match the epoch's key commitment.
+	ErrKeyMismatch = errors.New("trust: key does not match the epoch's kc")
 )
 
 // How records why an SSH key is trusted.
@@ -117,6 +140,9 @@ type Device struct {
 	Ed25519 [32]byte
 	Cert    []byte // exact Signed cert bytes as received
 	Revoked bool
+	// RevokedSeq is the seq of the revoke's event (0 = unknown, before
+	// everything). It invalidates bundles with a later seq (PROTOCOL §13.3).
+	RevokedSeq uint64
 }
 
 // Head is a channel's pinned epoch chain head.
@@ -181,6 +207,11 @@ func initSchema(tx *sql.Tx) error {
 	if v > schemaVersion {
 		return fmt.Errorf("trust store schema v%d is newer than this tc (v%d)", v, schemaVersion)
 	}
+	if v == 1 {
+		if _, err := tx.Exec(migrateV1); err != nil {
+			return fmt.Errorf("migrating trust store v1: %w", err)
+		}
+	}
 	if _, err := tx.Exec(schema); err != nil {
 		return err
 	}
@@ -209,16 +240,47 @@ func i64(v uint64) int64 { return int64(v) }
 
 // ---- device keys ----
 
-// DeviceKeys returns this device's keys for the server, generating and
-// storing them with crypto/rand on first use. Concurrent first calls from
-// several processes all get the same keys. This is the only place the
+// DeviceKeys returns this device's keys for user on the server, generating
+// and storing them with crypto/rand on first use. Concurrent first calls
+// from several processes all get the same keys. This is the only place the
 // private keys are persisted.
-func (s *Store) DeviceKeys(sid e2ecrypto.ServerID) (*e2ecrypto.DeviceKeys, error) {
+//
+// One device per server: keys stored for another user (TC_HOME re-used for
+// a different login) are replaced by fresh ones. Keys from before keys were
+// bound to a user (user 0) are claimed by the first caller.
+func (s *Store) DeviceKeys(sid e2ecrypto.ServerID, user uint64) (*e2ecrypto.DeviceKeys, error) {
+	return s.deviceKeys(sid, user, nil)
+}
+
+// RetireDeviceKeys replaces the server's device keys with fresh ones if they
+// are still those of device old (revoked for good), and returns the current
+// keys. Concurrent callers retiring the same device all get the same new keys.
+func (s *Store) RetireDeviceKeys(sid e2ecrypto.ServerID, user uint64, old e2ecrypto.DevID) (*e2ecrypto.DeviceKeys, error) {
+	return s.deviceKeys(sid, user, &old)
+}
+
+func (s *Store) deviceKeys(sid e2ecrypto.ServerID, user uint64, retire *e2ecrypto.DevID) (*e2ecrypto.DeviceKeys, error) {
+	if user == 0 {
+		return nil, fmt.Errorf("loading device keys: %w: user 0", ErrInvalid)
+	}
 	var raw []byte
 	err := s.tx(func(tx *sql.Tx) error {
-		err := tx.QueryRow(`SELECT keys FROM device_keys WHERE server_id = ?`, sid[:]).Scan(&raw)
-		if !errors.Is(err, sql.ErrNoRows) {
+		var owner int64
+		err := tx.QueryRow(`SELECT keys, user FROM device_keys WHERE server_id = ?`, sid[:]).Scan(&raw, &owner)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
+		}
+		if err == nil && (owner == 0 || uint64(owner) == user) {
+			var k e2ecrypto.DeviceKeys
+			if err := k.UnmarshalBinary(raw); err != nil {
+				return err
+			}
+			if retire == nil || k.ID != *retire {
+				if owner == 0 {
+					_, err = tx.Exec(`UPDATE device_keys SET user = ? WHERE server_id = ?`, i64(user), sid[:])
+				}
+				return err
+			}
 		}
 		k, err := e2ecrypto.Generate(rand.Reader)
 		if err != nil {
@@ -227,8 +289,9 @@ func (s *Store) DeviceKeys(sid e2ecrypto.ServerID) (*e2ecrypto.DeviceKeys, error
 		if raw, err = k.MarshalBinary(); err != nil {
 			return err
 		}
-		_, err = tx.Exec(`INSERT INTO device_keys (server_id, keys, created) VALUES (?, ?, ?)`,
-			sid[:], raw, time.Now().UnixNano())
+		_, err = tx.Exec(`INSERT INTO device_keys (server_id, keys, created, user) VALUES (?, ?, ?, ?)
+			ON CONFLICT (server_id) DO UPDATE SET keys = excluded.keys, created = excluded.created, user = excluded.user`,
+			sid[:], raw, time.Now().UnixNano(), i64(user))
 		return err
 	})
 	if err != nil {
@@ -239,6 +302,29 @@ func (s *Store) DeviceKeys(sid e2ecrypto.ServerID) (*e2ecrypto.DeviceKeys, error
 		return nil, fmt.Errorf("loading device keys: %w", err)
 	}
 	return &k, nil
+}
+
+// ImportDeviceKeys stores k as user's device keys for the server unless the
+// store already has keys for it (migration from TC_HOME/device.key). It
+// reports whether k was stored.
+func (s *Store) ImportDeviceKeys(sid e2ecrypto.ServerID, user uint64, k *e2ecrypto.DeviceKeys) (bool, error) {
+	raw, err := k.MarshalBinary()
+	if err != nil || user == 0 {
+		return false, fmt.Errorf("importing device keys: %w", errors.Join(ErrInvalid, err))
+	}
+	var n int64
+	err = s.tx(func(tx *sql.Tx) error {
+		res, err := tx.Exec(`INSERT OR IGNORE INTO device_keys (server_id, keys, created, user) VALUES (?, ?, ?, ?)`,
+			sid[:], raw, time.Now().UnixNano(), i64(user))
+		if err == nil {
+			n, err = res.RowsAffected()
+		}
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("importing device keys: %w", err)
+	}
+	return n == 1, nil
 }
 
 // ---- SSH keys ----
@@ -409,7 +495,7 @@ func (s *Store) PutDevice(sid e2ecrypto.ServerID, d Device) error {
 			return ErrDeviceConflict
 		}
 		if d.Revoked {
-			return revoke(tx, sid, d.ID)
+			return revoke(tx, sid, d.ID, d.RevokedSeq)
 		}
 		return nil
 	})
@@ -419,34 +505,46 @@ func (s *Store) PutDevice(sid e2ecrypto.ServerID, d Device) error {
 	return nil
 }
 
-func revoke(tx *sql.Tx, sid e2ecrypto.ServerID, dev e2ecrypto.DevID) error {
-	_, err := tx.Exec(`INSERT OR IGNORE INTO revoked_devices (server_id, dev) VALUES (?, ?)`, sid[:], dev[:])
+func revoke(tx *sql.Tx, sid e2ecrypto.ServerID, dev e2ecrypto.DevID, seq uint64) error {
+	// The earliest known revoke seq wins: it invalidates the most bundles.
+	_, err := tx.Exec(`INSERT INTO revoked_devices (server_id, dev, seq) VALUES (?, ?, ?)
+		ON CONFLICT (server_id, dev) DO UPDATE SET seq = min(seq, excluded.seq)`, sid[:], dev[:], i64(seq))
 	return err
 }
 
-// RevokeDevice marks a device revoked, permanently. The device need not be
-// stored yet: a revocation seen before the cert still applies to it.
+// RevokeDevice marks a device revoked, permanently, as of before every
+// event. The device need not be stored yet: a revocation seen before the
+// cert still applies to it.
 func (s *Store) RevokeDevice(sid e2ecrypto.ServerID, dev e2ecrypto.DevID) error {
-	if err := s.tx(func(tx *sql.Tx) error { return revoke(tx, sid, dev) }); err != nil {
+	return s.RevokeDeviceAt(sid, dev, 0)
+}
+
+// RevokeDeviceAt marks a device revoked, permanently, by the revoke at event
+// seq: bundles with a later seq must not be signed by it or box to it.
+// Revoking again keeps the lowest seq.
+func (s *Store) RevokeDeviceAt(sid e2ecrypto.ServerID, dev e2ecrypto.DevID, seq uint64) error {
+	if err := s.tx(func(tx *sql.Tx) error { return revoke(tx, sid, dev, seq) }); err != nil {
 		return fmt.Errorf("revoking device %x: %w", dev, err)
 	}
 	return nil
 }
 
 const deviceCols = `d.dev, d.user, d.x25519, d.ed25519, d.cert,
-	EXISTS (SELECT 1 FROM revoked_devices r WHERE r.server_id = d.server_id AND r.dev = d.dev)`
+	(SELECT r.seq FROM revoked_devices r WHERE r.server_id = d.server_id AND r.dev = d.dev)`
 
 func scanDevice(sc interface{ Scan(...any) error }) (Device, error) {
 	var d Device
 	var id, x, ed []byte
 	var user int64
-	if err := sc.Scan(&id, &user, &x, &ed, &d.Cert, &d.Revoked); err != nil {
+	var rseq sql.NullInt64
+	if err := sc.Scan(&id, &user, &x, &ed, &d.Cert, &rseq); err != nil {
 		return Device{}, err
 	}
 	copy(d.ID[:], id)
 	copy(d.X25519[:], x)
 	copy(d.Ed25519[:], ed)
 	d.User = uint64(user)
+	d.Revoked, d.RevokedSeq = rseq.Valid, uint64(rseq.Int64)
 	return d, nil
 }
 
@@ -537,6 +635,187 @@ func (s *Store) AdvanceChain(sid e2ecrypto.ServerID, ch uint64, h Head) error {
 		return fmt.Errorf("advancing chain of channel %d: %w", ch, err)
 	}
 	return nil
+}
+
+// Epoch is a verified epoch bundle of a channel: what later checks need
+// without the bundle itself (which lives in the cache and can be reset).
+type Epoch struct {
+	Epoch  uint32
+	Hash   [32]byte // e2ecrypto.ChainHash of the bundle's b
+	KC     [32]byte
+	Roster []uint64
+	Key    *e2ecrypto.Key // K, once this device has it
+}
+
+func packRoster(r []uint64) []byte {
+	b := make([]byte, 0, 8*len(r))
+	for _, u := range r {
+		b = binary.BigEndian.AppendUint64(b, u)
+	}
+	return b
+}
+
+func unpackRoster(b []byte) []uint64 {
+	out := make([]uint64, 0, len(b)/8)
+	for ; len(b) >= 8; b = b[8:] {
+		out = append(out, binary.BigEndian.Uint64(b))
+	}
+	return out
+}
+
+// AdvanceEpoch records a bundle the caller verified as extending the head
+// and makes it the head, in one transaction. e.Epoch must be the head's
+// epoch + 1 (1 without a head), else ErrGap; a lower epoch is ErrRollback;
+// a different bundle for the head's epoch is ErrFork; the same head again
+// is a no-op. e.Key, if set, must match e.KC (ErrKeyMismatch).
+func (s *Store) AdvanceEpoch(sid e2ecrypto.ServerID, ch uint64, e Epoch) error {
+	if e.Epoch == 0 || len(e.Roster) == 0 {
+		return fmt.Errorf("advancing epoch: %w: bad epoch", ErrInvalid)
+	}
+	if e.Key != nil && e2ecrypto.KeyCommitment(*e.Key, sid, ch, e.Epoch) != e.KC {
+		return fmt.Errorf("advancing epoch: %w", ErrKeyMismatch)
+	}
+	err := s.tx(func(tx *sql.Tx) error {
+		var ep int64
+		var hash []byte
+		err := tx.QueryRow(`SELECT epoch, hash FROM chain_heads WHERE server_id = ? AND chan = ?`,
+			sid[:], i64(ch)).Scan(&ep, &hash)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			ep = 0
+		case err != nil:
+			return err
+		case uint32(ep) > e.Epoch:
+			return fmt.Errorf("%w: epoch %d below pinned %d", ErrRollback, e.Epoch, ep)
+		case uint32(ep) == e.Epoch:
+			if subtle.ConstantTimeCompare(hash, e.Hash[:]) != 1 {
+				return fmt.Errorf("%w at epoch %d", ErrFork, ep)
+			}
+			return nil
+		}
+		if e.Epoch != uint32(ep)+1 {
+			return fmt.Errorf("%w: epoch %d after head %d", ErrGap, e.Epoch, ep)
+		}
+		var k []byte
+		if e.Key != nil {
+			k = e.Key[:]
+		}
+		if _, err := tx.Exec(`INSERT INTO epochs (server_id, chan, epoch, hash, kc, roster, k) VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (server_id, chan, epoch) DO UPDATE SET hash = excluded.hash, kc = excluded.kc,
+				roster = excluded.roster, k = excluded.k`,
+			sid[:], i64(ch), int64(e.Epoch), e.Hash[:], e.KC[:], packRoster(e.Roster), k); err != nil {
+			return err
+		}
+		_, err = tx.Exec(`INSERT INTO chain_heads (server_id, chan, epoch, hash, eh) VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT (server_id, chan) DO UPDATE SET epoch = excluded.epoch, hash = excluded.hash, eh = excluded.eh`,
+			sid[:], i64(ch), int64(e.Epoch), e.Hash[:], e.Hash[:e2ecrypto.IDSize])
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("advancing chain of channel %d: %w", ch, err)
+	}
+	return nil
+}
+
+// Epoch returns a verified epoch of the channel; ok is false if none is recorded.
+func (s *Store) Epoch(sid e2ecrypto.ServerID, ch uint64, epoch uint32) (e Epoch, ok bool, err error) {
+	var hash, kc, roster, k []byte
+	err = s.db.QueryRow(`SELECT hash, kc, roster, k FROM epochs WHERE server_id = ? AND chan = ? AND epoch = ?`,
+		sid[:], i64(ch), int64(epoch)).Scan(&hash, &kc, &roster, &k)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Epoch{}, false, nil
+	}
+	if err != nil {
+		return Epoch{}, false, fmt.Errorf("loading epoch: %w", err)
+	}
+	e.Epoch = epoch
+	copy(e.Hash[:], hash)
+	copy(e.KC[:], kc)
+	e.Roster = unpackRoster(roster)
+	if len(k) == e2ecrypto.KeySize {
+		e.Key = new(e2ecrypto.Key)
+		copy(e.Key[:], k)
+	}
+	return e, true, nil
+}
+
+// SetEpochKey stores K for a verified epoch. It must match the epoch's kc
+// (ErrKeyMismatch); an epoch that isn't recorded is ErrUnknownEpoch. Setting
+// it again is a no-op.
+func (s *Store) SetEpochKey(sid e2ecrypto.ServerID, ch uint64, epoch uint32, k e2ecrypto.Key) error {
+	err := s.tx(func(tx *sql.Tx) error {
+		var kc []byte
+		err := tx.QueryRow(`SELECT kc FROM epochs WHERE server_id = ? AND chan = ? AND epoch = ?`,
+			sid[:], i64(ch), int64(epoch)).Scan(&kc)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrUnknownEpoch
+		}
+		if err != nil {
+			return err
+		}
+		want := e2ecrypto.KeyCommitment(k, sid, ch, epoch)
+		if subtle.ConstantTimeCompare(kc, want[:]) != 1 {
+			return ErrKeyMismatch
+		}
+		_, err = tx.Exec(`UPDATE epochs SET k = ? WHERE server_id = ? AND chan = ? AND epoch = ?`,
+			k[:], sid[:], i64(ch), int64(epoch))
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("storing key of channel %d epoch %d: %w", ch, epoch, err)
+	}
+	return nil
+}
+
+// MissingKeys returns the channel's verified epochs this device has no K
+// for, newest first.
+func (s *Store) MissingKeys(sid e2ecrypto.ServerID, ch uint64) ([]uint32, error) {
+	rows, err := s.db.Query(`SELECT epoch FROM epochs WHERE server_id = ? AND chan = ? AND k IS NULL
+		ORDER BY epoch DESC`, sid[:], i64(ch))
+	if err != nil {
+		return nil, fmt.Errorf("loading epochs: %w", err)
+	}
+	defer rows.Close()
+	var out []uint32
+	for rows.Next() {
+		var e int64
+		if err := rows.Scan(&e); err != nil {
+			return nil, err
+		}
+		out = append(out, uint32(e))
+	}
+	return out, rows.Err()
+}
+
+// ---- alarms ----
+
+// RaiseAlarm records that the server presented something about the channel's
+// chain that an honest server can't (a fork, rollback, forged bundle). The
+// first detail is kept. There is deliberately no way to clear an alarm
+// yet: like the sticky flags, nothing the sync code calls may undo it (the
+// TUI's acknowledge flow, step 10, will add one).
+func (s *Store) RaiseAlarm(sid e2ecrypto.ServerID, ch uint64, detail string) error {
+	err := s.tx(func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT OR IGNORE INTO chan_alarms (server_id, chan, detail, time) VALUES (?, ?, ?, ?)`,
+			sid[:], i64(ch), detail, time.Now().UnixNano())
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("raising alarm for channel %d: %w", ch, err)
+	}
+	return nil
+}
+
+// Alarm returns the channel's alarm detail; ok is false if there is none.
+func (s *Store) Alarm(sid e2ecrypto.ServerID, ch uint64) (detail string, ok bool, err error) {
+	err = s.db.QueryRow(`SELECT detail FROM chan_alarms WHERE server_id = ? AND chan = ?`, sid[:], i64(ch)).Scan(&detail)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("loading alarm: %w", err)
+	}
+	return detail, true, nil
 }
 
 // ---- sticky flags ----
