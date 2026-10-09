@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/identity"
 	"github.com/skailama/tc/internal/proto"
+	"github.com/skailama/tc/internal/sanitize"
 	"github.com/skailama/tc/internal/trust"
 )
 
@@ -1112,5 +1114,34 @@ func TestE2EBundleKeptUntilKey(t *testing.T) {
 	pass(withKeys)
 	if n := count(t, c, "epochs"); n != 0 {
 		t.Fatalf("bundle kept after K was obtained (%d cached)", n)
+	}
+}
+
+// Names in UnverifiedMembersError come from the server and are sanitized.
+func TestE2EUnverifiedMembersErrorSanitized(t *testing.T) {
+	fs, c := e2eClient(t)
+	old := newSSH(t)
+	if err := c.Trust().PinKey(testSID(), bob, ssh.FingerprintSHA256(old.PublicKey()), old.PublicKey().Marshal(), trust.TOFU); err != nil {
+		t.Fatal(err)
+	}
+	run(t, c)
+	b := newPeer(t, bob, nil)
+	evil := "bob\x1b]52;c;cHduZWQ=\x07\x1b[2J\n"
+	f := startE2E(t, fs, proto.Snapshot{
+		Users: []proto.User{users[0], {ID: bob, Name: evil}},
+		Chans: []proto.Channel{dmChan(0)},
+		Devs:  []proto.Device{{Cert: b.cert}},
+	}, proto.DevicesListRes{})
+	f.myKeys(c)
+	waitFor(t, "online", online(c))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var ue *UnverifiedMembersError
+	if err := c.RotateKey(ctx, dm); !errors.As(err, &ue) {
+		t.Fatalf("rotate = %v", err)
+	}
+	msg := ue.Error()
+	if strings.ContainsAny(msg, "\x1b\x07\n") || msg != "can't verify any device of: @"+sanitize.Line(evil) {
+		t.Fatalf("unsanitized: %q", msg)
 	}
 }

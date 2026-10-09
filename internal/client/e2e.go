@@ -17,6 +17,7 @@ import (
 	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/identity"
 	"github.com/skailama/tc/internal/proto"
+	"github.com/skailama/tc/internal/sanitize"
 	"github.com/skailama/tc/internal/trust"
 )
 
@@ -1219,7 +1220,8 @@ func (c *Client) rotateOnce(ctx context.Context, s *session, sid e2ecrypto.Serve
 		}
 		if n == 0 && c.hasUnverifiedDevice(sid, u) {
 			unverified.Users = append(unverified.Users, u)
-			unverified.Names = append(unverified.Names, "@"+c.User(u).Name)
+			// Names come from the server: never let one carry terminal escapes.
+			unverified.Names = append(unverified.Names, "@"+sanitize.Line(c.User(u).Name))
 		}
 	}
 	if len(unverified.Users) > 0 {
