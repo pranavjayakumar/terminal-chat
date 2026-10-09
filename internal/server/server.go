@@ -67,6 +67,15 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.PublicAddr != "" {
+		if err := ValidPublicAddr(cfg.PublicAddr); err != nil {
+			return nil, err
+		}
+		if host, _, _ := net.SplitHostPort(cfg.PublicAddr); host == "" {
+			cfg.Logger.Warn("public address has no host; webhook URLs will use localhost. Pass --public host:port so teammates can reach them",
+				"public", cfg.PublicAddr)
+		}
+	}
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("creating data dir: %w", err)
 	}

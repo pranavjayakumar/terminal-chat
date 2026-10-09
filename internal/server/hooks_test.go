@@ -719,3 +719,33 @@ func TestHTTPConnCap(t *testing.T) {
 		t.Fatalf("extra connection not closed: %v", err)
 	}
 }
+
+func TestValidPublicAddr(t *testing.T) {
+	for _, a := range []string{"chat.example.com:7443", "10.0.0.1:7443", "[::1]:7443", ":7443", "localhost:1"} {
+		if err := ValidPublicAddr(a); err != nil {
+			t.Errorf("%q: %v", a, err)
+		}
+	}
+	for _, a := range []string{"x", "host", "h'x:7443", "a b:7443", `h"x:1`, "h:0", "h:99999", "h:07443", "h:port",
+		"[zz]:1", "[fe80::1%eth0]:1", "h$(id):1", "h;x:1", "h/x:1"} {
+		if err := ValidPublicAddr(a); err == nil {
+			t.Errorf("%q accepted", a)
+		}
+	}
+	if _, err := New(Config{DataDir: t.TempDir(), PublicAddr: "evil'host:7443"}); err == nil {
+		t.Fatal("New accepted a public address with a quote")
+	}
+}
+
+// TestHookURLEmptyHost: a public address without a host gives localhost
+// URLs, not "https://:7443/...".
+func TestHookURLEmptyHost(t *testing.T) {
+	ts := startHookServer(t)
+	alice := ts.register(t, "alice", false)
+	snap, _ := alice.syncFresh()
+	ts.cfg.PublicAddr = ":7443"
+	h := alice.createHook(generalID(t, snap), "ci")
+	if !strings.HasPrefix(h.URL, "https://localhost:7443/hooks/") {
+		t.Fatalf("url %q", h.URL)
+	}
+}

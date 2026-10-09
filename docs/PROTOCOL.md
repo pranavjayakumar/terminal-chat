@@ -317,6 +317,11 @@ never drive a terminal.
 Cap `hooks`. Lets scripts, CI jobs and agents post into a channel with a plain HTTPS
 request — no tc install, no SSH key.
 
+**URL.** `https://<public addr>/hooks/<token>`. The server's public address is validated
+at startup as `host:port` (DNS name, IPv4 or bracketed IPv6 without zone, numeric port;
+anything else, e.g. quotes or spaces, refuses to start). An empty host (`:7443`) becomes
+`localhost` in URLs, with a warning in the log.
+
 **Endpoint.** The TLS-over-TCP listener offers ALPN `tc/1` and `http/1.1` (in that
 order of preference). Connections that negotiate `http/1.1` — or no ALPN at all, which a
 tc client never does — are served by an HTTP/1.1 server; `tc/1` gets the frame protocol;

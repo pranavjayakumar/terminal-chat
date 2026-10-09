@@ -8,6 +8,9 @@ import (
 	"encoding/base32"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -194,7 +197,41 @@ func validHookToken(t string) bool {
 }
 
 func (s *Server) hookURL(token string) string {
-	return "https://" + s.cfg.PublicAddr + proto.HookPath + token
+	return "https://" + urlHostPort(s.cfg.PublicAddr) + proto.HookPath + token
+}
+
+// urlHostPort is addr for use in a URL: an empty host (":7443") becomes
+// localhost, which at least works on the server's own machine.
+func urlHostPort(addr string) string {
+	if host, port, err := net.SplitHostPort(addr); err == nil && host == "" {
+		return net.JoinHostPort("localhost", port)
+	}
+	return addr
+}
+
+// ValidPublicAddr checks that addr is host:port with a DNS name, IPv4 or
+// bracketed IPv6 host (possibly empty) and a numeric port. It ends up in
+// URLs and commands people paste into a shell, so nothing else is allowed.
+func ValidPublicAddr(addr string) error {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("public address %q must be host:port: %w", addr, err)
+	}
+	if p, err := strconv.Atoi(port); err != nil || p < 1 || p > 65535 || strconv.Itoa(p) != port {
+		return fmt.Errorf("public address %q: bad port", addr)
+	}
+	if strings.HasPrefix(addr, "[") || strings.Contains(host, ":") {
+		if a, err := netip.ParseAddr(host); err != nil || !a.Is6() || a.Zone() != "" {
+			return fmt.Errorf("public address %q: bad IPv6 host", addr)
+		}
+		return nil
+	}
+	for _, c := range host {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '-') {
+			return fmt.Errorf("public address %q: host may only contain letters, digits, '.' and '-'", addr)
+		}
+	}
+	return nil
 }
 
 func (s *Server) hookCurl(url string) string {
