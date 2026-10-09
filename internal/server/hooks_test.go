@@ -64,7 +64,11 @@ type hookResp struct {
 
 func (ts *testServer) post(t *testing.T, method, url, ctype, body string, hdr ...string) hookResp {
 	t.Helper()
-	cl := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: transport.HTTPSConfig(ts.HTTPPin())}}
+	tr := &http.Transport{TLSClientConfig: transport.HTTPSConfig(ts.HTTPPin())}
+	// Each post uses its own transport; close its connection so tests that
+	// post many times don't pile up idle connections against the per-source cap.
+	defer tr.CloseIdleConnections()
+	cl := &http.Client{Timeout: 5 * time.Second, Transport: tr}
 	req, err := http.NewRequest(method, url, strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
@@ -978,5 +982,95 @@ func TestHTTPConnCapPerSource(t *testing.T) {
 	c.state(other, http.StateNew)
 	if other.closed {
 		t.Fatal("one source used up the whole HTTP connection cap; another source's connection was closed")
+	}
+}
+
+func connFrom(addr string, port int) *fakeConn {
+	return &fakeConn{remote: &net.TCPAddr{IP: net.ParseIP(addr), Port: port}}
+}
+
+// TestHTTPConnCapPerSourceLimit: one source gets maxHTTPConnsPerSource
+// connections; the rest are closed unserved without costing a global slot,
+// and closing admitted ones frees slots again.
+func TestHTTPConnCapPerSourceLimit(t *testing.T) {
+	c := &connCap{max: maxHTTPConns}
+	var admitted []*fakeConn
+	for i := range maxHTTPConnsPerSource {
+		fc := connFrom("203.0.113.7", 10000+i)
+		c.state(fc, http.StateNew)
+		if fc.closed {
+			t.Fatalf("connection %d closed under the cap", i)
+		}
+		admitted = append(admitted, fc)
+	}
+	extra := connFrom("203.0.113.7", 20000)
+	c.state(extra, http.StateNew)
+	if !extra.closed {
+		t.Fatal("connection over the per-source cap served")
+	}
+	// net/http reports StateClosed for the refused one; it must not free a slot.
+	c.state(extra, http.StateClosed)
+	if n := c.active.Load(); n != maxHTTPConnsPerSource {
+		t.Fatalf("active %d, want %d", n, maxHTTPConnsPerSource)
+	}
+	again := connFrom("203.0.113.7", 20001)
+	c.state(again, http.StateNew)
+	if !again.closed {
+		t.Fatal("refused close freed a slot for its source")
+	}
+	// Closing an admitted one frees exactly one slot.
+	c.state(admitted[0], http.StateClosed)
+	c.state(admitted[0], http.StateClosed) // repeated report: no double free
+	next := connFrom("203.0.113.7", 20002)
+	c.state(next, http.StateNew)
+	if next.closed {
+		t.Fatal("slot not freed")
+	}
+	if over := connFrom("203.0.113.7", 20003); func() bool { c.state(over, http.StateNew); return !over.closed }() {
+		t.Fatal("double StateClosed freed two slots")
+	}
+}
+
+// TestHTTPConnCapSourceKey: the per-source cap uses the rate limiter's key,
+// so IPv6 sources share a /64 and v4-mapped addresses share the v4 key.
+func TestHTTPConnCapSourceKey(t *testing.T) {
+	c := &connCap{max: maxHTTPConns}
+	for i := range maxHTTPConnsPerSource {
+		c.state(connFrom(fmt.Sprintf("2001:db8:1:2::%x", i+1), 1000+i), http.StateNew)
+	}
+	same := connFrom("2001:db8:1:2:ffff::1", 1) // same /64
+	c.state(same, http.StateNew)
+	if !same.closed {
+		t.Fatal("same /64 not counted as one source")
+	}
+	other := connFrom("2001:db8:1:3::1", 1) // different /64
+	c.state(other, http.StateNew)
+	if other.closed {
+		t.Fatal("different /64 refused")
+	}
+	for i := range maxHTTPConnsPerSource {
+		c.state(connFrom("10.0.0.1", 2000+i), http.StateNew)
+	}
+	mapped := connFrom("::ffff:10.0.0.1", 1)
+	c.state(mapped, http.StateNew)
+	if !mapped.closed {
+		t.Fatal("v4-mapped address not counted with its v4 address")
+	}
+}
+
+// TestHTTPConnCapGlobalStillApplies: many sources can't exceed the global cap.
+func TestHTTPConnCapGlobalStillApplies(t *testing.T) {
+	c := &connCap{max: 4}
+	for i := range 4 {
+		fc := connFrom(fmt.Sprintf("198.51.100.%d", i+1), 1)
+		c.state(fc, http.StateNew)
+		if fc.closed {
+			t.Fatalf("source %d refused under the global cap", i)
+		}
+	}
+	extra := connFrom("198.51.100.99", 1)
+	c.state(extra, http.StateNew)
+	if !extra.closed {
+		t.Fatal("global cap not enforced")
 	}
 }

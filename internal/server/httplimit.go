@@ -21,8 +21,9 @@ const (
 	// indistinguishable from a new one and can go.
 	ipTTL = time.Minute
 
-	maxHTTPConns    = 256
-	httpIdleTimeout = 10 * time.Second
+	maxHTTPConns          = 256
+	maxHTTPConnsPerSource = 16
+	httpIdleTimeout       = 10 * time.Second
 )
 
 // ipLimiter is a bounded map of per-address token buckets, evicting the
@@ -105,21 +106,51 @@ func (l *ipLimiter) len() int {
 }
 
 // connCap is an http.Server ConnState hook that closes connections beyond
-// max open ones instead of serving them, so slow clients can't pile up
-// goroutines and TLS state. (A ConnState hook rather than a listener
-// wrapper keeps the *tls.Conn visible to net/http.)
+// max open ones, or beyond perSource from one source (same key as the rate
+// limiter), instead of serving them, so slow clients can't pile up
+// goroutines and TLS state and one source can't lock the others out. (A
+// ConnState hook rather than a listener wrapper keeps the *tls.Conn visible
+// to net/http.)
 type connCap struct {
-	max    int64
-	active atomic.Int64
+	max       int64
+	perSource int64 // 0: maxHTTPConnsPerSource
+	active    atomic.Int64
+
+	mu    sync.Mutex
+	conns map[net.Conn]netip.Prefix // admitted connections only
+	by    map[netip.Prefix]int64
 }
 
 func (c *connCap) state(conn net.Conn, st http.ConnState) {
 	switch st {
 	case http.StateNew:
-		if c.active.Add(1) > c.max {
-			conn.Close() // net/http then reports StateClosed
+		key := ipKey(conn.RemoteAddr().String())
+		per := c.perSource
+		if per == 0 {
+			per = maxHTTPConnsPerSource
 		}
+		c.mu.Lock()
+		if c.active.Load() >= c.max || c.by[key] >= per {
+			c.mu.Unlock()
+			conn.Close() // net/http then reports StateClosed; it was never admitted
+			return
+		}
+		if c.conns == nil {
+			c.conns, c.by = map[net.Conn]netip.Prefix{}, map[netip.Prefix]int64{}
+		}
+		c.conns[conn] = key
+		c.by[key]++
+		c.active.Add(1)
+		c.mu.Unlock()
 	case http.StateClosed, http.StateHijacked:
-		c.active.Add(-1)
+		c.mu.Lock()
+		if key, ok := c.conns[conn]; ok {
+			delete(c.conns, conn)
+			if c.by[key]--; c.by[key] <= 0 {
+				delete(c.by, key)
+			}
+			c.active.Add(-1)
+		}
+		c.mu.Unlock()
 	}
 }

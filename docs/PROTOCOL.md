@@ -398,4 +398,5 @@ or someone deletes it).
 Every HTTP request, whatever its path, first spends a token from a per-source bucket
 (burst 30, refill 5/s; IPv6 sources grouped by /64) → 429 + `Retry-After`, before any
 token lookup. The HTTP server sets header (10 s), read/write (30 s) and idle (10 s)
-timeouts, caps headers at 16 KiB, and closes connections beyond 256 open ones unserved.
+timeouts, caps headers at 16 KiB, and closes connections beyond 256 open ones, or beyond 16 open ones from one source (same
+grouping as the bucket above), unserved.
