@@ -559,6 +559,7 @@ so non-members can't make the server parse 16 KiB):
 | no box goes to a device revoked after the current epoch's `key.epoch` seq (any revoked device at epoch 0): the rotator couldn't have seen that revoke | `stale_epoch` |
 | no box goes to any other revoked device (its revoke came before the head the rotator built on) | `bad_request` |
 | no two boxes share an X25519 key | `bad_request` |
+| at least one box for every roster user who has an active device ("every member with a device needs at least one box") | `bad_request` |
 | ≤ 1 rotation per channel per user per 10 s, unless the current bundle's roster or boxed-device set differs from the current members/devices | `rate_limited` |
 
 On success the server stores the bundle, sets `Channel.epoch`, appends a
@@ -571,7 +572,10 @@ It is returned only for races (the CAS, a roster change, a boxed device
 revoked after the head); a bundle that is wrong for the state the client
 must already have seen is `bad_request`, so retrying it can't loop.
 Boxes may be missing for some devices: clients seal only to devices they
-verified, and the rest get the key via `key.share` (§13.7).
+verified, and the rest get the key via `key.share` (§13.7). But every roster
+user who has an active device needs at least one box, so someone of theirs
+can answer `key.need` for their other devices; a user with no devices yet
+needs none.
 
 **key.fetch** `{chan, from: u32, to: u32}`: current members only (else
 `forbidden`, also for unknown channels); `1 ≤ from ≤ to` and `to − from < 256` (else `bad_request`).

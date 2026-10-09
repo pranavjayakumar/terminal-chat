@@ -3,8 +3,8 @@ package server
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"crypto/rand"
+	"database/sql"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -806,22 +806,31 @@ func TestEpochStale(t *testing.T) {
 }
 
 // Clients seal only to devices they've verified, so a bundle may skip some
-// member devices (they get the key via key.share); it may never box a device
-// outside the members' active devices.
+// member devices (they get the key via key.share), but not every device of
+// a member; it may never box a device outside the members' active devices.
 func TestKeyRotateMissingBoxAllowed(t *testing.T) {
 	ts := startServer(t, "tcp")
 	fastClock(ts)
 	alice := ts.registerCaps(t, "alice", true, e2eCaps)
 	bob := ts.registerCaps(t, "bob", false, e2eCaps)
+	carol := ts.registerCaps(t, "carol", false, e2eCaps)
 	alice.syncFresh()
 	bob.syncFresh()
+	carol.syncFresh()
 	sid := ts.sid()
 	ch := alice.createE2E("sec")
 	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: bob.user.ID}, nil)
+	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: carol.user.ID}, nil)
 	a1, _ := alice.registerDevice(ts)
-	bob.registerDevice(ts) // bob's device isn't verified by alice yet
-	roster := []uint64{alice.user.ID, bob.user.ID}
-	alice.ok(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: bundle(t, a1, sid, ch.ID, 1, nil, roster, a1)}, nil)
+	alice.registerDevice(ts) // a2, not verified by the rotator yet
+	bob.registerDevice(ts)   // b1
+	// carol has no device: nothing to box.
+	roster := []uint64{alice.user.ID, bob.user.ID, carol.user.ID}
+	// bob has a device but no box.
+	alice.fail(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: bundle(t, a1, sid, ch.ID, 1, nil, roster, a1)}, proto.ErrBadRequest)
+	b2, _ := bob.registerDevice(ts)
+	// One box per user is enough: a2 and b1 get K via key.share.
+	alice.ok(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: bundle(t, a1, sid, ch.ID, 1, nil, roster, a1, b2)}, nil)
 }
 
 // Databases from before epochs.seq / devices.revoked_seq get them from events.

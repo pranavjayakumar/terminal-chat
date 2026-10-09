@@ -171,35 +171,53 @@ func rosterOf(ctx context.Context, q querier, ch uint64) ([]uint64, error) {
 	return out, rows.Err()
 }
 
-// rosterDevices maps the non-revoked devices of users to their X25519 keys:
-// the devices a bundle may box to.
-func rosterDevices(ctx context.Context, q querier, users []uint64) (map[e2ecrypto.DevID][32]byte, error) {
+// rosterDevices maps the non-revoked devices of users to their X25519 keys
+// (the devices a bundle may box to) and to their owners.
+func rosterDevices(ctx context.Context, q querier, users []uint64) (map[e2ecrypto.DevID][32]byte, map[e2ecrypto.DevID]uint64, error) {
 	js, err := json.Marshal(users)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	rows, err := q.QueryContext(ctx, `SELECT dev, x25519 FROM devices
+	rows, err := q.QueryContext(ctx, `SELECT dev, x25519, user FROM devices
 		WHERE revoked IS NULL AND user IN (SELECT value FROM json_each(?))`, string(js))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	out := map[e2ecrypto.DevID][32]byte{}
+	owners := map[e2ecrypto.DevID]uint64{}
 	for rows.Next() {
 		var dev, x []byte
-		if err := rows.Scan(&dev, &x); err != nil {
-			return nil, err
+		var owner uint64
+		if err := rows.Scan(&dev, &x, &owner); err != nil {
+			return nil, nil, err
 		}
 		var id e2ecrypto.DevID
 		var k [32]byte
 		if len(dev) != len(id) || len(x) != len(k) {
-			return nil, fmt.Errorf("malformed stored device %x", dev)
+			return nil, nil, fmt.Errorf("malformed stored device %x", dev)
 		}
 		copy(id[:], dev)
 		copy(k[:], x)
 		out[id] = k
+		owners[id] = owner
 	}
-	return out, rows.Err()
+	return out, owners, rows.Err()
+}
+
+// boxesEveryUser reports whether every user owning a device in owners has
+// at least one box in eb.
+func boxesEveryUser(eb identity.EpochBundle, owners map[e2ecrypto.DevID]uint64) bool {
+	boxed := map[uint64]bool{}
+	for _, bx := range eb.Boxes {
+		boxed[owners[bx.Dev]] = true
+	}
+	for _, u := range owners {
+		if !boxed[u] {
+			return false
+		}
+	}
+	return true
 }
 
 // sameBoxes reports whether eb boxes exactly the devices in devs.
@@ -310,7 +328,7 @@ func (s *Server) opKeyRotate(ctx context.Context, u proto.User, a proto.KeyRotat
 		if !slices.Equal(eb.Roster, roster) {
 			return nil, staleEpoch("roster is not the channel's current members")
 		}
-		devs, err := rosterDevices(ctx, tx, roster)
+		devs, owners, err := rosterDevices(ctx, tx, roster)
 		if err != nil {
 			return nil, err
 		}
@@ -319,6 +337,11 @@ func (s *Server) opKeyRotate(ctx context.Context, u proto.User, a proto.KeyRotat
 		}
 		if err := eb.CheckBoxKeys(devs); err != nil {
 			return nil, badRequest("bundle seals twice to one key")
+		}
+		// Clients may skip devices they haven't verified, but a member left
+		// without any box could only ever get K from someone's key.share.
+		if !boxesEveryUser(eb, owners) {
+			return nil, badRequest("every member with a device needs at least one box")
 		}
 
 		now := s.now()

@@ -167,7 +167,8 @@ Server (honest case): dedupe (author, nonce) first (conflict compares enc bytes)
 if enc.epoch ≠ current or bundle stale, then verify sig vs a registered device of the caller.
 Plaintext into e2e → `bad_request`. `key.rotate` (channel/membership/e2e checked before decoding the bundle) CAS `epoch == cur+1 && prev == H(cur.b)`, roster ==
 non-disabled members, boxes only for registered non-revoked roster devices (a subset is fine — clients seal
-only to devices they verified; decided in step 5 review; a box to an unknown, non-roster or
+only to devices they verified, the remaining devices get K via `key.share`; but ≥ 1 box per roster user
+who has an active device, else `bad_request`; decided in step 5 review; a box to an unknown, non-roster or
 already-revoked device is `bad_request`, and `stale_epoch` is only for races: CAS, roster change, a
 boxed device revoked after the current head's `key.epoch`); losing RES after the
 winning `key.epoch` event; ≤ 1 rotate / chan / 10 s / user unless roster/devices changed. Search
