@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -26,7 +27,20 @@ type activityState struct {
 	// was opened; later items get a "new" dot. 0: it was never opened.
 	seen  int64
 	saved int64 // the last time written to the cache
+
+	// Refreshes while open are rate-limited: last is when the list was
+	// last read, pending says an update came in since, timer that a tick
+	// is already scheduled.
+	last    time.Time
+	pending bool
+	timer   bool
 }
+
+// activityEvery is the shortest time between two reads of the list while
+// the overlay is open.
+const activityEvery = time.Second
+
+type activityRefreshMsg struct{}
 
 // activityID identifies an item across refreshes.
 type activityID struct {
@@ -55,6 +69,7 @@ func (m *Model) openActivity() {
 		a.sel = 0
 	}
 	a.items = items
+	a.last, a.pending = m.now(), false
 	a.sel = min(max(a.sel, 0), max(len(items)-1, 0))
 	a.seen = m.c.ActivitySeen()
 	m.markActivitySeen()
@@ -85,6 +100,7 @@ func (m *Model) refreshActivity() {
 		keep = idOf(a.items[a.sel])
 	}
 	a.items = m.c.Activity(activityLimit)
+	a.last, a.pending = m.now(), false
 	m.markActivitySeen()
 	if had {
 		for i, it := range a.items {
@@ -95,6 +111,39 @@ func (m *Model) refreshActivity() {
 		}
 	}
 	a.sel = min(max(a.sel, 0), max(len(a.items)-1, 0))
+}
+
+// activityAffected says whether u can change the list: new or changed
+// messages in a channel I'm in, or a change to the channels themselves.
+// Users and presence updates never do.
+func (m *Model) activityAffected(u client.Update) bool {
+	if u.Channels {
+		return true
+	}
+	for ch := range u.Msgs {
+		if v, ok := m.chanView(ch); ok && v.Member {
+			return true
+		}
+	}
+	return false
+}
+
+// queueActivityRefresh refreshes the open overlay at once unless it was
+// read less than activityEvery ago; then one refresh is scheduled for when
+// that time is up, however many updates arrive meanwhile.
+func (m *Model) queueActivityRefresh() tea.Cmd {
+	a := &m.act
+	wait := activityEvery - m.now().Sub(a.last)
+	if wait <= 0 {
+		m.refreshActivity()
+		return nil
+	}
+	a.pending = true
+	if a.timer {
+		return nil
+	}
+	a.timer = true
+	return tea.Tick(wait, func(time.Time) tea.Msg { return activityRefreshMsg{} })
 }
 
 func (m *Model) activityKey(k tea.KeyMsg) tea.Cmd {

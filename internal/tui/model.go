@@ -681,6 +681,12 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case okMsg:
 		m.clearErr()
 		return m, nil
+	case activityRefreshMsg:
+		m.act.timer = false
+		if m.act.pending && m.mode == modeActivity {
+			m.refreshActivity()
+		}
+		return m, nil
 	case draftSaveMsg:
 		m.draftTimer = false
 		m.flushDrafts()
@@ -826,8 +832,8 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 		m.setNotice("message not sent: "+f.Failed, true, false, 0)
 	}
 	cmds = append(cmds, m.notifyFor(u.New))
-	if m.mode == modeActivity && (len(u.Msgs) > 0 || u.Channels || u.Users) {
-		m.refreshActivity()
+	if m.mode == modeActivity && m.activityAffected(u) {
+		cmds = append(cmds, m.queueActivityRefresh())
 	}
 	if u.Msgs[m.active] || u.Channels {
 		cmds = append(cmds, m.markRead())

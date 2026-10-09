@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/skailama/tc/internal/client"
@@ -194,11 +196,13 @@ func TestActivityTextIsSanitized(t *testing.T) {
 
 func TestActivityRefreshesWhileOpenKeepingSelection(t *testing.T) {
 	m, f := newTestModelFake(t, 100, 30)
+	clk := newClock(m)
 	activityFake(f)
 	press(m, "alt+a", "down", "down") // the DM
 	dm := f.activity[2]
 	fresh := client.ActivityItem{Kind: client.ActMention, Time: actBase + 20*60_000, Chan: 10, Msg: 104, Author: 3, Preview: "brand new"}
 	f.activity = append([]client.ActivityItem{fresh}, f.activity...)
+	clk.add(2 * time.Second)
 	m.Update(updateMsg(client.Update{Msgs: map[uint64]bool{10: true}, Channels: true}))
 	if len(m.act.items) != 7 || idOf(m.act.items[m.act.sel]) != idOf(dm) {
 		t.Fatalf("selection moved: sel %d of %d", m.act.sel, len(m.act.items))
@@ -208,6 +212,7 @@ func TestActivityRefreshesWhileOpenKeepingSelection(t *testing.T) {
 	}
 	// The selected item disappears: the selection stays in range.
 	f.activity = f.activity[:1]
+	clk.add(2 * time.Second)
 	m.Update(updateMsg(client.Update{Msgs: map[uint64]bool{10: true}}))
 	if m.act.sel != 0 || len(m.act.items) != 1 {
 		t.Fatalf("sel %d of %d", m.act.sel, len(m.act.items))
@@ -347,6 +352,7 @@ func TestActivitySelectionSurvivesReopen(t *testing.T) {
 
 func TestActivityMarksItemsNewerThanLastOpen(t *testing.T) {
 	m, f := newTestModelFake(t, 120, 30)
+	clk := newClock(m)
 	activityFake(f)
 	dots := func() (n int) {
 		for _, l := range strings.Split(checkView(t, m, "dots"), "\n") {
@@ -385,6 +391,7 @@ func TestActivityMarksItemsNewerThanLastOpen(t *testing.T) {
 	// An item arriving while the overlay is open gets one, and counts as seen.
 	late := client.ActivityItem{Kind: client.ActDM, Time: actBase + 30*60_000, Chan: 20, Msg: 300, Author: 2, Preview: "late one"}
 	f.activity = append([]client.ActivityItem{late}, f.activity...)
+	clk.add(2 * time.Second)
 	m.Update(updateMsg(client.Update{Msgs: map[uint64]bool{20: true}}))
 	if row := activityRowOf(t, checkView(t, m, "x"), "late one"); !strings.Contains(row, "│•") {
 		t.Fatalf("live item has no dot: %q", row)
@@ -403,4 +410,69 @@ func activityRowOf(t *testing.T, view, text string) string {
 	}
 	t.Fatalf("no row with %q in\n%s", text, view)
 	return ""
+}
+
+// While the overlay is open, only messages in channels I'm in refresh it,
+// and never more than once a second.
+func TestActivityRefreshIsFilteredAndDebounced(t *testing.T) {
+	m, f := newTestModelFake(t, 100, 30)
+	clk := newClock(m)
+	activityFake(f)
+	reads := func() (n int) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for _, c := range f.calls {
+			if c == "activity" {
+				n++
+			}
+		}
+		return
+	}
+	mine := map[uint64]bool{10: true}
+	press(m, "alt+a")
+	base := reads()
+	update := func(u client.Update) tea.Cmd {
+		_, cmd := m.Update(updateMsg(u))
+		return cmd
+	}
+
+	// Not about the list: users, presence, typing, a channel I'm not in.
+	clk.add(5 * time.Second)
+	update(client.Update{Users: true})
+	update(client.Update{Presence: true})
+	update(client.Update{Typing: map[uint64]bool{10: true}})
+	update(client.Update{Msgs: map[uint64]bool{12: true}}) // #random: not a member
+	if got := reads(); got != base {
+		t.Fatalf("%d extra reads for updates that can't change the list", got-base)
+	}
+
+	// The first relevant update refreshes at once …
+	update(client.Update{Msgs: mine})
+	if got := reads(); got != base+1 {
+		t.Fatalf("reads = %d, want %d", got, base+1)
+	}
+	// … a burst within the second does not, but schedules exactly one refresh.
+	for i := 0; i < 10; i++ {
+		clk.add(50 * time.Millisecond)
+		update(client.Update{Msgs: mine})
+	}
+	if got := reads(); got != base+1 {
+		t.Fatalf("burst caused %d reads", got-base-1)
+	}
+	if !m.act.pending || !m.act.timer {
+		t.Fatalf("no refresh scheduled: pending=%v timer=%v", m.act.pending, m.act.timer)
+	}
+	clk.add(time.Second)
+	m.Update(activityRefreshMsg{})
+	if got := reads(); got != base+2 || m.act.pending || m.act.timer {
+		t.Fatalf("after the tick: reads %d pending=%v timer=%v", got-base, m.act.pending, m.act.timer)
+	}
+	// A tick with nothing pending, or after the overlay closed, reads nothing.
+	m.Update(activityRefreshMsg{})
+	press(m, "esc")
+	update(client.Update{Msgs: mine})
+	m.Update(activityRefreshMsg{})
+	if got := reads(); got != base+2 {
+		t.Fatalf("reads = %d", got-base)
+	}
 }
