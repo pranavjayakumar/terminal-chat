@@ -28,6 +28,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
   time/author. Day separators (`── Tue 9 Oct ──`). Wrapped bodies align under the body column.
 - Pending (outbox) messages render dim; failed ones show `! failed — r to retry, d to discard`.
 - Edited: dim ` (edited)`. Deleted: dim italic `message deleted`.
+- Pinned messages end with a dim `📌` on their footer line; the header shows a dim `📌 N` when the channel has pins.
 - Reactions on a line below: `👍 2  🎉 1` (your own reactions highlighted).
 - Thread roots show `↳ N replies`; threads open in a right pane (or full width below 100 cols).
 - Typing line above the input; nothing when nobody is typing.
@@ -55,7 +56,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 | `Alt-Shift-↑/↓` | previous / next unread channel |
 | `PgUp/PgDn`, mouse wheel | scroll history (fetches older via History at top) |
 | `↑` on empty input | select messages mode (↑/↓ moves selection) |
-| in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (prompt for emoji; `+1`, `:tada:` shortcuts), `y` copy body (OSC 52), `Esc` leave |
+| in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (prompt for emoji; `+1`, `:tada:` shortcuts), `y` copy body (OSC 52), `p` pin / unpin (notice "pinned" / "unpinned"), `Esc` leave |
 | `Esc` | close thread / switcher / select mode; never quits |
 | `Ctrl-C` twice, or `/quit` | quit |
 | `F1` or `/help` | help overlay (`?` is just text, so messages can start with it) |
@@ -63,7 +64,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 ## Slash commands
 
 `/join #x`, `/leave`, `/create #x [--private]`, `/add @user`, `/topic text`, `/dm @a @b`,
-`/invite` (admin; prints code), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps),
+`/invite` (admin; prints code), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps), `/pins` (overlay of this channel's pinned messages, newest pin first, as `author · preview`; Enter jumps, Esc closes),
 `/activity`, `/highlight [word…]`, `/unhighlight word…`, `/share-pane [pane]` (herdr only), `/quit`.
 Unknown command → inline error, input kept.
 

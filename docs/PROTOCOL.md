@@ -140,6 +140,8 @@ session **before** the RES. The `seq` in a RES is informational: clients advance
 | `edit` | `{msg, body: str}` | `{seq}` |
 | `delete` | `{msg}` | `{seq}` |
 | `react` / `unreact` | `{msg, emoji: str}` | `{seq}` |
+| `pin` / `unpin` | `{msg}` | `{seq}` (cap `pins`) |
+| `pins.list` | `{chan}` | `{msgs: [Message]}` — current pins, newest pin first (cap `pins`) |
 | `history` | `{chan, before: u64 (0 = latest), limit ≤ 200, thread?: u64}` | `{msgs: [Message], more: bool}` — with `thread`, that thread's replies only |
 | `search` | `{q: str, chan?: u64, limit ≤ 50}` | `{msgs: [Message]}` |
 | `read` | `{chan, seq}` | `{}` |
@@ -166,6 +168,13 @@ Rules:
   id with `body = ""`, `deleted = true`. Edit or react on a deleted message → `not_found`.
 - **react/unreact/delete** are set-semantics: a no-op returns ok `{seq: 0}` and emits nothing.
 - **read** only moves forward (server keeps the max) and is clamped to the channel's newest message id.
+- **pin/unpin** are set-semantics like react: a no-op returns ok `{seq: 0}` and emits nothing. The caller
+  must currently be a member of the message's channel and the message must exist and not be deleted
+  (else `not_found`). At most 50 pins per channel; pinning a 51st → `conflict` (re-pinning an existing
+  pin is still a no-op). Deleting a pinned message unpins it: `pin.remove` is emitted in the same
+  transaction, right after `msg.delete`. `pin` and `unpin` count as write ops for rate limits.
+  **pins.list** works for public channels and channels where the caller is a member (like `history`;
+  others → `forbidden`) and omits deleted messages.
 - **react**: at most 32 distinct emoji per message and 10 reactions per user per message (`bad_request`).
 - **history/search** cover public channels and channels where the caller is
   currently a member; `history` on others → `forbidden`, `search` filters silently.
@@ -214,6 +223,7 @@ Event = {seq: u64, kind: str, chan?: u64, time: i64, actor: u64, data: map}
 | `msg.edit` | `{msg, body, edited: i64}` |
 | `msg.delete` | `{msg}` |
 | `react.add` / `react.remove` | `{msg, emoji}` |
+| `pin.add` / `pin.remove` | `{msg}` (cap `pins`; visible like reactions: members at that seq) |
 | `chan.new` / `chan.update` | `Channel` |
 | `chan.join` | `{user, chan: Channel}` |
 | `chan.leave` | `{user}` |
@@ -276,10 +286,14 @@ The server overwrites `user` in every C→S EPHEMERAL with the authenticated use
 ```
 User    = {id, name, display, admin: bool, disabled: bool, created: i64, bot?: bool}
 Channel = {id, name, kind: "public"|"private"|"dm", topic, members: [u64], created,
-           e2e?: bool, epoch?: u32, creator?: u64}   (e2e/epoch/creator: §13.3)
+           e2e?: bool, epoch?: u32, creator?: u64, pins?: [u64]}   (e2e/epoch/creator: §13.3)
 Message = {id, chan, author, body, thread: u64 (0 = top level), time,
            edited: i64 (0 = never), deleted: bool, reactions: {emoji: [u64]}}
 ```
+
+`Channel.pins` (cap `pins`; omitted when empty) lists the ids of the channel's pinned messages, newest pin
+first; snapshots and `chan.*` events carry it, and `pin.add`/`pin.remove` keep it current. The server
+advertises cap `pins` in WELCOME; older servers simply lack the ops and the field.
 
 `User.bot` (omitted when false) marks a webhook bot user (§12). Bots have no keys, never
 log in (add-key invites can't target them) and never have presence. Clients MUST NOT treat a
