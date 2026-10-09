@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS epochs (
 	time INTEGER NOT NULL, -- server clock, for the rotate rate cap
 	PRIMARY KEY (chan, epoch)
 );
+-- The rate cap looks up a user's last rotation under the write lock.
+CREATE INDEX IF NOT EXISTS epochs_by ON epochs(chan, by_user, time);
 `
 
 // rotateEveryMs: one key.rotate per channel per user per 10 s, unless the
@@ -243,13 +245,29 @@ func (s *Server) opKeyFetch(ctx context.Context, u proto.User, a proto.KeyFetchA
 	if a.From == 0 || a.To < a.From || a.To-a.From >= proto.MaxKeyFetch {
 		return nil, badRequest("need 1 ≤ from ≤ to and at most 256 epochs")
 	}
+	// Like sync: check membership and open the read snapshot under the
+	// write lock, so a member who just left can't read later epochs.
 	s.mu.Lock()
 	member := s.members[a.Chan][u.ID]
+	var tx *sql.Tx
+	var err error
+	if member {
+		tx, err = s.st.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if err == nil {
+			_, err = head(ctx, tx) // pins the snapshot before unlocking
+		}
+	}
 	s.mu.Unlock()
 	if !member {
 		return nil, errForbidden
 	}
-	rows, err := s.st.db.QueryContext(ctx, `SELECT bundle FROM epochs WHERE chan = ? AND epoch >= ? AND epoch <= ? ORDER BY epoch`,
+	if tx != nil {
+		defer tx.Rollback()
+	}
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT bundle FROM epochs WHERE chan = ? AND epoch >= ? AND epoch <= ? ORDER BY epoch`,
 		a.Chan, a.From, a.To)
 	if err != nil {
 		return nil, err
@@ -277,7 +295,8 @@ func (s *Server) opKeyFetch(ctx context.Context, u proto.User, a proto.KeyFetchA
 // EpochStale reports whether encrypted channel ch needs a rotation before
 // anyone encrypts to it: it has no bundle yet, its roster isn't the current
 // non-disabled members, or it boxes a revoked device. Unencrypted channels
-// are never stale.
+// are never stale. It reads outside any transaction; a write that depends
+// on the answer must call epochStale with its own tx inside s.write.
 func (s *Server) EpochStale(ctx context.Context, ch uint64) (bool, error) {
 	return epochStale(ctx, s.st.db, ch)
 }

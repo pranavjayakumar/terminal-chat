@@ -249,7 +249,7 @@ func TestKeyRotateRejects(t *testing.T) {
 
 	// CAS on an empty chain.
 	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 2, &ok1, roster, a1, b1), proto.ErrStaleEpoch)
-	// Roster: missing, extra, or holding a disabled member.
+	// Roster: missing or extra (a disabled member: below).
 	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 1, nil, []uint64{alice.user.ID}, a1, b1), proto.ErrStaleEpoch)
 	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 1, nil, append(slices.Clone(roster), carol.user.ID), a1, b1), proto.ErrStaleEpoch)
 	// Boxes: missing, extra, or to a revoked device.
@@ -502,6 +502,29 @@ func TestKeyFetch(t *testing.T) {
 	}
 	carol.fail(proto.OpKeyFetch, proto.KeyFetchArgs{Chan: ch.ID, From: 1, To: 3}, proto.ErrForbidden)
 	carol.fail(proto.OpKeyFetch, proto.KeyFetchArgs{Chan: 999999, From: 1, To: 3}, proto.ErrForbidden)
+
+	// Bulky bundles straight into the store: a fetch stops under the frame
+	// limit and the client continues from the last epoch + 1.
+	for ep := 4; ep <= 100; ep++ {
+		blob := proto.MustRaw(proto.Signed{B: make([]byte, proto.MaxBundle-100), Sig: []byte{byte(ep)}})
+		if _, err := ts.st.db.Exec(`INSERT INTO epochs (chan, epoch, bundle, hash, by_user, time) VALUES (?, ?, ?, ?, ?, ?)`,
+			ch.ID, ep, blob, make([]byte, 32), alice.user.ID, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, from, calls := 0, uint32(1), 0
+	for from <= 100 {
+		bs := fetch(bob, from, 100)
+		calls++
+		if len(bs) == 0 || encodedSize(proto.KeyFetchRes{Bundles: bs}) > proto.MaxResultBytes {
+			t.Fatalf("fetch from %d: %d bundles, %d bytes", from, len(bs), encodedSize(proto.KeyFetchRes{Bundles: bs}))
+		}
+		got += len(bs)
+		from += uint32(len(bs))
+	}
+	if got != 100 || calls < 3 {
+		t.Fatalf("fetched %d bundles in %d calls", got, calls)
+	}
 	bob.ok(proto.OpChanLeave, proto.ChanArgs{Chan: ch.ID}, nil)
 	bob.fail(proto.OpKeyFetch, proto.KeyFetchArgs{Chan: ch.ID, From: 1, To: 3}, proto.ErrForbidden)
 }

@@ -541,8 +541,10 @@ rate limited), checked in this order inside the write transaction:
 
 | check | error |
 |---|---|
-| `len(b) + len(sig)` ≤ 16 KiB; ≤ 128 boxes | `too_large` |
-| `b` well formed; `server_id` is this server's; `chan` equals the arg | `bad_request` |
+| `len(b) + len(sig)` ≤ 16 KiB | `too_large` |
+| `b` well formed (canonical, §13.1) | `bad_request` |
+| ≤ 128 boxes | `too_large` |
+| `server_id` is this server's; `chan` equals the arg | `bad_request` |
 | channel exists | `not_found` |
 | caller is a current member | `forbidden` |
 | channel is encrypted | `bad_request` |
@@ -562,7 +564,7 @@ before its own `stale_epoch` RES. `stale_epoch` means "your view of the
 channel is behind": apply pending events (or `key.fetch`), rebuild, retry.
 
 **key.fetch** `{chan, from: u32, to: u32}`: current members only (else
-`forbidden`); `1 ≤ from ≤ to` and `to − from < 256` (else `bad_request`).
+`forbidden`, also for unknown channels); `1 ≤ from ≤ to` and `to − from < 256` (else `bad_request`).
 Returns `{bundles: [Signed]}`, the stored bundles in that range in epoch
 order, possibly stopping early at ~768 KiB: ask again from the last epoch + 1.
 
