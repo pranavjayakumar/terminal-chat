@@ -479,13 +479,20 @@ func (m *Model) cycle(dir int, unreadOnly bool) tea.Cmd {
 
 // ---- threads ----
 
-func (m *Model) openThread(root uint64) {
+func (m *Model) openThread(root uint64) tea.Cmd {
 	if root == 0 || m.active == 0 {
-		return
+		return nil
 	}
 	m.thread = pane{ch: m.active, root: root, sel: -1}
 	m.reloadPane(&m.thread)
 	m.updatePlaceholder()
+	// The cache may hold only some of the replies; fetch the newest page
+	// from the server (results arrive as a normal Msgs update).
+	ch := m.thread.ch
+	return m.call("thread history", func(ctx context.Context) error {
+		_, err := m.c.ThreadHistory(ctx, ch, root, 0)
+		return err
+	})
 }
 
 func (m *Model) closeThread() {
@@ -930,9 +937,6 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 	case key == kUp && empty:
 		m.enterSelect()
 		return nil
-	case key == kHelp && empty:
-		m.openHelp()
-		return nil
 	}
 	before := m.input.Value()
 	var cmd tea.Cmd
@@ -1217,9 +1221,9 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 			return nil, true
 		}
 		m.leaveSelect()
-		m.openThread(root)
+		cmd := m.openThread(root)
 		m.layoutInput()
-		return nil, true
+		return cmd, true
 	case kSelReact:
 		if sel.ID == 0 || sel.Deleted {
 			return nil, true

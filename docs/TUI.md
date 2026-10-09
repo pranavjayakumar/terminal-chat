@@ -56,7 +56,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 | in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (prompt for emoji; `+1`, `:tada:` shortcuts), `y` copy body (OSC 52), `Esc` leave |
 | `Esc` | close thread / switcher / select mode; never quits |
 | `Ctrl-C` twice, or `/quit` | quit |
-| `?` on empty input | help overlay |
+| `F1` or `/help` | help overlay (`?` is just text, so messages can start with it) |
 
 ## Slash commands
 

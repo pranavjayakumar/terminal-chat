@@ -3,6 +3,7 @@ package tui
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"slices"
 	"strconv"
 	"sync"
@@ -280,4 +281,14 @@ func run(m *Model, cmd tea.Cmd) {
 			_, cmd = m.Update(msg)
 		}
 	}
+}
+
+func (f *fakeClient) SetDisplay(ctx context.Context, display string) error {
+	f.record("name:" + display)
+	return nil
+}
+
+func (f *fakeClient) ThreadHistory(ctx context.Context, ch, root, before uint64) (bool, error) {
+	f.record(fmt.Sprintf("thread-history:%d:%d", ch, root))
+	return false, nil
 }

@@ -32,10 +32,10 @@ tc                                    # chat
 | `Alt-↑/↓` | previous / next channel (`Alt-Shift` for unread) |
 | `↑` on empty input | select a message: `e` edit · `d` delete · `r` thread · `+` react · `y` copy |
 | `Esc` | back out of anything |
-| `?` or `/help` | all keys and commands |
+| `F1` or `/help` | all keys and commands |
 | `Ctrl-C` twice | quit |
 
-Commands: `/join #x` `/create #x [--private]` `/add @user` `/dm @a @b` `/topic …` `/search …` `/away [status]` `/back` `/share-pane [pane]` `/invite` (admin) `/webhook name` `/webhooks` `/webhook-delete id`.
+Commands: `/join #x` `/create #x [--private]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/away [status]` `/back` `/share-pane [pane]` `/invite` (admin) `/webhook name` `/webhooks` `/webhook-delete id`.
 
 From the shell:
 
