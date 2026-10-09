@@ -91,8 +91,14 @@ func newWith(t *testing.T, vars map[string]string) *Notifier {
 	t.Helper()
 	e := OSEnv()
 	e.Getenv = func(k string) string { return vars[k] }
-	return New(e, nil)
+	n := New(e, nil)
+	n.timeout = slowExec
+	return n
 }
+
+// slowExec is the timeout for fake binaries that should finish: a fresh
+// executable can take seconds to start on a loaded macOS machine.
+const slowExec = 30 * time.Second
 
 func TestHerdrArgv(t *testing.T) {
 	log := fakeBin(t, "herdr", "")
@@ -142,6 +148,7 @@ func TestNotifySendArgv(t *testing.T) {
 	e.Getenv = func(string) string { return "" }
 	e.GOOS = "linux"
 	n := New(e, nil)
+	n.timeout = slowExec
 	if n.Backend() != NotifySnd {
 		t.Fatalf("backend %s", n.Backend())
 	}
@@ -187,6 +194,7 @@ func TestTimeoutAndBusyDrop(t *testing.T) {
 	if d := time.Since(start); d > 3*time.Second {
 		t.Fatalf("timeout not enforced: %v", d)
 	}
+	n.timeout = slowExec
 	if !n.Notify("three", "") {
 		t.Fatal("not accepted after the first finished")
 	}
@@ -207,6 +215,7 @@ func TestHerdrCLI(t *testing.T) {
 	if h == nil {
 		t.Fatal("not detected")
 	}
+	h.timeout = slowExec
 	ps, err := h.Panes(context.Background())
 	if err != nil || len(ps) != 2 {
 		t.Fatalf("panes %v %v", ps, err)
@@ -250,7 +259,7 @@ func TestParseRead(t *testing.T) {
 
 func TestHerdrError(t *testing.T) {
 	fakeBin(t, "herdr", "exit 3\n")
-	h := &HerdrCLI{Pane: "p", bin: "herdr"}
+	h := &HerdrCLI{Pane: "p", bin: "herdr", timeout: slowExec}
 	var ee *exec.ExitError
 	if _, err := h.Panes(context.Background()); !errors.As(err, &ee) {
 		t.Fatalf("want exit error, got %v", err)

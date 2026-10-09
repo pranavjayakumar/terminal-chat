@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // HerdrCLI talks to the herdr instance tc's pane lives in. herdr's CLI
@@ -15,6 +16,7 @@ import (
 type HerdrCLI struct {
 	Pane, Tab, Workspace string
 	bin                  string
+	timeout              time.Duration // 0: execTimeout
 }
 
 // ErrNoHerdr means tc isn't running inside herdr.
@@ -62,7 +64,11 @@ func (p Pane) Name() string {
 const maxHerdrOutput = 4 << 20
 
 func (h *HerdrCLI) out(ctx context.Context, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, execTimeout)
+	d := h.timeout
+	if d == 0 {
+		d = execTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, d)
 	defer cancel()
 	b, err := output(ctx, append([]string{h.bin}, args...), maxHerdrOutput)
 	if err != nil {
