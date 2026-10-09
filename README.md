@@ -36,7 +36,7 @@ tc                                    # chat
 | `F1` or `/help` | all keys and commands |
 | `Ctrl-C` twice | quit |
 
-Commands: `/join #x` `/create #x [--private]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/pins` `/activity` `/highlight [word…]` `/unhighlight word…` `/away [status]` `/back` `/share-pane [pane]` `/invite` (admin) `/webhook name` `/webhooks` `/webhook-delete id`.
+Commands: `/join #x` `/create #x [--private]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/pins` `/activity` `/highlight [word…]` `/unhighlight word…` `/away [status]` `/back` `/snippet file[:range]` `/share-pane [pane]` `/invite` (admin) `/webhook name` `/webhooks` `/webhook-delete id`.
 
 Unsent text is kept per channel and thread (a dim `✎` in the sidebar marks channels with a draft) and
 survives restarts. `/highlight deploy oncall` makes those words count like an @mention: marker, unread
@@ -47,6 +47,8 @@ From the shell:
 ```sh
 tc send '#general' deploy finished          # message
 kubectl logs pod/api | tc send @priya        # piped → code block (colors stripped)
+(git diff) | tc send '#review'               # a diff block, colored in tc
+tc send '#backend' --file pkg/db.go:40-60 look at this   # lines 40-60 as a code block + permalink
 tc tail '#deploys'                           # stream a channel
 ```
 

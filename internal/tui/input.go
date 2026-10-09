@@ -363,6 +363,8 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 	case "back":
 		m.manualAway, m.autoAway = false, false
 		return tea.Batch(m.call("back", func(context.Context) error { return be.SetAway(false, "") }), m.awayTick()), nil
+	case "snippet":
+		return m.shareSnippet(c.args)
 	case "share-pane":
 		if len(c.args) > 1 {
 			return nil, errors.New("usage: /share-pane [pane id or label]")

@@ -34,6 +34,8 @@ type styles struct {
 	noticeErr, noticeInfo           lipgloss.Style
 	prompt, placeholder             lipgloss.Style
 	overlayTitle, overlaySel        lipgloss.Style
+	diffAdd, diffDel, diffHunk      lipgloss.Style
+	diffHdr                         lipgloss.Style
 	authors                         [len(authorPalette)]lipgloss.Style
 }
 
@@ -80,6 +82,10 @@ func newStyles(r *lipgloss.Renderer, color bool) *styles {
 	s.deleted = n().Faint(true).Italic(true)
 	s.code = fg(n(), "173")
 	s.codeBar = fg(n().Faint(true), "8")
+	s.diffAdd = fg(n(), "34")
+	s.diffDel = fg(n(), "160")
+	s.diffHunk = fg(n().Faint(true), "37")
+	s.diffHdr = n().Bold(true).Faint(true)
 	s.url = fg(n().Underline(true), "39")
 	s.mention = fg(n().Bold(true), "214")
 	s.mentionMark = fg(n().Bold(true), "214")

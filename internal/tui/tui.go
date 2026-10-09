@@ -108,6 +108,9 @@ type Options struct {
 	// AwayAfter sets presence to away after this long without a key; 0: never.
 	AwayAfter time.Duration
 
+	// SnippetDir is the base for relative /snippet paths; "": the working directory.
+	SnippetDir string
+
 	styles *styles // nil: from Out and NO_COLOR
 }
 
