@@ -35,7 +35,7 @@ tc                                    # chat
 | `?` or `/help` | all keys and commands |
 | `Ctrl-C` twice | quit |
 
-Commands: `/join #x` `/create #x [--private]` `/add @user` `/dm @a @b` `/topic …` `/search …` `/away [status]` `/back` `/share-pane [pane]` `/invite` (admin).
+Commands: `/join #x` `/create #x [--private]` `/add @user` `/dm @a @b` `/topic …` `/search …` `/away [status]` `/back` `/share-pane [pane]` `/invite` (admin) `/webhook name` `/webhooks` `/webhook-delete id`.
 
 From the shell:
 
@@ -55,6 +55,49 @@ Run tc in a herdr pane and it notices (`HERDR_ENV=1`):
 
 `TC_NOTIFY=auto|herdr|os|bell|off` picks the notification backend; `TC_AWAY_MIN=15` sets
 auto-away (0 disables). Details in [docs/TUI.md](docs/TUI.md).
+
+## Webhooks
+
+CI jobs, scripts and agents can post into a channel with a plain HTTPS POST — no tc
+install or SSH key needed. In the channel, run `/webhook ci` (any member can). tc
+creates a bot user `ci`, adds it to the channel, and copies a ready-made curl command
+to your clipboard:
+
+```sh
+curl -fsS -k --pinnedpubkey 'sha256//BASE64PIN=' \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"deploy finished ✅"}' \
+  'https://chat.example.com:7443/hooks/abcdefghijklmnopqrstuvwxyz'
+```
+
+- The URL is the secret — treat it like a password. `/webhooks` lists hooks,
+  `/webhook-delete <id>` revokes one at once.
+- The server's certificate is self-signed; `--pinnedpubkey` pins it (`-k` only skips the
+  CA/hostname check, the pin is still enforced).
+- Any other content type posts the raw body: `make test 2>&1 | tail -50 | curl … --data-binary @- URL`.
+  ANSI colors are stripped; max 64 KiB.
+- Send `Idempotency-Key: <something unique>` to make retries safe.
+- Limit: 20 messages burst, then 1/s per hook (HTTP 429 with `Retry-After`).
+
+GitHub Actions — store the URL and pin as secrets `TC_HOOK_URL` and `TC_HOOK_PIN`
+(`sha256//…`):
+
+```yaml
+- name: Notify tc
+  if: always()
+  env:
+    TC_HOOK_URL: ${{ secrets.TC_HOOK_URL }}
+    TC_HOOK_PIN: ${{ secrets.TC_HOOK_PIN }}
+    # Via env, not inline ${{ }}, so branch names can't inject shell.
+    MSG: "${{ github.repository }}@${{ github.ref_name }}: ${{ job.status }} — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+    KEY: "${{ github.run_id }}-${{ github.run_attempt }}"
+  run: |
+    printf '%s' "$MSG" | curl -fsS -k --pinnedpubkey "$TC_HOOK_PIN" \
+      -H 'Content-Type: text/plain' -H "Idempotency-Key: $KEY" \
+      --data-binary @- "$TC_HOOK_URL"
+```
+
+Wire details: [docs/PROTOCOL.md §12](docs/PROTOCOL.md).
 
 ## Development
 

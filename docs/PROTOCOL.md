@@ -335,7 +335,8 @@ nonce becomes the first 16 bytes of `SHA-256(u64be(hook id) || key)`, so retries
 the original message (send idempotency, §5); the same key with different text → 409.
 
 **Effect.** Exactly a `send` by the hook's bot user into the hook's channel: a
-`msg.new` with `author` = bot, same event log, fan-out and visibility.
+`msg.new` with `author` = bot, same event log, fan-out and visibility. The bot's
+per-user send limit (§9) also applies; a disabled bot's hooks answer 404.
 
 **Responses** (JSON, `Cache-Control: no-store`):
 
