@@ -786,12 +786,18 @@ func TestDeviceKeysBoundToUser(t *testing.T) {
 func TestImportDeviceKeys(t *testing.T) {
 	s, _ := newStore(t)
 	k, _ := e2ecrypto.Generate(rand.Reader)
-	if ok, err := s.ImportDeviceKeys(sidA, bob, k); !ok || err != nil {
-		t.Fatalf("import: %v %v", ok, err)
+	if res, err := s.ImportDeviceKeys(sidA, bob, k); res != ImportStored || err != nil {
+		t.Fatalf("import: %v %v", res, err)
+	}
+	if res, err := s.ImportDeviceKeys(sidA, bob, k); res != ImportPresent || err != nil {
+		t.Fatalf("same keys again: %v %v", res, err)
 	}
 	other, _ := e2ecrypto.Generate(rand.Reader)
-	if ok, err := s.ImportDeviceKeys(sidA, bob, other); ok || err != nil {
-		t.Fatalf("second import overwrote: %v %v", ok, err)
+	if res, err := s.ImportDeviceKeys(sidA, bob, other); res != ImportConflict || err != nil {
+		t.Fatalf("other keys: %v %v", res, err)
+	}
+	if res, err := s.ImportDeviceKeys(sidA, 9, k); res != ImportConflict || err != nil {
+		t.Fatalf("same keys, other user: %v %v", res, err)
 	}
 	got, err := s.DeviceKeys(sidA, bob)
 	if err != nil || got.ID != k.ID {

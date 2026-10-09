@@ -231,11 +231,13 @@ const deviceKeyFile = "device.key"
 
 const deviceKeyHeader = e2ecrypto.IDSize + 8
 
-// migrateDeviceKeyFile imports home/device.key into ts (unless ts already
-// has keys for that server: then another process got there first) and
-// removes the file. It holds the old lock while doing so, so a concurrent
-// process (old or new) never sees a half-migrated state. A malformed file
-// is left alone (and doesn't stop Open): it may be the only copy of a key.
+// migrateDeviceKeyFile imports home/device.key into ts and removes the file
+// only once the trust store holds exactly those keys (imported now, or
+// already, e.g. by another process). It holds the old lock while doing so,
+// so a concurrent process (old or new) never sees a half-migrated state. A
+// malformed file, one without a user, or one whose keys conflict with keys
+// already stored is left alone (and doesn't stop Open): it may be the only
+// copy of a key.
 func migrateDeviceKeyFile(home string, ts *trust.Store) error {
 	path := filepath.Join(home, deviceKeyFile)
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
@@ -266,10 +268,15 @@ func migrateDeviceKeyFile(home string, ts *trust.Store) error {
 	if k.UnmarshalBinary(b[deviceKeyHeader:]) != nil {
 		return nil
 	}
-	if user != 0 {
-		if _, err := ts.ImportDeviceKeys(sid, user, &k); err != nil {
-			return err
-		}
+	if user == 0 {
+		return nil
+	}
+	res, err := ts.ImportDeviceKeys(sid, user, &k)
+	if err != nil {
+		return err
+	}
+	if res != trust.ImportStored && res != trust.ImportPresent {
+		return nil
 	}
 	if err := os.Remove(path); err != nil {
 		return fmt.Errorf("removing %s: %w", deviceKeyFile, err)

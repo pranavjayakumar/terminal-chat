@@ -244,16 +244,37 @@ func TestDeviceKeyFileMigrated(t *testing.T) {
 	}
 	c.Close()
 
-	// A store that already has keys (another process migrated first) keeps them.
+	// A store that already has other keys keeps them, and the file (the only
+	// copy of its key) stays.
 	writeOldKeyFile(t, home, testSID(), alice)
 	c = open(t, home)
-	defer c.Close()
 	if k2, _ := c.Trust().DeviceKeys(testSID(), alice); k2.ID != old.ID {
 		t.Fatal("second migration overwrote keys")
 	}
-	if _, err := os.Stat(filepath.Join(home, deviceKeyFile)); !os.IsNotExist(err) {
-		t.Fatalf("device.key still there: %v", err)
+	if _, err := os.Stat(filepath.Join(home, deviceKeyFile)); err != nil {
+		t.Fatalf("conflicting device.key removed: %v", err)
 	}
+	c.Close()
+
+	// The same keys already present (another process migrated first): removed.
+	raw, _ := old.MarshalBinary()
+	sid := testSID()
+	b := append(append(sid[:0:0], sid[:]...), binary.BigEndian.AppendUint64(nil, alice)...)
+	os.WriteFile(filepath.Join(home, deviceKeyFile), append(b, raw...), 0o600)
+	c = open(t, home)
+	defer c.Close()
+	if _, err := os.Stat(filepath.Join(home, deviceKeyFile)); !os.IsNotExist(err) {
+		t.Fatalf("device.key with keys already present still there: %v", err)
+	}
+
+	// A file without a user can't be imported: kept.
+	writeOldKeyFile(t, home, testSID(), 0)
+	c4 := open(t, home)
+	c4.Close()
+	if _, err := os.Stat(filepath.Join(home, deviceKeyFile)); err != nil {
+		t.Fatalf("user-0 device.key removed: %v", err)
+	}
+	os.Remove(filepath.Join(home, deviceKeyFile))
 
 	// A malformed file is left alone and doesn't stop Open.
 	os.WriteFile(filepath.Join(home, deviceKeyFile), []byte("junk"), 0o600)

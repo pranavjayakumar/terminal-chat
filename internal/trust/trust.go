@@ -372,27 +372,52 @@ func (s *Store) deviceKeys(sid e2ecrypto.ServerID, user uint64, retire *e2ecrypt
 	return &k, nil
 }
 
+// ImportResult is what ImportDeviceKeys did.
+type ImportResult int
+
+const (
+	// ImportStored: k is now the server's device keys.
+	ImportStored ImportResult = iota + 1
+	// ImportPresent: exactly these keys were already stored for user.
+	ImportPresent
+	// ImportConflict: other keys (or keys of another user) are stored; k
+	// was not stored.
+	ImportConflict
+)
+
 // ImportDeviceKeys stores k as user's device keys for the server unless the
-// store already has keys for it (migration from TC_HOME/device.key). It
-// reports whether k was stored.
-func (s *Store) ImportDeviceKeys(sid e2ecrypto.ServerID, user uint64, k *e2ecrypto.DeviceKeys) (bool, error) {
+// store already has keys for it (migration from TC_HOME/device.key), and
+// says which happened. Only ImportStored and ImportPresent mean the caller
+// may delete its copy of k.
+func (s *Store) ImportDeviceKeys(sid e2ecrypto.ServerID, user uint64, k *e2ecrypto.DeviceKeys) (ImportResult, error) {
 	raw, err := k.MarshalBinary()
 	if err != nil || user == 0 {
-		return false, fmt.Errorf("importing device keys: %w", errors.Join(ErrInvalid, err))
+		return 0, fmt.Errorf("importing device keys: %w", errors.Join(ErrInvalid, err))
 	}
-	var n int64
+	var res ImportResult
 	err = s.tx(func(tx *sql.Tx) error {
-		res, err := tx.Exec(`INSERT OR IGNORE INTO device_keys (server_id, keys, created, user) VALUES (?, ?, ?, ?)`,
-			sid[:], raw, time.Now().UnixNano(), i64(user))
-		if err == nil {
-			n, err = res.RowsAffected()
+		var cur []byte
+		var owner int64
+		err := tx.QueryRow(`SELECT keys, user FROM device_keys WHERE server_id = ?`, sid[:]).Scan(&cur, &owner)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			res = ImportStored
+			_, err = tx.Exec(`INSERT INTO device_keys (server_id, keys, created, user) VALUES (?, ?, ?, ?)`,
+				sid[:], raw, time.Now().UnixNano(), i64(user))
+			return err
+		case err != nil:
+			return err
+		case subtle.ConstantTimeCompare(cur, raw) == 1 && (owner == 0 || uint64(owner) == user):
+			res = ImportPresent
+		default:
+			res = ImportConflict
 		}
-		return err
+		return nil
 	})
 	if err != nil {
-		return false, fmt.Errorf("importing device keys: %w", err)
+		return 0, fmt.Errorf("importing device keys: %w", err)
 	}
-	return n == 1, nil
+	return res, nil
 }
 
 // ---- SSH keys ----
