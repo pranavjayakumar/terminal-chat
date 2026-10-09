@@ -3,6 +3,8 @@ package client
 import (
 	"bytes"
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -104,8 +106,39 @@ func TestServerE2EDowngradeAlarm(t *testing.T) {
 	}
 }
 
-// Step 7 will refuse plaintext sends into e2e channels (and while the
-// server is alarmed); placeholder so the requirement isn't lost.
+// Nothing goes out as plaintext into an encrypted channel: a message queued
+// before the server dropped e2e1 fails instead of being sent, and new sends
+// are refused while the downgrade alarm stands.
 func TestPlaintextIntoE2ERefused(t *testing.T) {
-	t.Skip("TODO(step 7): encrypted sends; plaintext into e2e channels must be refused")
+	fs, c := e2eClient(t)
+	run(t, c)
+	b1 := newPeer(t, bob, nil)
+	f := startE2E(t, fs, proto.Snapshot{Chans: []proto.Channel{dmChan(0)}, Devs: []proto.Device{{Cert: b1.cert}}}, proto.DevicesListRes{})
+	f.myKeys(c)
+	waitFor(t, "server marked e2e", func() bool { ok, _ := c.Trust().ServerUsesE2E(testSID()); return ok })
+
+	fs.caps.Store([]string(nil))
+	f.fc.conn.Close()
+	waitFor(t, "offline", func() bool { return c.Status().State != Online })
+	if err := c.Send(dm, "secret plan", 0); err != nil {
+		t.Fatal(err)
+	}
+	fc := fs.accept()
+	r := fc.expectReq(proto.OpSync, nil)
+	fc.ok(r.ID, proto.SyncRes{Head: 21})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.Flush(ctx); err == nil || !strings.Contains(err.Error(), "stopped offering end-to-end encryption") {
+		t.Fatalf("flush: %v", err)
+	}
+	if err := c.Send(dm, "more", 0); !errors.Is(err, ErrE2EAlarm) {
+		t.Fatalf("send after the alarm: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	for len(fc.in) > 0 {
+		var req proto.Req
+		if f := <-fc.in; f.Type == proto.TReq && f.Decode(&req) == nil && req.Op == proto.OpSend {
+			t.Fatalf("sent %s", req.Args)
+		}
+	}
 }
