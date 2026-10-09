@@ -510,6 +510,10 @@ func (c *Client) sealEntry(ctx context.Context, s *session, e outboxEntry, prev 
 				return nil, failErr{sanitize.Line(err.Error())}
 			case errors.Is(err, ErrOffline) || ctx.Err() != nil:
 				return nil, ErrOffline
+			case attempt == 0:
+				// Typically someone's bundle arrived meanwhile ("chain isn't
+				// verified yet"): catch up and look again.
+				continue
 			default:
 				return nil, failErr{noKeyReason}
 			}

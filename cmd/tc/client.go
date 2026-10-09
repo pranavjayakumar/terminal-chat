@@ -222,13 +222,18 @@ func cmdTail(args []string) error {
 	if err != nil {
 		return err
 	}
-	// Encrypted messages arrive decrypted; one still waiting for its key is
-	// printed once it opens (it comes again in Updates().New).
+	return tail(ctx, c, ch, os.Stdout)
+}
+
+// tail prints ch's recent messages, then new ones as they arrive.
+// Encrypted messages arrive decrypted; one still waiting for its key is
+// printed once it opens (it comes again in Updates().New).
+func tail(ctx context.Context, c *client.Client, ch uint64, w io.Writer) error {
 	seen := map[uint64]bool{}
 	for _, m := range c.Messages(ch, 20) {
 		if m.ID != 0 {
 			seen[m.ID] = m.Sec != client.SecWaiting
-			printMsg(c, m)
+			printMsg(w, c, m)
 		}
 	}
 	for {
@@ -242,7 +247,7 @@ func cmdTail(args []string) error {
 			for _, m := range u.New {
 				if m.Chan == ch && !seen[m.ID] {
 					seen[m.ID] = true
-					printMsg(c, m)
+					printMsg(w, c, m)
 				}
 			}
 			if st := c.Status(); st.Stopped {
@@ -252,7 +257,7 @@ func cmdTail(args []string) error {
 	}
 }
 
-func printMsg(c *client.Client, m client.Message) {
+func printMsg(w io.Writer, c *client.Client, m client.Message) {
 	t := time.UnixMilli(m.Time).Format("15:04")
 	name := sanitize.Line(c.User(m.Author).Name)
 	body := sanitize.Text(m.Body)
@@ -272,5 +277,5 @@ func printMsg(c *client.Client, m client.Message) {
 		name += " ↳"
 	}
 	indent := strings.Repeat(" ", len(t)+len(name)+3)
-	fmt.Printf("%s %s: %s\n", t, name, strings.ReplaceAll(body, "\n", "\n"+indent))
+	fmt.Fprintf(w, "%s %s: %s\n", t, name, strings.ReplaceAll(body, "\n", "\n"+indent))
 }
