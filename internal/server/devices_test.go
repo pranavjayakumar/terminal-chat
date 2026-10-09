@@ -200,8 +200,22 @@ func TestDeviceRegisterRejects(t *testing.T) {
 	strangerEndorse, _ := identity.NewKeyEndorse(newKey(t), sid, alice.user.ID, alice.signer.PublicKey(), time.Now())
 	e = proto.Signed(strangerEndorse)
 	alice.fail(proto.OpDeviceRegister, proto.DeviceRegisterArgs{Cert: good, Endorse: &e}, proto.ErrBadRequest)
+	selfEndorse, _ := identity.NewKeyEndorse(alice.signer, sid, alice.user.ID, alice.signer.PublicKey(), time.Now())
+	e = proto.Signed(selfEndorse)
+	alice.fail(proto.OpDeviceRegister, proto.DeviceRegisterArgs{Cert: good, Endorse: &e}, proto.ErrBadRequest)
 
 	bob.quiet(100 * time.Millisecond) // nothing above produced an event
+
+	// The same device keys under another device id: conflict.
+	dk, _ := alice.registerDevice(ts)
+	bob.event(proto.KDeviceNew)
+	twin := *dk
+	twin.ID[0] ^= 0xff
+	tc, err := identity.NewDeviceCert(alice.signer, sid, alice.user.ID, &twin, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg(proto.Signed(tc), proto.ErrConflict)
 
 	// A second registered key (add-key invite) can sign certs, and an
 	// endorsement by the first key travels with the device.
@@ -223,13 +237,13 @@ func TestDeviceRegisterRejects(t *testing.T) {
 	}
 	var list proto.DevicesListRes
 	bob.ok(proto.OpDevicesList, proto.DevicesListArgs{Users: []uint64{alice.user.ID}}, &list)
-	if len(list.Certs) != 1 || len(list.Endorse) != 1 {
-		t.Fatalf("list = %+v", list)
+	if len(list.Certs) != 2 || len(list.Endorse) != 1 {
+		t.Fatalf("list: %d certs, %d endorse", len(list.Certs), len(list.Endorse))
 	}
 
-	// At most 8 active devices: 1 so far, 7 more fit, the 9th doesn't.
+	// At most 8 active devices: 2 so far, 6 more fit, the 9th doesn't.
 	var devs []*e2ecrypto.DeviceKeys
-	for range proto.MaxDevices - 1 {
+	for range proto.MaxDevices - 2 {
 		k, _ := alice.registerDevice(ts)
 		devs = append(devs, k)
 	}
@@ -390,8 +404,9 @@ func TestDevicesListPages(t *testing.T) {
 		ids = append(ids, u.user.ID)
 		for j := range 24 {
 			blob := proto.MustRaw(proto.Signed{B: make([]byte, 30000), Sig: []byte{byte(j)}})
-			if _, err := ts.st.db.Exec(`INSERT INTO devices (dev, user, cert, created) VALUES (?, ?, ?, ?)`,
-				[]byte{byte(i), byte(j)}, u.user.ID, blob, j); err != nil {
+			id := []byte{byte(i), byte(j)}
+			if _, err := ts.st.db.Exec(`INSERT INTO devices (dev, user, x25519, ed25519, cert, created) VALUES (?, ?, ?, ?, ?, ?)`,
+				id, u.user.ID, append([]byte{'x'}, id...), append([]byte{'e'}, id...), blob, j); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -416,4 +431,16 @@ func TestDevicesListPages(t *testing.T) {
 	if len(one.Certs) != 24 || one.Next != 0 {
 		t.Fatalf("one user: %d certs next %d", len(one.Certs), one.Next)
 	}
+	// A filtered list pages too, and skips users that aren't asked for.
+	var two proto.DevicesListRes
+	alice.ok(proto.OpDevicesList, proto.DevicesListArgs{Users: []uint64{ids[0], ids[2]}}, &two)
+	if len(two.Certs) != 24 || two.Next != ids[0] {
+		t.Fatalf("filtered page 1: %d certs next %d", len(two.Certs), two.Next)
+	}
+	var rest proto.DevicesListRes
+	alice.ok(proto.OpDevicesList, proto.DevicesListArgs{Users: []uint64{ids[0], ids[2]}, After: two.Next}, &rest)
+	if len(rest.Certs) != 24 || rest.Next != 0 {
+		t.Fatalf("filtered page 2: %d certs next %d", len(rest.Certs), rest.Next)
+	}
+	alice.fail(proto.OpDevicesList, proto.DevicesListArgs{Users: make([]uint64, maxListUsers+1)}, proto.ErrBadRequest)
 }

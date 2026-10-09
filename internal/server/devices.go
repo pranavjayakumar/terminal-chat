@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"slices"
 
@@ -44,22 +45,11 @@ func userKeys(ctx context.Context, q querier, u uint64) ([][]byte, error) {
 	return out, rows.Err()
 }
 
-// verifyCert finds the caller's key that signed sc. Verification comes
-// first; the unverified decode only picks the error code.
+// verifyCert checks sc against the caller's keys. The unverified decode
+// only picks which key to try (one verification, even for RSA) and the error
+// code; everything returned comes from the verified decode.
 func (s *Server) verifyCert(sc proto.Signed, u uint64, keys [][]byte) (identity.DeviceCert, error) {
 	sid := s.sid()
-	for _, k := range keys {
-		c, err := identity.Signed(sc).VerifyDeviceCert(sid, k)
-		if err == nil {
-			if c.User != u {
-				return c, proto.Errf(proto.ErrForbidden, "device cert is for another user")
-			}
-			return c, nil
-		}
-		if errors.Is(err, identity.ErrWrongServer) {
-			return c, badRequest("device cert is for another server")
-		}
-	}
 	c, err := identity.PeekDeviceCert(identity.Signed(sc))
 	switch {
 	case err != nil:
@@ -71,7 +61,14 @@ func (s *Server) verifyCert(sc proto.Signed, u uint64, keys [][]byte) (identity.
 	case !slices.ContainsFunc(keys, func(k []byte) bool { return bytes.Equal(k, c.SSH) }):
 		return c, proto.Errf(proto.ErrForbidden, "device cert is not signed by one of your registered SSH keys")
 	}
-	return c, badRequest("device cert signature does not verify")
+	c, err = identity.Signed(sc).VerifyDeviceCert(sid, c.SSH)
+	if err != nil {
+		return c, badRequest("device cert signature does not verify")
+	}
+	if c.User != u { // can't differ from the peek, but this is the value that counts
+		return c, proto.Errf(proto.ErrForbidden, "device cert is for another user")
+	}
+	return c, nil
 }
 
 func (s *Server) verifyEndorse(se proto.Signed, c identity.DeviceCert, keys [][]byte) error {
@@ -83,6 +80,9 @@ func (s *Server) verifyEndorse(se proto.Signed, c identity.DeviceCert, keys [][]
 		}
 		if e.User != c.User || !bytes.Equal(e.NewSSH, c.SSH) {
 			return badRequest("endorsement is not for this cert's key")
+		}
+		if bytes.Equal(k, e.NewSSH) {
+			return badRequest("a key can't endorse itself")
 		}
 		return nil
 	}
@@ -127,6 +127,16 @@ func (s *Server) opDeviceRegister(ctx context.Context, u proto.User, a proto.Dev
 		if !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
+		// Shared keys would break epoch boxes (same X25519 key and nonce)
+		// and "another device" revokes; clients check this too.
+		var dup int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM devices WHERE x25519 = ? OR ed25519 = ?`,
+			c.X25519[:], []byte(c.Ed25519)).Scan(&dup); err != nil {
+			return nil, err
+		}
+		if dup > 0 {
+			return nil, proto.Errf(proto.ErrConflict, "device keys already registered")
+		}
 		var active, total int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COUNT(*) FILTER (WHERE revoked IS NULL) FROM devices WHERE user = ?`,
 			u.ID).Scan(&total, &active); err != nil {
@@ -139,8 +149,8 @@ func (s *Server) opDeviceRegister(ctx context.Context, u proto.User, a proto.Dev
 			return nil, badRequest("device registration limit reached")
 		}
 		now := s.now()
-		if _, err := tx.ExecContext(ctx, `INSERT INTO devices (dev, user, cert, endorse, created) VALUES (?, ?, ?, ?, ?)`,
-			c.Dev[:], u.ID, cert, endorse, now); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO devices (dev, user, x25519, ed25519, cert, endorse, created) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			c.Dev[:], u.ID, c.X25519[:], []byte(c.Ed25519), cert, endorse, now); err != nil {
 			return nil, err
 		}
 		ev, err := appendEvent(ctx, tx, proto.KDeviceNew, 0, u.ID, 0, now, a)
@@ -275,95 +285,116 @@ type deviceRow struct {
 	encSize int
 }
 
-// listDevices returns devices of users (nil = all) with id > after, ordered
-// by user then registration.
-func listDevices(ctx context.Context, q querier, users []uint64, after uint64) ([]deviceRow, error) {
-	rows, err := q.QueryContext(ctx, `SELECT user, cert, endorse, revoked FROM devices WHERE user > ? ORDER BY user, created, dev`, after)
+// eachDevice streams devices of users (nil = all) with id > after, ordered
+// by user then registration, until fn returns false.
+func eachDevice(ctx context.Context, q querier, users []uint64, after uint64, fn func(deviceRow) bool) error {
+	query := `SELECT user, cert, endorse, revoked FROM devices WHERE user > ?`
+	args := []any{after}
+	if len(users) > 0 {
+		query += ` AND user IN (SELECT value FROM json_each(?))`
+		js, err := json.Marshal(users)
+		if err != nil {
+			return err
+		}
+		args = append(args, string(js))
+	}
+	rows, err := q.QueryContext(ctx, query+` ORDER BY user, created, dev`, args...)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
-	var out []deviceRow
 	for rows.Next() {
 		var d deviceRow
 		var cert, endorse, revoked []byte
 		if err := rows.Scan(&d.user, &cert, &endorse, &revoked); err != nil {
-			return nil, err
-		}
-		if len(users) > 0 && !slices.Contains(users, d.user) {
-			continue
+			return err
 		}
 		if err := proto.Unmarshal(cert, &d.dev.Cert); err != nil {
-			return nil, err
+			return err
 		}
 		if endorse != nil {
 			d.dev.Endorse = new(proto.Signed)
 			if err := proto.Unmarshal(endorse, d.dev.Endorse); err != nil {
-				return nil, err
+				return err
 			}
 		}
 		if revoked != nil {
 			d.revoke = new(proto.Signed)
 			if err := proto.Unmarshal(revoked, d.revoke); err != nil {
-				return nil, err
+				return err
 			}
 		}
 		d.encSize = len(cert) + len(endorse) + len(revoked)
-		out = append(out, d)
+		if !fn(d) {
+			return nil
+		}
 	}
-	return out, rows.Err()
+	return rows.Err()
 }
 
+const maxListUsers = 4096
+
 func (s *Server) opDevicesList(ctx context.Context, a proto.DevicesListArgs) (any, error) {
-	if len(a.Users) > 4096 {
+	if len(a.Users) > maxListUsers {
 		return nil, badRequest("too many users")
 	}
-	devs, err := listDevices(ctx, s.st.db, a.Users, a.After)
-	if err != nil {
-		return nil, err
-	}
 	res := proto.DevicesListRes{Certs: []proto.Signed{}, Endorse: []proto.Signed{}, Revoked: []proto.Signed{}}
-	size := 0
-	for i := 0; i < len(devs); {
-		// One user's devices go in whole or not at all; one user always fits
-		// (MaxDeviceRegistrations × 3 × MaxSigned < MaxResultBytes).
-		j, n := i, 0
-		for ; j < len(devs) && devs[j].user == devs[i].user; j++ {
-			n += devs[j].encSize
+	// Rows arrive grouped by user. A user's rows are collected, then added
+	// whole if they fit; one user always fits
+	// (MaxDeviceRegistrations × 3 × MaxSigned < MaxResultBytes).
+	var group []deviceRow
+	var lastIncluded uint64
+	size, groupSize := 0, 0
+	seen := map[string]bool{}
+	flush := func() bool {
+		if len(group) == 0 {
+			return true
 		}
-		if size+n > proto.MaxResultBytes && size > 0 {
-			res.Next = devs[i-1].user
-			break
+		if size+groupSize > proto.MaxResultBytes && size > 0 {
+			return false
 		}
-		size += n
-		for _, d := range devs[i:j] {
+		size += groupSize
+		for _, d := range group {
 			res.Certs = append(res.Certs, d.dev.Cert)
-			if d.dev.Endorse != nil && !slices.ContainsFunc(res.Endorse, func(e proto.Signed) bool {
-				return bytes.Equal(e.B, d.dev.Endorse.B) && bytes.Equal(e.Sig, d.dev.Endorse.Sig)
-			}) {
-				res.Endorse = append(res.Endorse, *d.dev.Endorse)
+			if e := d.dev.Endorse; e != nil && !seen[string(proto.MustRaw(*e))] {
+				seen[string(proto.MustRaw(*e))] = true
+				res.Endorse = append(res.Endorse, *e)
 			}
 			if d.revoke != nil {
 				res.Revoked = append(res.Revoked, *d.revoke)
 			}
 		}
-		i = j
+		lastIncluded = group[0].user
+		group, groupSize = group[:0], 0
+		return true
+	}
+	err := eachDevice(ctx, s.st.db, a.Users, a.After, func(d deviceRow) bool {
+		if len(group) > 0 && d.user != group[0].user && !flush() {
+			res.Next = lastIncluded
+			return false
+		}
+		group = append(group, d)
+		groupSize += d.encSize
+		return true
+	})
+	if err != nil {
+		return nil, err
+	}
+	if res.Next == 0 && !flush() {
+		res.Next = lastIncluded
 	}
 	return res, nil
 }
 
 // snapshotDevices sends every device and revoke in parts (e2e1 sessions only).
 func (sess *session) snapshotDevices(ctx context.Context, tx *sql.Tx) error {
-	devs, err := listDevices(ctx, tx, nil, 0)
-	if err != nil {
-		return err
-	}
 	var part proto.Snapshot
 	size := 0
-	for _, d := range devs {
+	var perr error
+	err := eachDevice(ctx, tx, nil, 0, func(d deviceRow) bool {
 		if size+d.encSize > snapshotPart && size > 0 {
-			if err := sess.pushSnapshot(part); err != nil {
-				return err
+			if perr = sess.pushSnapshot(part); perr != nil {
+				return false
 			}
 			part, size = proto.Snapshot{}, 0
 		}
@@ -372,6 +403,13 @@ func (sess *session) snapshotDevices(ctx context.Context, tx *sql.Tx) error {
 			part.Revoked = append(part.Revoked, *d.revoke)
 		}
 		size += d.encSize
+		return true
+	})
+	if err != nil {
+		return err
+	}
+	if perr != nil {
+		return perr
 	}
 	if size > 0 {
 		return sess.pushSnapshot(part)

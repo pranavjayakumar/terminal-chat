@@ -363,12 +363,14 @@ Server rules (honest case):
   under one of the caller's registered SSH keys (§4.1) — not signed by one →
   `forbidden`; cert for another `user` → `forbidden`; other `server_id`,
   bad signature or malformed → `bad_request`. An `endorse` must verify
-  under one of the caller's registered keys with `user` = caller and
-  `new_ssh` = the cert's `ssh` (else `bad_request`); the server stores and
-  forwards it but does not register `new_ssh` as a login key.
+  under one of the caller's registered keys other than `new_ssh`, with
+  `user` = caller and `new_ssh` = the cert's `ssh` (else `bad_request`); the
+  server stores and forwards it but does not register `new_ssh` as a login key.
   `dev` already registered → `conflict`, except an exact repeat of the
   same cert and endorse by the same user, which is ok `{seq: 0}` and
-  emits nothing. A user may have at most 8 non-revoked devices and register
+  emits nothing. An `x25519` or `ed25519` key already used by any device →
+  `conflict` (clients must check this too: a shared X25519 key would reuse
+  key and nonce in epoch boxes). A user may have at most 8 non-revoked devices and register
   at most 32 ever (`bad_request`). Emits `device.new`.
 - **device.revoke** (write op, rate limited): `revoke` ≤ 4 KiB (`too_large`).
   It must verify under a registered SSH key of the caller, or under the
@@ -377,7 +379,8 @@ Server rules (honest case):
   → `bad_request`; unknown `dev` or a device of someone else → `not_found`.
   Revoking a revoked device is ok `{seq: 0}` and emits nothing. Revocation
   is permanent. Emits `device.revoke`.
-- **devices.list**: devices of `users` (absent/empty = everyone), including
+- **devices.list**: devices of `users` (absent/empty = everyone; at most
+  4096 entries, else `bad_request`), including
   revoked ones, with every distinct `endorse` attached to them and every
   revoke, ordered by user. Whole users only; when the next user would push
   the result past ~768 KiB the server stops and sets `next`: call again with
