@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -747,5 +748,64 @@ func TestHookURLEmptyHost(t *testing.T) {
 	h := alice.createHook(generalID(t, snap), "ci")
 	if !strings.HasPrefix(h.URL, "https://localhost:7443/hooks/") {
 		t.Fatalf("url %q", h.URL)
+	}
+}
+
+// TestBotCapNotOneUsers (verifier, M2): bots are never deleted and the
+// per-creator cap counts hooks, not bots, so one member can create and
+// delete hooks under fresh names until the server-wide bot cap is used up,
+// after which nobody else can make a webhook bot ever again.
+func TestBotCapNotOneUsers(t *testing.T) {
+	ts := startHookServer(t)
+	mallory := ts.register(t, "mallory", false)
+	snap, _ := mallory.syncFresh()
+	bob := ts.register(t, "bob", false)
+	bob.syncFresh()
+	gen := generalID(t, snap)
+
+	for i := range maxBots {
+		// The attacker just waits out the write bucket; skip the wait.
+		ts.mu.Lock()
+		delete(ts.wlimits, mallory.user.ID)
+		ts.mu.Unlock()
+		res := mallory.req(proto.OpHookCreate, proto.HookCreateArgs{Chan: gen, Name: fmt.Sprintf("m%d", i)})
+		if !res.OK {
+			break // refused: a per-person bot cap exists
+		}
+		var r proto.HookCreateRes
+		if err := proto.Unmarshal(res.Data, &r); err != nil {
+			t.Fatal(err)
+		}
+		mallory.ok(proto.OpHookDelete, proto.HookArgs{ID: r.ID}, nil)
+		mallory.held = nil
+	}
+	if res := bob.req(proto.OpHookCreate, proto.HookCreateArgs{Chan: gen, Name: "ci"}); !res.OK {
+		t.Fatalf("one member exhausted the server-wide bot cap; bob can't create a bot: %v", res.Err)
+	}
+}
+
+// fakeConn is a net.Conn with a given remote address, for connCap.
+type fakeConn struct {
+	net.Conn
+	remote net.Addr
+	closed bool
+}
+
+func (c *fakeConn) RemoteAddr() net.Addr { return c.remote }
+func (c *fakeConn) Close() error         { c.closed = true; return nil }
+
+// TestHTTPConnCapPerSource (verifier, L2): the connection cap is global
+// only, so a single source holding maxHTTPConns idle connections (each
+// lives ~10 s handshake + 10 s header timeout, then reconnect) locks every
+// other webhook caller out.
+func TestHTTPConnCapPerSource(t *testing.T) {
+	c := &connCap{max: maxHTTPConns}
+	for i := range maxHTTPConns {
+		c.state(&fakeConn{remote: &net.TCPAddr{IP: net.ParseIP("203.0.113.7"), Port: 10000 + i}}, http.StateNew)
+	}
+	other := &fakeConn{remote: &net.TCPAddr{IP: net.ParseIP("198.51.100.1"), Port: 443}}
+	c.state(other, http.StateNew)
+	if other.closed {
+		t.Fatal("one source used up the whole HTTP connection cap; another source's connection was closed")
 	}
 }
