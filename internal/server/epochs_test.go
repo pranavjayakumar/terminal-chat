@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1011,5 +1012,43 @@ func TestMigrateCreator(t *testing.T) {
 	}
 	if err := migrateCreator(db); err != nil { // idempotent
 		t.Fatal(err)
+	}
+}
+
+// EpochStale runs on every encrypted send (step 7): its queries must use
+// indexes, never scan devices or membership.
+func TestEpochStaleQueryPlans(t *testing.T) {
+	ts := startServer(t, "tcp")
+	plan := func(q string, args ...any) string {
+		t.Helper()
+		rows, err := ts.st.db.Query("EXPLAIN QUERY PLAN "+q, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var id, parent, notused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, detail)
+		}
+		return strings.Join(out, "; ")
+	}
+	for _, c := range []struct {
+		q    string
+		args []any
+	}{
+		{revokedBoxesQuery(1), []any{[]byte{1}}},
+		{revokedBoxesQuery(proto.MaxBundleBoxes), make([]any, proto.MaxBundleBoxes)},
+		{rosterQuery, []any{1}},
+	} {
+		p := plan(c.q, c.args...)
+		if strings.Contains(p, "SCAN devices") || strings.Contains(p, "SCAN m") || strings.Contains(p, "SCAN membership") {
+			t.Errorf("full scan in %q: %s", c.q, p)
+		}
+		t.Log(p)
 	}
 }

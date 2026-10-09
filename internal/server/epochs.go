@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +36,8 @@ CREATE TABLE IF NOT EXISTS epochs (
 );
 -- The rate cap looks up a user's last rotation under the write lock.
 CREATE INDEX IF NOT EXISTS epochs_by ON epochs(chan, by_user, time);
+-- Rosters (key.rotate, EpochStale) list a channel's current members.
+CREATE INDEX IF NOT EXISTS membership_chan ON membership(chan, user) WHERE leave_seq IS NULL;
 `
 
 // The rotate rate caps, both waived when the roster or its active devices
@@ -189,11 +190,14 @@ func chanEpoch(ctx context.Context, q querier, ch uint64) (h epochHead, err erro
 	return
 }
 
+// rosterQuery is ch's current non-disabled members (via membership_chan).
+const rosterQuery = `SELECT m.user FROM membership m JOIN users u ON u.id = m.user
+		WHERE m.chan = ? AND m.leave_seq IS NULL AND u.disabled = 0 ORDER BY m.user`
+
 // rosterOf is ch's current non-disabled members, sorted: what a bundle's
 // roster must be.
 func rosterOf(ctx context.Context, q querier, ch uint64) ([]uint64, error) {
-	rows, err := q.QueryContext(ctx, `SELECT m.user FROM membership m JOIN users u ON u.id = m.user
-		WHERE m.chan = ? AND m.leave_seq IS NULL AND u.disabled = 0 ORDER BY m.user`, ch)
+	rows, err := q.QueryContext(ctx, rosterQuery, ch)
 	if err != nil {
 		return nil, err
 	}
@@ -526,19 +530,20 @@ func epochStale(ctx context.Context, q querier, ch uint64) (bool, error) {
 	if !slices.Equal(eb.Roster, roster) {
 		return true, nil
 	}
-	devs := eb.BoxDevs()
-	ids := make([]string, len(devs))
+	devs := eb.BoxDevs() // 1..128, so a bounded number of placeholders
+	args := make([]any, len(devs))
 	for i := range devs {
-		ids[i] = strings.ToUpper(hex.EncodeToString(devs[i][:])) // SQLite's hex()
-	}
-	js, err := json.Marshal(ids)
-	if err != nil {
-		return false, err
+		args[i] = devs[i][:]
 	}
 	var revoked int
-	err = q.QueryRowContext(ctx, `SELECT COUNT(*) FROM devices WHERE revoked IS NOT NULL
-		AND hex(dev) IN (SELECT value FROM json_each(?))`, string(js)).Scan(&revoked)
+	err = q.QueryRowContext(ctx, revokedBoxesQuery(len(devs)), args...).Scan(&revoked)
 	return revoked > 0, err
+}
+
+// revokedBoxesQuery counts the revoked devices among n bound ids: n point
+// lookups on the devices primary key.
+func revokedBoxesQuery(n int) string {
+	return `SELECT COUNT(*) FROM devices WHERE dev IN (?` + strings.Repeat(`, ?`, n-1) + `) AND revoked IS NOT NULL`
 }
 
 // snapshotKeys sends the current bundle of every e2e channel in chans that
