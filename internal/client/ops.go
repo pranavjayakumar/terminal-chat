@@ -385,3 +385,39 @@ func (c *Client) SetAway(away bool, status string) error {
 	}
 	return nil
 }
+
+// SetDisplay sets my display name ("" clears it).
+func (c *Client) SetDisplay(ctx context.Context, display string) error {
+	return c.call(ctx, proto.OpUserUpdate, proto.UserUpdateArgs{Display: display}, nil, nil)
+}
+
+// ThreadHistory fetches older replies of thread root (before reply id, 0 =
+// newest) into the cache.
+func (c *Client) ThreadHistory(ctx context.Context, ch, root, before uint64) (more bool, err error) {
+	var r proto.HistoryRes
+	hook := func(res proto.Res) error {
+		var hr proto.HistoryRes
+		if !res.OK || len(res.Data) == 0 || proto.Unmarshal(res.Data, &hr) != nil {
+			return nil
+		}
+		err := c.tx(func(tx *sql.Tx) error {
+			for _, m := range hr.Msgs {
+				if err := upsertMsg(tx, m, true); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err == nil {
+			c.post(Update{Msgs: map[uint64]bool{ch: true}})
+		}
+		return err
+	}
+	err = c.call(ctx, proto.OpHistory, proto.HistoryArgs{Chan: ch, Before: before, Limit: 100, Thread: root}, &r, hook)
+	return r.More, err
+}
+
+// OpenNotes opens my private notes (a DM with only me).
+func (c *Client) OpenNotes(ctx context.Context) (proto.Channel, error) {
+	return c.OpenDM(ctx, nil)
+}

@@ -44,7 +44,7 @@ var writeOps = map[string]bool{
 	proto.OpEdit: true, proto.OpDelete: true, proto.OpReact: true, proto.OpUnreact: true,
 	proto.OpRead: true, proto.OpChanCreate: true, proto.OpChanJoin: true, proto.OpChanAdd: true,
 	proto.OpChanLeave: true, proto.OpChanTopic: true, proto.OpDMOpen: true,
-	proto.OpInviteCreate: true, proto.OpUserDisable: true,
+	proto.OpInviteCreate: true, proto.OpUserDisable: true, proto.OpUserUpdate: true,
 }
 
 func (s *Server) dispatch(ctx context.Context, sess *session, op string, args proto.Raw) (any, error) {
@@ -93,6 +93,8 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 		return proto.UsersRes{Users: users}, err
 	case proto.OpInviteCreate:
 		return withArgs(args, func(a proto.InviteCreateArgs) (any, error) { return s.opInviteCreate(ctx, u, a) })
+	case proto.OpUserUpdate:
+		return withArgs(args, func(a proto.UserUpdateArgs) (any, error) { return s.opUserUpdate(ctx, u, a) })
 	case proto.OpUserDisable:
 		return withArgs(args, func(a proto.UserArgs) (any, error) { return s.opUserDisable(ctx, u, a) })
 	}
@@ -332,8 +334,13 @@ func (s *Server) opHistory(ctx context.Context, u proto.User, a proto.HistoryArg
 	if before == 0 || before > math.MaxInt64 {
 		before = math.MaxInt64
 	}
-	msgs, err := scanMessages(ctx, s.st.db,
-		`SELECT `+msgCols+` FROM messages WHERE chan = ? AND id < ? ORDER BY id DESC LIMIT ?`, a.Chan, before, limit+1)
+	query := `SELECT ` + msgCols + ` FROM messages WHERE chan = ? AND id < ? ORDER BY id DESC LIMIT ?`
+	qargs := []any{a.Chan, before, limit + 1}
+	if a.Thread != 0 {
+		query = `SELECT ` + msgCols + ` FROM messages WHERE chan = ? AND thread = ? AND id < ? ORDER BY id DESC LIMIT ?`
+		qargs = []any{a.Chan, a.Thread, before, limit + 1}
+	}
+	msgs, err := scanMessages(ctx, s.st.db, query, qargs...)
 	if err != nil {
 		return nil, err
 	}
@@ -591,8 +598,9 @@ func (s *Server) opDMOpen(ctx context.Context, u proto.User, a proto.DMOpenArgs)
 			members = append(members, id)
 		}
 	}
-	if len(members) < 2 || len(members) > proto.MaxDMOthers+1 {
-		return nil, badRequest("a DM needs 1 to 7 other people")
+	// A DM with nobody else is the caller's private notes.
+	if len(members) > proto.MaxDMOthers+1 {
+		return nil, badRequest("a DM can have at most 7 other people")
 	}
 	slices.Sort(members)
 	var res proto.ChanRes

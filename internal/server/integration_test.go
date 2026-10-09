@@ -618,5 +618,27 @@ func TestDMOpen(t *testing.T) {
 	bob.event(proto.KMsgNew)
 	carol.quiet(150 * time.Millisecond)
 	bob.fail(proto.OpChanLeave, proto.ChanArgs{Chan: a.Chan.ID}, proto.ErrForbidden)
-	alice.fail(proto.OpDMOpen, proto.DMOpenArgs{Users: []uint64{alice.user.ID}}, proto.ErrBadRequest)
+	// A DM with only yourself is your private notes; nobody else sees it.
+	var notes proto.ChanRes
+	alice.ok(proto.OpDMOpen, proto.DMOpenArgs{Users: []uint64{alice.user.ID}}, &notes)
+	if len(notes.Chan.Members) != 1 || notes.Chan.Kind != proto.ChanDM {
+		t.Fatalf("notes: %+v", notes.Chan)
+	}
+	alice.send(notes.Chan.ID, "note to self")
+	bob.quiet(150 * time.Millisecond)
+	tooMany := make([]uint64, proto.MaxDMOthers+1)
+	for i := range tooMany {
+		tooMany[i] = uint64(100 + i)
+	}
+	alice.fail(proto.OpDMOpen, proto.DMOpenArgs{Users: tooMany}, proto.ErrBadRequest)
+}
+
+// syncFreshAgain reconnects c's key and does a fresh sync.
+func (c *tclient) syncFreshAgain(t *testing.T, ts *testServer) (proto.Snapshot, proto.SyncRes) {
+	t.Helper()
+	c2, bye := ts.connect(t, c.signer, "", "")
+	if bye != "" {
+		t.Fatal(bye)
+	}
+	return c2.syncFresh()
 }

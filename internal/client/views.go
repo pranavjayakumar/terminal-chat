@@ -125,7 +125,7 @@ func (c *Client) displayName(ch proto.Channel, me uint64) string {
 		}
 	}
 	if len(names) == 0 {
-		return c.User(me).Name
+		return c.User(me).Name + " (notes)"
 	}
 	slices.Sort(names)
 	return strings.Join(names, ", ")
