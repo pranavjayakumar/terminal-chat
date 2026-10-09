@@ -1,0 +1,21 @@
+[Unit]
+Description=tc chat server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=tc
+Group=tc
+ExecStart=/usr/local/bin/tc server --data /var/lib/tc --listen :7443
+Restart=always
+RestartSec=2
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/tc
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
