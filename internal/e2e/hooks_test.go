@@ -53,10 +53,8 @@ func TestWebhook(t *testing.T) {
 	if err != nil || len(hooks) != 1 || hooks[0].Name != "ci" {
 		t.Fatalf("ListHooks: %v %+v", err, hooks)
 	}
-	if err := bob.DeleteHook(ctx, hooks[0].ID); err == nil {
-		t.Fatal("bob deleted alice's hook")
-	}
-	if err := alice.DeleteHook(ctx, hooks[0].ID); err != nil {
+	// Any member of the channel may revoke it.
+	if err := bob.DeleteHook(ctx, hooks[0].ID); err != nil {
 		t.Fatal(err)
 	}
 	resp, err = hc.Post(url, "text/plain", strings.NewReader("again"))

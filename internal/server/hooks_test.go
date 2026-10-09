@@ -287,12 +287,76 @@ func TestHookOpsPermissions(t *testing.T) {
 	}
 	bob.noMsgIn(priv.Chan.ID, 300*time.Millisecond)
 
-	// Delete: bob (member, not creator) forbidden; outsider not_found; creator and admin ok.
-	bob.fail(proto.OpHookDelete, proto.HookArgs{ID: gh.ID}, proto.ErrForbidden)
+	// Delete: an outsider gets not_found; any member of the channel (not just
+	// the creator) and admins may.
 	bob.fail(proto.OpHookDelete, proto.HookArgs{ID: ph.ID}, proto.ErrNotFound)
-	alice.ok(proto.OpHookDelete, proto.HookArgs{ID: gh.ID}, nil)
+	bob.ok(proto.OpHookDelete, proto.HookArgs{ID: gh.ID}, nil)
 	admin.ok(proto.OpHookDelete, proto.HookArgs{ID: ph.ID}, nil)
 	alice.fail(proto.OpHookDelete, proto.HookArgs{ID: gh.ID}, proto.ErrNotFound)
+}
+
+// TestHookRevocation: a hook stops posting once its creator loses access,
+// and the remaining members can revoke it (H1).
+func TestHookRevocation(t *testing.T) {
+	ts := startHookServer(t)
+	admin := ts.register(t, "root", true)
+	admin.syncFresh()
+	alice := ts.register(t, "alice", false)
+	snap, _ := alice.syncFresh()
+	bob := ts.register(t, "bob", false)
+	bob.syncFresh()
+	gen := generalID(t, snap)
+
+	var inc proto.ChanRes
+	alice.ok(proto.OpChanCreate, proto.ChanCreateArgs{Name: "incident", Private: true}, &inc)
+	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: inc.Chan.ID, User: bob.user.ID}, nil)
+	ih := alice.createHook(inc.Chan.ID, "pager")
+	gh := alice.createHook(gen, "ci")
+	if r := ts.post(t, "POST", ih.URL, "text/plain", "up"); r.status != 200 {
+		t.Fatalf("before leave: %d %s", r.status, r.raw)
+	}
+	notFound := ts.post(t, "POST", "https://"+ts.addr+"/hooks/aaaaaaaaaaaaaaaaaaaaaaaaaa", "text/plain", "x")
+
+	// The creator leaves: the hook goes dormant (same 404 as unknown) and
+	// a remaining member can delete it.
+	alice.ok(proto.OpChanLeave, proto.ChanArgs{Chan: inc.Chan.ID}, nil)
+	if r := ts.post(t, "POST", ih.URL, "text/plain", "still here"); r.status != 404 || r.raw != notFound.raw {
+		t.Fatalf("after creator left: %d %s", r.status, r.raw)
+	}
+	bob.ok(proto.OpHookDelete, proto.HookArgs{ID: ih.ID}, nil)
+
+	// The creator is disabled: their hooks are deleted at once.
+	if r := ts.post(t, "POST", gh.URL, "text/plain", "ok"); r.status != 200 {
+		t.Fatalf("before disable: %d %s", r.status, r.raw)
+	}
+	admin.ok(proto.OpUserDisable, proto.UserArgs{User: alice.user.ID}, nil)
+	if r := ts.post(t, "POST", gh.URL, "text/plain", "zombie"); r.status != 404 || r.raw != notFound.raw {
+		t.Fatalf("after disable: %d %s", r.status, r.raw)
+	}
+	var l proto.HooksRes
+	admin.ok(proto.OpHookList, proto.Empty{}, &l)
+	if len(l.Hooks) != 0 {
+		t.Fatalf("hooks left after disable: %+v", l.Hooks)
+	}
+}
+
+// TestHookDeletedInFlight: a request that looked its hook up before the
+// hook was deleted doesn't post (L6).
+func TestHookDeletedInFlight(t *testing.T) {
+	ts := startHookServer(t)
+	alice := ts.register(t, "alice", false)
+	snap, _ := alice.syncFresh()
+	h := alice.createHook(generalID(t, snap), "ci")
+	ctx := context.Background()
+	live, err := ts.hookByToken(ctx, h.URL[strings.LastIndex(h.URL, "/")+1:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice.ok(proto.OpHookDelete, proto.HookArgs{ID: h.ID}, nil)
+	_, err = ts.send(ctx, live.bot, proto.SendArgs{Chan: live.ch, Body: "late", Nonce: make([]byte, 16)}, &live)
+	if pe, ok := err.(*proto.Error); !ok || pe.Code != proto.ErrNotFound {
+		t.Fatalf("send through deleted hook: %v", err)
+	}
 }
 
 func TestBotCannotLogIn(t *testing.T) {

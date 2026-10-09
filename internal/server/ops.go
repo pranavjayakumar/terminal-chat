@@ -158,6 +158,13 @@ func (s *Server) canRead(ch, u uint64) (string, bool) {
 // ---- messages ----
 
 func (s *Server) opSend(ctx context.Context, u proto.User, a proto.SendArgs) (any, error) {
+	return s.send(ctx, u, a, nil)
+}
+
+// send implements the send op. For a webhook send, hook is the hook that
+// was looked up; it is re-checked inside the write transaction so a hook
+// deleted or revoked meanwhile never posts.
+func (s *Server) send(ctx context.Context, u proto.User, a proto.SendArgs, hook *liveHook) (any, error) {
 	if len(a.Nonce) != 16 {
 		return nil, badRequest("nonce must be 16 bytes")
 	}
@@ -166,6 +173,11 @@ func (s *Server) opSend(ctx context.Context, u proto.User, a proto.SendArgs) (an
 	}
 	var res proto.SendRes
 	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
+		if hook != nil {
+			if err := s.hookLiveLocked(ctx, tx, hook); err != nil {
+				return nil, err
+			}
+		}
 		// Idempotent retry: same (author, nonce) returns the original message.
 		var id, ch, thread uint64
 		var body string
@@ -665,6 +677,10 @@ func (s *Server) opUserDisable(ctx context.Context, u proto.User, a proto.UserAr
 			return nil, nil
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE users SET disabled = 1 WHERE id = ?`, a.User); err != nil {
+			return nil, err
+		}
+		// Their webhooks (made by them, or posting as them) die with them.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM hooks WHERE created_by = ? OR bot = ?`, a.User, a.User); err != nil {
 			return nil, err
 		}
 		target.Disabled = true

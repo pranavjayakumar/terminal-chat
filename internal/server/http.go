@@ -87,7 +87,7 @@ func (s *Server) hookHandler() http.Handler {
 			return
 		}
 		ctx := r.Context()
-		id, ch, bot, err := s.hookByToken(ctx, token)
+		h, err := s.hookByToken(ctx, token)
 		if err != nil {
 			if !errors.Is(err, sql.ErrNoRows) {
 				s.log.Error("webhook lookup", "err", err)
@@ -97,13 +97,7 @@ func (s *Server) hookHandler() http.Handler {
 			hookFail(w, http.StatusNotFound, proto.ErrNotFound, "")
 			return
 		}
-		s.mu.Lock()
-		disabled := s.disabled[bot.ID]
-		s.mu.Unlock()
-		if disabled {
-			hookFail(w, http.StatusNotFound, proto.ErrNotFound, "")
-			return
-		}
+		id := h.id
 		if ok, wait := s.allowHook(id); !ok {
 			retryAfter(w, wait)
 			hookFail(w, http.StatusTooManyRequests, proto.ErrRateLimited, "slow down")
@@ -135,7 +129,7 @@ func (s *Server) hookHandler() http.Handler {
 		} else {
 			rand.Read(nonce)
 		}
-		res, err := s.opSend(ctx, bot, proto.SendArgs{Chan: ch, Body: text, Nonce: nonce})
+		res, err := s.send(ctx, h.bot, proto.SendArgs{Chan: h.ch, Body: text, Nonce: nonce}, &h)
 		if err != nil {
 			var pe *proto.Error
 			if !errors.As(err, &pe) {

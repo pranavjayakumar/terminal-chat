@@ -176,9 +176,11 @@ Rules:
   with that name is reused, otherwise one is created (`user.new`); a human with that name →
   `conflict`. If the bot isn't a member of `chan` it is added (`chan.join`, actor = caller).
   `url` is secret and returned only here. **hook.list** returns hooks in channels the caller
-  currently belongs to (admins: all). **hook.delete**: the creator or an admin (a member who
-  isn't → `forbidden`, anyone else → `not_found`); the URL stops working at once. The bot
-  user and its messages stay. `hook.create`/`hook.delete` count as write ops for rate limits.
+  currently belongs to (admins: all). **hook.delete**: the creator, an admin, or any current
+  member of the hook's channel (anyone else → `not_found`); the URL stops working at once. The
+  bot user and its messages stay. Disabling a user (`user.disable`) deletes the hooks they
+  created (and any posting as them) in the same transaction. `hook.create`/`hook.delete`
+  count as write ops for rate limits.
 - **dm.open** returns the existing DM for that exact member set (caller included)
   or creates it. DMs have `name = ""`.
 
@@ -336,7 +338,11 @@ the original message (send idempotency, §5); the same key with different text �
 
 **Effect.** Exactly a `send` by the hook's bot user into the hook's channel: a
 `msg.new` with `author` = bot, same event log, fan-out and visibility. The bot's
-per-user send limit (§9) also applies; a disabled bot's hooks answer 404.
+per-user send limit (§9) also applies. Inside the send's write transaction the server
+re-checks that the hook still exists, that its creator is enabled and still a member of
+the channel, and that its bot is enabled and still a member; otherwise the request gets
+the same 404 as an unknown token (a hook whose creator left is dormant until they rejoin
+or someone deletes it).
 
 **Responses** (JSON, `Cache-Control: no-store`):
 

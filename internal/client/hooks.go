@@ -37,7 +37,7 @@ func (c *Client) ListHooks(ctx context.Context) ([]proto.Hook, error) {
 	return r.Hooks, err
 }
 
-// DeleteHook deletes a webhook (ours, or any as admin).
+// DeleteHook deletes a webhook (any in a channel we're in; any at all, for admins).
 func (c *Client) DeleteHook(ctx context.Context, id uint64) error {
 	return c.call(ctx, proto.OpHookDelete, proto.HookArgs{ID: id}, nil, nil)
 }

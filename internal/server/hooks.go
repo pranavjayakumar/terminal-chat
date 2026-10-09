@@ -244,11 +244,10 @@ func (s *Server) opHookDelete(ctx context.Context, u proto.User, a proto.HookArg
 		if err != nil {
 			return nil, err
 		}
-		if by != u.ID && !u.Admin {
-			if !s.members[ch][u.ID] {
-				return nil, errNotFound
-			}
-			return nil, errForbidden
+		// Any member can revoke a hook posting into their channel, so it
+		// doesn't outlive its creator's access.
+		if by != u.ID && !u.Admin && !s.members[ch][u.ID] {
+			return nil, errNotFound
 		}
 		_, err = tx.ExecContext(ctx, `DELETE FROM hooks WHERE id = ?`, a.ID)
 		return nil, err
@@ -262,13 +261,36 @@ func (s *Server) opHookDelete(ctx context.Context, u proto.User, a proto.HookArg
 	return proto.Empty{}, nil
 }
 
-// hookByToken returns the live hook for token and its bot user.
-func (s *Server) hookByToken(ctx context.Context, token string) (id, ch uint64, bot proto.User, err error) {
+// liveHook is a hook as looked up by its token.
+type liveHook struct {
+	id, ch, creator uint64
+	bot             proto.User
+}
+
+// hookByToken returns the hook for token and its bot user.
+func (s *Server) hookByToken(ctx context.Context, token string) (liveHook, error) {
+	var h liveHook
 	var botID uint64
-	err = s.st.db.QueryRowContext(ctx, `SELECT id, chan, bot FROM hooks WHERE token = ?`, tokenHash(token)).Scan(&id, &ch, &botID)
+	err := s.st.db.QueryRowContext(ctx, `SELECT id, chan, bot, created_by FROM hooks WHERE token = ?`,
+		tokenHash(token)).Scan(&h.id, &h.ch, &botID, &h.creator)
 	if err != nil {
-		return 0, 0, bot, err
+		return h, err
 	}
-	bot, err = getUser(ctx, s.st.db, botID)
-	return id, ch, bot, err
+	h.bot, err = getUser(ctx, s.st.db, botID)
+	return h, err
+}
+
+// hookLiveLocked checks, inside a write transaction, that h still exists and
+// may post: its creator is enabled and still in the channel, and so is its
+// bot. Anything else is not_found (HTTP 404).
+func (s *Server) hookLiveLocked(ctx context.Context, tx *sql.Tx, h *liveHook) error {
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM hooks WHERE id = ?`, h.id).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 || s.disabled[h.creator] || s.disabled[h.bot.ID] ||
+		!s.members[h.ch][h.creator] || !s.members[h.ch][h.bot.ID] {
+		return errNotFound
+	}
+	return nil
 }
