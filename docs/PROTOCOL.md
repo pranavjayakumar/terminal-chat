@@ -806,7 +806,9 @@ a member.
 
 A member that holds K for `epoch` answers only if `dev` is a device it
 verified (§13.2), not revoked, of the `key.need`'s `user`, and that user is
-in the roster of that epoch's bundle (never seal K to a non-member). It
+both a current member of the channel (as the client knows it) and in the
+roster of that epoch's bundle (never seal K to a non-member, nor to a former
+member asking for an epoch they once belonged to). It
 answers at most once per (chan, epoch, dev) per 30 s, with
 **key.share** `{chan, epoch, dev, eph, ct}`:
 

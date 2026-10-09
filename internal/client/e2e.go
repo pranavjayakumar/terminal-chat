@@ -1016,7 +1016,9 @@ type shareKey struct {
 }
 
 // answerKeyNeed seals K to the asking device if it's a verified, live device
-// of the asking user and that user is in the epoch's roster.
+// of the asking user, that user is a current member of the channel (cache)
+// AND in the roster of the requested epoch: someone who left must not get
+// keys for old epochs they were once in.
 func (c *Client) answerKeyNeed(ctx context.Context, s *session, sid e2ecrypto.ServerID, e proto.Ephemeral) {
 	me := s.myDevice()
 	if me == nil || len(e.Dev) != e2ecrypto.IDSize || e.Chan == 0 || e.Epoch == 0 {
@@ -1042,6 +1044,9 @@ func (c *Client) answerKeyNeed(ctx context.Context, s *session, sid e2ecrypto.Se
 	ep, ok, err := c.trust.Epoch(sid, e.Chan, e.Epoch)
 	c.e2eMu.Unlock()
 	if err != nil || !ok || ep.Key == nil || !slices.Contains(ep.Roster, d.User) {
+		return
+	}
+	if cv, ok, err := getChan(c.db, e.Chan); err != nil || !ok || !cv.E2E || !slices.Contains(cv.Members, d.User) {
 		return
 	}
 	key := shareKey{e.Chan, e.Epoch, dev}

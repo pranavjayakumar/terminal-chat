@@ -1040,3 +1040,32 @@ func TestE2EKeyNeedVerifyThrottled(t *testing.T) {
 		t.Fatalf("%d verification runs for 5 key.need, want ≤ 1", got)
 	}
 }
+
+// A key.need from someone in the epoch's roster who is no longer a member
+// isn't answered.
+func TestE2EKeyNeedFormerMember(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	b1, c1 := newPeer(t, bob, nil), newPeer(t, carol, nil)
+	group := proto.Channel{ID: dm, Kind: proto.ChanDM, Members: []uint64{alice, bob, carol}, E2E: true, Creator: bob}
+	f := startE2E(t, fs, proto.Snapshot{Chans: []proto.Channel{group},
+		Devs: []proto.Device{{Cert: b1.cert}, {Cert: c1.cert}}}, proto.DevicesListRes{})
+	me := f.myKeys(c)
+	f.keyEpoch(dm, bob, mkBundle(t, b1.dev, dm, 1, nil, []uint64{alice, bob, carol}, newK(t), nil, me, b1.dev))
+	waitFor(t, "ok", status(c, dm, E2EOK))
+	f.event(proto.KChanLeave, dm, carol, proto.UserRef{User: carol})
+	waitFor(t, "carol left", func() bool { cv, _ := c.Channel(dm); return !slices.Contains(cv.Members, carol) })
+	f.write(proto.TEphemeral, proto.Ephemeral{Kind: proto.EphKeyNeed, Chan: dm, User: carol, Epoch: 1, Dev: c1.dev.ID[:]})
+	select {
+	case s := <-f.shares:
+		t.Fatalf("answered a former member: %+v", s)
+	case <-time.After(300 * time.Millisecond):
+	}
+	// A current roster member still is.
+	f.write(proto.TEphemeral, proto.Ephemeral{Kind: proto.EphKeyNeed, Chan: dm, User: bob, Epoch: 1, Dev: b1.dev.ID[:]})
+	select {
+	case <-f.shares:
+	case <-time.After(5 * time.Second):
+		t.Fatal("current member not answered")
+	}
+}
