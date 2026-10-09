@@ -1134,3 +1134,32 @@ func TestKeyChangesLRU(t *testing.T) {
 		t.Fatalf("%d pending across users", len(pend))
 	}
 }
+
+// Device keys replaced on a user mismatch (or retired) are archived, never
+// deleted.
+func TestDeviceKeysArchivedOnUserMismatch(t *testing.T) {
+	s, _ := newStore(t)
+	kb, err := s.DeviceKeys(sidA, bob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k3, err := s.DeviceKeys(sidA, 3)
+	if err != nil || k3.ID == kb.ID {
+		t.Fatalf("other user kept bob's device: %v", err)
+	}
+	arch, err := s.ArchivedDeviceKeys(sidA)
+	if err != nil || len(arch) != 1 || arch[0].User != bob || arch[0].Keys.ID != kb.ID || arch[0].Keys.X25519Pub != kb.X25519Pub {
+		t.Fatalf("archive after mismatch = %+v %v", arch, err)
+	}
+	fresh, err := s.RetireDeviceKeys(sidA, 3, k3.ID)
+	if err != nil || fresh.ID == k3.ID {
+		t.Fatal(err)
+	}
+	arch, _ = s.ArchivedDeviceKeys(sidA)
+	if len(arch) != 2 || arch[0].User != 3 || arch[0].Keys.ID != k3.ID {
+		t.Fatalf("archive after retire = %+v", arch)
+	}
+	if other, _ := s.ArchivedDeviceKeys(sidB); len(other) != 0 {
+		t.Fatal("archive leaked to another server")
+	}
+}

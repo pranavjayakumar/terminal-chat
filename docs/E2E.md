@@ -126,6 +126,9 @@ Libraries (all pure Go, keeps `CGO_ENABLED=0`): `crypto/ecdh`, `crypto/ed25519`,
   can't move, replay, re-attribute or forge edits. Reactions become HMAC tags + signed enc.
 - Device certs use the existing tc signature format with context `"tc-device-v1\x00"` (no SSHSIG).
   sk-* signatures must have the user-presence flag.
+- Device private keys are never deleted from the trust store: keys replaced because TC_HOME is re-used
+  for another user, or retired after a revoke, move to an archive table; `TC_HOME/device.key`
+  (pre-trust-store) is removed only once the trust store holds exactly its keys.
 - Cut from v1: age passphrase backup, `--github` verify, emoji SAS, per-epoch history boxes, SSHSIG.
 - Webhooks into e2e channels → `forbidden`. Server search excludes e2e; client FTS instead.
 - **M1 bug found:** delete/edit never scrub `events.data`, so old bodies replay on sync (PR 0).

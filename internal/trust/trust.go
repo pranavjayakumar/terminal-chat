@@ -37,8 +37,9 @@ const FileName = "e2e.db"
 // epochs and chan_alarms; v3 adds revoked_devices.time; v4 adds server_pins
 // and server_alarms; v5 makes revoked_devices.seq nullable (NULL = unknown;
 // v1–v4 stored unknown as 0, which the migration turns into NULL); v6 adds
-// key_changes.last_seen (pending key changes are an LRU of maxKeyChanges).
-const schemaVersion = 6
+// key_changes.last_seen (pending key changes are an LRU of maxKeyChanges);
+// v7 adds archived_device_keys.
+const schemaVersion = 7
 
 // maxKeyChanges bounds the pending key changes kept per user and server; the
 // least recently seen is dropped (it is re-recorded if seen again).
@@ -76,6 +77,11 @@ CREATE TABLE IF NOT EXISTS chan_alarms (
 CREATE TABLE IF NOT EXISTS server_pins (
 	addr TEXT NOT NULL, pin TEXT NOT NULL, server_id BLOB NOT NULL, first_seen INTEGER NOT NULL,
 	PRIMARY KEY (addr, pin));
+-- Device keys replaced because TC_HOME was re-used for another user, or
+-- the device was retired: never deleted, so no private key is ever lost.
+CREATE TABLE IF NOT EXISTS archived_device_keys (
+	server_id BLOB NOT NULL, keys BLOB NOT NULL, user INTEGER NOT NULL, created INTEGER NOT NULL,
+	archived INTEGER NOT NULL, PRIMARY KEY (server_id, keys));
 CREATE TABLE IF NOT EXISTS server_alarms (
 	server_id BLOB PRIMARY KEY, detail TEXT NOT NULL, time INTEGER NOT NULL);
 `
@@ -314,15 +320,16 @@ func i64(v uint64) int64 { return int64(v) }
 // private keys are persisted.
 //
 // One device per server: keys stored for another user (TC_HOME re-used for
-// a different login) are replaced by fresh ones. Keys from before keys were
-// bound to a user (user 0) are claimed by the first caller.
+// a different login) are archived (ArchivedDeviceKeys), never deleted, and
+// replaced by fresh ones. Keys from before keys were bound to a user (user
+// 0) are claimed by the first caller.
 func (s *Store) DeviceKeys(sid e2ecrypto.ServerID, user uint64) (*e2ecrypto.DeviceKeys, error) {
 	return s.deviceKeys(sid, user, nil)
 }
 
-// RetireDeviceKeys replaces the server's device keys with fresh ones if they
-// are still those of device old (revoked for good), and returns the current
-// keys. Concurrent callers retiring the same device all get the same new keys.
+// RetireDeviceKeys replaces (archiving) the server's device keys with fresh
+// ones if they are still those of device old (revoked for good), and returns
+// the current keys. Concurrent callers retiring the same device all get the same new keys.
 func (s *Store) RetireDeviceKeys(sid e2ecrypto.ServerID, user uint64, old e2ecrypto.DevID) (*e2ecrypto.DeviceKeys, error) {
 	return s.deviceKeys(sid, user, &old)
 }
@@ -350,6 +357,14 @@ func (s *Store) deviceKeys(sid e2ecrypto.ServerID, user uint64, retire *e2ecrypt
 				return err
 			}
 		}
+		if err == nil {
+			// Keep the keys being replaced.
+			if _, err := tx.Exec(`INSERT OR IGNORE INTO archived_device_keys (server_id, keys, user, created, archived)
+				SELECT server_id, keys, user, created, ? FROM device_keys WHERE server_id = ?`,
+				time.Now().UnixNano(), sid[:]); err != nil {
+				return err
+			}
+		}
 		k, err := e2ecrypto.Generate(rand.Reader)
 		if err != nil {
 			return err
@@ -370,6 +385,38 @@ func (s *Store) deviceKeys(sid e2ecrypto.ServerID, user uint64, retire *e2ecrypt
 		return nil, fmt.Errorf("loading device keys: %w", err)
 	}
 	return &k, nil
+}
+
+// ArchivedKeys are device keys that were replaced, with the user they
+// belonged to.
+type ArchivedKeys struct {
+	User uint64
+	Keys *e2ecrypto.DeviceKeys
+}
+
+// ArchivedDeviceKeys returns the server's replaced device keys, newest first.
+func (s *Store) ArchivedDeviceKeys(sid e2ecrypto.ServerID) ([]ArchivedKeys, error) {
+	rows, err := s.db.Query(`SELECT keys, user FROM archived_device_keys WHERE server_id = ?
+		ORDER BY archived DESC, rowid DESC`, sid[:])
+	if err != nil {
+		return nil, fmt.Errorf("loading archived device keys: %w", err)
+	}
+	defer rows.Close()
+	var out []ArchivedKeys
+	for rows.Next() {
+		var raw []byte
+		var user int64
+		var a ArchivedKeys
+		if err := rows.Scan(&raw, &user); err != nil {
+			return nil, err
+		}
+		a.User, a.Keys = uint64(user), new(e2ecrypto.DeviceKeys)
+		if err := a.Keys.UnmarshalBinary(raw); err != nil {
+			return nil, fmt.Errorf("loading archived device keys: %w", err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
 
 // ImportResult is what ImportDeviceKeys did.
