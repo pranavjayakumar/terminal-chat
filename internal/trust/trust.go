@@ -35,8 +35,9 @@ const FileName = "e2e.db"
 
 // Schema history: v1 = step 3; v2 adds device_keys.user, revoked_devices.seq,
 // epochs and chan_alarms; v3 adds revoked_devices.time; v4 adds server_pins
-// and server_alarms.
-const schemaVersion = 4
+// and server_alarms; v5 makes revoked_devices.seq nullable (NULL = unknown;
+// v1–v4 stored unknown as 0, which the migration turns into NULL).
+const schemaVersion = 5
 
 const schema = `
 CREATE TABLE IF NOT EXISTS device_keys (
@@ -52,7 +53,7 @@ CREATE TABLE IF NOT EXISTS devices (
 	server_id BLOB NOT NULL, dev BLOB NOT NULL, user INTEGER NOT NULL, x25519 BLOB NOT NULL,
 	ed25519 BLOB NOT NULL, cert BLOB NOT NULL, PRIMARY KEY (server_id, dev));
 CREATE TABLE IF NOT EXISTS revoked_devices (
-	server_id BLOB NOT NULL, dev BLOB NOT NULL, seq INTEGER NOT NULL DEFAULT 0,
+	server_id BLOB NOT NULL, dev BLOB NOT NULL, seq INTEGER,
 	time INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (server_id, dev));
 CREATE TABLE IF NOT EXISTS chain_heads (
 	server_id BLOB NOT NULL, chan INTEGER NOT NULL, epoch INTEGER NOT NULL, hash BLOB NOT NULL,
@@ -82,6 +83,18 @@ ALTER TABLE revoked_devices ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;
 // migrateV2 adds the v3 column to a v1 or v2 file.
 const migrateV2 = `
 ALTER TABLE revoked_devices ADD COLUMN time INTEGER NOT NULL DEFAULT 0;
+`
+
+// migrateV4 rebuilds revoked_devices with a nullable seq; a stored 0 meant
+// "unknown" but won every min(), invalidating every bundle of the device.
+const migrateV4 = `
+CREATE TABLE revoked_devices_v5 (
+	server_id BLOB NOT NULL, dev BLOB NOT NULL, seq INTEGER,
+	time INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (server_id, dev));
+INSERT INTO revoked_devices_v5 (server_id, dev, seq, time)
+	SELECT server_id, dev, NULLIF(seq, 0), time FROM revoked_devices;
+DROP TABLE revoked_devices;
+ALTER TABLE revoked_devices_v5 RENAME TO revoked_devices;
 `
 
 var (
@@ -155,8 +168,9 @@ type Device struct {
 	Ed25519 [32]byte
 	Cert    []byte // exact Signed cert bytes as received
 	Revoked bool
-	// RevokedSeq is the seq of the revoke's event (0 = unknown, before
-	// everything). It invalidates bundles with a later seq (PROTOCOL §13.3).
+	// RevokedSeq is the seq of the revoke's event (0 = unknown: only the
+	// time rule applies until a real seq arrives). It invalidates bundles
+	// with a later seq (PROTOCOL §13.3).
 	RevokedSeq uint64
 	// RevokedTime is the signed time of the revoke (Unix ms; 0 = unknown). A
 	// bundle the device signed at or after it is invalid whatever its seq
@@ -241,6 +255,11 @@ func initSchema(tx *sql.Tx) error {
 	}
 	if v == 1 || v == 2 {
 		if _, err := tx.Exec(migrateV2); err != nil {
+			return fmt.Errorf("migrating trust store v%d: %w", v, err)
+		}
+	}
+	if v >= 1 && v <= 4 {
+		if _, err := tx.Exec(migrateV4); err != nil {
 			return fmt.Errorf("migrating trust store v%d: %w", v, err)
 		}
 	}
@@ -539,24 +558,31 @@ func (s *Store) PutDevice(sid e2ecrypto.ServerID, d Device) error {
 
 func revoke(tx *sql.Tx, sid e2ecrypto.ServerID, dev e2ecrypto.DevID, seq uint64, at int64) error {
 	// The earliest known revoke seq and time win: they invalidate the most
-	// bundles. A time of 0 is "unknown" and never beats a known one.
+	// bundles. Seq 0 (stored NULL) and time 0 are "unknown" and never beat a
+	// known value.
+	var s sql.NullInt64
+	if seq != 0 {
+		s = sql.NullInt64{Int64: i64(seq), Valid: true}
+	}
 	_, err := tx.Exec(`INSERT INTO revoked_devices (server_id, dev, seq, time) VALUES (?, ?, ?, ?)
-		ON CONFLICT (server_id, dev) DO UPDATE SET seq = min(seq, excluded.seq),
+		ON CONFLICT (server_id, dev) DO UPDATE SET
+		seq = CASE WHEN excluded.seq IS NULL THEN seq WHEN seq IS NULL THEN excluded.seq
+			ELSE min(seq, excluded.seq) END,
 		time = CASE WHEN excluded.time = 0 THEN time WHEN time = 0 THEN excluded.time
-			ELSE min(time, excluded.time) END`, sid[:], dev[:], i64(seq), max(at, 0))
+			ELSE min(time, excluded.time) END`, sid[:], dev[:], s, max(at, 0))
 	return err
 }
 
-// RevokeDevice marks a device revoked, permanently, as of before every
-// event. The device need not be stored yet: a revocation seen before the
-// cert still applies to it.
+// RevokeDevice marks a device revoked, permanently, at an unknown seq and
+// time (so no bundle is invalidated by it until one is known). The device
+// need not be stored yet: a revocation seen before the cert still applies.
 func (s *Store) RevokeDevice(sid e2ecrypto.ServerID, dev e2ecrypto.DevID) error {
 	return s.RevokeDeviceAt(sid, dev, 0)
 }
 
 // RevokeDeviceAt marks a device revoked, permanently, by the revoke at event
-// seq: bundles with a later seq must not be signed by it or box to it.
-// Revoking again keeps the lowest seq.
+// seq (0 = unknown): bundles with a later seq must not be signed by it or
+// box to it. Revoking again keeps the lowest known seq.
 func (s *Store) RevokeDeviceAt(sid e2ecrypto.ServerID, dev e2ecrypto.DevID, seq uint64) error {
 	return s.RevokeDeviceAtTime(sid, dev, seq, 0)
 }
@@ -573,6 +599,7 @@ func (s *Store) RevokeDeviceAtTime(sid e2ecrypto.ServerID, dev e2ecrypto.DevID, 
 }
 
 const deviceCols = `d.dev, d.user, d.x25519, d.ed25519, d.cert,
+	EXISTS (SELECT 1 FROM revoked_devices r WHERE r.server_id = d.server_id AND r.dev = d.dev),
 	(SELECT r.seq FROM revoked_devices r WHERE r.server_id = d.server_id AND r.dev = d.dev),
 	(SELECT r.time FROM revoked_devices r WHERE r.server_id = d.server_id AND r.dev = d.dev)`
 
@@ -581,14 +608,14 @@ func scanDevice(sc interface{ Scan(...any) error }) (Device, error) {
 	var id, x, ed []byte
 	var user int64
 	var rseq, rtime sql.NullInt64
-	if err := sc.Scan(&id, &user, &x, &ed, &d.Cert, &rseq, &rtime); err != nil {
+	if err := sc.Scan(&id, &user, &x, &ed, &d.Cert, &d.Revoked, &rseq, &rtime); err != nil {
 		return Device{}, err
 	}
 	copy(d.ID[:], id)
 	copy(d.X25519[:], x)
 	copy(d.Ed25519[:], ed)
 	d.User = uint64(user)
-	d.Revoked, d.RevokedSeq, d.RevokedTime = rseq.Valid, uint64(rseq.Int64), rtime.Int64
+	d.RevokedSeq, d.RevokedTime = uint64(rseq.Int64), rtime.Int64
 	return d, nil
 }
 

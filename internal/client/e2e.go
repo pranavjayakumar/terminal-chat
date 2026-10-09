@@ -499,7 +499,7 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 		// Only a known device of the revoke's user: a member must not be able
 		// to pre-revoke someone else's device id. Skip a revoke if we already
 		// hold one at least as early in both seq and signed time.
-		if !ok || d.User != pr.User || (d.Revoked && d.RevokedSeq <= r.seq && d.RevokedTime != 0 && d.RevokedTime <= pr.Time) {
+		if !ok || d.User != pr.User || (d.Revoked && d.RevokedSeq != 0 && d.RevokedSeq <= r.seq && d.RevokedTime != 0 && d.RevokedTime <= pr.Time) {
 			continue
 		}
 		valid := false
@@ -513,7 +513,9 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 		if !valid {
 			devs, _ := ts.Devices(sid, pr.User)
 			for _, o := range devs {
-				if o.ID == pr.Dev || (o.Revoked && o.RevokedSeq < r.seq) {
+				// A signer revoked at an unknown seq may have been revoked
+				// before this revoke: it doesn't count.
+				if o.ID == pr.Dev || (o.Revoked && (o.RevokedSeq == 0 || o.RevokedSeq < r.seq)) {
 					continue
 				}
 				if v, err := r.s.VerifyDeviceRevokeByDevice(sid, o.Ed25519[:]); err == nil && v.User == pr.User && v.Dev == pr.Dev {
@@ -562,9 +564,9 @@ func (c *Client) validateBundle(sid e2ecrypto.ServerID, ch proto.Channel, epoch 
 	}
 	// Invalid if EITHER the server's seq order OR the bundle's own signed
 	// time puts it after a signed revoke of its device: a server can't
-	// reorder past both (docs/E2E.md step 6). A revoke whose time we don't
-	// know (0) is judged by seq alone.
-	if by.Revoked && by.RevokedSeq < cb.seq {
+	// reorder past both (docs/E2E.md step 6). A revoke whose seq or time we
+	// don't know (0) is judged by the other rule alone.
+	if by.Revoked && by.RevokedSeq != 0 && by.RevokedSeq < cb.seq {
 		return eb, fmt.Errorf("epoch %d: signed by a revoked device", epoch)
 	}
 	if by.Revoked && by.RevokedTime != 0 && eb.Time >= by.RevokedTime {
@@ -595,7 +597,7 @@ func (c *Client) validateBundle(sid e2ecrypto.ServerID, ch proto.Channel, epoch 
 		if !slices.Contains(eb.Roster, d.User) {
 			return eb, fmt.Errorf("epoch %d: key sealed to a non-member", epoch)
 		}
-		if d.Revoked && d.RevokedSeq < cb.seq {
+		if d.Revoked && d.RevokedSeq != 0 && d.RevokedSeq < cb.seq {
 			return eb, fmt.Errorf("epoch %d: key sealed to a revoked device", epoch)
 		}
 		if keys[d.X25519] {

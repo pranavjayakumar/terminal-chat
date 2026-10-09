@@ -417,3 +417,30 @@ func TestUnverifiedDeviceObjectsBounded(t *testing.T) {
 		t.Fatal("cap leaked to another user")
 	}
 }
+
+// Seq 0 means "unknown" in the cache too: it never wins the min.
+func TestStoreRevokeUnknownSeq(t *testing.T) {
+	db, err := openCache(filepath.Join(t.TempDir(), "cache.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	signer := newSSH(t)
+	d, _ := e2ecrypto.Generate(rand.Reader)
+	r, err := identity.NewDeviceRevoke(signer, testSID(), bob, d.ID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq := func() (n uint64) {
+		db.QueryRow(`SELECT seq FROM device_revokes`).Scan(&n)
+		return n
+	}
+	for _, step := range []struct{ in, want uint64 }{{0, 0}, {30, 30}, {0, 30}, {20, 20}, {40, 20}} {
+		if err := storeRevoke(db, proto.Signed(r), step.in); err != nil {
+			t.Fatal(err)
+		}
+		if got := seq(); got != step.want {
+			t.Fatalf("after %d: seq %d, want %d", step.in, got, step.want)
+		}
+	}
+}

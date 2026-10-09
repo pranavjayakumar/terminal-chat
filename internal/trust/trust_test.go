@@ -855,11 +855,66 @@ func TestRevokeSeqKeepsEarliest(t *testing.T) {
 	if !got.Revoked || got.RevokedSeq != 30 {
 		t.Fatalf("revoked %v at %d, want 30", got.Revoked, got.RevokedSeq)
 	}
+	// Seq 0 is "unknown": it never wins the min.
 	if err := s.RevokeDevice(sidA, d.ID); err != nil {
 		t.Fatal(err)
 	}
-	if got, _, _ := s.Device(sidA, d.ID); got.RevokedSeq != 0 {
-		t.Fatalf("unknown-seq revoke didn't win: %d", got.RevokedSeq)
+	if got, _, _ := s.Device(sidA, d.ID); !got.Revoked || got.RevokedSeq != 30 {
+		t.Fatalf("unknown-seq revoke won: %d", got.RevokedSeq)
+	}
+	// A device first revoked at an unknown seq takes the first real one.
+	d2 := device(t, bob)
+	s.PutDevice(sidA, d2)
+	s.RevokeDevice(sidA, d2.ID)
+	if got, _, _ := s.Device(sidA, d2.ID); !got.Revoked || got.RevokedSeq != 0 {
+		t.Fatalf("unknown revoke: %+v", got)
+	}
+	s.RevokeDeviceAt(sidA, d2.ID, 90)
+	if got, _, _ := s.Device(sidA, d2.ID); got.RevokedSeq != 90 {
+		t.Fatalf("real seq after unknown: %d", got.RevokedSeq)
+	}
+}
+
+// A v4 file stored unknown revoke seqs as 0; the migration makes them NULL
+// (unknown) and keeps real ones.
+func TestMigrateV4RevokeSeqZero(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "tc")
+	os.MkdirAll(home, 0o700)
+	s0 := open(t, home)
+	zero, real := device(t, bob), device(t, bob)
+	s0.PutDevice(sidA, zero)
+	s0.PutDevice(sidA, real)
+	s0.RevokeDeviceAt(sidA, real.ID, 12)
+	for _, q := range []string{
+		`DROP TABLE revoked_devices`,
+		`CREATE TABLE revoked_devices (server_id BLOB NOT NULL, dev BLOB NOT NULL, seq INTEGER NOT NULL DEFAULT 0,
+			time INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (server_id, dev))`,
+		`PRAGMA user_version = 4`,
+	} {
+		if _, err := s0.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s0.db.Exec(`INSERT INTO revoked_devices VALUES (?, ?, 0, 500), (?, ?, 12, 0)`, sidA[:], zero.ID[:], sidA[:], real.ID[:])
+	s0.Close()
+
+	s := open(t, home)
+	if got, _, _ := s.Device(sidA, zero.ID); !got.Revoked || got.RevokedSeq != 0 || got.RevokedTime != 500 {
+		t.Fatalf("zero row: %+v", got)
+	}
+	var null bool
+	s.db.QueryRow(`SELECT seq IS NULL FROM revoked_devices WHERE dev = ?`, zero.ID[:]).Scan(&null)
+	if !null {
+		t.Fatal("seq 0 not reset to unknown")
+	}
+	if err := s.RevokeDeviceAt(sidA, zero.ID, 40); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.Device(sidA, zero.ID); got.RevokedSeq != 40 {
+		t.Fatalf("real seq after migration: %d", got.RevokedSeq)
+	}
+	if got, _, _ := s.Device(sidA, real.ID); !got.Revoked || got.RevokedSeq != 12 {
+		t.Fatalf("real row: %+v", got)
 	}
 }
 

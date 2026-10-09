@@ -692,7 +692,13 @@ possibly stopping early at ~768 KiB: ask again from the last epoch + 1.
 bundles whose `key.epoch` seq is after r (they should not have boxed that
 device); bundles at or before r stay valid, and the revoked device's
 earlier keys are expected history. Clients order the two by these seqs
-(`key.fetch` `seqs`, snapshot `keys[].seq`, event seqs).
+(`key.fetch` `seqs`, snapshot `keys[].seq`, event seqs). A seq is never 0:
+the server backfills it from the `device.revoke` event and, if that is
+impossible, leaves the revoke out of `devices.list` and the snapshot (and
+logs it) rather than send 0. A client that has a revoke without a seq
+(missing or 0 in `revoked_seqs`) treats the seq as **unknown**, not as
+"before everything": it applies only the time rule below until a real seq
+arrives, and an unknown seq never wins the "earliest" comparison.
 
 A *client* additionally rejects a bundle (an alarm, §13.3 client validity)
 whose own signed `time` is at or after the signed `time` of a verified

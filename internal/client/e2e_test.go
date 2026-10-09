@@ -840,6 +840,10 @@ func TestE2EBundleAfterRevokeBySignedTime(t *testing.T) {
 		{"seq says after the revoke, signed times don't", time.Hour, revokeSeqBeforeBundle, false,
 			"epoch 1: signed by a revoked device"},
 		{"seq and signed time both before the revoke", time.Hour, revokeSeqAfterBundle, true, ""},
+		// Seq 0 = unknown: it must not count as "before everything"; only the time rule applies.
+		{"unknown seq, signed time after the bundle", time.Hour, 0, true, ""},
+		{"unknown seq, signed time before the bundle", -time.Hour, 0, false,
+			"epoch 1: signed after its device was revoked"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -74,14 +74,16 @@ func storeEndorse(q dbtx, e proto.Signed) error {
 }
 
 // storeRevoke keeps a revoke with the seq of its device.revoke event (0 if
-// unknown, which counts as before every bundle). The lowest seq seen wins.
+// unknown: then only the signed-time rule applies until a real seq
+// arrives). The lowest known seq wins; 0 never beats a known one.
 func storeRevoke(q dbtx, r proto.Signed, seq uint64) error {
 	dr, err := identity.PeekDeviceRevoke(identity.Signed(r))
 	if err != nil || !keepUnverified(q, "device_revokes", dr.ServerID[:], dr.User) {
 		return nil
 	}
 	_, err = q.Exec(`INSERT INTO device_revokes (revoke, dev, user, seq) VALUES (?, ?, ?, ?)
-		ON CONFLICT (revoke) DO UPDATE SET seq = min(seq, excluded.seq)`,
+		ON CONFLICT (revoke) DO UPDATE SET seq = CASE WHEN excluded.seq = 0 THEN seq
+			WHEN seq = 0 THEN excluded.seq ELSE min(seq, excluded.seq) END`,
 		[]byte(proto.MustRaw(r)), dr.Dev[:], dr.User, seq)
 	return err
 }

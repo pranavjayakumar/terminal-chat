@@ -290,6 +290,10 @@ type deviceRow struct {
 	revoke  *proto.Signed
 	revSeq  uint64 // seq of the device.revoke event
 	encSize int
+	// revUnknown: the device is revoked but its revoke's seq is unknown
+	// (backfill found no event). The revoke is left out (logged): clients
+	// read seq 0 as "unknown", so never send it.
+	revUnknown bool
 }
 
 // eachDevice streams devices of users (nil = all) with id > after, ordered
@@ -324,6 +328,9 @@ func eachDevice(ctx context.Context, q querier, users []uint64, after uint64, fn
 			if err := proto.Unmarshal(endorse, d.dev.Endorse); err != nil {
 				return err
 			}
+		}
+		if revoked != nil && d.revSeq == 0 {
+			d.revUnknown, revoked = true, nil
 		}
 		if revoked != nil {
 			d.revoke = new(proto.Signed)
@@ -380,6 +387,9 @@ func (s *Server) opDevicesList(ctx context.Context, a proto.DevicesListArgs) (an
 		return nil, badRequest("user ids out of range")
 	}
 	err := eachDevice(ctx, s.st.db, a.Users, a.After, func(d deviceRow) bool {
+		if d.revUnknown {
+			s.log.Error("device revoke without a seq, omitted", "user", d.user)
+		}
 		if len(group) > 0 && d.user != group[0].user && !flush() {
 			res.Next = lastIncluded
 			return false
@@ -403,6 +413,9 @@ func (sess *session) snapshotDevices(ctx context.Context, tx *sql.Tx) error {
 	size := 0
 	var perr error
 	err := eachDevice(ctx, tx, nil, 0, func(d deviceRow) bool {
+		if d.revUnknown {
+			sess.srv.log.Error("device revoke without a seq, omitted", "user", d.user)
+		}
 		if size+d.encSize > snapshotPart && size > 0 {
 			if perr = sess.pushSnapshot(part); perr != nil {
 				return false
