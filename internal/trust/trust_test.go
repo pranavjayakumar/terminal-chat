@@ -876,6 +876,24 @@ func TestMigrateV7EpochSeq(t *testing.T) {
 	}
 }
 
+// The legacy cutoff is set once; later calls can't move it.
+func TestLegacyCutoffSticky(t *testing.T) {
+	s, home := newStore(t)
+	if c, err := s.LegacyCutoff(sidA, 7, 40); err != nil || c != 40 {
+		t.Fatalf("first: %d %v", c, err)
+	}
+	if c, _ := s.LegacyCutoff(sidA, 7, 900); c != 40 {
+		t.Fatalf("moved to %d", c)
+	}
+	if c, _ := s.LegacyCutoff(sidB, 7, 3); c != 3 {
+		t.Fatalf("other server: %d", c)
+	}
+	s.Close()
+	if c, _ := open(t, home).LegacyCutoff(sidA, 7, 0); c != 40 {
+		t.Fatalf("after reopen: %d", c)
+	}
+}
+
 func TestRevokeSeqKeepsEarliest(t *testing.T) {
 	s, _ := newStore(t)
 	d := device(t, bob)

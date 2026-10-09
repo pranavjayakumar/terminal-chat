@@ -39,7 +39,7 @@ const FileName = "e2e.db"
 // v1–v4 stored unknown as 0, which the migration turns into NULL); v6 adds
 // key_changes.last_seen (pending key changes are an LRU of maxKeyChanges);
 // v7 adds archived_device_keys; v8 adds epochs.seq (the key.epoch seq of a
-// verified bundle; NULL = unknown).
+// verified bundle; NULL = unknown) and legacy_cutoffs.
 const schemaVersion = 8
 
 // maxKeyChanges bounds the pending key changes kept per user and server; the
@@ -83,6 +83,10 @@ CREATE TABLE IF NOT EXISTS server_pins (
 CREATE TABLE IF NOT EXISTS archived_device_keys (
 	server_id BLOB NOT NULL, keys BLOB NOT NULL, user INTEGER NOT NULL, created INTEGER NOT NULL,
 	archived INTEGER NOT NULL, PRIMARY KEY (server_id, keys));
+-- Per encrypted channel: the newest cached message id when it was first
+-- seen encrypted (plaintext up to it is legacy). Set once.
+CREATE TABLE IF NOT EXISTS legacy_cutoffs (
+	server_id BLOB NOT NULL, chan INTEGER NOT NULL, cutoff INTEGER NOT NULL, PRIMARY KEY (server_id, chan));
 CREATE TABLE IF NOT EXISTS server_alarms (
 	server_id BLOB PRIMARY KEY, detail TEXT NOT NULL, time INTEGER NOT NULL);
 `
@@ -1056,6 +1060,33 @@ func (s *Store) ChannelE2E(sid e2ecrypto.ServerID, ch uint64) (bool, error) {
 	err := s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM e2e_chans WHERE server_id = ? AND chan = ?)`,
 		sid[:], i64(ch)).Scan(&ok)
 	return ok, err
+}
+
+// LegacyCutoff returns the channel's legacy cutoff: the newest message id
+// the client had cached when it first saw the channel encrypted. Plaintext
+// at or below it predates encryption ("legacy"); plaintext above it can
+// only have been inserted by the server. If none is recorded yet, maxCached
+// is recorded (sticky: set once, never changed) and returned.
+func (s *Store) LegacyCutoff(sid e2ecrypto.ServerID, ch uint64, maxCached uint64) (uint64, error) {
+	var cut int64
+	err := s.db.QueryRow(`SELECT cutoff FROM legacy_cutoffs WHERE server_id = ? AND chan = ?`, sid[:], i64(ch)).Scan(&cut)
+	if err == nil {
+		return uint64(cut), nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	err = s.tx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO legacy_cutoffs (server_id, chan, cutoff) VALUES (?, ?, ?)`,
+			sid[:], i64(ch), i64(maxCached)); err != nil {
+			return err
+		}
+		return tx.QueryRow(`SELECT cutoff FROM legacy_cutoffs WHERE server_id = ? AND chan = ?`, sid[:], i64(ch)).Scan(&cut)
+	})
+	if err != nil {
+		return 0, fmt.Errorf("legacy cutoff of channel %d: %w", ch, err)
+	}
+	return uint64(cut), nil
 }
 
 // ---- server identity ----
