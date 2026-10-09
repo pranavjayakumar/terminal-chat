@@ -25,8 +25,8 @@ Release tag: `v0.1.0` = M1. No newer tag yet.
    plaintext until this lands — handle that history), 8 edit/delete/react + local FTS, 9 membership changes +
    `chan.remove` + `chan.encrypt` (legacy DMs), 10 TUI warnings + `/verify`, 11 malicious-server suite,
    12 security pass + chaos. Webhooks must be forbidden into e2e channels (step 7).
-3. **Finish M2**: long-code-line viewer, `/pin` `/pins`, `/remind`, user groups `@team`, diff and
-   `file:line` snippets.
+3. **Finish M2**: diff and `file:line` snippets. (Long-line viewer, `/pins`, `/remind` and user groups
+   `@team` are done.)
 4. **Deploy**: waiting on the droplet IP → `docs/DEPLOY.md`, then real-network tests.
 5. **M4 onboarding** — see `docs/ROADMAP.md`. Note: the repo is private, so install-from-GitHub-releases needs
    auth; consider serving install.sh + binaries from the tc server itself (pinned TLS).
