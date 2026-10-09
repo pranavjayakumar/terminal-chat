@@ -210,6 +210,8 @@ type Snapshot struct {
 	Revoked []Signed `msgpack:"revoked,omitempty"`
 	// Keys is the latest epoch bundle of each visible e2e channel (§13.3).
 	Keys []EpochKey `msgpack:"keys,omitempty"`
+	// Groups is every user group (cap groups).
+	Groups []Group `msgpack:"groups,omitempty"`
 }
 
 type Ping struct {

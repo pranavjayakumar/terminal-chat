@@ -120,6 +120,11 @@ func (c *Client) applySnapshot(s *session, sn proto.Snapshot) error {
 				return err
 			}
 		}
+		for _, g := range sn.Groups {
+			if err := storeGroup(tx, g); err != nil {
+				return err
+			}
+		}
 		me := c.Me().ID
 		for _, m := range sn.Msgs {
 			if err := upsertMsg(tx, m, true); err != nil {
@@ -255,6 +260,8 @@ func (c *Client) appliedElsewhere(ev proto.Event) Update {
 		if proto.Unmarshal(ev.Data, &m) == nil {
 			u.New = append(u.New, m)
 		}
+	case proto.KGroupUpdate:
+		u.Channels = true
 	}
 	if ev.Chan != 0 {
 		u.msgs(ev.Chan)
@@ -392,6 +399,15 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		*newUser = &x
 		u.Users = true
 		u.Channels = true // DM display names
+	case proto.KGroupUpdate:
+		var g proto.Group
+		if !decode(&g) || !proto.ValidName(g.Name) {
+			return nil
+		}
+		if err := storeGroup(tx, g); err != nil {
+			return err
+		}
+		u.Channels = true // who a message mentions changed
 	case proto.KDeviceNew:
 		var d proto.Device
 		if !decode(&d) {

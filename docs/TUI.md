@@ -70,7 +70,9 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 
 `/join #x`, `/leave`, `/create #x [--private]`, `/add @user`, `/topic text`, `/dm @a @b`,
 `/invite` (admin; prints code), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps), `/pins` (overlay of this channel's pinned messages, newest pin first, as `author · preview`; Enter jumps, Esc closes),
-`/activity`, `/highlight [word…]`, `/unhighlight word…`, `/snippet path[:range] [message]`, `/share-pane [pane]` (herdr only), `/quit`.
+`/activity`, `/highlight [word…]`, `/unhighlight word…`, `/group name @a @b…` (admin), `/groups`,
+`/remind <when> <text>`, `/reminders`, `/remind-delete id`, `/snippet path[:range] [message]`,
+`/share-pane [pane]` (herdr only), `/quit`.
 Unknown command → inline error, input kept.
 
 ## Behavior
@@ -115,6 +117,34 @@ Unknown command → inline error, input kept.
   neither does text inside a fenced code block (pasted logs would match everything).
 - The words are re-read from the cache on every channel update, so a `/highlight` made in another pane
   takes effect here without a restart; `/highlight` and `/unhighlight` work on the fresh list.
+
+## User groups
+
+- `/group oncall @alice @bob` (admin) sets the group `@oncall` to exactly those people; `/group oncall` with
+  no people deletes it; `/groups` lists them in a read-only overlay (`↑/↓` move, `Esc` closes; it reads the
+  cache, so it works offline). Names follow the channel/user name rule, can't be a user's name and can't end
+  in `-bot`; at most 50 members.
+- A message **by a person** containing `@oncall` (whole word, like `@name`) counts as an `@mention` for each
+  member: `▎` gutter marker, `@` unread badge, activity view "mention" item, and the notification rules
+  below. Bots' messages and my own never do. The groups come from the client cache and follow
+  `group.update` events live.
+
+## Reminders
+
+- `/remind <when> <text>` asks the **server** to post `⏰ <text>` in my private notes (the DM with only
+  me) at that time, so it fires with tc closed; a reminder due while the server was down arrives when it
+  restarts. If set from a channel (not from the notes) the text gets ` (from #channel)` while I can still
+  read it.
+- `<when>`, optionally after `in` or `at`: `10m` `2h` `1d` `1w` `1h30m` (from now); `15:30`, `9:05`, `9am`,
+  `9:30pm` (the next time my wall clock shows that: today, or tomorrow if it has passed; `12am` is
+  midnight); `tomorrow 9am` / `tomorrow 15:30`. Times are the local zone's wall-clock time, converted to an
+  absolute time on this machine before sending; "tomorrow" is the next calendar day even across a
+  daylight-saving change. At most a year ahead, 4 KiB of text, 100 pending per user.
+- `/reminders` lists mine with ids in an overlay (`id  when  text (from #chan)`); `/remind-delete id`
+  cancels one.
+- A delivered reminder is my own message, which never notifies, with one exception: a message of mine in my
+  notes that starts with `⏰ ` notifies (`⏰ Reminder`, the text) unless I'm looking at the notes, and
+  counts as unread (`@` badge) until read.
 
 ## Activity view
 

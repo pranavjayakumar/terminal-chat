@@ -318,6 +318,7 @@ func (c *tclient) syncFresh() (proto.Snapshot, proto.SyncRes) {
 			snap.Devs = append(snap.Devs, part.Devs...)
 			snap.Revoked = append(snap.Revoked, part.Revoked...)
 			snap.Keys = append(snap.Keys, part.Keys...)
+			snap.Groups = append(snap.Groups, part.Groups...)
 			if part.Read != nil {
 				snap.Read = part.Read
 			}

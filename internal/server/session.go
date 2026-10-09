@@ -86,7 +86,7 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 	}
 	defer s.unregister(sess)
 	if err := sess.codec.Write(proto.TWelcome, proto.Welcome{
-		Server: Version, Caps: []string{proto.CapHooks, proto.CapE2E, proto.CapPins}, ServerID: s.st.serverID, User: user, Time: s.now(),
+		Server: Version, Caps: []string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind}, ServerID: s.st.serverID, User: user, Time: s.now(),
 	}); err != nil {
 		return
 	}
@@ -171,7 +171,7 @@ func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp str
 			}
 			var n int
 			tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE name = ?`, a.Name).Scan(&n)
-			if n > 0 {
+			if n > 0 || groupNameTaken(ctx, tx, a.Name) {
 				return nil, fail(proto.ByeNameTaken, "")
 			}
 			res, err := tx.ExecContext(ctx, `INSERT INTO users (name, admin, created) VALUES (?, ?, ?)`, a.Name, admin, now)
@@ -591,7 +591,11 @@ func (s *Server) sendSnapshot(ctx context.Context, tx *sql.Tx, sess *session) er
 	if err != nil {
 		return err
 	}
-	if err := sess.pushSnapshot(proto.Snapshot{Users: users, Read: read}); err != nil {
+	groups, err := listGroups(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if err := sess.pushSnapshot(proto.Snapshot{Users: users, Read: read, Groups: groups}); err != nil {
 		return err
 	}
 	var cpart []proto.Channel

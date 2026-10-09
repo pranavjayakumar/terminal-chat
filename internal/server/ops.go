@@ -42,6 +42,7 @@ func decodeArgs[T any](raw proto.Raw) (T, error) {
 // writeOps are rate limited by allowWrite (send has its own limit).
 var writeOps = map[string]bool{
 	proto.OpEdit: true, proto.OpDelete: true, proto.OpReact: true, proto.OpUnreact: true, proto.OpPin: true, proto.OpUnpin: true,
+	proto.OpGroupSet: true, proto.OpRemindCreate: true, proto.OpRemindDelete: true,
 	proto.OpRead: true, proto.OpChanCreate: true, proto.OpChanJoin: true, proto.OpChanAdd: true,
 	proto.OpChanLeave: true, proto.OpChanTopic: true, proto.OpDMOpen: true,
 	proto.OpInviteCreate: true, proto.OpUserDisable: true, proto.OpUserUpdate: true,
@@ -83,6 +84,16 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 		return withArgs(args, func(a proto.MsgArgs) (any, error) { return s.opPin(ctx, u, a, op == proto.OpPin) })
 	case proto.OpPinsList:
 		return withArgs(args, func(a proto.ChanArgs) (any, error) { return s.opPinsList(ctx, u, a) })
+	case proto.OpGroupSet:
+		return withArgs(args, func(a proto.GroupSetArgs) (any, error) { return s.opGroupSet(ctx, u, a) })
+	case proto.OpGroupsList:
+		return s.opGroupsList(ctx)
+	case proto.OpRemindCreate:
+		return withArgs(args, func(a proto.RemindCreateArgs) (any, error) { return s.opRemindCreate(ctx, u, a) })
+	case proto.OpRemindList:
+		return s.opRemindList(ctx, u)
+	case proto.OpRemindDelete:
+		return withArgs(args, func(a proto.RemindDeleteArgs) (any, error) { return s.opRemindDelete(ctx, u, a) })
 	case proto.OpHistory:
 		return withArgs(args, func(a proto.HistoryArgs) (any, error) { return s.opHistory(ctx, u, a) })
 	case proto.OpSearch:
@@ -689,7 +700,9 @@ func (s *Server) opDMOpen(ctx context.Context, sess *session, a proto.DMOpenArgs
 				return nil, errNotFound
 			}
 		}
-		c, ev, err := createChannel(ctx, tx, s.now(), u.ID, "", proto.ChanDM, "", members, sess.e2e)
+		// Private notes (a DM with only yourself) stay unencrypted for now:
+		// the server writes reminders into them (docs/E2E.md step 7).
+		c, ev, err := createChannel(ctx, tx, s.now(), u.ID, "", proto.ChanDM, "", members, sess.e2e && len(members) > 1)
 		res.Chan = c
 		return []proto.Event{ev}, err
 	})
@@ -745,6 +758,10 @@ func (s *Server) opUserDisable(ctx context.Context, u proto.User, a proto.UserAr
 		if err != nil {
 			return nil, err
 		}
+		gevs, err := s.pruneFromGroups(ctx, tx, u, a.User)
+		if err != nil {
+			return nil, err
+		}
 		// Still under s.mu: no new session can register for this user and
 		// existing ones stop receiving before the lock is released.
 		s.disabled[a.User] = true
@@ -753,7 +770,7 @@ func (s *Server) opUserDisable(ctx context.Context, u proto.User, a proto.UserAr
 				sess.revoke()
 			}
 		}
-		return []proto.Event{ev}, nil
+		return append([]proto.Event{ev}, gevs...), nil
 	})
 	return proto.Empty{}, err
 }

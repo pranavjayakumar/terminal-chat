@@ -36,10 +36,11 @@ tc                                    # chat
 | `F1` or `/help` | all keys and commands |
 | `Ctrl-C` twice | quit |
 
-Commands: `/join #x` `/create #x [--private]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/pins` `/activity` `/highlight [word…]` `/unhighlight word…` `/away [status]` `/back` `/snippet file[:range]` `/share-pane [pane]` `/invite` (admin) `/webhook name` `/webhooks` `/webhook-delete id`.
+Commands: `/join #x` `/create #x [--private]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/pins` `/activity` `/highlight [word…]` `/unhighlight word…` `/group name @a @b` (admin) `/groups` `/remind <when> <text>` `/reminders` `/remind-delete id` `/away [status]` `/back` `/snippet file[:range]` `/share-pane [pane]` `/invite` (admin) `/webhook name` `/webhooks` `/webhook-delete id`.
 
 Unsent text is kept per channel and thread (a dim `✎` in the sidebar marks channels with a draft) and
-survives restarts. `/highlight deploy oncall` makes those words count like an @mention: marker, unread
+survives restarts. `/remind 10m stand up` or `/remind tomorrow 9am …` posts `⏰ …` in your private notes on time, even
+if tc is closed. An admin's `/group oncall @alice @bob` makes `@oncall` mention both. `/highlight deploy oncall` makes those words count like an @mention: marker, unread
 `@` badge and notification.
 
 From the shell:

@@ -57,7 +57,7 @@ The server key never rotates in v1; rotating means re-issuing invites.
 | 0x11 | RES | S→C | `{id: u32, ok: bool, data?: any, err?: {code: str, msg: str}}` |
 | 0x20 | EVENT | S→C | `Event` (persistent, carries `seq`) |
 | 0x21 | EPHEMERAL | both | `{kind: str, ...}` (typing, presence; never stored) |
-| 0x22 | SNAPSHOT | S→C | `{users?: [User], chans?: [Channel], msgs?: [Message], read?: {chan: seq}, devs?, revoked?, keys?}` (one part; `devs`/`revoked` §13.2, `keys` §13.6) |
+| 0x22 | SNAPSHOT | S→C | `{users?: [User], chans?: [Channel], msgs?: [Message], read?: {chan: seq}, groups?: [Group], devs?, revoked?, keys?}` (one part; `groups` §8, `devs`/`revoked` §13.2, `keys` §13.6) |
 | 0x30 | PING | both | `{t: i64}` |
 | 0x31 | PONG | both | `{t: i64}` (echo) |
 | 0x40 | VOICE | both | reserved for v2 (TCP fallback only; QUIC uses datagrams) |
@@ -157,6 +157,11 @@ session **before** the RES. The `seq` in a RES is informational: clients advance
 | `hook.create` | `{chan, name}` | `{id: u64, name: str, url: str, pin: str}` (cap `hooks`, §12) |
 | `hook.list` | `{}` | `{hooks: [{id, chan, name, created_by: u64, created: i64}]}` |
 | `hook.delete` | `{id}` | `{}` |
+| `group.set` | `{name, members: [u64]}` (admin) | `{seq}` (cap `groups`) |
+| `groups.list` | `{}` | `{groups: [Group]}` (cap `groups`) |
+| `remind.create` | `{at: i64, text: str, chan?: u64}` | `{id: u64}` (cap `remind`) |
+| `remind.list` | `{}` | `{reminders: [{id, at, text, chan?}]}` — the caller's, soonest first (cap `remind`) |
+| `remind.delete` | `{id}` | `{}` (cap `remind`) |
 
 Rules:
 - **send idempotency**: `(author, nonce)` is permanently unique. A repeat returns
@@ -207,6 +212,26 @@ Rules:
   `hook.delete` count as write ops for rate limits.
 - **dm.open** returns the existing DM for that exact member set (caller included)
   or creates it. DMs have `name = ""`.
+- **group.set** replaces a group's members (sorted, duplicates dropped) and emits `group.update`;
+  non-admins get `forbidden`. `name` follows the user/channel name rule (§9) and must not end in
+  `-bot` (`bad_request`); it must not be a user's name (`conflict`), and registering a user whose
+  name is a group's fails with BYE `name_taken`. Members must be existing, enabled, non-bot users
+  (`not_found` / `bad_request`) and number at most 50 (`bad_request`); at most 200 groups
+  (`conflict`). **Empty `members` deletes** the group. Setting what is already stored, or deleting
+  a group that doesn't exist, is a no-op: ok `{seq: 0}`, no event. `group.set` counts as a write op
+  for rate limits.
+- **Mentions of a group are decided by clients.** A message containing `@<group>` as a whole word
+  (the same rule as `@<user>`: not inside a longer name or an email address, case-insensitive)
+  counts as a mention for every member, in every channel the member is in. Like any mention, a
+  bot's message and one's own never count. The server neither parses bodies nor notifies.
+- **remind.create** schedules a reminder for the caller. `at` is absolute Unix milliseconds, in
+  `(0, now + 366 days]` (else `bad_request`; a time already past is delivered at once). `text` is
+  validated like a message body (non-empty, no control characters; `bad_request`) and is at most
+  4 KiB (`too_large`). `chan`, if set, must be readable by the caller (`forbidden`). At most 100
+  pending reminders per user (`conflict`). The server owns delivery (§6.1): it works with no client
+  connected. **remind.list** returns the caller's pending reminders; **remind.delete** removes one
+  of the caller's (anyone else's or an unknown id → `not_found`). `remind.create` and
+  `remind.delete` count as write ops for rate limits.
 
 ## 6. Events & sync
 
@@ -228,6 +253,7 @@ Event = {seq: u64, kind: str, chan?: u64, time: i64, actor: u64, data: map}
 | `chan.join` | `{user, chan: Channel}` |
 | `chan.leave` | `{user}` |
 | `user.new` / `user.update` | `User` |
+| `group.update` | `Group` (cap `groups`; visible to everyone; no members = deleted) |
 | `read.update` | `{chan, seq}` (visible only to the actor) |
 
 ### Visibility
@@ -235,7 +261,7 @@ Event = {seq: u64, kind: str, chan?: u64, time: i64, actor: u64, data: map}
 An event on channel C is visible to user U iff U is a member of C **at that
 event's seq**. Exceptions: `chan.join`/`chan.leave` about U are always visible
 to U; `chan.new`/`chan.update` of public channels and all `user.*` are visible
-to everyone. Live fan-out checks membership at send time; after U's `chan.leave`
+to everyone, as is `group.update`. Live fan-out checks membership at send time; after U's `chan.leave`
 commits, no more events for C reach U's sessions. A new member gets the full
 Channel in their `chan.join` event and fetches older messages with `history`.
 
@@ -259,7 +285,7 @@ After WELCOME the client sends `sync {since: last_seq, server_id}`.
    H = current head. Live events with seq > H are buffered.
 2. **Snapshot path** — if `since == 0`, `server_id` differs from the server's,
    `since > H`, or `H − since > 10,000`: send SNAPSHOT parts (each ≤ 1 MiB) with
-   users, visible channels, read markers and the last 50 messages per channel,
+   users, groups, visible channels, read markers and the last 50 messages per channel,
    then RES `{head: H, reset: true}`. With `reset` the client discards its local
    cache (but **not** its outbox) before applying the snapshot.
 3. **Replay path** — otherwise replay visible events with since < seq ≤ H in
@@ -271,6 +297,25 @@ sends BYE `slow_consumer`; the client reconnects and syncs.
 
 Clients apply events idempotently (`seq ≤ last_seq` → ignore) and persist
 `last_seq` only after applying.
+
+### 6.1 Reminders
+
+Pending reminders live in the server's database, not in the event log. A scheduler owned by the
+server sleeps until the earliest `at` (and wakes when a new reminder could be earlier); it does not
+poll on a short tick. When a reminder is due it is posted, as if sent by its user, into the user's
+private notes (the DM with only themselves, created if the user never opened it; not encrypted, the
+server writes it): a `msg.new` (preceded by `chan.new` if the notes were created) whose `body` is
+`⏰ ` + `text`, followed by ` (from #name)` if `chan` was set and the user can still read it
+(` (from a DM)` for a DM; nothing otherwise). The message's `time` is the delivery time.
+
+Delivery is exactly once: the pending row is deleted in the same transaction that inserts the
+message (and the message nonce is derived from the reminder id as a second guard), so a crash or
+restart can neither lose nor repeat it. A reminder that fell due while the server was down is
+delivered as soon as the server starts. A reminder whose user is disabled is dropped.
+
+A delivered reminder is an ordinary message by the user, so ordinary rules would skip it for
+notifications and unread counts. Clients identify one as: authored by me, in my notes, body starting
+with `⏰ `, and then notify and count it as unread like a DM from someone else.
 
 ## 7. Ephemeral
 
@@ -299,6 +344,13 @@ advertises cap `pins` in WELCOME; older servers simply lack the ops and the fiel
 log in (add-key invites can't target them) and never have presence. Clients MUST NOT treat a
 bot's message as a mention or DM notification (its text comes from outside tc); it still
 counts as unread.
+
+```
+Group = {name: str, members: [u64]}
+```
+
+A `Group` (cap `groups`) is a named set of users that `@name` mentions at once (§5 rules). The
+server advertises caps `groups` and `remind` in WELCOME; older servers lack the ops.
 
 `Message.id` is the seq of its `msg.new` event, so ids order chronologically
 and map directly onto read markers.
@@ -664,7 +716,8 @@ e2e channel is `bad_request` "upgrade tc" (§13.3).
 
 Implemented: `device.register`, `device.revoke`, `devices.list` (§13.2),
 `key.rotate`, `key.fetch` (§13.3), `chan.create + e2e?`, `dm.open` (e2e
-DMs). Not yet: `key.share`, `send/edit/delete/react + enc`, `chan.add +
+DMs; a DM with no other members — private notes — is never e2e, because the server
+posts reminders into it). Not yet: `key.share`, `send/edit/delete/react + enc`, `chan.add +
 bundle`, `chan.remove`, `chan.encrypt` (`docs/E2E.md` §13.5).
 
 | op | args | data |
