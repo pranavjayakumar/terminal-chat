@@ -9,7 +9,7 @@ Last updated: 2026-10-10 (end of session 1; branch `m2-activity` adds drafts, hi
 | M0 scaffold, spec, agents, CI | ✅ done |
 | M1 core chat (server, client, TUI, sync, offline outbox) | ✅ done, battle-tested (chaos + adversarial + live herdr) |
 | M2 collaboration | ✅ essentially done: notifications, herdr badge, `/share-pane`, auto-away, `tc notify`, notes, `/name`, threads, webhooks + bots, privacy scrubbing, drafts, `/highlight`, activity (Alt-A), message viewer (`v`), pins (`p`, `/pins`), user groups (`@oncall`), reminders (`/remind`), diff/snippets (`tc send --file`, `/snippet`) |
-| M3 end-to-end encryption | steps 1–6 merged (#9 crypto, #10 certs, #11 trust store, #13 server devices, #16 server epochs, #25 client bundles); **step 7 (encrypted send/receive) on branch `e2e/encrypted-send`** |
+| M3 end-to-end encryption | steps 1–7 merged (#9, #10, #11, #13, #16, #25 client verification, #26 encrypted send/receive) — **encrypted DMs and private channels work end to end**; next: step 8 (encrypted edit/delete/react) |
 | M4 zero-setup onboarding | not started |
 | M5 voice | not started |
 
@@ -34,7 +34,8 @@ Release tag: `v0.1.0` = M1. No newer tag yet.
 5. **M4 onboarding** — see `docs/ROADMAP.md`. Note: the repo is private, so install-from-GitHub-releases needs
    auth; consider serving install.sh + binaries from the tc server itself (pinned TLS).
 
-**Budget rule (owner):** kiro-cli may use at most 45–50% of its monthly credits (check with
+**Budget rule (owner):** kiro-cli may use at most 45–50% of its monthly credits (it reached 46.6% on 2026-10-10,
+so remaining work that day ran on Claude subagents) (check with
 `kiro-cli chat --no-interactive "/usage"`); it was 44.3% before step 6 started. Above ~47% use Claude only.
 
 ## How we work (keep doing this)
