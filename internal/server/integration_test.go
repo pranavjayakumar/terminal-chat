@@ -642,3 +642,162 @@ func (c *tclient) syncFreshAgain(t *testing.T, ts *testServer) (proto.Snapshot, 
 	}
 	return c2.syncFresh()
 }
+
+// replayFrom reconnects c's key, syncs from since and returns every EVENT
+// replayed before the sync RES.
+func (c *tclient) replayFrom(t *testing.T, ts *testServer, since uint64) []proto.Frame {
+	t.Helper()
+	c2, bye := ts.connect(t, c.signer, "", "")
+	if bye != "" {
+		t.Fatal(bye)
+	}
+	c2.nextID++
+	c2.codec.Write(proto.TReq, proto.Req{ID: c2.nextID, Op: proto.OpSync,
+		Args: proto.MustRaw(proto.SyncArgs{Since: since, ServerID: ts.st.serverID})})
+	var evs []proto.Frame
+	for {
+		f := c2.recv("replay")
+		switch f.Type {
+		case proto.TEvent:
+			evs = append(evs, f)
+		case proto.TSnapshot:
+			t.Fatal("got a snapshot, want a replay")
+		case proto.TRes:
+			var r proto.Res
+			f.Decode(&r)
+			if !r.OK {
+				t.Fatalf("replay sync: %v", r.Err)
+			}
+			return evs
+		}
+	}
+}
+
+// assertScrubbed fails if any replayed frame carries one of gone, either in
+// its raw bytes or in a decoded message body.
+func assertScrubbed(t *testing.T, frames []proto.Frame, gone ...string) {
+	t.Helper()
+	for _, f := range frames {
+		var ev proto.Event
+		if err := f.Decode(&ev); err != nil {
+			t.Fatal(err)
+		}
+		var body string
+		switch ev.Kind {
+		case proto.KMsgNew:
+			var m proto.Message
+			proto.Unmarshal(ev.Data, &m)
+			body = m.Body
+		case proto.KMsgEdit:
+			var d proto.MsgEdit
+			proto.Unmarshal(ev.Data, &d)
+			body = d.Body
+		}
+		for _, s := range gone {
+			if strings.Contains(string(f.Payload), s) || strings.Contains(body, s) {
+				t.Errorf("replayed %s seq %d still contains %q", ev.Kind, ev.Seq, s)
+			}
+		}
+	}
+}
+
+func searchCount(c *tclient, q string) int {
+	var r proto.MsgsRes
+	c.ok(proto.OpSearch, proto.SearchArgs{Q: q}, &r)
+	return len(r.Msgs)
+}
+
+func TestDeletedTextNotReplayed(t *testing.T) {
+	forEachTransport(t, func(t *testing.T, ts *testServer) {
+		alice := ts.register(t, "alice", false)
+		bob := ts.register(t, "bob", false)
+		snap, _ := alice.syncFresh()
+		_, before := bob.syncFresh()
+		gen := generalID(t, snap)
+
+		id := alice.send(gen, "secret").Msg
+		bob.event(proto.KMsgNew)
+		if n := searchCount(alice, "secret"); n != 1 {
+			t.Fatalf("search before delete = %d", n)
+		}
+		// An edit before the delete must be scrubbed as well.
+		alice.ok(proto.OpEdit, proto.EditArgs{Msg: id, Body: "secret v2"}, nil)
+		alice.ok(proto.OpDelete, proto.MsgArgs{Msg: id}, nil)
+
+		frames := bob.replayFrom(t, ts, before.Head)
+		assertScrubbed(t, frames, "secret")
+		var sawNew, sawDelete bool
+		for _, f := range frames {
+			var ev proto.Event
+			f.Decode(&ev)
+			switch ev.Kind {
+			case proto.KMsgNew:
+				var m proto.Message
+				proto.Unmarshal(ev.Data, &m)
+				if m.ID == id {
+					sawNew = true
+					if !m.Deleted || m.Body != "" || m.Chan != gen || m.Author != alice.user.ID {
+						t.Errorf("replayed msg.new = %+v", m)
+					}
+				}
+			case proto.KMsgDelete:
+				sawDelete = true
+			}
+		}
+		if !sawNew || !sawDelete {
+			t.Errorf("replay msg.new=%v msg.delete=%v", sawNew, sawDelete)
+		}
+		if n := searchCount(alice, "secret"); n != 0 {
+			t.Errorf("search after delete = %d", n)
+		}
+		if n := searchCount(bob, "secret"); n != 0 {
+			t.Errorf("bob's search after delete = %d", n)
+		}
+	})
+}
+
+func TestEditedTextNotReplayed(t *testing.T) {
+	forEachTransport(t, func(t *testing.T, ts *testServer) {
+		alice := ts.register(t, "alice", false)
+		bob := ts.register(t, "bob", false)
+		snap, _ := alice.syncFresh()
+		_, before := bob.syncFresh()
+		gen := generalID(t, snap)
+
+		id := alice.send(gen, "secret alpha").Msg
+		alice.ok(proto.OpEdit, proto.EditArgs{Msg: id, Body: "secret bravo"}, nil)
+		alice.ok(proto.OpEdit, proto.EditArgs{Msg: id, Body: "final charlie"}, nil)
+
+		frames := bob.replayFrom(t, ts, before.Head)
+		assertScrubbed(t, frames, "secret", "alpha", "bravo")
+		var got []string
+		for _, f := range frames {
+			var ev proto.Event
+			f.Decode(&ev)
+			switch ev.Kind {
+			case proto.KMsgNew:
+				var m proto.Message
+				proto.Unmarshal(ev.Data, &m)
+				if m.ID == id {
+					if m.Edited == 0 || m.Deleted {
+						t.Errorf("replayed msg.new = %+v", m)
+					}
+					got = append(got, "new:"+m.Body)
+				}
+			case proto.KMsgEdit:
+				var d proto.MsgEdit
+				proto.Unmarshal(ev.Data, &d)
+				got = append(got, "edit:"+d.Body)
+			}
+		}
+		if s := strings.Join(got, ","); s != "new:final charlie,edit:,edit:final charlie" {
+			t.Errorf("replay = %q", s)
+		}
+		if n := searchCount(alice, "alpha"); n != 0 {
+			t.Errorf("search old text = %d", n)
+		}
+		if n := searchCount(alice, "charlie"); n != 1 {
+			t.Errorf("search new text = %d", n)
+		}
+	})
+}

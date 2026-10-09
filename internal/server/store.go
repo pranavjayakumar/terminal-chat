@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -171,6 +172,57 @@ func patchEventData(ctx context.Context, tx *sql.Tx, ev *proto.Event, data any) 
 	ev.Data = raw
 	_, err = tx.ExecContext(ctx, `UPDATE events SET data = ? WHERE seq = ?`, raw, ev.Seq)
 	return err
+}
+
+// scrubMessageEvents rewrites the event log after an edit or delete so a
+// replay can't resurrect text the author replaced or removed: the message's
+// msg.new event (seq == message id) gets its current state, and every
+// msg.edit for it with seq < before keeps its place but loses its body.
+// before == 0 means all of them (delete).
+func scrubMessageEvents(ctx context.Context, tx *sql.Tx, m proto.Message, before uint64) error {
+	m.Reactions = nil // replayed through react.* events
+	if err := patchEventData(ctx, tx, &proto.Event{Seq: m.ID}, m); err != nil {
+		return fmt.Errorf("scrubbing msg.new %d: %w", m.ID, err)
+	}
+	if before == 0 {
+		before = math.MaxInt64
+	}
+	// msg.edit data isn't indexed by message, so scan the channel's edits
+	// since the message was sent.
+	rows, err := tx.QueryContext(ctx, `SELECT seq, data FROM events
+		WHERE kind = ? AND chan = ? AND seq > ? AND seq < ?`, proto.KMsgEdit, m.Chan, m.ID, before)
+	if err != nil {
+		return err
+	}
+	var stale []proto.Event
+	for rows.Next() {
+		var seq uint64
+		var data []byte
+		if err := rows.Scan(&seq, &data); err != nil {
+			rows.Close()
+			return err
+		}
+		var d proto.MsgEdit
+		if proto.Unmarshal(data, &d) == nil && d.Msg == m.ID && d.Body != "" {
+			d.Body = ""
+			raw, err := proto.Marshal(d)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			stale = append(stale, proto.Event{Seq: seq, Data: raw})
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, ev := range stale {
+		if _, err := tx.ExecContext(ctx, `UPDATE events SET data = ? WHERE seq = ?`, []byte(ev.Data), ev.Seq); err != nil {
+			return fmt.Errorf("scrubbing msg.edit %d: %w", ev.Seq, err)
+		}
+	}
+	return nil
 }
 
 func nullable(v uint64) any {
