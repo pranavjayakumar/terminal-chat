@@ -171,6 +171,9 @@ func TestEndToEnd(t *testing.T) {
 				t.Fatal(err)
 			}
 			alice.Send(sec.ID, "before bob", 0)
+			if err := alice.Flush(ctx); err != nil { // stored before bob joins
+				t.Fatal(err)
+			}
 			if err := alice.AddMember(ctx, sec.ID, bob.Me().ID); err != nil {
 				t.Fatal(err)
 			}
