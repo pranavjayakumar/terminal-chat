@@ -30,10 +30,18 @@ CREATE TABLE IF NOT EXISTS hooks (
 );
 `
 
-// Per-hook HTTP rate limit (PROTOCOL.md §12).
+// Webhook limits (PROTOCOL.md §5 hook.create, §12).
 const (
-	hookBurst  = 20
+	hookBurst  = 20 // per hook
 	hookPerSec = 1
+	// Every hook send across the server, so many hooks can't add up to a
+	// flood that starves people on the single writer.
+	hookGlobalBurst  = 50
+	hookGlobalPerSec = 10
+
+	maxHooksPerUser = 10
+	maxHooksPerChan = 20
+	maxBots         = 100
 )
 
 // migrateHooks adds the webhook tables and the users.bot and users.bot_owner
@@ -83,7 +91,8 @@ type hookState struct {
 	curl string // pin in curl --pinnedpubkey form
 
 	mu     sync.Mutex
-	limits map[uint64]*bucket
+	limits map[uint64]*bucket // per hook id
+	global map[uint64]*bucket // one bucket, key 0
 }
 
 func newHookState(dataDir string) (*hookState, error) {
@@ -96,7 +105,7 @@ func newHookState(dataDir string) (*hookState, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &hookState{cert: cert, pin: pin, curl: curl, limits: map[uint64]*bucket{}}, nil
+	return &hookState{cert: cert, pin: pin, curl: curl, limits: map[uint64]*bucket{}, global: map[uint64]*bucket{}}, nil
 }
 
 // HTTPCert is the certificate for webhook (HTTP) clients, for
@@ -106,16 +115,23 @@ func (s *Server) HTTPCert() tls.Certificate { return s.hk.cert }
 // HTTPPin is the SPKI pin of HTTPCert.
 func (s *Server) HTTPPin() string { return s.hk.pin }
 
-// allowHook takes a token from hook id's bucket, or reports how long until
-// one is available.
+// allowHook takes a token from hook id's bucket and the global hook bucket,
+// or reports how long until one is available.
 func (s *Server) allowHook(id uint64) (bool, time.Duration) {
 	s.hk.mu.Lock()
 	defer s.hk.mu.Unlock()
-	if s.take(s.hk.limits, id, hookBurst, hookPerSec) {
-		return true, 0
+	if !s.take(s.hk.limits, id, hookBurst, hookPerSec) {
+		return false, wait(s.hk.limits[id], hookPerSec)
 	}
-	b := s.hk.limits[id]
-	return false, time.Duration((1 - b.tokens) / hookPerSec * float64(time.Second))
+	if !s.take(s.hk.global, 0, hookGlobalBurst, hookGlobalPerSec) {
+		s.hk.limits[id].tokens++ // not sent: give the hook its token back
+		return false, wait(s.hk.global[0], hookGlobalPerSec)
+	}
+	return true, 0
+}
+
+func wait(b *bucket, perSec float64) time.Duration {
+	return time.Duration((1 - b.tokens) / perSec * float64(time.Second))
 }
 
 func newHookToken() string {
@@ -179,6 +195,17 @@ func (s *Server) opHookCreate(ctx context.Context, u proto.User, a proto.HookCre
 		case kind == proto.ChanDM:
 			return nil, badRequest("webhooks can't post into DMs")
 		}
+		var mine, inChan int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FILTER (WHERE created_by = ?), COUNT(*) FILTER (WHERE chan = ?) FROM hooks`,
+			u.ID, a.Chan).Scan(&mine, &inChan); err != nil {
+			return nil, err
+		}
+		switch {
+		case mine >= maxHooksPerUser:
+			return nil, proto.Errf(proto.ErrConflict, fmt.Sprintf("you already have %d webhooks; delete one first (/webhooks)", maxHooksPerUser))
+		case inChan >= maxHooksPerChan:
+			return nil, proto.Errf(proto.ErrConflict, fmt.Sprintf("this channel already has %d webhooks; delete one first (/webhooks)", maxHooksPerChan))
+		}
 		now := s.now()
 		var evs []proto.Event
 		var botID, owner uint64
@@ -193,6 +220,13 @@ func (s *Server) opHookCreate(ctx context.Context, u proto.User, a proto.HookCre
 			// Otherwise anyone could post as someone else's trusted bot.
 			return nil, proto.Errf(proto.ErrConflict, "that bot belongs to someone else; pick another name")
 		case errors.Is(err, sql.ErrNoRows):
+			var bots int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE bot = 1`).Scan(&bots); err != nil {
+				return nil, err
+			}
+			if bots >= maxBots {
+				return nil, proto.Errf(proto.ErrConflict, fmt.Sprintf("this server already has %d bots; reuse one of yours", maxBots))
+			}
 			r, err := tx.ExecContext(ctx, `INSERT INTO users (name, created, bot, bot_owner) VALUES (?, ?, 1, ?)`, a.Name, now, u.ID)
 			if err != nil {
 				return nil, err
@@ -233,31 +267,21 @@ func (s *Server) opHookCreate(ctx context.Context, u proto.User, a proto.HookCre
 }
 
 func (s *Server) opHookList(ctx context.Context, u proto.User) (any, error) {
-	rows, err := s.st.db.QueryContext(ctx, `SELECT id, chan, name, created_by, created FROM hooks ORDER BY id`)
+	rows, err := s.st.db.QueryContext(ctx, `SELECT id, chan, name, created_by, created FROM hooks
+		WHERE ? OR chan IN (SELECT chan FROM membership WHERE user = ? AND leave_seq IS NULL) ORDER BY id`, u.Admin, u.ID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	res := proto.HooksRes{Hooks: []proto.Hook{}}
-	var all []proto.Hook
 	for rows.Next() {
 		var h proto.Hook
 		if err := rows.Scan(&h.ID, &h.Chan, &h.Name, &h.CreatedBy, &h.Created); err != nil {
 			return nil, err
 		}
-		all = append(all, h)
+		res.Hooks = append(res.Hooks, h)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	s.mu.Lock()
-	for _, h := range all {
-		if u.Admin || s.members[h.Chan][u.ID] {
-			res.Hooks = append(res.Hooks, h)
-		}
-	}
-	s.mu.Unlock()
-	return res, nil
+	return res, rows.Err()
 }
 
 func (s *Server) opHookDelete(ctx context.Context, u proto.User, a proto.HookArgs) (any, error) {

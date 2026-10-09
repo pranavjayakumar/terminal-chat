@@ -77,7 +77,9 @@ curl -fsS -k --pinnedpubkey 'sha256//BASE64PIN=' \
 - Any other content type posts the raw body: `make test 2>&1 | tail -50 | curl … --data-binary @- URL`.
   ANSI colors are stripped; max 64 KiB.
 - Send `Idempotency-Key: <something unique>` to make retries safe.
-- Limit: 20 messages burst, then 1/s per hook (HTTP 429 with `Retry-After`).
+- Limit: 20 messages burst, then 1/s per hook, and hook messages count against their
+  creator's own send limit (HTTP 429 with `Retry-After`). At most 10 hooks per person and
+  20 per channel.
 
 GitHub Actions — store the URL and pin as secrets `TC_HOOK_URL` and `TC_HOOK_PIN`
 (`sha256//…`):

@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -17,10 +19,15 @@ import (
 	"github.com/skailama/tc/internal/transport"
 )
 
-// startHookServer is startServer (TCP) with the HTTP side enabled.
-func startHookServer(t *testing.T) *testServer {
+// startHookServer is startServer (TCP) with the HTTP side enabled; opts
+// adjust the Config.
+func startHookServer(t *testing.T, opts ...func(*Config)) *testServer {
 	t.Helper()
-	srv, err := New(Config{DataDir: t.TempDir(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	cfg := Config{DataDir: t.TempDir(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	srv, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,6 +221,12 @@ func TestHook404s(t *testing.T) {
 	if unknown.status != 404 || deleted.status != 404 || deleted.raw != unknown.raw {
 		t.Fatalf("unknown %d %q vs deleted %d %q", unknown.status, unknown.raw, deleted.status, deleted.raw)
 	}
+}
+
+// frozenClock stops token buckets from refilling, so limits are exact.
+func frozenClock(c *Config) {
+	t0 := time.Now()
+	c.Now = func() time.Time { return t0 }
 }
 
 func TestHookRateLimit(t *testing.T) {
@@ -474,4 +487,111 @@ func TestBotOwnerMigration(t *testing.T) {
 			t.Fatalf("bot %d owner %d (%v), want %d", id, owner, err, want)
 		}
 	}
+}
+
+// TestHookCaps: hooks per creator and per channel, and bots per server, are
+// capped (M2).
+func TestHookCaps(t *testing.T) {
+	ts := startHookServer(t)
+	alice := ts.register(t, "alice", false)
+	snap, _ := alice.syncFresh()
+	bob := ts.register(t, "bob", false)
+	bob.syncFresh()
+	carol := ts.register(t, "carol", false)
+	carol.syncFresh()
+	gen := generalID(t, snap)
+	var other proto.ChanRes
+	alice.ok(proto.OpChanCreate, proto.ChanCreateArgs{Name: "other"}, &other)
+
+	for range maxHooksPerUser {
+		alice.createHook(gen, "a")
+	}
+	alice.fail(proto.OpHookCreate, proto.HookCreateArgs{Chan: other.Chan.ID, Name: "a"}, proto.ErrConflict)
+	for range maxHooksPerChan - maxHooksPerUser {
+		bob.createHook(gen, "b")
+	}
+	carol.fail(proto.OpHookCreate, proto.HookCreateArgs{Chan: gen, Name: "c"}, proto.ErrConflict)
+	carol.ok(proto.OpChanJoin, proto.ChanArgs{Chan: other.Chan.ID}, nil)
+	carol.createHook(other.Chan.ID, "c")
+
+	// Server-wide bot cap: fill it up directly, then only existing bots work.
+	var bots int
+	ts.st.db.QueryRow(`SELECT COUNT(*) FROM users WHERE bot = 1`).Scan(&bots)
+	for i := bots; i < maxBots; i++ {
+		if _, err := ts.st.db.Exec(`INSERT INTO users (name, created, bot, bot_owner) VALUES (?, 0, 1, 0)`,
+			fmt.Sprintf("filler%d-bot", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	carol.fail(proto.OpHookCreate, proto.HookCreateArgs{Chan: other.Chan.ID, Name: "new"}, proto.ErrConflict)
+	carol.createHook(other.Chan.ID, "c")
+}
+
+// TestHookSendsChargeCreator: many hooks by one person share that person's
+// send budget (M2).
+func TestHookSendsChargeCreator(t *testing.T) {
+	ts := startHookServer(t, frozenClock)
+	alice := ts.register(t, "alice", false)
+	snap, _ := alice.syncFresh()
+	gen := generalID(t, snap)
+	h1, h2 := alice.createHook(gen, "one"), alice.createHook(gen, "two")
+	ok := 0
+	for i := range 2 * hookBurst {
+		h := h1
+		if i%2 == 1 {
+			h = h2
+		}
+		switch r := ts.post(t, "POST", h.URL, "text/plain", "m"); r.status {
+		case 200:
+			ok++
+		case 429:
+		default:
+			t.Fatalf("post %d: %d %s", i, r.status, r.raw)
+		}
+	}
+	if ok != 30 { // alice's send burst
+		t.Fatalf("%d hook sends got through, want 30", ok)
+	}
+}
+
+// TestHookGlobalLimit: all hook sends share a server-wide bucket (M2).
+func TestHookGlobalLimit(t *testing.T) {
+	ts := startHookServer(t, frozenClock)
+	var hooks []proto.HookCreateRes
+	for i := range 3 {
+		c := ts.register(t, fmt.Sprintf("u%d", i), false)
+		snap, _ := c.syncFresh()
+		hooks = append(hooks, c.createHook(generalID(t, snap), "h"+strconv.Itoa(i)))
+	}
+	// 3 hooks × 17 sends: each hook and creator is under its own limit.
+	ok, limited := 0, 0
+	for range 17 {
+		for _, h := range hooks {
+			switch r := ts.post(t, "POST", h.URL, "text/plain", "m"); r.status {
+			case 200:
+				ok++
+			case 429:
+				limited++
+				if r.header.Get("Retry-After") == "" {
+					t.Fatal("no Retry-After")
+				}
+			default:
+				t.Fatalf("%d %s", r.status, r.raw)
+			}
+		}
+	}
+	if ok != hookGlobalBurst || limited != 51-hookGlobalBurst {
+		t.Fatalf("ok %d limited %d, want %d/%d", ok, limited, hookGlobalBurst, 51-hookGlobalBurst)
+	}
+}
+
+// TestHookListLimited: hook.list counts as a write op (M2).
+func TestHookListLimited(t *testing.T) {
+	ts := startHookServer(t, frozenClock)
+	alice := ts.register(t, "alice", false)
+	alice.syncFresh()
+	for range 60 {
+		alice.ok(proto.OpHookList, proto.Empty{}, nil)
+	}
+	alice.fail(proto.OpHookList, proto.Empty{}, proto.ErrRateLimited)
 }

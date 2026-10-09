@@ -181,14 +181,15 @@ Rules:
   with that name is reused only by its owner (the user whose `hook.create` created it) or an
   admin; anyone else → `conflict`. Otherwise a new bot is created (`user.new`) and owned by
   the caller; a human with that name → `conflict`. If the bot isn't a member of `chan` it is
-  added (`chan.join`, actor = caller).
-  The result's `name` is the bot's name.
+  added (`chan.join`, actor = caller). The result's `name` is the bot's name. Caps
+  (`conflict` with a message saying which): at most 10 hooks per creator, 20 per channel,
+  and 100 bot users per server (reusing an existing bot doesn't count).
   `url` is secret and returned only here. **hook.list** returns hooks in channels the caller
-  currently belongs to (admins: all). **hook.delete**: the creator, an admin, or any current
+  currently belongs to (admins: all), filtered in the query. **hook.delete**: the creator, an admin, or any current
   member of the hook's channel (anyone else → `not_found`); the URL stops working at once. The
   bot user and its messages stay. Disabling a user (`user.disable`) deletes the hooks they
-  created (and any posting as them) in the same transaction. `hook.create`/`hook.delete`
-  count as write ops for rate limits.
+  created (and any posting as them) in the same transaction. `hook.create`, `hook.list` and
+  `hook.delete` count as write ops for rate limits.
 - **dm.open** returns the existing DM for that exact member set (caller included)
   or creates it. DMs have `name = ""`.
 
@@ -338,15 +339,17 @@ is still enforced). `hook.create` returns a ready-made `curl` command.
 
 **Request.** `Content-Type: application/json` → body `{"text": str}`; any other type →
 the raw body is the text. Reads at most 128 KiB (→ 413). The text must be valid UTF-8
-(→ 400); ANSI CSI/OSC sequences and `` are stripped, other control characters removed
+(→ 400); ANSI CSI/OSC sequences and `
+` are stripped, other control characters removed
 (`sanitize.StripANSI`), trailing whitespace trimmed; then the normal message rules apply
 (empty → 400, > 64 KiB → 413). Optional `Idempotency-Key` header (≤ 256 B): the send
 nonce becomes the first 16 bytes of `SHA-256(u64be(hook id) || key)`, so retries return
 the original message (send idempotency, §5); the same key with different text → 409.
 
 **Effect.** Exactly a `send` by the hook's bot user into the hook's channel: a
-`msg.new` with `author` = bot, same event log, fan-out and visibility. The bot's
-per-user send limit (§9) also applies. Inside the send's write transaction the server
+`msg.new` with `author` = bot, same event log, fan-out and visibility. The send is
+charged to both the bot's and the hook creator's per-user send bucket (§9), so more hooks
+never mean more throughput for one person. Inside the send's write transaction the server
 re-checks that the hook still exists, that its creator is enabled and still a member of
 the channel, and that its bot is enabled and still a member; otherwise the request gets
 the same 404 as an unknown token (a hook whose creator left is dormant until they rejoin
@@ -361,6 +364,6 @@ or someone deletes it).
 | 404 | `{"error": "not_found"}` | anything but `POST /hooks/<live token>` — unknown and deleted tokens are indistinguishable |
 | 409 | `{"error": "conflict"}` | Idempotency-Key reused with different text |
 | 413 | `{"error": "too_large"}` | body or text over the limits |
-| 429 | `{"error": "rate_limited"}` + `Retry-After: <s>` | per hook: burst 20, refill 1/s |
+| 429 | `{"error": "rate_limited"}` + `Retry-After: <s>` | per hook: burst 20, refill 1/s; all hooks on the server together: burst 50, refill 10/s; or the creator's/bot's send bucket (§9) |
 
 The HTTP server sets header/read/write/idle timeouts and caps headers at 16 KiB.

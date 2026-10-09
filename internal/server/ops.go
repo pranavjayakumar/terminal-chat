@@ -45,7 +45,7 @@ var writeOps = map[string]bool{
 	proto.OpRead: true, proto.OpChanCreate: true, proto.OpChanJoin: true, proto.OpChanAdd: true,
 	proto.OpChanLeave: true, proto.OpChanTopic: true, proto.OpDMOpen: true,
 	proto.OpInviteCreate: true, proto.OpUserDisable: true, proto.OpUserUpdate: true,
-	proto.OpHookCreate: true, proto.OpHookDelete: true,
+	proto.OpHookCreate: true, proto.OpHookDelete: true, proto.OpHookList: true,
 }
 
 func (s *Server) dispatch(ctx context.Context, sess *session, op string, args proto.Raw) (any, error) {
@@ -204,6 +204,11 @@ func (s *Server) send(ctx context.Context, u proto.User, a proto.SendArgs, hook 
 			if err != nil || root != 0 {
 				return nil, badRequest("thread must be a top-level message in this channel")
 			}
+		}
+		// A hook send also spends its creator's send budget, so making more
+		// hooks doesn't multiply anyone's throughput.
+		if hook != nil && !s.allowSend(hook.creator) {
+			return nil, proto.Errf(proto.ErrRateLimited, "slow down")
 		}
 		if !s.allowSend(u.ID) {
 			return nil, proto.Errf(proto.ErrRateLimited, "slow down")
