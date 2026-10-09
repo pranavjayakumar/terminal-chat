@@ -56,7 +56,7 @@ The server key never rotates in v1; rotating means re-issuing invites.
 | 0x11 | RES | S→C | `{id: u32, ok: bool, data?: any, err?: {code: str, msg: str}}` |
 | 0x20 | EVENT | S→C | `Event` (persistent, carries `seq`) |
 | 0x21 | EPHEMERAL | both | `{kind: str, ...}` (typing, presence; never stored) |
-| 0x22 | SNAPSHOT | S→C | `{users?: [User], chans?: [Channel], msgs?: [Message], read?: {chan: seq}}` (one part) |
+| 0x22 | SNAPSHOT | S→C | `{users?: [User], chans?: [Channel], msgs?: [Message], read?: {chan: seq}, devs?, revoked?}` (one part; `devs`/`revoked` §12.2) |
 | 0x30 | PING | both | `{t: i64}` |
 | 0x31 | PONG | both | `{t: i64}` (echo) |
 | 0x40 | VOICE | both | reserved for v2 (TCP fallback only; QUIC uses datagrams) |
@@ -295,3 +295,105 @@ never drive a terminal.
 - Additive change → new `caps` string, optional fields, new ops/kinds/frame types.
 - Clients ignore unknown event kinds, fields and frame types.
 - Servers return `unknown_op` for unknown ops and never close the connection for it.
+
+## 12. End-to-end encryption (cap `e2e1`)
+
+Design and threat model: `docs/E2E.md` ("Review r1 → r2" is authoritative).
+Everything in this section exists only in sessions whose effective caps
+(§3) include `e2e1`: without it the server answers the ops below with
+`unknown_op`, never sends the events below, and omits the snapshot fields.
+The server advertises `e2e1` in WELCOME.
+
+**The server is not trusted for any of this.** It checks what it can (so an
+honest server rejects garbage early), but clients verify every signed object
+themselves against SSH keys they pinned; server-side checks are no evidence.
+
+### 12.1 Signed objects
+
+```
+Signed = {b: bin, sig: bin}
+```
+
+`sig` is over `context || b`, where `context` is a NUL-terminated tag that
+names the object type. Verify `sig` before decoding `b`; `b` is never
+re-encoded (forward it byte for byte). `b` is a msgpack map in canonical form:
+the exact encoding `internal/proto` produces (fields in the listed order,
+smallest int encodings, no extra keys); anything else is rejected. H =
+SHA-256; integers in binary layouts are big-endian. Ids are `bin16`, keys
+`bin32`, times Unix ms.
+
+SSH signatures use the §4 wire format and algorithm rules (no `ssh-rsa`/SHA-1;
+`sk-*` signatures must have the user-presence flag).
+
+### 12.2 Devices
+
+Each device has its own X25519 and Ed25519 keys (the SSH agent can sign but
+not do ECDH). The user's SSH key vouches for them:
+
+```
+DeviceCert.b   = {v: 1, server_id: bin16, user: u64, dev: bin16, x25519: bin32,
+                  ed25519: bin32, ssh: bin, created: i64}
+DeviceCert.sig = SSH signature by `ssh` (wire-encoded key), context "tc-device-v1\x00"
+
+KeyEndorse.b   = {v: 1, server_id, user, new_ssh: bin, time: i64}
+KeyEndorse.sig = SSH signature by an already-endorsed key of `user`, context "tc-endorse-v1\x00"
+
+DeviceRevoke.b   = {v: 1, server_id, user, dev, time: i64}
+DeviceRevoke.sig = SSH signature by an endorsed key of `user` ("tc-revoke-v1\x00"), or
+                   Ed25519 by another non-revoked device of `user` ("tc-revoke-dev-v1\x00")
+```
+
+`Device = {cert: Signed, endorse?: Signed}` (`endorse` is a KeyEndorse for
+`cert`'s `ssh`, for clients that pinned an older key of the user).
+
+| op | args | data |
+|---|---|---|
+| `device.register` | `{cert: Signed, endorse?: Signed}` | `{seq}` |
+| `device.revoke` | `{revoke: Signed}` | `{seq}` |
+| `devices.list` | `{users?: [u64], after?: u64}` | `{certs: [Signed], endorse: [Signed], revoked: [Signed], next?: u64}` |
+
+| event kind | data | visible to |
+|---|---|---|
+| `device.new` | `Device` | every `e2e1` session |
+| `device.revoke` | `{revoke: Signed}` | every `e2e1` session |
+
+Server rules (honest case):
+- **device.register** (write op, rate limited): `cert` and `endorse` are
+  each ≤ 4 KiB (`len(b) + len(sig)`, else `too_large`). The cert must verify
+  under one of the caller's registered SSH keys (§4.1) — not signed by one →
+  `forbidden`; cert for another `user` → `forbidden`; other `server_id`,
+  bad signature or malformed → `bad_request`. An `endorse` must verify
+  under one of the caller's registered keys with `user` = caller and
+  `new_ssh` = the cert's `ssh` (else `bad_request`); the server stores and
+  forwards it but does not register `new_ssh` as a login key.
+  `dev` already registered → `conflict`, except an exact repeat of the
+  same cert and endorse by the same user, which is ok `{seq: 0}` and
+  emits nothing. A user may have at most 8 non-revoked devices and register
+  at most 32 ever (`bad_request`). Emits `device.new`.
+- **device.revoke** (write op, rate limited): `revoke` ≤ 4 KiB (`too_large`).
+  It must verify under a registered SSH key of the caller, or under the
+  Ed25519 key of a different, non-revoked device of the caller (else
+  `forbidden`); `user` must be the caller (`forbidden`); other `server_id`
+  → `bad_request`; unknown `dev` or a device of someone else → `not_found`.
+  Revoking a revoked device is ok `{seq: 0}` and emits nothing. Revocation
+  is permanent. Emits `device.revoke`.
+- **devices.list**: devices of `users` (absent/empty = everyone), including
+  revoked ones, with every distinct `endorse` attached to them and every
+  revoke, ordered by user. Whole users only; when the next user would push
+  the result past ~768 KiB the server stops and sets `next`: call again with
+  the same `users` and `after = next`.
+- **Snapshot** (§6) adds `devs: [Device]` (every device, revoked ones too) and
+  `revoked: [Signed]` (every DeviceRevoke), possibly over several parts.
+
+Clients store what they receive and decide trust locally: a cert counts only
+if it verifies under an SSH key pinned for its `user` (directly or via a
+KeyEndorse chain from a pinned key), and a revoke only if it verifies under a
+pinned key or a verified device of that user. Unverifiable objects are kept
+but ignored.
+
+Limits: `Signed` objects here ≤ 4 KiB; ≤ 8 non-revoked devices per user;
+≤ 32 device registrations per user, ever.
+
+### 12.3+ Epochs and encrypted messages
+
+See `docs/E2E.md` (in progress).

@@ -122,6 +122,11 @@ func FuzzDecode(f *testing.F) {
 	seed(TReq, Req{ID: 1, Op: OpSend, Args: MustRaw(SendArgs{Chan: 1, Body: "x"})})
 	seed(TEvent, Event{Seq: 1, Kind: KMsgNew, Data: MustRaw(Message{ID: 1})})
 	seed(TSnapshot, Snapshot{Users: []User{{ID: 1}}, Read: map[uint64]uint64{1: 2}})
+	sig := Signed{B: []byte{0x81, 0xa1, 'v', 1}, Sig: []byte{1, 2}}
+	seed(TReq, Req{ID: 2, Op: OpDeviceRegister, Args: MustRaw(DeviceRegisterArgs{Cert: sig, Endorse: &sig})})
+	seed(TEvent, Event{Seq: 2, Kind: KDeviceRevoke, Data: MustRaw(DeviceRevokeArgs{Revoke: sig})})
+	seed(TSnapshot, Snapshot{Devs: []Device{{Cert: sig}}, Revoked: []Signed{sig}})
+	seed(TRes, Res{ID: 3, OK: true, Data: MustRaw(DevicesListRes{Certs: []Signed{sig}, Next: 4})})
 	f.Add([]byte{0, 0, 0, 1, 0x30})
 	f.Add([]byte{0xff, 0xff, 0xff, 0xff})
 
@@ -132,6 +137,8 @@ func FuzzDecode(f *testing.F) {
 		func() any { return &Snapshot{} }, func() any { return &Bye{} },
 		func() any { return &Message{} }, func() any { return &SendArgs{} },
 		func() any { return &HistoryRes{} }, func() any { return &DMOpenArgs{} },
+		func() any { return &Device{} }, func() any { return &DeviceRevokeArgs{} },
+		func() any { return &DevicesListArgs{} }, func() any { return &DevicesListRes{} },
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
 		c := NewCodec(bytes.NewBuffer(data))
@@ -143,6 +150,18 @@ func FuzzDecode(f *testing.F) {
 			}
 			for _, mk := range targets {
 				_ = fr.Decode(mk())
+			}
+			// Op args, RES data and event data are nested Raw values.
+			var env struct {
+				Args Raw `msgpack:"args"`
+				Data Raw `msgpack:"data"`
+			}
+			if fr.Decode(&env) == nil {
+				for _, raw := range []Raw{env.Args, env.Data} {
+					for _, mk := range targets {
+						_ = Unmarshal(raw, mk())
+					}
+				}
 			}
 		}
 	})
@@ -172,4 +191,55 @@ func TestCheckRejectsLyingLengths(t *testing.T) {
 	if err := Unmarshal(ok, &v); err != nil {
 		t.Errorf("rejected max-depth nesting: %v", err)
 	}
+}
+
+func TestDeviceTypesRoundTrip(t *testing.T) {
+	sig := Signed{B: []byte{1, 2, 3}, Sig: []byte{4, 5}}
+	in := Snapshot{Devs: []Device{{Cert: sig}, {Cert: sig, Endorse: &sig}}, Revoked: []Signed{sig}}
+	var out Snapshot
+	if err := Unmarshal(MustRaw(in), &out); err != nil || !reflect.DeepEqual(in, out) {
+		t.Fatalf("snapshot: %+v %v", out, err)
+	}
+	// Absent optional fields cost nothing for clients without e2e1.
+	if b := MustRaw(Snapshot{}); len(b) != 1 {
+		t.Fatalf("empty snapshot is %d bytes", len(b))
+	}
+	var dev Device
+	if err := Unmarshal(MustRaw(Device{Cert: sig}), &dev); err != nil || dev.Endorse != nil {
+		t.Fatalf("device without endorse: %+v %v", dev, err)
+	}
+	var lr DevicesListRes
+	if err := Unmarshal(MustRaw(DevicesListRes{Certs: []Signed{sig}, Next: 9}), &lr); err != nil || lr.Next != 9 || len(lr.Certs) != 1 {
+		t.Fatalf("list res: %+v %v", lr, err)
+	}
+}
+
+// FuzzDevices decodes arbitrary msgpack as every §12 device type. Signed.B
+// must survive a decode/encode/decode cycle byte for byte: signatures cover
+// it verbatim.
+func FuzzDevices(f *testing.F) {
+	sig := Signed{B: []byte{0x81, 0xa1, 'v', 1}, Sig: bytes.Repeat([]byte{7}, 64)}
+	f.Add([]byte(MustRaw(Device{Cert: sig, Endorse: &sig})))
+	f.Add([]byte(MustRaw(DeviceRevokeArgs{Revoke: sig})))
+	f.Add([]byte(MustRaw(DevicesListArgs{Users: []uint64{1, 2}, After: 1})))
+	f.Add([]byte(MustRaw(DevicesListRes{Certs: []Signed{sig}, Endorse: []Signed{sig}, Revoked: []Signed{sig}, Next: 3})))
+	f.Add([]byte(MustRaw(Snapshot{Devs: []Device{{Cert: sig}}, Revoked: []Signed{sig}})))
+	f.Add([]byte{0xc1})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		var d Device
+		if Unmarshal(data, &d) == nil {
+			var again Device
+			if err := Unmarshal(MustRaw(d), &again); err != nil {
+				t.Fatalf("re-decode: %v", err)
+			}
+			if !bytes.Equal(again.Cert.B, d.Cert.B) || !bytes.Equal(again.Cert.Sig, d.Cert.Sig) ||
+				(d.Endorse == nil) != (again.Endorse == nil) {
+				t.Fatalf("device changed across round trip: %+v vs %+v", d, again)
+			}
+		}
+		_ = Unmarshal(data, &DeviceRevokeArgs{})
+		_ = Unmarshal(data, &DevicesListArgs{})
+		_ = Unmarshal(data, &DevicesListRes{})
+		_ = Unmarshal(data, &Snapshot{})
+	})
 }

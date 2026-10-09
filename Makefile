@@ -11,6 +11,7 @@ test:
 
 fuzz:
 	GOTOOLCHAIN=local go test ./internal/proto -run '^$$' -fuzz FuzzDecode -fuzztime 30s
+	GOTOOLCHAIN=local go test ./internal/proto -run '^$$' -fuzz FuzzDevices -fuzztime 30s
 	GOTOOLCHAIN=local go test ./internal/sanitize -run '^$$' -fuzz FuzzSanitize -fuzztime 30s
 	GOTOOLCHAIN=local go test ./internal/e2ecrypto -run '^$$' -fuzz FuzzParseEnc -fuzztime 30s
 	GOTOOLCHAIN=local go test ./internal/e2ecrypto -run '^$$' -fuzz FuzzDecrypt -fuzztime 30s
