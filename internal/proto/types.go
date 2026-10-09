@@ -208,6 +208,8 @@ type Snapshot struct {
 	// Devs and Revoked are sent only with cap e2e1 (§13.2).
 	Devs    []Device `msgpack:"devs,omitempty"`
 	Revoked []Signed `msgpack:"revoked,omitempty"`
+	// Keys is the latest epoch bundle of each visible e2e channel (§13.3).
+	Keys []Signed `msgpack:"keys,omitempty"`
 }
 
 type Ping struct {
@@ -238,6 +240,10 @@ type Channel struct {
 	Topic   string   `msgpack:"topic"`
 	Members []uint64 `msgpack:"members"`
 	Created int64    `msgpack:"created"`
+	// E2E channels are end-to-end encrypted (§13); Epoch is the current
+	// epoch, 0 until the first key.rotate.
+	E2E   bool   `msgpack:"e2e,omitempty"`
+	Epoch uint32 `msgpack:"epoch,omitempty"`
 }
 
 type Message struct {
@@ -348,6 +354,8 @@ type ChanCreateArgs struct {
 	Name    string `msgpack:"name"`
 	Private bool   `msgpack:"private"`
 	Topic   string `msgpack:"topic,omitempty"`
+	// E2E (cap e2e1, private channels only) makes the channel encrypted.
+	E2E bool `msgpack:"e2e,omitempty"`
 }
 
 type ChanRes struct {

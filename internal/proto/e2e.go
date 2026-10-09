@@ -1,7 +1,7 @@
 package proto
 
-// End-to-end encryption, cap e2e1 (PROTOCOL.md §13). Only devices so far;
-// epochs and encrypted messages follow (docs/E2E.md).
+// End-to-end encryption, cap e2e1 (PROTOCOL.md §13). Devices and epochs so
+// far; encrypted messages follow (docs/E2E.md).
 
 // CapE2E is the capability for §13. Device ops, device events and the
 // snapshot's devs/revoked fields exist only in sessions where both sides
@@ -20,6 +20,54 @@ const (
 	KDeviceNew    = "device.new"
 	KDeviceRevoke = "device.revoke"
 )
+
+// Epoch ops and event (PROTOCOL.md §13.3).
+const (
+	OpKeyRotate = "key.rotate"
+	OpKeyFetch  = "key.fetch"
+
+	// KKeyEpoch carries a new epoch bundle; visible to e2e1 sessions of
+	// members of its channel at its seq.
+	KKeyEpoch = "key.epoch"
+)
+
+// ErrStaleEpoch: the bundle (or, later, enc) doesn't build on the
+// channel's current epoch, roster or devices. Retryable after catching up.
+const ErrStaleEpoch = "stale_epoch"
+
+// Epoch limits (PROTOCOL.md §13.8), mirroring e2ecrypto's.
+const (
+	// MaxBundle bounds len(b)+len(sig) of an EpochBundle.
+	MaxBundle = 16 << 10
+	// MaxBundleBoxes is the most key boxes in one bundle.
+	MaxBundleBoxes = 128
+	// MaxKeyFetch is the most epochs one key.fetch may ask for.
+	MaxKeyFetch = 256
+)
+
+// KeyRotateArgs is key.rotate's args.
+type KeyRotateArgs struct {
+	Chan   uint64 `msgpack:"chan"`
+	Bundle Signed `msgpack:"bundle"`
+}
+
+// KeyEpoch is the key.epoch event data.
+type KeyEpoch struct {
+	Bundle Signed `msgpack:"bundle"`
+}
+
+// KeyFetchArgs asks for the bundles of epochs From..To (inclusive).
+type KeyFetchArgs struct {
+	Chan uint64 `msgpack:"chan"`
+	From uint32 `msgpack:"from"`
+	To   uint32 `msgpack:"to"`
+}
+
+// KeyFetchRes holds the requested bundles that exist, in epoch order. It
+// may stop early to fit MaxResultBytes: ask again from the last epoch + 1.
+type KeyFetchRes struct {
+	Bundles []Signed `msgpack:"bundles"`
+}
 
 // Device limits (PROTOCOL.md §13.2). They mirror e2ecrypto's, which proto
 // can't import; a server test keeps them equal.
