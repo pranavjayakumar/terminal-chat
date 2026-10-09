@@ -393,6 +393,12 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 	if cmd, ok, err := m.hookCommand(c); ok {
 		return cmd, err
 	}
+	if cmd, ok, err := m.groupCommand(c); ok {
+		return cmd, err
+	}
+	if cmd, ok, err := m.remindCommand(c); ok {
+		return cmd, err
+	}
 	return nil, fmt.Errorf("unknown command /%s", sanitize.Line(c.name))
 }
 

@@ -73,11 +73,16 @@ type pendingNote struct {
 
 func (m *Model) shouldNotify(x proto.Message) bool {
 	// Bots (webhooks) never notify: their text is from outside tc.
-	if x.Author == m.me.ID || x.Deleted || m.users[x.Author].Bot {
+	if x.Deleted || m.users[x.Author].Bot {
 		return false
 	}
 	if x.Chan == m.active && m.focused {
 		return false
+	}
+	if x.Author == m.me.ID {
+		// My own messages don't notify, except a reminder the server
+		// posted in my notes: that is the point of it.
+		return m.isReminder(x)
 	}
 	v, ok := m.chanView(x.Chan)
 	return (ok && v.Kind == proto.ChanDM) || m.concernsMe(x.Body)
@@ -86,6 +91,10 @@ func (m *Model) shouldNotify(x proto.Message) bool {
 // noteText is the notification for x: "#chan · alice" or "alice (DM)",
 // and the first non-empty line of the body.
 func (m *Model) noteText(x proto.Message) (title, body, group string) {
+	if m.isReminder(x) {
+		title = "⏰ Reminder"
+		return title, firstNonEmptyLine(strings.TrimPrefix(x.Body, proto.RemindPrefix)), title
+	}
 	who := m.r.userName(x.Author)
 	if v, ok := m.chanView(x.Chan); ok && v.Kind == proto.ChanDM {
 		title = who + " (DM)"
@@ -94,13 +103,16 @@ func (m *Model) noteText(x proto.Message) (title, body, group string) {
 		group = m.chanTitle(x.Chan)
 		title = group + " · " + who
 	}
-	for _, l := range strings.Split(sanitize.Text(x.Body), "\n") {
+	return title, firstNonEmptyLine(x.Body), group
+}
+
+func firstNonEmptyLine(s string) string {
+	for _, l := range strings.Split(sanitize.Text(s), "\n") {
 		if l = strings.TrimSpace(l); l != "" {
-			body = l
-			break
+			return l
 		}
 	}
-	return title, body, group
+	return ""
 }
 
 func (m *Model) notifyFor(news []proto.Message) tea.Cmd {

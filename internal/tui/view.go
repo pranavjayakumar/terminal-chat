@@ -220,6 +220,8 @@ func (m *Model) bodyLines(d dims) []string {
 		return m.searchLines(w, h)
 	case modeActivity:
 		return m.activityLines(w, h)
+	case modeList:
+		return m.listLines(w, h)
 	case modeViewer:
 		return m.viewerLines(w, h)
 	case modePanePick:

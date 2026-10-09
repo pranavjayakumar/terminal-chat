@@ -33,6 +33,7 @@ const (
 	modeSharePreview
 	modeActivity
 	modeViewer
+	modeList
 )
 
 // pane is a scrollable message list: a channel (root 0) or a thread.
@@ -126,6 +127,8 @@ type Model struct {
 	dk         draftKey            // where the input's text belongs
 
 	highlights []string // keywords that count like an @mention (lowercase)
+	mentionAs  []string // names that @mention me: mine, then my groups
+	list       listState
 
 	jump jumpState
 }
@@ -146,6 +149,7 @@ type (
 		err  error
 	}
 	openChanMsg struct{ ch uint64 }
+	listMsg     listState
 	pinsMsg     struct {
 		ch  uint64
 		res []proto.Message
@@ -277,6 +281,7 @@ func (m *Model) reloadUsers() {
 		m.r.me = u
 	}
 	m.reloadPresence()
+	m.refreshMentionNames()
 	m.rc.reset()
 	m.main.ver++
 	m.thread.ver++
@@ -292,6 +297,7 @@ func (m *Model) reloadPresence() {
 func (m *Model) reloadChans() {
 	m.chans = m.c.Channels()
 	m.refreshHighlights()
+	m.refreshMentionNames()
 	if m.active != 0 {
 		if v, ok := m.chanView(m.active); !ok || (!v.Member && v.Kind != proto.ChanPublic) {
 			// Left or removed: fall back to something we're in.
@@ -790,6 +796,10 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.search = searchState{q: msg.q, res: msg.res}
 		m.mode = modeSearch
 		return m, nil
+	case listMsg:
+		m.list = listState(msg)
+		m.mode = modeList
+		return m, nil
 	case pinsMsg:
 		if msg.err != nil {
 			m.setErr("pins", msg.err)
@@ -921,6 +931,9 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 		return m.searchKey(k)
 	case modeActivity:
 		return m.activityKey(k)
+	case modeList:
+		m.listKey(keyName(k))
+		return nil
 	case modeHelp:
 		m.helpKey(key)
 		return nil

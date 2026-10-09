@@ -103,14 +103,14 @@ func (m *Model) refreshHighlights() {
 // highlight words. The caller has already excluded my own, deleted and bot
 // messages.
 func (m *Model) concernsMe(body string) bool {
-	return mentionsMe(body, m.me.Name) || client.Highlighted(body, m.highlights)
+	return client.Mentioned(body, m.mentionAs) || client.Highlighted(body, m.highlights)
 }
 
 // concernMark is the log gutter for a message by someone else: "▎" for an
 // @mention, "*" when only a highlight word matched, blank otherwise.
 func (m *Model) concernMark(body string) string {
 	switch {
-	case mentionsMe(body, m.me.Name):
+	case client.Mentioned(body, m.mentionAs):
 		return m.st.mentionMark.Render("▎")
 	case client.Highlighted(body, m.highlights):
 		return m.st.mentionMark.Render("*")

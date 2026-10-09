@@ -71,6 +71,11 @@ type Backend interface {
 	Unpin(ctx context.Context, msg uint64) error
 	Pins(ch uint64) []client.Message
 	FetchPins(ctx context.Context, ch uint64) error
+	Groups() []proto.Group
+	SetGroup(ctx context.Context, name string, members []uint64) error
+	Remind(ctx context.Context, at time.Time, text string, ch uint64) (uint64, error)
+	Reminders(ctx context.Context) ([]proto.Reminder, error)
+	DeleteReminder(ctx context.Context, id uint64) error
 }
 
 var _ Backend = (*client.Client)(nil)
