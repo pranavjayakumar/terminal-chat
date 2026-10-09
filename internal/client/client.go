@@ -35,6 +35,17 @@
 //	func (c *Client) DiscardFailed(local int64) error
 //	func (c *Client) MarkRead(ch, seq uint64) error                     // local now, server best-effort
 //
+// Local-only state (cache, never sent to the server, kept across snapshot resets):
+//
+//	func (c *Client) Drafts() []Draft                                   // unsent input per (channel, thread)
+//	func (c *Client) Draft(ch, thread uint64) string
+//	func (c *Client) SetDraft(ch, thread uint64, body string) error     // "" removes
+//	func (c *Client) Highlights() []string                              // keywords that count like an @mention
+//	func (c *Client) AddHighlight(word string) (added bool, err error)
+//	func (c *Client) RemoveHighlight(word string) (removed bool, err error)
+//	func Highlighted(body string, words []string) bool                  // whole word, case-insensitive
+//	func (c *Client) Activity(limit int) []ActivityItem                 // what concerns me, newest first (see activity.go)
+//
 // Online-only (return ErrOffline unless Status().State == Online):
 //
 //	Edit(ctx, msg, body) error; Delete(ctx, msg) error

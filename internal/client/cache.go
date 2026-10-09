@@ -1,6 +1,8 @@
 package client
 
 import (
+	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -40,6 +42,17 @@ CREATE INDEX IF NOT EXISTS devices_user ON devices (user);
 CREATE TABLE IF NOT EXISTS device_endorse (endorse BLOB PRIMARY KEY, user INTEGER NOT NULL, new_ssh BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS device_revokes (revoke BLOB PRIMARY KEY, dev BLOB NOT NULL, user INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS device_revokes_dev ON device_revokes (dev);
+-- Local-only state (never sent to the server, kept across snapshot resets).
+CREATE TABLE IF NOT EXISTS drafts (
+	chan INTEGER NOT NULL, thread INTEGER NOT NULL, body TEXT NOT NULL, time INTEGER NOT NULL,
+	PRIMARY KEY (chan, thread));
+CREATE TABLE IF NOT EXISTS highlights (word TEXT PRIMARY KEY, time INTEGER NOT NULL);
+-- Reactions other people added to my messages, from react.add events (the
+-- message itself only keeps who reacted, not when). Feeds the activity view.
+CREATE TABLE IF NOT EXISTS reacts (
+	msg INTEGER NOT NULL, actor INTEGER NOT NULL, emoji TEXT NOT NULL, time INTEGER NOT NULL,
+	PRIMARY KEY (msg, actor, emoji));
+CREATE INDEX IF NOT EXISTS reacts_time ON reacts (time);
 `
 
 // dbtx is the subset of *sql.DB / *sql.Tx the cache helpers need.
@@ -79,6 +92,34 @@ func openCache(path string) (*sql.DB, error) {
 	return db, nil
 }
 
+// connQ adapts a dedicated connection to dbtx.
+type connQ struct{ c *sql.Conn }
+
+func (q connQ) Exec(s string, a ...any) (sql.Result, error) {
+	return q.c.ExecContext(context.Background(), s, a...)
+}
+func (q connQ) Query(s string, a ...any) (*sql.Rows, error) {
+	return q.c.QueryContext(context.Background(), s, a...)
+}
+func (q connQ) QueryRow(s string, a ...any) *sql.Row {
+	return q.c.QueryRowContext(context.Background(), s, a...)
+}
+
+// readTx runs f on a deferred (read-only, non-locking) transaction. The
+// database/sql Begin is IMMEDIATE here, which would take the write lock.
+func (c *Client) readTx(f func(dbtx) error) error {
+	conn, err := c.db.Conn(context.Background())
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(context.Background(), `BEGIN DEFERRED`); err != nil {
+		return err
+	}
+	defer conn.ExecContext(context.Background(), `ROLLBACK`)
+	return f(connQ{conn})
+}
+
 // ---- meta ----
 
 func metaUint(q dbtx, k string) (uint64, error) {
@@ -104,9 +145,25 @@ func setMeta(q dbtx, k string, v any) error {
 	return err
 }
 
-// resetCache drops everything the server can resend; the outbox and read
-// markers the server hasn't acknowledged yet survive.
+// resetCache drops everything the server can resend; the outbox, unacknowledged
+// read markers and local-only state (drafts) survive.
 func resetCache(q dbtx, serverID []byte) error {
+	// Local-only state survives a reset of the same server; another server's
+	// ids mean nothing here.
+	old, err := metaBytes(q, "server_id")
+	if err != nil {
+		return err
+	}
+	if len(old) > 0 && !bytes.Equal(old, serverID) {
+		for _, t := range []string{"drafts", "reacts"} {
+			if _, err := q.Exec(`DELETE FROM ` + t); err != nil {
+				return err
+			}
+		}
+		if _, err := q.Exec(`DELETE FROM meta WHERE k = 'activity_seen'`); err != nil {
+			return err
+		}
+	}
 	for _, s := range []string{
 		`DELETE FROM users`, `DELETE FROM chans`, `DELETE FROM msgs`, `DELETE FROM reads WHERE dirty = 0`,
 		`DELETE FROM devices`, `DELETE FROM device_endorse`, `DELETE FROM device_revokes`,
@@ -331,7 +388,7 @@ func matchOutbox(q dbtx, m proto.Message) error {
 
 // wipe empties the whole cache, outbox included (new login).
 func wipe(q dbtx) error {
-	for _, t := range []string{"meta", "users", "chans", "msgs", "reads", "outbox", "devices", "device_endorse", "device_revokes"} {
+	for _, t := range []string{"meta", "users", "chans", "msgs", "reads", "outbox", "devices", "device_endorse", "device_revokes", "drafts", "highlights", "reacts"} {
 		if _, err := q.Exec(`DELETE FROM ` + t); err != nil {
 			return err
 		}

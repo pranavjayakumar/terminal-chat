@@ -6,6 +6,7 @@ import tea "github.com/charmbracelet/bubbletea"
 const (
 	kQuit       = "ctrl+c"
 	kSwitcher   = "ctrl+k"
+	kActivity   = "alt+a" // Ctrl-A stays the textarea's line start
 	kSidebar    = "ctrl+b"
 	kEnter      = "enter"
 	kEsc        = "esc"
@@ -46,6 +47,7 @@ var helpLines = [][2]string{
 	{"Enter", "send"},
 	{"Alt-Enter / Ctrl-J", "newline"},
 	{"Ctrl-K", "quick switcher"},
+	{"Alt-A, /activity", "mentions, replies, reactions, DMs"},
 	{"Alt-↑/↓, Ctrl-P/N", "previous / next channel"},
 	{"Alt-Shift-↑/↓", "previous / next unread"},
 	{"PgUp/PgDn, wheel", "scroll history"},
@@ -57,7 +59,7 @@ var helpLines = [][2]string{
 	{"  r / d on failed", "retry / discard"},
 	{"Ctrl-U", "clear draft"},
 	{"Ctrl-B, F2", "toggle sidebar"},
-	{"?, F1, /help", "this help"},
+	{"F1, /help", "this help"},
 	{"Ctrl-C twice, /quit", "quit"},
 	{"", ""},
 	{"/join #x", "join or open a channel"},
@@ -65,8 +67,11 @@ var helpLines = [][2]string{
 	{"/create #x [--private]", "new channel"},
 	{"/add @user", "add someone here"},
 	{"/topic text", "set the topic"},
+	{"/name Display Name", "set your display name"},
 	{"/dm @a @b", "direct message"},
 	{"/search terms", "search; Enter jumps"},
+	{"/highlight word…", "mark messages with these words like a mention (none: list)"},
+	{"/unhighlight word…", "stop highlighting"},
 	{"/away [status], /back", "presence"},
 	{"/invite", "invite code (admin)"},
 	{"/share-pane [pane]", "send a herdr pane's output (preview first)"},

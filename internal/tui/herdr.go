@@ -80,7 +80,7 @@ func (m *Model) shouldNotify(x proto.Message) bool {
 		return false
 	}
 	v, ok := m.chanView(x.Chan)
-	return (ok && v.Kind == proto.ChanDM) || mentionsMe(x.Body, m.me.Name)
+	return (ok && v.Kind == proto.ChanDM) || m.concernsMe(x.Body)
 }
 
 // noteText is the notification for x: "#chan · alice" or "alice (DM)",
@@ -238,6 +238,8 @@ func (b *badgeWriter) set(ctx context.Context, h Herdr, seq int, title string) {
 // Close undoes what the UI reported to herdr. Call it after the program
 // exits.
 func (m *Model) Close() {
+	m.syncDraft()
+	m.flushDrafts()
 	if m.opt.Herdr == nil || m.badgeSent == "" {
 		return
 	}
