@@ -184,3 +184,21 @@ func TestGroupBlocksUserName(t *testing.T) {
 		t.Fatalf("bye %q, want name_taken", bye)
 	}
 }
+
+// Disabling a user removes them from every group (and deletes groups left
+// empty), so group lists never keep pointing at disabled accounts.
+func TestDisableUserPrunesGroups(t *testing.T) {
+	ts := startServer(t, "tcp")
+	alice := ts.register(t, "alice", true)
+	bob := ts.register(t, "bob", false)
+	alice.syncFresh()
+	bob.syncFresh()
+	alice.ok(proto.OpGroupSet, proto.GroupSetArgs{Name: "oncall", Members: []uint64{alice.user.ID, bob.user.ID}}, nil)
+	alice.ok(proto.OpGroupSet, proto.GroupSetArgs{Name: "solo", Members: []uint64{bob.user.ID}}, nil)
+	alice.ok(proto.OpUserDisable, proto.UserArgs{User: bob.user.ID}, nil)
+	var res proto.GroupsRes
+	alice.ok(proto.OpGroupsList, proto.Empty{}, &res)
+	if len(res.Groups) != 1 || res.Groups[0].Name != "oncall" || len(res.Groups[0].Members) != 1 || res.Groups[0].Members[0] != alice.user.ID {
+		t.Fatalf("groups after disable: %+v", res.Groups)
+	}
+}

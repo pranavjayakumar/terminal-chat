@@ -388,7 +388,7 @@ func TestRemindDeliveryIsIdempotentUnderRace(t *testing.T) {
 		t.Fatalf("delivered %d times: %q", len(got), got)
 	}
 
-	// Even if the row came back, the per-reminder nonce blocks a second copy.
+	// Even if the row came back, reminders_delivered blocks a second copy.
 	ts.st.db.Exec(`INSERT INTO reminders (id, user, at, text, chan, created) VALUES (?, ?, 1, 'race', 0, 1)`, id.ID, alice.user.ID)
 	if err := ts.deliverReminder(context.Background(), id.ID); err != nil {
 		t.Fatal(err)

@@ -133,3 +133,38 @@ func groupNameTaken(ctx context.Context, q querier, name string) bool {
 	q.QueryRowContext(ctx, `SELECT COUNT(*) FROM groups WHERE name = ?`, name).Scan(&n)
 	return n > 0
 }
+
+// pruneFromGroups removes a disabled user from every group, emitting
+// group.update for each group that changed (deleting groups left empty).
+func (s *Server) pruneFromGroups(ctx context.Context, tx *sql.Tx, actor proto.User, user uint64) ([]proto.Event, error) {
+	groups, err := listGroups(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	var evs []proto.Event
+	for _, g := range groups {
+		kept := slices.DeleteFunc(slices.Clone(g.Members), func(id uint64) bool { return id == user })
+		if len(kept) == len(g.Members) {
+			continue
+		}
+		if len(kept) == 0 {
+			_, err = tx.ExecContext(ctx, `DELETE FROM groups WHERE name = ?`, g.Name)
+		} else {
+			raw, merr := proto.Marshal(kept)
+			if merr != nil {
+				return nil, merr
+			}
+			_, err = tx.ExecContext(ctx, `UPDATE groups SET members = ? WHERE name = ?`, raw, g.Name)
+		}
+		if err != nil {
+			return nil, err
+		}
+		var res proto.SeqRes
+		gev, err := s.groupEvent(ctx, tx, actor, g.Name, kept, &res)
+		if err != nil {
+			return nil, err
+		}
+		evs = append(evs, gev...)
+	}
+	return evs, nil
+}

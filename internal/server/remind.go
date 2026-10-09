@@ -2,8 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
-	"encoding/binary"
 	"errors"
 	"time"
 
@@ -24,10 +24,15 @@ CREATE TABLE IF NOT EXISTS reminders (
 	created INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS reminders_at ON reminders(at);
+-- Ids already delivered: a second guard (besides deleting the row in the
+-- delivery transaction) that, unlike a message nonce, clients can't reach.
+CREATE TABLE IF NOT EXISTS reminders_delivered (id INTEGER PRIMARY KEY);
 CREATE INDEX IF NOT EXISTS reminders_user ON reminders(user);
 `
 
 const (
+	// remindBackoff pushes back one reminder that failed to deliver.
+	remindBackoff = 5 * time.Minute
 	// remindMaxWait bounds one sleep so a clock step or a suspended machine
 	// (monotonic timers pause in sleep) is noticed without polling.
 	remindMaxWait = time.Minute
@@ -206,9 +211,18 @@ func (s *Server) deliverDue(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	// One reminder that can't be delivered must not hold up everyone else's:
+	// log it, push it back a few minutes, and carry on.
 	for _, id := range ids {
 		if err := s.deliverReminder(ctx, id); err != nil {
-			return err
+			if ctx.Err() != nil {
+				return err
+			}
+			s.log.Error("delivering reminder", "id", id, "err", err)
+			if _, uerr := s.st.db.ExecContext(ctx, `UPDATE reminders SET at = ? WHERE id = ?`,
+				s.now()+remindBackoff.Milliseconds(), id); uerr != nil {
+				return uerr
+			}
 		}
 	}
 	return nil
@@ -240,18 +254,15 @@ func (s *Server) deliverReminder(ctx context.Context, id uint64) error {
 		if from := s.remindOrigin(ctx, tx, ch, user); from != "" {
 			body += " (from " + from + ")"
 		}
-		// A fixed nonce per reminder makes a second delivery impossible even
-		// if the row somehow came back.
-		nonce := make([]byte, 16)
-		copy(nonce, "remind")
-		binary.BigEndian.PutUint64(nonce[8:], id)
-		var dup int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE author = ? AND nonce = ?`, user, nonce).Scan(&dup); err != nil {
+		// Deleting the row in this transaction makes delivery exactly-once;
+		// reminders_delivered also blocks a row that somehow came back.
+		if r, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO reminders_delivered (id) VALUES (?)`, id); err != nil {
 			return nil, err
+		} else if n, _ := r.RowsAffected(); n == 0 {
+			return nil, nil
 		}
-		if dup > 0 {
-			return evs, nil
-		}
+		nonce := make([]byte, 16)
+		rand.Read(nonce)
 		m := proto.Message{Chan: notes, Author: user, Body: body, Time: now}
 		ev, err := appendEvent(ctx, tx, proto.KMsgNew, notes, user, 0, now, m)
 		if err != nil {

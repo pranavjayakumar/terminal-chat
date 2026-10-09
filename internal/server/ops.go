@@ -700,7 +700,9 @@ func (s *Server) opDMOpen(ctx context.Context, sess *session, a proto.DMOpenArgs
 				return nil, errNotFound
 			}
 		}
-		c, ev, err := createChannel(ctx, tx, s.now(), u.ID, "", proto.ChanDM, "", members, sess.e2e)
+		// Private notes (a DM with only yourself) stay unencrypted for now:
+		// the server writes reminders into them (docs/E2E.md step 7).
+		c, ev, err := createChannel(ctx, tx, s.now(), u.ID, "", proto.ChanDM, "", members, sess.e2e && len(members) > 1)
 		res.Chan = c
 		return []proto.Event{ev}, err
 	})
@@ -756,6 +758,10 @@ func (s *Server) opUserDisable(ctx context.Context, u proto.User, a proto.UserAr
 		if err != nil {
 			return nil, err
 		}
+		gevs, err := s.pruneFromGroups(ctx, tx, u, a.User)
+		if err != nil {
+			return nil, err
+		}
 		// Still under s.mu: no new session can register for this user and
 		// existing ones stop receiving before the lock is released.
 		s.disabled[a.User] = true
@@ -764,7 +770,7 @@ func (s *Server) opUserDisable(ctx context.Context, u proto.User, a proto.UserAr
 				sess.revoke()
 			}
 		}
-		return []proto.Event{ev}, nil
+		return append([]proto.Event{ev}, gevs...), nil
 	})
 	return proto.Empty{}, err
 }

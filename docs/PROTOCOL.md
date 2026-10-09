@@ -716,7 +716,8 @@ e2e channel is `bad_request` "upgrade tc" (§13.3).
 
 Implemented: `device.register`, `device.revoke`, `devices.list` (§13.2),
 `key.rotate`, `key.fetch` (§13.3), `chan.create + e2e?`, `dm.open` (e2e
-DMs). Not yet: `key.share`, `send/edit/delete/react + enc`, `chan.add +
+DMs; a DM with no other members — private notes — is never e2e, because the server
+posts reminders into it). Not yet: `key.share`, `send/edit/delete/react + enc`, `chan.add +
 bundle`, `chan.remove`, `chan.encrypt` (`docs/E2E.md` §13.5).
 
 | op | args | data |
