@@ -19,6 +19,7 @@ import (
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
 	"github.com/skailama/tc/internal/transport"
+	"github.com/skailama/tc/internal/trust"
 )
 
 const clientName = "tc"
@@ -272,6 +273,18 @@ func Login(ctx context.Context, home, invite, name, keyPath string) (proto.User,
 	if err := tx.Commit(); err != nil {
 		return proto.User{}, err
 	}
+	if len(w.ServerID) == e2ecrypto.IDSize {
+		// An explicit login is the one place a new server identity is trusted.
+		ts, err := trust.Open(home)
+		if err != nil {
+			return proto.User{}, err
+		}
+		err = ts.RepinServer(inv.Addr, inv.Pin, e2ecrypto.ServerID(w.ServerID))
+		ts.Close()
+		if err != nil {
+			return proto.User{}, err
+		}
+	}
 	cfg := Config{Addr: inv.Addr, Pin: inv.Pin, KeyPath: keyPath, UserID: w.User.ID, Name: w.User.Name}
 	if err := writeConfig(home, cfg); err != nil {
 		return proto.User{}, err
@@ -310,7 +323,57 @@ func fatal(err error) bool {
 	if errors.As(err, &bye) {
 		return bye.Code == proto.ByeRevoked || bye.Code == proto.ByeAuthFailed
 	}
-	return errors.Is(err, transport.ErrPinMismatch) || errors.Is(err, errWrongUser)
+	return errors.Is(err, transport.ErrPinMismatch) || errors.Is(err, errWrongUser) ||
+		errors.Is(err, trust.ErrServerChanged)
+}
+
+// checkServer compares the WELCOME's server_id with the one pinned for the
+// config's address and TLS pin (or, before pins existed, the cache's). A
+// different id stops Run: every trust row is keyed by server_id, so
+// accepting a new one would silently start trust over. Nothing is reset;
+// `tc login` re-trusts. It returns the id to pin after the first sync when
+// none is pinned yet.
+func (c *Client) checkServer(w proto.Welcome) (*e2ecrypto.ServerID, error) {
+	pinned, ok, err := c.trust.ServerIdentity(c.cfg.Addr, c.cfg.Pin)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		if old, err := metaBytes(c.db, "server_id"); err == nil && len(old) == e2ecrypto.IDSize {
+			copy(pinned[:], old)
+			ok = true
+		}
+	}
+	if len(w.ServerID) != e2ecrypto.IDSize {
+		if ok {
+			return nil, trust.ErrServerChanged
+		}
+		return nil, nil
+	}
+	sid := e2ecrypto.ServerID(w.ServerID)
+	if ok && sid != pinned {
+		return nil, trust.ErrServerChanged
+	}
+	return &sid, nil
+}
+
+// checkDowngrade marks a server that speaks e2e1, and raises a sticky
+// alarm if a server once seen with e2e1 now doesn't advertise it: an
+// attacker stripping the cap would otherwise get plaintext.
+// TODO(step 7): refuse plaintext sends into e2e channels while alarmed.
+func (c *Client) checkDowngrade(s *session) {
+	sid, ok := s.serverID()
+	if !ok {
+		return
+	}
+	if s.e2e() {
+		_ = c.trust.MarkServerE2E(sid)
+		return
+	}
+	if was, err := c.trust.ServerUsesE2E(sid); err == nil && was {
+		_ = c.trust.RaiseServerAlarm(sid, "the server stopped offering end-to-end encryption")
+		c.post(Update{Channels: true, Status: true})
+	}
 }
 
 // errWrongUser means our key now belongs to a different user than config.json
@@ -398,6 +461,11 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 		conn.Close()
 		return false, fmt.Errorf("%w: server says user %d, config says %d", errWrongUser, w.User.ID, c.cfg.UserID)
 	}
+	pinSID, err := c.checkServer(w)
+	if err != nil {
+		conn.Close()
+		return false, err
+	}
 	if err := c.applyUsers([]proto.User{w.User}); err != nil {
 		conn.Close()
 		return false, err
@@ -423,7 +491,12 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 	if err == nil {
 		_, err = s.call(sctx, proto.OpSync, proto.SyncArgs{Since: since, ServerID: sid}, c.syncHook(s))
 	}
+	if err == nil && pinSID != nil {
+		// First successful sync with this address and pin: trust its id.
+		err = c.trust.PinServer(c.cfg.Addr, c.cfg.Pin, *pinSID)
+	}
 	if err == nil {
+		c.checkDowngrade(s)
 		online = true
 		c.mu.Lock()
 		c.sess = s

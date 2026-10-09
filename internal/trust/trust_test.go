@@ -986,3 +986,44 @@ func TestAlarmsSticky(t *testing.T) {
 		t.Fatal("alarm leaked across servers")
 	}
 }
+
+// ---- step 6 review ----
+
+func TestServerPins(t *testing.T) {
+	s, _ := newStore(t)
+	if _, ok, err := s.ServerIdentity("h:1", "p"); ok || err != nil {
+		t.Fatalf("empty store: %v %v", ok, err)
+	}
+	if err := s.PinServer("h:1", "p", sidA); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PinServer("h:1", "p", sidA); err != nil {
+		t.Fatalf("same id again: %v", err)
+	}
+	if err := s.PinServer("h:1", "p", sidB); !errors.Is(err, ErrServerChanged) {
+		t.Fatalf("other id: %v", err)
+	}
+	if got, _, _ := s.ServerIdentity("h:1", "p"); got != sidA {
+		t.Fatal("pin replaced by PinServer")
+	}
+	// Another TLS pin at the same address is another server record.
+	if err := s.PinServer("h:1", "p2", sidB); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RepinServer("h:1", "p", sidB); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.ServerIdentity("h:1", "p"); got != sidB {
+		t.Fatal("RepinServer didn't replace")
+	}
+	if err := s.RaiseServerAlarm(sidA, "first"); err != nil {
+		t.Fatal(err)
+	}
+	s.RaiseServerAlarm(sidA, "second")
+	if d, ok, _ := s.ServerAlarm(sidA); !ok || d != "first" {
+		t.Fatalf("alarm %q %v", d, ok)
+	}
+	if _, ok, _ := s.ServerAlarm(sidB); ok {
+		t.Fatal("alarm leaked to another server")
+	}
+}

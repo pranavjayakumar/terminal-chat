@@ -480,6 +480,17 @@ The server advertises `e2e1` in WELCOME.
 honest server rejects garbage early), but clients verify every signed object
 themselves against SSH keys they pinned; server-side checks are no evidence.
 
+**Server identity and downgrade.** Clients key all trust state by
+`server_id`, so they pin it: the first `server_id` seen after a successful
+sync is recorded for the config's address and TLS pin, and a later WELCOME
+with a different (or missing) `server_id` stops the client ("server
+identity changed — log in again to trust it"); trust state is never reset
+for it. `tc login` explicitly re-trusts (a new record for the invite's
+address and pin). A client that ever saw a server with `e2e1` keeps that
+fact; a later WELCOME without `e2e1` is a sticky alarm for the server and
+every encrypted channel, and clients must not send plaintext into
+encrypted channels (enforced with encrypted sends, step 7).
+
 ### 13.1 Signed objects
 
 ```

@@ -1130,6 +1130,18 @@ func (c *Client) hasUnverifiedDevice(sid e2ecrypto.ServerID, user uint64) bool {
 
 // ---- status ----
 
+// TrustAlarm reports a server-wide trust alarm: the server, once seen
+// speaking e2e1, stopped advertising it. Every encrypted channel's
+// E2EStatus is then an alarm too. Sticky (trust store); works offline.
+func (c *Client) TrustAlarm() (detail string, ok bool) {
+	sid, ok := c.cacheServerID()
+	if !ok {
+		return "", false
+	}
+	detail, ok, _ = c.trust.ServerAlarm(sid)
+	return detail, ok
+}
+
 // E2EStatus reports ch's key state from the trust store and the cache; it
 // works offline.
 func (c *Client) E2EStatus(ch uint64) E2EStatus {
@@ -1151,6 +1163,10 @@ func (c *Client) e2eStatus(sid e2ecrypto.ServerID, ch proto.Channel) E2EStatus {
 	}
 	head, hasHead, _ := c.trust.ChainHead(sid, ch.ID)
 	st := E2EStatus{Epoch: head.Epoch}
+	if detail, ok, _ := c.trust.ServerAlarm(sid); ok {
+		st.State, st.Detail = E2EAlarm, detail
+		return st
+	}
 	if detail, ok, _ := c.trust.Alarm(sid, ch.ID); ok {
 		st.State, st.Detail = E2EAlarm, detail
 		return st

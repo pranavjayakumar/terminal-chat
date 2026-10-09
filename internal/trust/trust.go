@@ -34,8 +34,9 @@ import (
 const FileName = "e2e.db"
 
 // Schema history: v1 = step 3; v2 adds device_keys.user, revoked_devices.seq,
-// epochs and chan_alarms; v3 adds revoked_devices.time.
-const schemaVersion = 3
+// epochs and chan_alarms; v3 adds revoked_devices.time; v4 adds server_pins
+// and server_alarms.
+const schemaVersion = 4
 
 const schema = `
 CREATE TABLE IF NOT EXISTS device_keys (
@@ -65,6 +66,11 @@ CREATE TABLE IF NOT EXISTS epochs (
 CREATE TABLE IF NOT EXISTS chan_alarms (
 	server_id BLOB NOT NULL, chan INTEGER NOT NULL, detail TEXT NOT NULL, time INTEGER NOT NULL,
 	PRIMARY KEY (server_id, chan));
+CREATE TABLE IF NOT EXISTS server_pins (
+	addr TEXT NOT NULL, pin TEXT NOT NULL, server_id BLOB NOT NULL, first_seen INTEGER NOT NULL,
+	PRIMARY KEY (addr, pin));
+CREATE TABLE IF NOT EXISTS server_alarms (
+	server_id BLOB PRIMARY KEY, detail TEXT NOT NULL, time INTEGER NOT NULL);
 `
 
 // migrateV1 adds the v2 columns to a v1 file (the v2 tables come from schema).
@@ -102,6 +108,9 @@ var (
 	ErrUnknownEpoch = errors.New("trust: epoch not verified")
 	// ErrKeyMismatch means a key doesn't match the epoch's key commitment.
 	ErrKeyMismatch = errors.New("trust: key does not match the epoch's kc")
+	// ErrServerChanged means the server at a pinned address and TLS pin
+	// presented another server_id than the one first seen there.
+	ErrServerChanged = errors.New("server identity changed — log in again to trust it")
 )
 
 // How records why an SSH key is trusted.
@@ -900,4 +909,92 @@ func (s *Store) ChannelE2E(sid e2ecrypto.ServerID, ch uint64) (bool, error) {
 	err := s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM e2e_chans WHERE server_id = ? AND chan = ?)`,
 		sid[:], i64(ch)).Scan(&ok)
 	return ok, err
+}
+
+// ---- server identity ----
+//
+// Every other row is keyed by server_id, which the server itself announces
+// in WELCOME. A server that changed its id would make the client start over
+// with empty trust (fresh TOFU), so the first id seen at a config's address
+// and TLS pin is pinned, and only an explicit login re-trusts.
+
+// ServerIdentity returns the server_id pinned for (addr, pin); ok is false if none is.
+func (s *Store) ServerIdentity(addr, pin string) (sid e2ecrypto.ServerID, ok bool, err error) {
+	var b []byte
+	err = s.db.QueryRow(`SELECT server_id FROM server_pins WHERE addr = ? AND pin = ?`, addr, pin).Scan(&b)
+	if errors.Is(err, sql.ErrNoRows) {
+		return sid, false, nil
+	}
+	if err != nil {
+		return sid, false, fmt.Errorf("loading server identity: %w", err)
+	}
+	copy(sid[:], b)
+	return sid, len(b) == e2ecrypto.IDSize, nil
+}
+
+// PinServer records sid as the identity of the server at (addr, pin) unless
+// one is pinned already; a different pinned id is ErrServerChanged (and is
+// kept: nothing here ever resets trust).
+func (s *Store) PinServer(addr, pin string, sid e2ecrypto.ServerID) error {
+	err := s.tx(func(tx *sql.Tx) error {
+		var b []byte
+		err := tx.QueryRow(`SELECT server_id FROM server_pins WHERE addr = ? AND pin = ?`, addr, pin).Scan(&b)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			_, err = tx.Exec(`INSERT INTO server_pins (addr, pin, server_id, first_seen) VALUES (?, ?, ?, ?)`,
+				addr, pin, sid[:], time.Now().UnixNano())
+			return err
+		case err != nil:
+			return err
+		case subtle.ConstantTimeCompare(b, sid[:]) != 1:
+			return ErrServerChanged
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("pinning server identity: %w", err)
+	}
+	return nil
+}
+
+// RepinServer makes sid the identity of the server at (addr, pin), replacing
+// any earlier one. Only an explicit `tc login` calls it.
+func (s *Store) RepinServer(addr, pin string, sid e2ecrypto.ServerID) error {
+	err := s.tx(func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT INTO server_pins (addr, pin, server_id, first_seen) VALUES (?, ?, ?, ?)
+			ON CONFLICT (addr, pin) DO UPDATE SET server_id = excluded.server_id, first_seen = excluded.first_seen`,
+			addr, pin, sid[:], time.Now().UnixNano())
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("re-pinning server identity: %w", err)
+	}
+	return nil
+}
+
+// RaiseServerAlarm records that the server did something an honest one
+// can't (e.g. dropped e2e1 after speaking it). The first detail is kept;
+// like channel alarms it can't be cleared yet (step 10).
+func (s *Store) RaiseServerAlarm(sid e2ecrypto.ServerID, detail string) error {
+	err := s.tx(func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT OR IGNORE INTO server_alarms (server_id, detail, time) VALUES (?, ?, ?)`,
+			sid[:], detail, time.Now().UnixNano())
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("raising server alarm: %w", err)
+	}
+	return nil
+}
+
+// ServerAlarm returns the server's alarm detail; ok is false if there is none.
+func (s *Store) ServerAlarm(sid e2ecrypto.ServerID) (detail string, ok bool, err error) {
+	err = s.db.QueryRow(`SELECT detail FROM server_alarms WHERE server_id = ?`, sid[:]).Scan(&detail)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("loading server alarm: %w", err)
+	}
+	return detail, true, nil
 }

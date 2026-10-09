@@ -70,6 +70,7 @@
 //
 //	func (c *Client) E2EStatus(ch uint64) E2EStatus  // off / ok / waiting_key / unverified / alarm
 //	func (c *Client) ServerID() (e2ecrypto.ServerID, bool)
+//	func (c *Client) TrustAlarm() (string, bool)      // server dropped e2e1 after speaking it (sticky)
 //
 // Server-side refusals are returned as *proto.Error (check Code).
 package client
@@ -123,7 +124,7 @@ func (s State) String() string {
 }
 
 // Status describes the connection. Stopped means Run gave up for good
-// (revoked, auth failure, pin mismatch) and Err says why.
+// (revoked, auth failure, pin mismatch, server identity changed) and Err says why.
 type Status struct {
 	State     State
 	Err       string
