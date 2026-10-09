@@ -116,6 +116,10 @@ func openStore(path string) (*store, error) {
 		db.Close()
 		return nil, fmt.Errorf("creating schema: %w", err)
 	}
+	if err := migrateHooks(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	s := &store{db: db}
 	err = db.QueryRow(`SELECT v FROM meta WHERE k = 'server_id'`).Scan(&s.serverID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -180,11 +184,11 @@ func nullable(v uint64) any {
 	return int64(v)
 }
 
-const userCols = `id, name, display, admin, disabled, created`
+const userCols = `id, name, display, admin, disabled, created, bot`
 
 func scanUser(sc interface{ Scan(...any) error }) (proto.User, error) {
 	var u proto.User
-	err := sc.Scan(&u.ID, &u.Name, &u.Display, &u.Admin, &u.Disabled, &u.Created)
+	err := sc.Scan(&u.ID, &u.Name, &u.Display, &u.Admin, &u.Disabled, &u.Created, &u.Bot)
 	return u, err
 }
 

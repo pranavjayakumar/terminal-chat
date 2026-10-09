@@ -53,7 +53,7 @@ func cmdServer(args []string) error {
 		return err
 	}
 	defer srv.Close()
-	ln, err := transport.Listen(*listen, srv.Cert())
+	ln, err := transport.ListenWith(*listen, srv.Cert(), transport.ListenOpts{HTTP: true, HTTPCert: srv.HTTPCert()})
 	if err != nil {
 		return err
 	}

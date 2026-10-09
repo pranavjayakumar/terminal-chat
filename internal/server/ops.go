@@ -45,6 +45,7 @@ var writeOps = map[string]bool{
 	proto.OpRead: true, proto.OpChanCreate: true, proto.OpChanJoin: true, proto.OpChanAdd: true,
 	proto.OpChanLeave: true, proto.OpChanTopic: true, proto.OpDMOpen: true,
 	proto.OpInviteCreate: true, proto.OpUserDisable: true, proto.OpUserUpdate: true,
+	proto.OpHookCreate: true, proto.OpHookDelete: true,
 }
 
 func (s *Server) dispatch(ctx context.Context, sess *session, op string, args proto.Raw) (any, error) {
@@ -97,6 +98,9 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 		return withArgs(args, func(a proto.UserUpdateArgs) (any, error) { return s.opUserUpdate(ctx, u, a) })
 	case proto.OpUserDisable:
 		return withArgs(args, func(a proto.UserArgs) (any, error) { return s.opUserDisable(ctx, u, a) })
+	}
+	if res, ok, err := s.hookOp(ctx, u, op, args); ok {
+		return res, err
 	}
 	return nil, proto.Errf(proto.ErrUnknownOp, "")
 }
@@ -633,8 +637,12 @@ func (s *Server) opInviteCreate(ctx context.Context, u proto.User, a proto.Invit
 		return nil, errForbidden
 	}
 	if a.User != 0 {
-		if _, err := getUser(ctx, s.st.db, a.User); err != nil {
+		target, err := getUser(ctx, s.st.db, a.User)
+		if err != nil {
 			return nil, errNotFound
+		}
+		if target.Bot {
+			return nil, badRequest("bots can't log in")
 		}
 	}
 	code, err := s.CreateInvite(ctx, false, a.User)
