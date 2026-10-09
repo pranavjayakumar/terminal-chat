@@ -45,6 +45,9 @@
 //	func (c *Client) RemoveHighlight(word string) (removed bool, err error)
 //	func Highlighted(body string, words []string) bool                  // whole word, case-insensitive
 //	func (c *Client) Activity(limit int) []ActivityItem                 // what concerns me, newest first (see activity.go)
+//	func (c *Client) Groups() []proto.Group                             // user groups from the cache (see groups.go)
+//	func (c *Client) MentionNames() []string                            // my name plus my groups: what @-mentions me
+//	func Mentioned(body string, names []string) bool                    // whole-word @name for any of names
 //
 // Online-only (return ErrOffline unless Status().State == Online):
 //
@@ -56,6 +59,7 @@
 //	History(ctx, ch, before) (more bool, err error)  // older messages into the cache
 //	Search(ctx, q, ch) ([]proto.Message, error)
 //	CreateInvite(ctx, user) (string, error); DisableUser(ctx, user) error
+//	SetGroup(ctx, name, members) error (admin); FetchGroups(ctx) ([]proto.Group, error)
 //	SendTyping(ch) error; SetAway(away bool, status string) error
 //
 // Server-side refusals are returned as *proto.Error (check Code).

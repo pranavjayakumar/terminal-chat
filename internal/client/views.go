@@ -62,8 +62,9 @@ func (c *Client) Channels() []ChannelView {
 	// A mention is @me or one of my highlight keywords. The SQL narrows the
 	// rows; Go applies the exact whole-word rules.
 	words := c.Highlights()
+	names := c.MentionNames()
 	mention := map[uint64]bool{}
-	filter, fargs := highlightFilter("m.body", me.Name, words)
+	filter, fargs := highlightFilter("m.body", names, words)
 	if mrows, err := c.db.Query(`SELECT m.chan, m.body FROM msgs m LEFT JOIN reads r ON r.chan = m.chan
 		WHERE m.id > COALESCE(r.seq, 0) AND m.author != ? AND m.deleted = 0 AND `+filter+`
 		AND m.author NOT IN (SELECT id FROM users WHERE bot = 1)`,
@@ -71,7 +72,7 @@ func (c *Client) Channels() []ChannelView {
 		for mrows.Next() {
 			var ch uint64
 			var body string
-			if mrows.Scan(&ch, &body) == nil && !mention[ch] && (mentions(body, me.Name) || Highlighted(body, words)) {
+			if mrows.Scan(&ch, &body) == nil && !mention[ch] && (Mentioned(body, names) || Highlighted(body, words)) {
 				mention[ch] = true
 			}
 		}
