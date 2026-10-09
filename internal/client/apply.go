@@ -149,7 +149,7 @@ func (c *Client) applySnapshot(s *session, sn proto.Snapshot) error {
 			}
 		}
 		for _, k := range sn.Keys {
-			if err := storeBundle(tx, 0, k.Bundle, k.Seq); err != nil {
+			if err := c.storeBundle(tx, 0, k.Bundle, k.Seq); err != nil {
 				return err
 			}
 		}
@@ -431,7 +431,7 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		if !decode(&d) || ev.Chan == 0 {
 			return nil
 		}
-		return storeBundle(tx, ev.Chan, d.Bundle, ev.Seq)
+		return c.storeBundle(tx, ev.Chan, d.Bundle, ev.Seq)
 	case proto.KKeyShare:
 		var d proto.KeyShareArgs
 		if !decode(&d) || ev.Chan == 0 {
@@ -441,7 +441,7 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		if id, ok := c.ourDev(tx); ok {
 			dev = &id
 		}
-		return storeShare(tx, ev.Chan, ev.Actor, ev.Seq, d, dev)
+		return storeShare(tx, me, ev.Chan, ev.Actor, ev.Seq, d, dev)
 	case proto.KReadUpdate:
 		var d proto.ReadUpdate
 		if !decode(&d) {

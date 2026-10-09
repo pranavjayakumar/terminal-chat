@@ -12,8 +12,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
+	"time"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
@@ -1080,5 +1082,49 @@ func TestServerPins(t *testing.T) {
 	}
 	if _, ok, _ := s.ServerAlarm(sidB); ok {
 		t.Fatal("alarm leaked to another server")
+	}
+}
+
+// Pending key changes are an LRU of 16 per user and server.
+func TestKeyChangesLRU(t *testing.T) {
+	s, _ := newStore(t)
+	first := sshKey(t)
+	if err := s.PinKey(sidA, bob, first.fp, first.wire, TOFU); err != nil {
+		t.Fatal(err)
+	}
+	var keys []key
+	for range maxKeyChanges + 4 {
+		k := sshKey(t)
+		keys = append(keys, k)
+		if err := s.PinKey(sidA, bob, k.fp, k.wire, TOFU); !errors.Is(err, ErrKeyChanged) {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Millisecond) // distinct last_seen
+	}
+	// Seeing the oldest surviving one again keeps it.
+	if err := s.PinKey(sidA, bob, keys[4].fp, keys[4].wire, TOFU); !errors.Is(err, ErrKeyChanged) {
+		t.Fatal(err)
+	}
+	k := sshKey(t)
+	s.PinKey(sidA, bob, k.fp, k.wire, TOFU)
+	pend, _ := s.PendingKeyChanges(sidA)
+	if len(pend) != maxKeyChanges {
+		t.Fatalf("%d pending, want %d", len(pend), maxKeyChanges)
+	}
+	has := func(fp string) bool {
+		return slices.ContainsFunc(pend, func(p SSHKey) bool { return p.Fingerprint == fp })
+	}
+	if has(keys[0].fp) || has(keys[5].fp) || !has(keys[4].fp) || !has(k.fp) {
+		t.Fatal("not least-recently-seen eviction")
+	}
+	// Another user's changes are counted separately.
+	c := sshKey(t)
+	s.PinKey(sidA, 9, c.fp, c.wire, TOFU)
+	c2 := sshKey(t)
+	if err := s.PinKey(sidA, 9, c2.fp, c2.wire, TOFU); !errors.Is(err, ErrKeyChanged) {
+		t.Fatal(err)
+	}
+	if pend, _ := s.PendingKeyChanges(sidA); len(pend) != maxKeyChanges+1 {
+		t.Fatalf("%d pending across users", len(pend))
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"database/sql"
 	"errors"
 	"slices"
 	"sync"
@@ -935,5 +936,107 @@ func TestE2EShareFloodKeepsLegitShare(t *testing.T) {
 	waitFor(t, "ok from bob's share", status(c, dm, E2EOK))
 	if n := count(t, c, "key_shares"); n > maxCachedShares {
 		t.Fatalf("%d shares cached, cap %d", n, maxCachedShares)
+	}
+}
+
+// Unverified bundles and shares are cached only for channels known as
+// encrypted that we're a member of, at most maxEpochAhead above the head
+// and under a global cap; they never raise the cached channel epoch.
+func TestE2EBundleCacheBounds(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	b1 := newPeer(t, bob, nil)
+	stranger := newPeer(t, bob, nil) // never verified: its bundles can't be judged
+	const plain, notMine = 103, 104
+	f := startE2E(t, fs, proto.Snapshot{
+		Chans: []proto.Channel{dmChan(0),
+			{ID: plain, Name: "plain", Kind: proto.ChanPrivate, Members: []uint64{alice, bob}, Creator: bob},
+			{ID: notMine, Name: "theirs", Kind: proto.ChanPrivate, Members: []uint64{bob, carol}, E2E: true, Creator: bob}},
+		Devs: []proto.Device{{Cert: b1.cert}},
+	}, proto.DevicesListRes{})
+	me := f.myKeys(c)
+	cached := func(ch uint64) (n int) {
+		c.db.QueryRow(`SELECT COUNT(*) FROM epochs WHERE chan = ?`, ch).Scan(&n)
+		return n
+	}
+	for _, ch := range []uint64{plain, notMine} {
+		f.event(proto.KKeyEpoch, ch, bob, proto.KeyEpoch{Bundle: mkBundle(t, b1.dev, ch, 1, nil, []uint64{alice, bob}, newK(t), nil, me)})
+		f.event(proto.KKeyShare, ch, bob, proto.KeyShareArgs{Chan: ch, Epoch: 1, Dev: me.ID[:], Eph: make([]byte, 32), CT: make([]byte, e2ecrypto.BoxCTSize)})
+	}
+	far := mkBundle(t, stranger.dev, dm, maxEpochAhead+1, nil, []uint64{alice, bob}, newK(t), nil, me)
+	near := mkBundle(t, stranger.dev, dm, maxEpochAhead, nil, []uint64{alice, bob}, newK(t), nil, me)
+	f.event(proto.KKeyEpoch, dm, bob, proto.KeyEpoch{Bundle: far})
+	f.event(proto.KKeyEpoch, dm, bob, proto.KeyEpoch{Bundle: near})
+	waitFor(t, "near bundle cached", func() bool {
+		var n int
+		c.db.QueryRow(`SELECT COUNT(*) FROM epochs WHERE chan = ? AND epoch = ?`, dm, maxEpochAhead).Scan(&n)
+		return n == 1
+	})
+	if cached(dm) != 1 {
+		t.Fatalf("%d bundles cached for the DM: epoch %d (> head + %d) kept", cached(dm), maxEpochAhead+1, maxEpochAhead)
+	}
+	if cached(plain) != 0 || cached(notMine) != 0 || count(t, c, "key_shares") != 0 {
+		t.Fatalf("cached for plain %d, non-member %d, shares %d", cached(plain), cached(notMine), count(t, c, "key_shares"))
+	}
+	if cv, _ := c.Channel(dm); cv.Epoch != 0 {
+		t.Fatalf("unverified bundle raised the channel epoch to %d", cv.Epoch)
+	}
+
+	// Global cap: with the cache full of other channels' bundles, nothing more is kept.
+	for i := range maxCachedBundlesAll {
+		if _, err := c.db.Exec(`INSERT INTO epochs (chan, epoch, hash, bundle, seq) VALUES (?, 1, ?, x'00', 1)`,
+			1000+i/maxCachedBundles, []byte{byte(i), byte(i >> 8)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := c.tx(func(tx *sql.Tx) error {
+		return c.storeBundle(tx, dm, mkBundle(t, stranger.dev, dm, 3, nil, []uint64{alice, bob}, newK(t), nil, me), 99)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if cached(dm) != 1 {
+		t.Fatalf("stored over the global cap: %d", cached(dm))
+	}
+}
+
+// A forged cert is checked once, not on every pass.
+func TestE2EForgedCertNegativeCache(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	b1 := newPeer(t, bob, nil)
+	forged := newPeer(t, carol, nil)
+	forged.cert.Sig[5] ^= 1
+	f := startE2E(t, fs, proto.Snapshot{Chans: []proto.Channel{dmChan(0)},
+		Devs: []proto.Device{{Cert: b1.cert}, {Cert: forged.cert}}}, proto.DevicesListRes{})
+	f.myKeys(c)
+	time.Sleep(300 * time.Millisecond) // passes run every timing.keyNeed (200 ms)
+	n := c.certVerifies.Load()
+	time.Sleep(700 * time.Millisecond)
+	if got := c.certVerifies.Load(); got != n {
+		t.Fatalf("%d more cert checks over idle passes", got-n)
+	}
+}
+
+// key.need for devices we don't know triggers device verification at most
+// once per needVerifyEvery.
+func TestE2EKeyNeedVerifyThrottled(t *testing.T) {
+	fs, c := e2eClient(t)
+	c.timing.keyNeed = time.Hour // no periodic passes
+	run(t, c)
+	b1 := newPeer(t, bob, nil)
+	b3 := newPeer(t, bob, nil) // unendorsed: checked on every verification run
+	f := startE2E(t, fs, proto.Snapshot{Chans: []proto.Channel{dmChan(0)},
+		Devs: []proto.Device{{Cert: b1.cert}, {Cert: b3.cert}}}, proto.DevicesListRes{})
+	f.myKeys(c)
+	waitFor(t, "key change pending", func() bool { p, _ := c.Trust().PendingKeyChanges(testSID()); return len(p) == 1 })
+	time.Sleep(200 * time.Millisecond)
+	n := c.certVerifies.Load()
+	for i := range 5 {
+		unknown := e2ecrypto.DevID{0xee, byte(i)}
+		f.write(proto.TEphemeral, proto.Ephemeral{Kind: proto.EphKeyNeed, Chan: dm, User: bob, Epoch: 1, Dev: unknown[:]})
+	}
+	time.Sleep(300 * time.Millisecond)
+	if got := c.certVerifies.Load() - n; got > 1 {
+		t.Fatalf("%d verification runs for 5 key.need, want ≤ 1", got)
 	}
 }

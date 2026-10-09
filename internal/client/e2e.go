@@ -80,8 +80,15 @@ const revokeSkew = 5 * time.Minute
 
 // Bounds on what a server can make the cache hold.
 const (
-	maxCachedBundles = 1024 // unverified bundles per channel
-	maxCachedShares  = 256  // key.share events in all
+	maxCachedBundles    = 256  // unverified bundles per channel
+	maxCachedBundlesAll = 2048 // unverified bundles in all
+	maxCachedShares     = 256  // key.share events in all
+	// maxEpochAhead: bundles more than this many epochs above the verified
+	// head are dropped (a server can't make us cache a long fake future).
+	maxEpochAhead = 64
+	// needVerifyEvery: answerKeyNeed re-runs device verification for an
+	// unknown device at most this often.
+	needVerifyEvery = 10 * time.Second
 
 )
 
@@ -115,46 +122,59 @@ func e2eKind(kind string) bool {
 // ---- cache: bundles and shares ----
 
 // storeBundle keeps a bundle the server sent for channel ch (0: the
-// bundle's own) with its key.epoch seq, and raises the cached epoch.
-// Undecodable bundles, or ones naming another channel, are dropped: they
-// can't be filed under an epoch.
-func storeBundle(q dbtx, ch uint64, b proto.Signed, seq uint64) error {
+// bundle's own) with its key.epoch seq. It is unverified, so it changes
+// nothing else (in particular not chans.epoch, which only the server's
+// channel object sets). Dropped: undecodable bundles or ones naming another
+// channel or server; bundles for channels not cached as encrypted with us
+// as a member; epochs more than maxEpochAhead above our verified head; and
+// anything over the per-channel or global caps.
+func (c *Client) storeBundle(q dbtx, ch uint64, b proto.Signed, seq uint64) error {
 	eb, err := identity.PeekEpochBundle(identity.Signed(b))
 	if err != nil || (ch != 0 && eb.Chan != ch) || seq == 0 {
 		return nil
 	}
-	if cur, err := metaBytes(q, "server_id"); err == nil && len(cur) > 0 && !bytes.Equal(cur, eb.ServerID[:]) {
+	cur, err := metaBytes(q, "server_id")
+	if err != nil || len(cur) != e2ecrypto.IDSize || !bytes.Equal(cur, eb.ServerID[:]) {
+		return err
+	}
+	cv, ok, err := getChan(q, eb.Chan)
+	if err != nil || !ok || !cv.E2E || !slices.Contains(cv.Members, c.Me().ID) {
+		return err
+	}
+	head, _, err := c.trust.ChainHead(eb.ServerID, eb.Chan)
+	if err != nil || eb.Epoch > head.Epoch+maxEpochAhead {
 		return nil
 	}
-	var n int
-	q.QueryRow(`SELECT COUNT(*) FROM epochs WHERE chan = ?`, eb.Chan).Scan(&n)
-	if n >= maxCachedBundles {
+	var n, all int
+	if err := q.QueryRow(`SELECT COUNT(*) FILTER (WHERE chan = ?), COUNT(*) FROM epochs`, eb.Chan).Scan(&n, &all); err != nil {
+		return err
+	}
+	if n >= maxCachedBundles || all >= maxCachedBundlesAll {
 		return nil
 	}
 	raw := proto.MustRaw(b)
 	h := sha256.Sum256(raw)
-	if _, err := q.Exec(`INSERT OR IGNORE INTO epochs (chan, epoch, hash, bundle, seq) VALUES (?, ?, ?, ?, ?)`,
-		eb.Chan, eb.Epoch, h[:], []byte(raw), seq); err != nil {
-		return err
-	}
-	_, err = q.Exec(`UPDATE chans SET epoch = max(epoch, ?) WHERE id = ?`, eb.Epoch, eb.Chan)
+	_, err = q.Exec(`INSERT OR IGNORE INTO epochs (chan, epoch, hash, bundle, seq) VALUES (?, ?, ?, ?, ?)`,
+		eb.Chan, eb.Epoch, h[:], []byte(raw), seq)
 	return err
 }
 
 // storeShare keeps a key.share event sent to our device dev (nil: not
-// known yet) by sharer, a member of ch. Per (chan, epoch, dev, sharer) only
+// known yet) by sharer, in encrypted channel ch where both sharer and me
+// are members. Per (chan, epoch, dev, sharer) only
 // the newest share is kept, so one sharer re-sending can't pile up; over
 // maxCachedShares the oldest share of whoever holds the most is evicted,
 // so junk from one sharer (or the server inventing them) can't push out
 // a legitimate share from another.
-func storeShare(q dbtx, ch, sharer, seq uint64, d proto.KeyShareArgs, dev *e2ecrypto.DevID) error {
+func storeShare(q dbtx, me, ch, sharer, seq uint64, d proto.KeyShareArgs, dev *e2ecrypto.DevID) error {
 	if ch == 0 || sharer == 0 || len(d.Dev) != e2ecrypto.IDSize || len(d.Eph) != 32 || len(d.CT) != e2ecrypto.BoxCTSize {
 		return nil
 	}
 	if dev != nil && !bytes.Equal(d.Dev, dev[:]) {
 		return nil // for another device: nothing we can open
 	}
-	if cv, ok, err := getChan(q, ch); err != nil || !ok || !slices.Contains(cv.Members, sharer) {
+	if cv, ok, err := getChan(q, ch); err != nil || !ok || !cv.E2E || !slices.Contains(cv.Members, sharer) ||
+		(me != 0 && !slices.Contains(cv.Members, me)) {
 		return err
 	}
 	if _, err := q.Exec(`INSERT INTO key_shares (chan, epoch, dev, sharer, seq, eph, ct) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -192,6 +212,12 @@ func (c *Client) ourDev(q dbtx) (e2ecrypto.DevID, bool) {
 	}
 	c.myDev.Store(&k.ID)
 	return k.ID, true
+}
+
+// cachedMaxEpoch is the highest epoch among ch's cached, unverified bundles.
+func (c *Client) cachedMaxEpoch(ch uint64) (e uint32) {
+	c.db.QueryRow(`SELECT COALESCE(MAX(epoch), 0) FROM epochs WHERE chan = ?`, ch).Scan(&e)
+	return e
 }
 
 type cachedBundle struct {
@@ -473,8 +499,16 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 			done[i] = true // verified in an earlier pass
 			continue
 		}
-		_, err := cr.s.VerifyDeviceCert(sid, cr.dc.SSH)
-		done[i] = err != nil // forged: never counts
+		h := sha256.Sum256(cr.raw)
+		if c.badCert(h) {
+			done[i] = true
+			continue
+		}
+		c.certVerifies.Add(1)
+		if _, err := cr.s.VerifyDeviceCert(sid, cr.dc.SSH); err != nil {
+			done[i] = true // forged: never counts, and isn't checked again
+			c.markBadCert(h)
+		}
 	}
 	for round := 0; round < 8; round++ {
 		progress := false
@@ -574,6 +608,38 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 		}
 	}
 	return changed
+}
+
+// maxBadCerts bounds the negative cache of certs that failed verification.
+const maxBadCerts = 4096
+
+// badCert reports whether the cert with this hash already failed verification.
+func (c *Client) badCert(h [32]byte) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.badCerts[h]
+	return ok
+}
+
+func (c *Client) markBadCert(h [32]byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.badCerts) >= maxBadCerts {
+		clear(c.badCerts) // a forged cert re-verified once more is harmless
+	}
+	c.badCerts[h] = struct{}{}
+}
+
+// needVerifyDue reports (and records) whether answerKeyNeed may run device
+// verification now: at most once per needVerifyEvery.
+func (c *Client) needVerifyDue() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if time.Since(c.needVerified) < needVerifyEvery {
+		return false
+	}
+	c.needVerified = time.Now()
+	return true
 }
 
 // ---- epoch chain ----
@@ -699,7 +765,7 @@ func (c *Client) fetchBundles(ctx context.Context, s *session, ch uint64, from, 
 			if eb, err := identity.PeekEpochBundle(identity.Signed(b)); err != nil || eb.Epoch < from || eb.Epoch > to {
 				continue
 			}
-			if err := storeBundle(tx, ch, b, res.Seqs[i]); err != nil {
+			if err := c.storeBundle(tx, ch, b, res.Seqs[i]); err != nil {
 				return err
 			}
 		}
@@ -723,9 +789,7 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 	if err != nil {
 		return false
 	}
-	var latest uint32
-	c.db.QueryRow(`SELECT COALESCE(MAX(epoch), 0) FROM epochs WHERE chan = ?`, ch.ID).Scan(&latest)
-	latest = max(latest, ch.Epoch)
+	latest := max(c.cachedMaxEpoch(ch.ID), ch.Epoch)
 	if hasHead && latest < head.Epoch {
 		return c.alarm(sid, ch.ID, fmt.Sprintf("rollback: the server shows epoch %d, this device verified %d", latest, head.Epoch))
 	}
@@ -833,6 +897,9 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 			break // another process advanced meanwhile; the next pass catches up
 		}
 		changed = true
+		// Only a verified bundle moves the cached channel epoch (the server
+		// sends no chan.update for rotations); unverified ones never do.
+		c.db.Exec(`UPDATE chans SET epoch = max(epoch, ?) WHERE id = ?`, next, ch.ID)
 		for _, cb := range cands {
 			c.db.Exec(`DELETE FROM epochs WHERE chan = ? AND epoch = ? AND hash = ?`, ch.ID, next, cb.hash)
 		}
@@ -962,8 +1029,10 @@ func (c *Client) answerKeyNeed(ctx context.Context, s *session, sid e2ecrypto.Se
 	}
 	c.e2eMu.Lock()
 	d, ok, err := c.trust.Device(sid, dev)
-	if err == nil && !ok {
+	if err == nil && !ok && c.needVerifyDue() {
 		// Its device.new came just before; the worker may not have run yet.
+		// Throttled: key.need for unknown devices must not make us re-verify
+		// every cert on each request.
 		c.verifyDevices(sid, s.sshPub, c.Me().ID)
 		d, ok, err = c.trust.Device(sid, dev)
 	}
@@ -1099,7 +1168,7 @@ func (c *Client) rotateOnce(ctx context.Context, s *session, sid e2ecrypto.Serve
 			return fmt.Errorf("waiting for the key of epoch %d", head.Epoch)
 		}
 		p.Epoch, p.Prev, p.PrevK = head.Epoch+1, head.Hash, cur.Key
-	} else if ch.Epoch > 0 {
+	} else if ch.Epoch > 0 || c.cachedMaxEpoch(chID) > 0 {
 		return errors.New("the channel's key chain isn't verified yet")
 	} else if ch.Kind != proto.ChanDM && ch.Creator != user {
 		return errors.New("only the channel's creator can create its first key")

@@ -462,7 +462,7 @@ func TestStoreShareBounds(t *testing.T) {
 		t.Helper()
 		eph := make([]byte, 32)
 		eph[0] = tag
-		if err := storeShare(db, dm, sharer, seq, proto.KeyShareArgs{Chan: dm, Epoch: epoch, Dev: dev[:], Eph: eph,
+		if err := storeShare(db, alice, dm, sharer, seq, proto.KeyShareArgs{Chan: dm, Epoch: epoch, Dev: dev[:], Eph: eph,
 			CT: make([]byte, e2ecrypto.BoxCTSize)}, &mine); err != nil {
 			t.Fatal(err)
 		}

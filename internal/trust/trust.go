@@ -36,8 +36,13 @@ const FileName = "e2e.db"
 // Schema history: v1 = step 3; v2 adds device_keys.user, revoked_devices.seq,
 // epochs and chan_alarms; v3 adds revoked_devices.time; v4 adds server_pins
 // and server_alarms; v5 makes revoked_devices.seq nullable (NULL = unknown;
-// v1–v4 stored unknown as 0, which the migration turns into NULL).
-const schemaVersion = 5
+// v1–v4 stored unknown as 0, which the migration turns into NULL); v6 adds
+// key_changes.last_seen (pending key changes are an LRU of maxKeyChanges).
+const schemaVersion = 6
+
+// maxKeyChanges bounds the pending key changes kept per user and server; the
+// least recently seen is dropped (it is re-recorded if seen again).
+const maxKeyChanges = 16
 
 const schema = `
 CREATE TABLE IF NOT EXISTS device_keys (
@@ -48,7 +53,8 @@ CREATE TABLE IF NOT EXISTS pinned_keys (
 	how TEXT NOT NULL, first_seen INTEGER NOT NULL, PRIMARY KEY (server_id, user, fp));
 CREATE TABLE IF NOT EXISTS key_changes (
 	server_id BLOB NOT NULL, user INTEGER NOT NULL, fp TEXT NOT NULL, wire BLOB NOT NULL,
-	how TEXT NOT NULL, first_seen INTEGER NOT NULL, PRIMARY KEY (server_id, user, fp));
+	how TEXT NOT NULL, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (server_id, user, fp));
 CREATE TABLE IF NOT EXISTS devices (
 	server_id BLOB NOT NULL, dev BLOB NOT NULL, user INTEGER NOT NULL, x25519 BLOB NOT NULL,
 	ed25519 BLOB NOT NULL, cert BLOB NOT NULL, PRIMARY KEY (server_id, dev));
@@ -266,6 +272,17 @@ func initSchema(tx *sql.Tx) error {
 	if _, err := tx.Exec(schema); err != nil {
 		return err
 	}
+	if v >= 1 && v <= 5 {
+		var n int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('key_changes') WHERE name = 'last_seen'`).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			if _, err := tx.Exec(`ALTER TABLE key_changes ADD COLUMN last_seen INTEGER NOT NULL DEFAULT 0`); err != nil {
+				return fmt.Errorf("migrating trust store v%d: %w", v, err)
+			}
+		}
+	}
 	_, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion))
 	return err
 }
@@ -446,12 +463,21 @@ func (s *Store) PinKey(sid e2ecrypto.ServerID, user uint64, fp string, wire []by
 			sid[:], i64(user), fp).Scan(&pend)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
-			_, err = tx.Exec(`INSERT INTO key_changes (server_id, user, fp, wire, how, first_seen)
-				VALUES (?, ?, ?, ?, ?, ?)`, sid[:], i64(user), fp, wire, how, now)
-		case err == nil && how.rank() > pend.rank():
-			_, err = tx.Exec(`UPDATE key_changes SET how = ? WHERE server_id = ? AND user = ? AND fp = ?`,
-				how, sid[:], i64(user), fp)
+			_, err = tx.Exec(`INSERT INTO key_changes (server_id, user, fp, wire, how, first_seen, last_seen)
+				VALUES (?, ?, ?, ?, ?, ?, ?)`, sid[:], i64(user), fp, wire, how, now, now)
+		case err == nil:
+			if how.rank() < pend.rank() {
+				how = pend
+			}
+			_, err = tx.Exec(`UPDATE key_changes SET how = ?, last_seen = ? WHERE server_id = ? AND user = ? AND fp = ?`,
+				how, now, sid[:], i64(user), fp)
 		}
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(`DELETE FROM key_changes WHERE server_id = ? AND user = ? AND fp NOT IN (
+			SELECT fp FROM key_changes WHERE server_id = ? AND user = ? ORDER BY last_seen DESC, fp LIMIT ?)`,
+			sid[:], i64(user), sid[:], i64(user), maxKeyChanges)
 		return err
 	})
 	if err != nil {

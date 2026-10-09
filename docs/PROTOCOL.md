@@ -838,3 +838,12 @@ registered device (`not_found`), not revoked, of a current member
   per 10 s and ≤ 1 per channel per 2 s, both waived when the roster or its
   active devices changed since the current epoch (§13.3; plus the §9 write bucket).
   Signed device objects ≤ 4 KiB (§13.2).
+- Client-side bounds (what a server can make a client store or compute):
+  ≤ 16 pending key changes per user (least recently seen dropped); a cert
+  that fails verification is remembered by hash and not checked again;
+  device verification triggered by `key.need` for an unknown device runs at
+  most once per 10 s; unverified bundles and shares are kept only for
+  channels cached as encrypted with the client as a member, only for epochs
+  ≤ verified head + 64, and under per-channel and global caps. An unverified
+  bundle never changes the cached `Channel.epoch` (only the server's
+  Channel object or a verified bundle does).
