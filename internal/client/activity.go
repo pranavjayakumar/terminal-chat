@@ -56,9 +56,11 @@ type ActivityItem struct {
 const (
 	maxActivity  = 1000
 	previewRunes = 200
-	// maxReacts bounds the reactions table: only the newest are ever shown.
-	maxReacts = 1000
 )
+
+// maxReacts bounds the reactions table: only the newest are ever shown.
+// A variable so a test can use a small bound.
+var maxReacts = 1000
 
 // Activity lists, newest first, up to limit (default 100) things in the
 // channels I belong to that concern me: @mentions and highlight words,

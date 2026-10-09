@@ -241,6 +241,8 @@ func TestActivityPreviewIsOneShortLine(t *testing.T) {
 }
 
 func TestReactionTableIsBounded(t *testing.T) {
+	defer func(old int) { maxReacts = old }(maxReacts)
+	maxReacts = 40
 	c, _ := localClient(t)
 	seedLocal(t, c)
 	addMsg(t, c, proto.Message{ID: 1, Chan: general, Author: alice, Body: "mine", Time: 1})
