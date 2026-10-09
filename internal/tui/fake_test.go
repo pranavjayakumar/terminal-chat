@@ -33,6 +33,11 @@ type fakeClient struct {
 	histMore bool
 	calls    []string
 	aways    []bool
+	drafts   map[[2]uint64]string
+	words    []string
+	setErr   error // SetDraft fails with this
+	seen     int64 // activity seen time
+	activity []client.ActivityItem
 }
 
 func newFake() *fakeClient {
@@ -200,6 +205,41 @@ func (f *fakeClient) SetAway(away bool, status string) error {
 	return nil
 }
 
+func (f *fakeClient) Drafts() []client.Draft {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []client.Draft
+	for k, v := range f.drafts {
+		out = append(out, client.Draft{Chan: k[0], Thread: k[1], Body: v})
+	}
+	return out
+}
+
+func (f *fakeClient) Draft(ch, thread uint64) string { return f.draft(ch, thread) }
+
+func (f *fakeClient) SetDraft(ch, thread uint64, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.setErr != nil {
+		return f.setErr
+	}
+	if f.drafts == nil {
+		f.drafts = map[[2]uint64]string{}
+	}
+	if body == "" {
+		delete(f.drafts, [2]uint64{ch, thread})
+	} else {
+		f.drafts[[2]uint64{ch, thread}] = body
+	}
+	return nil
+}
+
+func (f *fakeClient) draft(ch, thread uint64) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.drafts[[2]uint64{ch, thread}]
+}
+
 func (f *fakeClient) awayCalls() []bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -291,4 +331,60 @@ func (f *fakeClient) SetDisplay(ctx context.Context, display string) error {
 func (f *fakeClient) ThreadHistory(ctx context.Context, ch, root, before uint64) (bool, error) {
 	f.record(fmt.Sprintf("thread-history:%d:%d", ch, root))
 	return false, nil
+}
+
+func (f *fakeClient) Highlights() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.words)
+}
+
+func (f *fakeClient) AddHighlight(word string) (bool, error) {
+	w, err := client.NormalizeHighlight(word)
+	if err != nil {
+		return false, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if slices.Contains(f.words, w) {
+		return false, nil
+	}
+	f.words = append(f.words, w)
+	slices.Sort(f.words)
+	return true, nil
+}
+
+func (f *fakeClient) RemoveHighlight(word string) (bool, error) {
+	w, err := client.NormalizeHighlight(word)
+	if err != nil {
+		return false, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	i := slices.Index(f.words, w)
+	if i < 0 {
+		return false, nil
+	}
+	f.words = slices.Delete(f.words, i, i+1)
+	return true, nil
+}
+
+func (f *fakeClient) Activity(limit int) []client.ActivityItem {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "activity")
+	return slices.Clone(f.activity)
+}
+
+func (f *fakeClient) ActivitySeen() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.seen
+}
+
+func (f *fakeClient) SetActivitySeen(ms int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seen = max(f.seen, ms)
+	return nil
 }

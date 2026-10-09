@@ -31,6 +31,7 @@ const (
 	modeReact
 	modePanePick
 	modeSharePreview
+	modeActivity
 )
 
 // pane is a scrollable message list: a channel (root 0) or a thread.
@@ -96,6 +97,7 @@ type Model struct {
 
 	sw     switcher
 	search searchState
+	act    activityState
 
 	focused    bool
 	lastTyping time.Time
@@ -114,6 +116,16 @@ type Model struct {
 	lastKey              time.Time
 	autoAway, manualAway bool
 	awayRun              bool
+
+	drafts     map[draftKey]string // unsent input per place to type, mirrored in the cache
+	draftDirty map[draftKey]bool   // changed since the last write to the cache
+	draftTimer bool                // a debounced save is scheduled
+	draftMark  map[uint64]bool     // channels with a draft not shown in the input
+	dk         draftKey            // where the input's text belongs
+
+	highlights []string // keywords that count like an @mention (lowercase)
+
+	jump jumpState
 }
 
 // ---- tea messages ----
@@ -174,10 +186,12 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 		bot: func(id uint64) bool { return m.users[id].Bot }}
 	m.input = newInput(st)
 	m.line = newLine(st)
+	m.loadDrafts()
 	m.reloadAll()
 	if ch := m.defaultChannel(); ch != 0 {
 		m.openChannel(ch)
 	}
+	m.syncDraft()
 	return m
 }
 
@@ -270,6 +284,7 @@ func (m *Model) reloadPresence() {
 
 func (m *Model) reloadChans() {
 	m.chans = m.c.Channels()
+	m.refreshHighlights()
 	if m.active != 0 {
 		if v, ok := m.chanView(m.active); !ok || (!v.Member && v.Kind != proto.ChanPublic) {
 			// Left or removed: fall back to something we're in.
@@ -389,6 +404,9 @@ func (m *Model) openChannel(ch uint64) tea.Cmd {
 	if ch == 0 {
 		return nil
 	}
+	if m.jump.wide != 0 && m.jump.wide != ch {
+		m.endWiden(false) // leaving the channel a jump widened
+	}
 	if ch == m.active && m.main.ch == ch {
 		m.closeThread()
 		m.main.scroll = 0
@@ -488,14 +506,17 @@ func (m *Model) openThread(root uint64) tea.Cmd {
 	m.updatePlaceholder()
 	// The cache may hold only some of the replies; fetch the newest page
 	// from the server (results arrive as a normal Msgs update).
-	ch := m.thread.ch
-	return m.call("thread history", func(ctx context.Context) error {
-		_, err := m.c.ThreadHistory(ctx, ch, root, 0)
-		return err
-	})
+	ch, c, ctx := m.thread.ch, m.c, m.ctx
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(ctx, reqTimeout)
+		defer cancel()
+		_, err := c.ThreadHistory(ctx, ch, root, 0)
+		return threadLoadedMsg{ch, root, err}
+	}
 }
 
 func (m *Model) closeThread() {
+	m.jump.waiting = false
 	m.thread = pane{sel: -1}
 	m.updatePlaceholder()
 }
@@ -644,7 +665,11 @@ func (m *Model) copyCmd(text string) tea.Cmd {
 // Update handles one message.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	_, cmd := m.update(msg)
+	m.syncDraft()
 	m.updatePlaceholder()
+	if t := m.draftTick(); t != nil {
+		cmd = tea.Batch(cmd, t)
+	}
 	if t := m.noticeTick(); t != nil {
 		cmd = tea.Batch(cmd, t)
 	}
@@ -663,6 +688,29 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case okMsg:
 		m.clearErr()
+		return m, nil
+	case threadLoadedMsg:
+		if msg.err != nil {
+			if !errors.Is(msg.err, client.ErrOffline) {
+				m.setErr("thread history", msg.err)
+			}
+		} else {
+			m.clearErr()
+		}
+		if m.thread.open() && m.thread.ch == msg.ch && m.thread.root == msg.root {
+			m.reloadPane(&m.thread)
+		}
+		m.finishJump(true)
+		return m, nil
+	case activityRefreshMsg:
+		m.act.timer = false
+		if m.act.pending && m.mode == modeActivity {
+			m.refreshActivity()
+		}
+		return m, nil
+	case draftSaveMsg:
+		m.draftTimer = false
+		m.flushDrafts()
 		return m, nil
 	case notifyFlushMsg:
 		return m, m.flushNote(msg)
@@ -743,6 +791,10 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Action != tea.MouseActionPress {
 			return m, nil
 		}
+		if m.mode == modeActivity { // the overlay covers the log: scroll its list
+			m.activityWheel(msg.Button)
+			return m, nil
+		}
 		switch msg.Button {
 		case tea.MouseButtonWheelUp:
 			return m, m.scrollBy(m.focus(), 3)
@@ -771,8 +823,14 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 			cmds = append(cmds, m.fetchHistory(m.active))
 		}
 	}
+	if u.Reset || u.Channels {
+		m.refreshDrafts()
+	}
 	if u.Reset {
 		m.reloadAll()
+		if m.mode == modeActivity {
+			m.refreshActivity()
+		}
 		cmds = append(cmds, m.markRead())
 		return tea.Batch(cmds...)
 	}
@@ -789,6 +847,7 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 	}
 	if m.thread.open() && u.Msgs[m.thread.ch] {
 		m.reloadPane(&m.thread)
+		m.finishJump(false)
 	}
 	if u.Typing[m.active] {
 		m.reloadTyping()
@@ -799,6 +858,9 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 		m.setNotice("message not sent: "+f.Failed, true, false, 0)
 	}
 	cmds = append(cmds, m.notifyFor(u.New))
+	if m.mode == modeActivity && m.activityAffected(u) {
+		cmds = append(cmds, m.queueActivityRefresh())
+	}
 	if u.Msgs[m.active] || u.Channels {
 		cmds = append(cmds, m.markRead())
 	}
@@ -839,6 +901,8 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 		return m.switcherKey(k)
 	case modeSearch:
 		return m.searchKey(k)
+	case modeActivity:
+		return m.activityKey(k)
 	case modeHelp:
 		m.helpKey(key)
 		return nil
@@ -858,6 +922,7 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 		return m.sharePreviewKey(key)
 	case modeSelect:
 		if cmd, handled := m.selectKey(k); handled {
+			m.trimWiden()
 			return cmd
 		}
 		m.leaveSelect()
@@ -871,6 +936,9 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 	switch {
 	case key == kSwitcher:
 		m.openSwitcher()
+		return nil
+	case key == kActivity:
+		m.openActivity()
 		return nil
 	case key == kSidebar || key == kSidebarAlt:
 		switch {
@@ -915,7 +983,6 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 		switch {
 		case m.editing != 0:
 			m.cancelEdit()
-			m.input.Reset()
 		case m.thread.open():
 			m.closeThread()
 			m.layoutInput()
@@ -1029,6 +1096,10 @@ func (m *Model) enterSelect() {
 func (m *Model) leaveSelect() {
 	m.mode = modeNormal
 	m.main.sel, m.thread.sel = -1, -1
+	if m.jump.wide != 0 {
+		m.endWiden(true)
+		m.main.scroll = 0
+	}
 	m.updatePlaceholder()
 }
 
@@ -1186,6 +1257,9 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 			return nil, true
 		}
 		m.leaveSelect()
+		// A jump can leave select mode with a draft in the input: keep it
+		// in its slot; cancelEdit puts it back.
+		m.setDraft(m.dk, m.input.Value())
 		m.editing = sel.ID
 		m.input.SetValue(sanitize.Text(sel.Body))
 		m.layoutInput()
@@ -1267,9 +1341,14 @@ func (m *Model) reactKey(k tea.KeyMsg) tea.Cmd {
 	return cmd
 }
 
+// cancelEdit ends an edit: its text leaves the input and the draft that was
+// there when the edit began (held in m.drafts meanwhile) comes back.
 func (m *Model) cancelEdit() {
-	if m.editing != 0 {
-		m.editing = 0
-		m.clearNotice()
+	if m.editing == 0 {
+		return
 	}
+	m.editing = 0
+	m.input.SetValue(m.drafts[m.dk])
+	m.layoutInput()
+	m.clearNotice()
 }

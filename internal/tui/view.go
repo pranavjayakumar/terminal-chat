@@ -92,8 +92,8 @@ func (m *Model) paneLines(p *pane, w int) ([]string, []int) {
 		switch {
 		case i == sel:
 			gutter = m.st.selMark.Render("▌")
-		case x.Author != m.me.ID && !x.Deleted && !m.users[x.Author].Bot && mentionsMe(x.Body, m.me.Name):
-			gutter = m.st.mentionMark.Render("▎")
+		case x.Author != m.me.ID && !x.Deleted && !m.users[x.Author].Bot:
+			gutter = m.concernMark(x.Body)
 		}
 		for _, l := range m.rc.get(&m.r, x, cw, header) {
 			lines = append(lines, gutter+l)
@@ -218,6 +218,8 @@ func (m *Model) bodyLines(d dims) []string {
 		return m.switcherLines(w, h)
 	case modeSearch:
 		return m.searchLines(w, h)
+	case modeActivity:
+		return m.activityLines(w, h)
 	case modePanePick:
 		return m.panePickLines(w, h)
 	case modeSharePreview:
@@ -483,19 +485,28 @@ func (m *Model) sideEntry(v client.ChannelView, w int) string {
 	case v.Unread > 0:
 		badge = strconv.Itoa(v.Unread)
 	}
-	labelW := w - 1
+	// A dim pencil marks a channel (or one of its threads) with an unsent
+	// draft that the input isn't showing.
+	draft := ""
+	if m.hasDraft(v.ID) {
+		draft = " ✎"
+	}
+	labelW := w - 1 - strWidth(draft)
 	if badge != "" {
-		labelW = w - strWidth(badge) - 2
+		labelW = w - strWidth(badge) - 2 - strWidth(draft)
 	}
 	label := fit(truncate(prefix+name, labelW), labelW)
 	if v.ID == m.active {
-		return m.st.sideActive.Render(fit(label+" "+badge, w-1))
+		return m.st.sideActive.Render(fit(label+draft+" "+badge, w-1))
 	}
 	st := m.st.sideItem
 	if v.Unread > 0 || v.Mention {
 		st = m.st.sideUnrd
 	}
 	out := st.Render(label)
+	if draft != "" {
+		out += m.st.dim.Render(draft)
+	}
 	if badge != "" {
 		bs := m.st.badge
 		if v.Mention {

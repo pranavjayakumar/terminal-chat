@@ -40,6 +40,15 @@ type Backend interface {
 	RetryFailed(local int64) error
 	DiscardFailed(local int64) error
 	MarkRead(ch, seq uint64) error
+	Drafts() []client.Draft
+	Draft(ch, thread uint64) string
+	SetDraft(ch, thread uint64, body string) error
+	Highlights() []string
+	AddHighlight(word string) (bool, error)
+	RemoveHighlight(word string) (bool, error)
+	Activity(limit int) []client.ActivityItem
+	ActivitySeen() int64
+	SetActivitySeen(ms int64) error
 
 	Edit(ctx context.Context, msg uint64, body string) error
 	Delete(ctx context.Context, msg uint64) error

@@ -15,8 +15,8 @@ Every milestone ships behind green CI, adversarial + chaos tests, and a live her
 | Display names (`/name`) | |
 | Thread history from server | older replies, not just the cache |
 | `tc notify -- <cmd>` | exit code, duration, output tail → channel/self, herdr notification |
-| Activity view (`Ctrl-A`) | mentions, replies in your threads, reactions to you |
-| Per-channel drafts, keyword highlights | local only |
+| Activity view (`Ctrl-A`) ✓ | mentions, replies in your threads, reactions to you, DMs |
+| Per-channel drafts ✓, keyword highlights ✓ | local only |
 | `/pin` `/pins`, `/remind`, user groups `@oncall` | |
 | Diff + `file:line` aware snippets | `git diff \| tc send`, `tc send --file a.go:40-60` |
 | UI gaps from M1 | `?` no longer eats messages, long-line viewer |

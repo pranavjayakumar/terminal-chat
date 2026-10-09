@@ -143,7 +143,6 @@ func (m *Model) submit() tea.Cmd {
 	if m.editing != 0 {
 		id := m.editing
 		m.cancelEdit()
-		m.clearInput()
 		return m.call("edit", func(ctx context.Context) error { return m.c.Edit(ctx, id, body) })
 	}
 	if strings.HasPrefix(v, "/") && !strings.HasPrefix(v, "//") {
@@ -249,6 +248,9 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 		return tea.Quit, nil
 	case "help":
 		m.openHelp()
+		return nil, nil
+	case "activity":
+		m.openActivity()
 		return nil, nil
 	case "join":
 		if err := need(1, "/join #channel"); err != nil {
@@ -378,6 +380,9 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 			res, err := be.Search(ctx, q, 0)
 			return searchMsg{q, res, err}
 		}, nil
+	}
+	if ok, err := m.highlightCommand(c); ok {
+		return nil, err
 	}
 	if cmd, ok, err := m.hookCommand(c); ok {
 		return cmd, err
