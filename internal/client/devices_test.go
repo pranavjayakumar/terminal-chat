@@ -444,3 +444,53 @@ func TestStoreRevokeUnknownSeq(t *testing.T) {
 		}
 	}
 }
+
+// One share per (chan, epoch, dev, sharer), newest seq wins; shares for
+// other devices or from non-members aren't kept; over the global cap the
+// sharer holding the most loses its oldest.
+func TestStoreShareBounds(t *testing.T) {
+	db, err := openCache(filepath.Join(t.TempDir(), "cache.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := storeChan(db, proto.Channel{ID: dm, Kind: proto.ChanDM, Members: []uint64{alice, bob, carol}, E2E: true}); err != nil {
+		t.Fatal(err)
+	}
+	mine := e2ecrypto.DevID{1}
+	share := func(sharer, seq uint64, epoch uint32, dev e2ecrypto.DevID, tag byte) {
+		t.Helper()
+		eph := make([]byte, 32)
+		eph[0] = tag
+		if err := storeShare(db, dm, sharer, seq, proto.KeyShareArgs{Chan: dm, Epoch: epoch, Dev: dev[:], Eph: eph,
+			CT: make([]byte, e2ecrypto.BoxCTSize)}, &mine); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n := func(q string, args ...any) (k int) {
+		db.QueryRow(`SELECT COUNT(*) FROM key_shares `+q, args...).Scan(&k)
+		return k
+	}
+	share(bob, 10, 1, mine, 1)
+	share(bob, 12, 1, mine, 2)
+	share(bob, 11, 1, mine, 3) // older: ignored
+	var tag []byte
+	db.QueryRow(`SELECT eph FROM key_shares WHERE sharer = ?`, bob).Scan(&tag)
+	if n("") != 1 || tag[0] != 2 {
+		t.Fatalf("newest share not kept alone: %d rows, tag %d", n(""), tag[0])
+	}
+	share(bob, 13, 1, e2ecrypto.DevID{2}, 4) // another device
+	share(99, 14, 1, mine, 5)                // not a member
+	if n("") != 1 {
+		t.Fatalf("%d rows after foreign shares", n(""))
+	}
+	for i := range uint64(maxCachedShares + 20) {
+		share(carol, 100+i, uint32(2+i), mine, 6)
+	}
+	if n("") != maxCachedShares || n("WHERE sharer = ?", bob) != 1 {
+		t.Fatalf("%d rows (cap %d), bob's %d", n(""), maxCachedShares, n("WHERE sharer = ?", bob))
+	}
+	if n("WHERE sharer = ? AND epoch = 2", carol) != 0 {
+		t.Fatal("carol's oldest share not evicted first")
+	}
+}

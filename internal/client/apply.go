@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/proto"
 )
 
@@ -436,7 +437,11 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		if !decode(&d) || ev.Chan == 0 {
 			return nil
 		}
-		return storeShare(tx, ev.Chan, d)
+		var dev *e2ecrypto.DevID
+		if id, ok := c.ourDev(tx); ok {
+			dev = &id
+		}
+		return storeShare(tx, ev.Chan, ev.Actor, ev.Seq, d, dev)
 	case proto.KReadUpdate:
 		var d proto.ReadUpdate
 		if !decode(&d) {

@@ -906,3 +906,34 @@ func TestE2EUnverifiedUsers(t *testing.T) {
 		t.Fatalf("after verifying carol: %v", got)
 	}
 }
+
+// A flood of junk key.share events (another member's, for epochs we haven't
+// verified, or for other devices) never pushes out a legitimate share.
+func TestE2EShareFloodKeepsLegitShare(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	b1 := newPeer(t, bob, nil)
+	group := proto.Channel{ID: dm, Kind: proto.ChanDM, Members: []uint64{alice, bob, carol}, E2E: true, Creator: bob}
+	f := startE2E(t, fs, proto.Snapshot{Chans: []proto.Channel{group}, Devs: []proto.Device{{Cert: b1.cert}}}, proto.DevicesListRes{})
+	me := f.myKeys(c)
+	k1 := newK(t)
+	f.keyEpoch(dm, bob, mkBundle(t, b1.dev, dm, 1, nil, []uint64{alice, bob, carol}, k1, nil, b1.dev)) // no box for us
+	waitFor(t, "waiting for key", status(c, dm, E2EWaitingKey))
+	junk := func(epoch uint32, dev []byte) proto.KeyShareArgs {
+		return proto.KeyShareArgs{Chan: dm, Epoch: epoch, Dev: dev, Eph: make([]byte, 32), CT: make([]byte, e2ecrypto.BoxCTSize)}
+	}
+	for i := range uint32(maxCachedShares + 50) {
+		f.event(proto.KKeyShare, dm, carol, junk(i+2, me.ID[:]))
+		other := e2ecrypto.DevID{byte(i), byte(i >> 8), 1}
+		f.event(proto.KKeyShare, dm, carol, junk(1, other[:]))
+	}
+	eph, ct, err := e2ecrypto.SealShare(rand.Reader, me.X25519Pub, e2ecrypto.ShareAD{ServerID: testSID(), Chan: dm, Epoch: 1, Recipient: me.ID}, k1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.event(proto.KKeyShare, dm, bob, proto.KeyShareArgs{Chan: dm, Epoch: 1, Dev: me.ID[:], Eph: eph[:], CT: ct[:]})
+	waitFor(t, "ok from bob's share", status(c, dm, E2EOK))
+	if n := count(t, c, "key_shares"); n > maxCachedShares {
+		t.Fatalf("%d shares cached, cap %d", n, maxCachedShares)
+	}
+}

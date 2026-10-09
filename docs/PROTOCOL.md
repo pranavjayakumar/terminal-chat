@@ -818,7 +818,11 @@ ct  = XChaCha20-Poly1305(bk, nonce 0^24, K, AD = "tc-share-v1" || server_id || c
 
 Anyone can build a share, so the recipient accepts K only if it matches
 the `kc` of the epoch's verified bundle; a share for an epoch it hasn't
-verified yet is kept until it has. Server rules (write op, rate limited):
+verified yet is kept until it has. Clients bound what they keep: only
+shares to their own device from a current member, at most one per
+(chan, epoch, device, sharer) (the newest event wins), and a global cap that
+evicts the oldest share of whichever sharer holds the most, so junk from
+one sharer never displaces another's legitimate share. Server rules (write op, rate limited):
 `dev`, `eph`, `ct` of the right sizes and `epoch ≥ 1` (else `bad_request`);
 channel exists (`not_found`); caller is a member (`forbidden`); channel is
 encrypted and `epoch ≤` its current epoch (`bad_request`); `dev` is a

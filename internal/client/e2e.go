@@ -81,7 +81,8 @@ const revokeSkew = 5 * time.Minute
 // Bounds on what a server can make the cache hold.
 const (
 	maxCachedBundles = 1024 // unverified bundles per channel
-	maxCachedShares  = 64   // key.share events per channel
+	maxCachedShares  = 256  // key.share events in all
+
 )
 
 func (s *session) serverID() (e2ecrypto.ServerID, bool) {
@@ -140,18 +141,57 @@ func storeBundle(q dbtx, ch uint64, b proto.Signed, seq uint64) error {
 	return err
 }
 
-func storeShare(q dbtx, ch uint64, d proto.KeyShareArgs) error {
-	if ch == 0 || len(d.Dev) != e2ecrypto.IDSize || len(d.Eph) != 32 || len(d.CT) != e2ecrypto.BoxCTSize {
+// storeShare keeps a key.share event sent to our device dev (nil: not
+// known yet) by sharer, a member of ch. Per (chan, epoch, dev, sharer) only
+// the newest share is kept, so one sharer re-sending can't pile up; over
+// maxCachedShares the oldest share of whoever holds the most is evicted,
+// so junk from one sharer (or the server inventing them) can't push out
+// a legitimate share from another.
+func storeShare(q dbtx, ch, sharer, seq uint64, d proto.KeyShareArgs, dev *e2ecrypto.DevID) error {
+	if ch == 0 || sharer == 0 || len(d.Dev) != e2ecrypto.IDSize || len(d.Eph) != 32 || len(d.CT) != e2ecrypto.BoxCTSize {
 		return nil
 	}
-	var n int
-	q.QueryRow(`SELECT COUNT(*) FROM key_shares WHERE chan = ?`, ch).Scan(&n)
-	if n >= maxCachedShares {
-		return nil
+	if dev != nil && !bytes.Equal(d.Dev, dev[:]) {
+		return nil // for another device: nothing we can open
 	}
-	_, err := q.Exec(`INSERT OR IGNORE INTO key_shares (chan, epoch, dev, eph, ct) VALUES (?, ?, ?, ?, ?)`,
-		ch, d.Epoch, d.Dev, d.Eph, d.CT)
-	return err
+	if cv, ok, err := getChan(q, ch); err != nil || !ok || !slices.Contains(cv.Members, sharer) {
+		return err
+	}
+	if _, err := q.Exec(`INSERT INTO key_shares (chan, epoch, dev, sharer, seq, eph, ct) VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (chan, epoch, dev, sharer) DO UPDATE SET seq = excluded.seq, eph = excluded.eph, ct = excluded.ct
+		WHERE excluded.seq > key_shares.seq`, ch, d.Epoch, d.Dev, sharer, seq, d.Eph, d.CT); err != nil {
+		return err
+	}
+	for {
+		var n int
+		if err := q.QueryRow(`SELECT COUNT(*) FROM key_shares`).Scan(&n); err != nil || n <= maxCachedShares {
+			return err
+		}
+		if _, err := q.Exec(`DELETE FROM key_shares WHERE rowid = (SELECT rowid FROM key_shares
+			WHERE sharer = (SELECT sharer FROM key_shares GROUP BY sharer ORDER BY COUNT(*) DESC, MIN(seq) LIMIT 1)
+			ORDER BY seq LIMIT 1)`); err != nil {
+			return err
+		}
+	}
+}
+
+// ourDev is this device's id on the cached server (loading, or on first
+// use creating, the device keys exactly as ensureDevice would); ok is false
+// before the first sync.
+func (c *Client) ourDev(q dbtx) (e2ecrypto.DevID, bool) {
+	if d := c.myDev.Load(); d != nil {
+		return *d, true
+	}
+	b, err := metaBytes(q, "server_id")
+	if err != nil || len(b) != e2ecrypto.IDSize {
+		return e2ecrypto.DevID{}, false
+	}
+	k, err := c.trust.DeviceKeys(e2ecrypto.ServerID(b), c.Me().ID)
+	if err != nil {
+		return e2ecrypto.DevID{}, false
+	}
+	c.myDev.Store(&k.ID)
+	return k.ID, true
 }
 
 type cachedBundle struct {
@@ -835,18 +875,19 @@ func (c *Client) walkBack(sid e2ecrypto.ServerID, ch uint64) bool {
 // applyShares opens key.share boxes sent to our device for epochs we've
 // verified. A share is accepted only if K matches the epoch's kc.
 func (c *Client) applyShares(sid e2ecrypto.ServerID, ch uint64, me *e2ecrypto.DeviceKeys) bool {
-	rows, err := c.db.Query(`SELECT epoch, dev, eph, ct FROM key_shares WHERE chan = ?`, ch)
+	rows, err := c.db.Query(`SELECT epoch, dev, sharer, eph, ct FROM key_shares WHERE chan = ?`, ch)
 	if err != nil {
 		return false
 	}
 	type share struct {
 		epoch        uint32
+		sharer       uint64
 		dev, eph, ct []byte
 	}
 	var shares []share
 	for rows.Next() {
 		var sh share
-		if rows.Scan(&sh.epoch, &sh.dev, &sh.eph, &sh.ct) == nil {
+		if rows.Scan(&sh.epoch, &sh.dev, &sh.sharer, &sh.eph, &sh.ct) == nil {
 			shares = append(shares, sh)
 		}
 	}
@@ -854,7 +895,8 @@ func (c *Client) applyShares(sid e2ecrypto.ServerID, ch uint64, me *e2ecrypto.De
 	changed := false
 	for _, sh := range shares {
 		drop := func() {
-			c.db.Exec(`DELETE FROM key_shares WHERE chan = ? AND epoch = ? AND dev = ? AND eph = ?`, ch, sh.epoch, sh.dev, sh.eph)
+			c.db.Exec(`DELETE FROM key_shares WHERE chan = ? AND epoch = ? AND dev = ? AND sharer = ? AND eph = ?`,
+				ch, sh.epoch, sh.dev, sh.sharer, sh.eph)
 		}
 		if me == nil {
 			return changed

@@ -111,6 +111,7 @@ func (c *Client) ensureDevice(ctx context.Context, s *session, signer ssh.Signer
 		return err
 	}
 	s.dev.Store(keys)
+	c.myDev.Store(&keys.ID)
 	// Once the cache holds every device (a full list, or a reset snapshot
 	// in an e2e1 session) events keep it current; then only our own
 	// devices need checking.
@@ -174,6 +175,7 @@ func (c *Client) ensureDevice(ctx context.Context, s *session, signer ssh.Signer
 			return err
 		}
 		s.dev.Store(keys)
+		c.myDev.Store(&keys.ID)
 	} else if slices.ContainsFunc(certs, func(sc proto.Signed) bool {
 		dc, err := identity.PeekDeviceCert(identity.Signed(sc))
 		return err == nil && dc.User == me && dc.Dev == keys.ID && bytes.Equal(dc.Ed25519, keys.Ed25519Pub)

@@ -88,6 +88,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
 	"github.com/skailama/tc/internal/trust"
@@ -185,6 +186,7 @@ type Client struct {
 	e2eMu    sync.Mutex
 	e2eKick  chan struct{}
 	keyNeeds chan proto.Ephemeral
+	myDev    atomic.Pointer[e2ecrypto.DevID] // this device's id, once known (ourDev)
 	// under mu:
 	e2eSoft   map[uint64]string // channel → why its next bundle can't be judged yet
 	needSent  map[uint64]time.Time

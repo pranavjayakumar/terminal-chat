@@ -49,10 +49,12 @@ CREATE INDEX IF NOT EXISTS device_revokes_dev ON device_revokes (dev);
 CREATE TABLE IF NOT EXISTS epochs (
 	chan INTEGER NOT NULL, epoch INTEGER NOT NULL, hash BLOB NOT NULL, bundle BLOB NOT NULL,
 	seq INTEGER NOT NULL, PRIMARY KEY (chan, epoch, hash));
--- key.share events (K sealed to some device), until the worker handles them.
+-- key.share events (K sealed to this device), until the worker handles
+-- them: one per (chan, epoch, dev, sharer), the newest (by event seq) wins.
 CREATE TABLE IF NOT EXISTS key_shares (
-	chan INTEGER NOT NULL, epoch INTEGER NOT NULL, dev BLOB NOT NULL, eph BLOB NOT NULL, ct BLOB NOT NULL,
-	PRIMARY KEY (chan, epoch, dev, eph));
+	chan INTEGER NOT NULL, epoch INTEGER NOT NULL, dev BLOB NOT NULL, sharer INTEGER NOT NULL,
+	seq INTEGER NOT NULL, eph BLOB NOT NULL, ct BLOB NOT NULL,
+	PRIMARY KEY (chan, epoch, dev, sharer));
 -- Local-only state (never sent to the server, kept across snapshot resets).
 CREATE TABLE IF NOT EXISTS drafts (
 	chan INTEGER NOT NULL, thread INTEGER NOT NULL, body TEXT NOT NULL, time INTEGER NOT NULL,

@@ -31,6 +31,20 @@ func migrateBots(db *sql.DB) error {
 // "full device list" mark, so the next e2e1 session lists them again with
 // their seqs (an unknown seq would invalidate every bundle of the device).
 func migrateE2E(db *sql.DB) error {
+	// key_shares gained sharer/seq and a new key: rebuild it (shares are
+	// recoverable through key.need).
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('key_shares') WHERE name = 'sharer'`).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		if _, err := db.Exec(`DROP TABLE key_shares; CREATE TABLE key_shares (
+			chan INTEGER NOT NULL, epoch INTEGER NOT NULL, dev BLOB NOT NULL, sharer INTEGER NOT NULL,
+			seq INTEGER NOT NULL, eph BLOB NOT NULL, ct BLOB NOT NULL,
+			PRIMARY KEY (chan, epoch, dev, sharer))`); err != nil {
+			return fmt.Errorf("migrating cache: %w", err)
+		}
+	}
 	for _, c := range [][3]string{
 		{"chans", "e2e", "INTEGER NOT NULL DEFAULT 0"},
 		{"chans", "epoch", "INTEGER NOT NULL DEFAULT 0"},
