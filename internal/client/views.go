@@ -26,7 +26,7 @@ type ChannelView struct {
 	Display string
 	Member  bool
 	Unread  int    // messages after the read marker not written by me
-	Mention bool   // an unread message @mentions me, or any unread in a DM
+	Mention bool   // an unread message by a person @mentions me, or any unread by a person in a DM
 	Read    uint64 // read marker (message id)
 	Last    uint64 // newest cached message id, for activity sorting
 }
@@ -53,9 +53,15 @@ func (c *Client) Channels() []ChannelView {
 	last := c.uintMap(`SELECT chan, MAX(id) FROM msgs GROUP BY chan`)
 	unread := c.uintMap(`SELECT m.chan, COUNT(*) FROM msgs m LEFT JOIN reads r ON r.chan = m.chan
 		WHERE m.id > COALESCE(r.seq, 0) AND m.author != ? AND m.deleted = 0 GROUP BY m.chan`, me.ID)
+	// Bot (webhook) messages count as unread but never as mentions: their
+	// text comes from outside (e.g. a branch named "fix-@priya").
+	human := c.uintMap(`SELECT m.chan, COUNT(*) FROM msgs m LEFT JOIN reads r ON r.chan = m.chan
+		WHERE m.id > COALESCE(r.seq, 0) AND m.author != ? AND m.deleted = 0
+		AND m.author NOT IN (SELECT id FROM users WHERE bot = 1) GROUP BY m.chan`, me.ID)
 	mention := map[uint64]bool{}
 	if mrows, err := c.db.Query(`SELECT m.chan, m.body FROM msgs m LEFT JOIN reads r ON r.chan = m.chan
-		WHERE m.id > COALESCE(r.seq, 0) AND m.author != ? AND m.deleted = 0 AND m.body LIKE ? ESCAPE '\'`,
+		WHERE m.id > COALESCE(r.seq, 0) AND m.author != ? AND m.deleted = 0 AND m.body LIKE ? ESCAPE '\'
+		AND m.author NOT IN (SELECT id FROM users WHERE bot = 1)`,
 		me.ID, "%@"+likeEscape(me.Name)+"%"); err == nil {
 		for mrows.Next() {
 			var ch uint64
@@ -73,7 +79,7 @@ func (c *Client) Channels() []ChannelView {
 		v.Display = c.displayName(v.Channel, me.ID)
 		if v.Member {
 			v.Unread = int(unread[v.ID])
-			v.Mention = mention[v.ID] || (v.Kind == proto.ChanDM && v.Unread > 0)
+			v.Mention = mention[v.ID] || (v.Kind == proto.ChanDM && human[v.ID] > 0)
 		}
 	}
 	slices.SortFunc(out, func(a, b ChannelView) int {

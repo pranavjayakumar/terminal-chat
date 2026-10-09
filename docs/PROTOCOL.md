@@ -265,7 +265,9 @@ Message = {id, chan, author, body, thread: u64 (0 = top level), time,
 ```
 
 `User.bot` (omitted when false) marks a webhook bot user (§12). Bots have no keys, never
-log in (add-key invites can't target them) and never have presence.
+log in (add-key invites can't target them) and never have presence. Clients MUST NOT treat a
+bot's message as a mention or DM notification (its text comes from outside tc); it still
+counts as unread.
 
 `Message.id` is the seq of its `msg.new` event, so ids order chronologically
 and map directly onto read markers.

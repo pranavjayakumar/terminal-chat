@@ -904,3 +904,33 @@ func TestCloseStopsEverything(t *testing.T) {
 	for range c.Updates() { // drained, then closed
 	}
 }
+
+// TestBotMessagesNeverMention: a webhook bot's @mention or DM counts as
+// unread, never as a mention (L5).
+func TestBotMessagesNeverMention(t *testing.T) {
+	testEnv(t)
+	fs := newFakeServer(t)
+	c := open(t, login(t, fs))
+	run(t, c)
+	fc := fs.accept()
+	fc.bootstrap()
+	waitFor(t, "online", online(c))
+
+	const ci = 9
+	fc.event(30, proto.KUserNew, 0, alice, proto.User{ID: ci, Name: "ci-bot", Bot: true})
+	fc.event(31, proto.KMsgNew, general, ci, proto.Message{ID: 31, Chan: general, Author: ci, Body: "fix-@alice failed"})
+	fc.event(32, proto.KMsgNew, dm, ci, proto.Message{ID: 32, Chan: dm, Author: ci, Body: "hi"})
+	waitFor(t, "events", func() bool { return lastSeq(t, c) == 32 })
+	if g := chanView(t, c, general); g.Unread != 1 || g.Mention {
+		t.Errorf("general = %+v", g)
+	}
+	if d := chanView(t, c, dm); d.Unread != 1 || d.Mention {
+		t.Errorf("dm = %+v", d)
+	}
+	// A person's message still is.
+	fc.event(33, proto.KMsgNew, general, bob, proto.Message{ID: 33, Chan: general, Author: bob, Body: "@alice look"})
+	waitFor(t, "events", func() bool { return lastSeq(t, c) == 33 })
+	if g := chanView(t, c, general); g.Unread != 2 || !g.Mention {
+		t.Errorf("general after bob = %+v", g)
+	}
+}
