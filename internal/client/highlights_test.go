@@ -273,3 +273,50 @@ func TestHighlightLikeWildcardsAreLiteral(t *testing.T) {
 		t.Fatalf("literal %%: %+v", v)
 	}
 }
+
+func TestHighlightedIgnoresFencedCode(t *testing.T) {
+	words := []string{"deploy"}
+	for name, tc := range map[string]struct {
+		body string
+		want bool
+	}{
+		"only in a block":      {"```\ndeploy failed\n```", false},
+		"block with language":  {"look:\n```go\nfunc deploy() {}\n```", false},
+		"indented fence":       {"  ```\ndeploy\n  ```", false},
+		"unterminated block":   {"intro\n```\ndeploy forever", false},
+		"before the block":     {"deploy now\n```\nx\n```", true},
+		"after the block":      {"```\nx\n```\nplease deploy", true},
+		"between two blocks":   {"```\na\n```\ndeploy\n```\nb\n```", true},
+		"inline code is prose": {"run `deploy` please", true},
+		"fence line itself":    {"```deploy\nx\n```", false},
+		"no fence":             {"deploy", true},
+	} {
+		if got := Highlighted(tc.body, words); got != tc.want {
+			t.Errorf("%s: Highlighted(%q) = %v, want %v", name, tc.body, got, tc.want)
+		}
+	}
+}
+
+// A keyword inside a pasted log neither flags the channel nor lands in the
+// activity view.
+func TestHighlightInCodeBlockIsNotAMention(t *testing.T) {
+	c, _ := localClient(t)
+	seedLocal(t, c)
+	if _, err := c.AddHighlight("deploy"); err != nil {
+		t.Fatal(err)
+	}
+	addMsg(t, c, proto.Message{ID: 10, Chan: general, Author: bob, Body: "build log:\n```\ndeploy step 3 failed\n```"})
+	if v := chanView(t, c, general); v.Unread != 1 || v.Mention {
+		t.Fatalf("channel: %+v", v)
+	}
+	if items := c.Activity(10); len(items) != 0 {
+		t.Fatalf("activity: %+v", items)
+	}
+	addMsg(t, c, proto.Message{ID: 11, Chan: general, Author: bob, Body: "did the deploy go out?\n```\nok\n```"})
+	if v := chanView(t, c, general); !v.Mention {
+		t.Fatalf("a keyword in prose still counts: %+v", v)
+	}
+	if items := c.Activity(10); len(items) != 1 || items[0].Kind != ActHighlight || items[0].Msg != 11 {
+		t.Fatalf("activity: %+v", items)
+	}
+}

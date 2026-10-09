@@ -118,17 +118,40 @@ func (c *Client) RemoveHighlight(word string) (removed bool, err error) {
 // Highlighted reports whether body contains any of words (as returned by
 // Highlights) as a whole word, case-insensitively: "deploy" matches
 // "Deploy failed" and "deploy-prod" but not "deployment" or "redeploy".
+// Text inside a fenced code block never matches: pasted logs and diffs
+// would otherwise light up on every keyword.
 func Highlighted(body string, words []string) bool {
 	if len(words) == 0 {
 		return false
 	}
-	lb := strings.ToLower(body)
+	lb := strings.ToLower(outsideCode(body))
 	for _, w := range words {
 		if containsWord(lb, strings.ToLower(w)) {
 			return true
 		}
 	}
 	return false
+}
+
+// outsideCode is body without its fenced code blocks, with the same fence
+// rule the renderer uses: a line starting with ``` opens or closes a block,
+// and a block left open runs to the end.
+func outsideCode(body string) string {
+	if !strings.Contains(body, "```") {
+		return body
+	}
+	var keep []string
+	in := false
+	for _, ln := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(ln), "```") {
+			in = !in
+			continue
+		}
+		if !in {
+			keep = append(keep, ln)
+		}
+	}
+	return strings.Join(keep, "\n")
 }
 
 // containsWord finds w in s with no letter, digit or underscore touching
