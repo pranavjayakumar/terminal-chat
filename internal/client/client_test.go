@@ -44,6 +44,8 @@ type fakeServer struct {
 	accepted atomic.Int32
 	bye      atomic.Value // string: BYE code to answer HELLO with
 	noPong   atomic.Bool
+	caps     atomic.Value // []string: WELCOME caps
+	hello    atomic.Value // proto.Hello: the last login (non-invite) HELLO
 
 	mu   sync.Mutex
 	open []transport.Conn
@@ -68,6 +70,7 @@ func newFakeServer(t *testing.T) *fakeServer {
 	}
 	fs := &fakeServer{t: t, ln: ln, pin: transport.Pin(cert), conns: make(chan *fakeConn, 16)}
 	fs.bye.Store("")
+	fs.caps.Store([]string(nil))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -126,12 +129,13 @@ func (fs *fakeServer) handle(c transport.Conn) {
 		return
 	}
 	fs.accepted.Add(1)
+	fs.hello.Store(h)
 	if code := fs.bye.Load().(string); code != "" {
 		codec.Write(proto.TBye, proto.Bye{Code: code})
 		linger(c, codec)
 		return
 	}
-	codec.Write(proto.TWelcome, proto.Welcome{Server: "fake", ServerID: serverID, User: users[0], Time: 1})
+	codec.Write(proto.TWelcome, proto.Welcome{Server: "fake", Caps: fs.caps.Load().([]string), ServerID: serverID, User: users[0], Time: 1})
 	codec.SetMaxFrame(proto.MaxFrame)
 	fc := &fakeConn{t: fs.t, conn: c, codec: codec, in: make(chan proto.Frame, 256)}
 	go func() {

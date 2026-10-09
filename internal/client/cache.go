@@ -33,6 +33,13 @@ CREATE TABLE IF NOT EXISTS outbox (
 	id INTEGER PRIMARY KEY AUTOINCREMENT, nonce BLOB NOT NULL UNIQUE, chan INTEGER NOT NULL,
 	thread INTEGER NOT NULL, body TEXT NOT NULL, time INTEGER NOT NULL,
 	failed TEXT NOT NULL DEFAULT '', msg INTEGER NOT NULL DEFAULT 0, sent INTEGER NOT NULL DEFAULT 0);
+-- Server-provided E2E objects (msgpack Signed), unverified; see devices.go.
+CREATE TABLE IF NOT EXISTS devices (cert BLOB PRIMARY KEY, dev BLOB NOT NULL, user INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS devices_dev ON devices (dev);
+CREATE INDEX IF NOT EXISTS devices_user ON devices (user);
+CREATE TABLE IF NOT EXISTS device_endorse (endorse BLOB PRIMARY KEY, user INTEGER NOT NULL, new_ssh BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS device_revokes (revoke BLOB PRIMARY KEY, dev BLOB NOT NULL, user INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS device_revokes_dev ON device_revokes (dev);
 `
 
 // dbtx is the subset of *sql.DB / *sql.Tx the cache helpers need.
@@ -98,6 +105,8 @@ func setMeta(q dbtx, k string, v any) error {
 func resetCache(q dbtx, serverID []byte) error {
 	for _, s := range []string{
 		`DELETE FROM users`, `DELETE FROM chans`, `DELETE FROM msgs`, `DELETE FROM reads WHERE dirty = 0`,
+		`DELETE FROM devices`, `DELETE FROM device_endorse`, `DELETE FROM device_revokes`,
+		`DELETE FROM meta WHERE k = 'devices_full'`,
 	} {
 		if _, err := q.Exec(s); err != nil {
 			return err
@@ -318,7 +327,7 @@ func matchOutbox(q dbtx, m proto.Message) error {
 
 // wipe empties the whole cache, outbox included (new login).
 func wipe(q dbtx) error {
-	for _, t := range []string{"meta", "users", "chans", "msgs", "reads", "outbox"} {
+	for _, t := range []string{"meta", "users", "chans", "msgs", "reads", "outbox", "devices", "device_endorse", "device_revokes"} {
 		if _, err := q.Exec(`DELETE FROM ` + t); err != nil {
 			return err
 		}
