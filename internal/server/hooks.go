@@ -20,7 +20,9 @@ import (
 
 const hooksSchema = `
 CREATE TABLE IF NOT EXISTS hooks (
-	id INTEGER PRIMARY KEY,
+	-- AUTOINCREMENT: a deleted hook's id is never reused, so its per-hook
+	-- rate-limit state can't carry over to a new hook.
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	token TEXT NOT NULL UNIQUE, -- tokenHash, like invites
 	chan INTEGER NOT NULL,
 	bot INTEGER NOT NULL,
@@ -50,6 +52,9 @@ func migrateHooks(db *sql.DB) error {
 	if _, err := db.Exec(hooksSchema); err != nil {
 		return fmt.Errorf("creating hooks schema: %w", err)
 	}
+	if err := hooksAutoincrement(db); err != nil {
+		return err
+	}
 	if err := addColumn(db, "users", "bot", `INTEGER NOT NULL DEFAULT 0`); err != nil {
 		return err
 	}
@@ -68,6 +73,34 @@ func migrateHooks(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+// hooksAutoincrement rebuilds a hooks table created without AUTOINCREMENT.
+func hooksAutoincrement(db *sql.DB) error {
+	var ddl string
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'hooks'`).Scan(&ddl); err != nil {
+		return err
+	}
+	if strings.Contains(strings.ToUpper(ddl), "AUTOINCREMENT") {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range []string{
+		`ALTER TABLE hooks RENAME TO hooks_old`,
+		hooksSchema,
+		`INSERT INTO hooks (id, token, chan, bot, name, created_by, created)
+			SELECT id, token, chan, bot, name, created_by, created FROM hooks_old`,
+		`DROP TABLE hooks_old`,
+	} {
+		if _, err := tx.Exec(q); err != nil {
+			return fmt.Errorf("migrating hooks to AUTOINCREMENT: %w", err)
+		}
+	}
+	return tx.Commit()
 }
 
 func addColumn(db *sql.DB, table, col, def string) error {
@@ -315,14 +348,15 @@ func (s *Server) opHookDelete(ctx context.Context, u proto.User, a proto.HookArg
 type liveHook struct {
 	id, ch, creator uint64
 	bot             proto.User
+	tokenHash       string
 }
 
 // hookByToken returns the hook for token and its bot user.
 func (s *Server) hookByToken(ctx context.Context, token string) (liveHook, error) {
-	var h liveHook
+	h := liveHook{tokenHash: tokenHash(token)}
 	var botID uint64
 	err := s.st.db.QueryRowContext(ctx, `SELECT id, chan, bot, created_by FROM hooks WHERE token = ?`,
-		tokenHash(token)).Scan(&h.id, &h.ch, &botID, &h.creator)
+		h.tokenHash).Scan(&h.id, &h.ch, &botID, &h.creator)
 	if err != nil {
 		return h, err
 	}

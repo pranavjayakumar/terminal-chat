@@ -343,7 +343,8 @@ the raw body is the text. Reads at most 128 KiB (→ 413). The text must be vali
 ` are stripped, other control characters removed
 (`sanitize.StripANSI`), trailing whitespace trimmed; then the normal message rules apply
 (empty → 400, > 64 KiB → 413). Optional `Idempotency-Key` header (≤ 256 B): the send
-nonce becomes the first 16 bytes of `SHA-256(u64be(hook id) || key)`, so retries return
+nonce becomes the first 16 bytes of `SHA-256(SHA-256(token) || key)` (the token hash is
+unique forever; hook ids are never reused either), so retries return
 the original message (send idempotency, §5); the same key with different text → 409.
 
 **Effect.** Exactly a `send` by the hook's bot user into the hook's channel: a

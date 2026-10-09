@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -125,7 +125,7 @@ func (s *Server) hookHandler() http.Handler {
 		}
 		nonce := make([]byte, 16)
 		if key != "" {
-			nonce = hookNonce(id, key)
+			nonce = hookNonce(h.tokenHash, key)
 		} else {
 			rand.Read(nonce)
 		}
@@ -184,9 +184,12 @@ func hookText(contentType string, raw []byte) (text, msg string) {
 }
 
 // hookNonce makes retries with the same Idempotency-Key idempotent sends.
-func hookNonce(id uint64, key string) []byte {
+// It's keyed by the hook's token hash (hex SHA-256 of the token), which
+// is unique forever, unlike a row id.
+func hookNonce(tokenHash, key string) []byte {
+	raw, _ := hex.DecodeString(tokenHash)
 	h := sha256.New()
-	binary.Write(h, binary.BigEndian, id)
+	h.Write(raw)
 	h.Write([]byte(key))
 	return h.Sum(nil)[:16]
 }

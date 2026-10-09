@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -423,8 +424,12 @@ func TestHookText(t *testing.T) {
 	if txt, msg := hookText("application/json; charset=utf-8", []byte(`{"text":"a\tb\r\n"}`)); msg != "" || txt != "a    b" {
 		t.Fatalf("%q %q", txt, msg)
 	}
-	if hookNonce(1, "k")[0] == hookNonce(2, "k")[0] && string(hookNonce(1, "k")) == string(hookNonce(2, "k")) {
-		t.Fatal("nonce ignores hook id")
+	// The nonce is SHA-256(SHA-256(token) || key), not tied to a row id.
+	a, b := tokenHash("token-a"), tokenHash("token-b")
+	inner := sha256.Sum256([]byte("token-a"))
+	want := sha256.Sum256(append(inner[:], 'k'))
+	if string(hookNonce(a, "k")) != string(want[:16]) || string(hookNonce(a, "k")) == string(hookNonce(b, "k")) {
+		t.Fatal("nonce must derive from the token hash and key")
 	}
 	if !validHookToken(newHookToken()) || validHookToken("AAAAAAAAAAAAAAAAAAAAAAAAAA") {
 		t.Fatal("token shape")
@@ -481,6 +486,14 @@ func TestBotOwnerMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.close()
+	// hooks is rebuilt with AUTOINCREMENT, rows kept.
+	var ddl string
+	var n int
+	st.db.QueryRow(`SELECT sql FROM sqlite_master WHERE name = 'hooks'`).Scan(&ddl)
+	st.db.QueryRow(`SELECT COUNT(*) FROM hooks`).Scan(&n)
+	if !strings.Contains(ddl, "AUTOINCREMENT") || n != 2 {
+		t.Fatalf("hooks after migration: %d rows, %s", n, ddl)
+	}
 	for id, want := range map[int]int{3: 2, 4: 0} {
 		var owner int
 		if err := st.db.QueryRow(`SELECT bot_owner FROM users WHERE id = ?`, id).Scan(&owner); err != nil || owner != want {
@@ -594,4 +607,26 @@ func TestHookListLimited(t *testing.T) {
 		alice.ok(proto.OpHookList, proto.Empty{}, nil)
 	}
 	alice.fail(proto.OpHookList, proto.Empty{}, proto.ErrRateLimited)
+}
+
+// TestHookIDsNotReused: a deleted hook's id isn't handed out again, and an
+// Idempotency-Key used on a deleted hook doesn't collide with a new one (L1).
+func TestHookIDsNotReused(t *testing.T) {
+	ts := startHookServer(t)
+	alice := ts.register(t, "alice", false)
+	snap, _ := alice.syncFresh()
+	gen := generalID(t, snap)
+	alice.createHook(gen, "ci")
+	h2 := alice.createHook(gen, "ci")
+	if r := ts.post(t, "POST", h2.URL, "text/plain", "first", "Idempotency-Key", "k1"); r.status != 200 {
+		t.Fatalf("%d %s", r.status, r.raw)
+	}
+	alice.ok(proto.OpHookDelete, proto.HookArgs{ID: h2.ID}, nil)
+	h3 := alice.createHook(gen, "ci") // same bot
+	if h3.ID <= h2.ID {
+		t.Fatalf("hook id %d reused (had %d)", h3.ID, h2.ID)
+	}
+	if r := ts.post(t, "POST", h3.URL, "text/plain", "second", "Idempotency-Key", "k1"); r.status != 200 {
+		t.Fatalf("new hook, same key: %d %s", r.status, r.raw)
+	}
 }
