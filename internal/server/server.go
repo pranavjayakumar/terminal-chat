@@ -53,8 +53,8 @@ type Server struct {
 	kinds    map[uint64]string          // chan -> kind
 	online   map[uint64]int             // user -> live session count
 	presence map[uint64]proto.Ephemeral // user -> last presence
-	limits   map[uint64]*bucket // sends
-	wlimits  map[uint64]*bucket // other write ops
+	limits   map[uint64]*bucket         // sends
+	wlimits  map[uint64]*bucket         // other write ops
 	disabled map[uint64]bool
 }
 

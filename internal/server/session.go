@@ -49,8 +49,8 @@ type session struct {
 	synced       bool
 	lastTyping   map[uint64]time.Time
 	lastPresence time.Time
-	lastRecv   time.Time
-	recvMu     sync.Mutex
+	lastRecv     time.Time
+	recvMu       sync.Mutex
 }
 
 func (s *Server) handle(ctx context.Context, conn transport.Conn) {

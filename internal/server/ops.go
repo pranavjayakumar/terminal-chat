@@ -676,4 +676,3 @@ func (s *Server) opUserDisable(ctx context.Context, u proto.User, a proto.UserAr
 	})
 	return proto.Empty{}, err
 }
-
