@@ -9,7 +9,7 @@ Last updated: 2026-10-10 (end of session 1). Read this first when resuming.
 | M0 scaffold, spec, agents, CI | ✅ done |
 | M1 core chat (server, client, TUI, sync, offline outbox) | ✅ done, battle-tested (chaos + adversarial + live herdr) |
 | M2 collaboration | ~60%: herdr/desktop notifications, unread badge, `/share-pane`, auto-away, `tc notify`, notes (`@me`), display names (server), thread history (server+client), webhooks + bots, privacy scrubbing — all merged |
-| M3 end-to-end encryption | steps 1–3 merged (#9 crypto, #10 device certs, #11 trust store); **step 4 in PR** (`e2e/server-devices`) |
+| M3 end-to-end encryption | steps 1–3 merged (#9 crypto, #10 device certs, #11 trust store); **step 4 in PR #13** (`e2e/server-devices`) |
 | M4 zero-setup onboarding | not started |
 | M5 voice | not started |
 
@@ -17,9 +17,9 @@ Release tag: `v0.1.0` = M1. No newer tag yet.
 
 ## Resume checklist (do in order)
 
-1. **Step 4 PR** (`e2e/server-devices`, worktree `.claude/worktrees/kiro-devices`): merge of main was being
-   resolved at pause time (spec renumbered: webhooks = §12, E2E = §13). Check the branch builds, open/finish
-   its PR, run the **protocol-guardian** review on it (worker ran its own reviewer instead), then merge.
+1. **Step 4 = PR #13** (`e2e/server-devices`, worktree `.claude/worktrees/kiro-devices`): main already merged
+   in, full suite green, spec renumbered (webhooks = §12, E2E = §13). Run the **protocol-guardian** review on
+   it (the worker used its own reviewer), fix findings, merge.
    Follow-ups noted by the worker: device key lives in `TC_HOME/device.key` with a TODO — move it into
    `internal/trust` (`trust.Store.DeviceKeys`); registration errors are silent (no client logger); hardware
    keys prompt for a touch once per device in the background; no cap on unverified objects a server can push
