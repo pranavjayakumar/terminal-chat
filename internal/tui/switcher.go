@@ -235,7 +235,7 @@ func (m *Model) jumpTo(x proto.Message) tea.Cmd {
 	cmd := m.openChannel(x.Chan)
 	p := &m.main
 	if x.Thread != 0 {
-		m.openThread(x.Thread)
+		cmd = tea.Batch(cmd, m.openThread(x.Thread))
 		p = &m.thread
 	}
 	for i, y := range p.msgs {

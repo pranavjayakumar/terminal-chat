@@ -56,6 +56,8 @@ type Backend interface {
 	CreateInvite(ctx context.Context, user uint64) (string, error)
 	SendTyping(ch uint64) error
 	SetAway(away bool, status string) error
+	SetDisplay(ctx context.Context, display string) error
+	ThreadHistory(ctx context.Context, ch, root, before uint64) (bool, error)
 }
 
 var _ Backend = (*client.Client)(nil)

@@ -314,6 +314,9 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 			}
 			return nil
 		}), nil
+	case "name":
+		display := c.rest
+		return m.call("name", func(ctx context.Context) error { return be.SetDisplay(ctx, display) }), nil
 	case "topic":
 		ch, err := needChan()
 		if err != nil {

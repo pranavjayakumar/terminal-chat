@@ -387,3 +387,46 @@ func TestTypedWordsThatSpellKeyNames(t *testing.T) {
 		t.Fatalf("sent %+v", f.sent)
 	}
 }
+
+// "?" no longer opens help, so messages can start with it.
+func TestQuestionMarkStartsMessage(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	for _, r := range "?? is this on" {
+		run(m, m.handleKey(keyMsg(string(r))))
+	}
+	run(m, m.handleKey(keyMsg("enter")))
+	if len(f.sent) != 1 || f.sent[0].Body != "?? is this on" {
+		t.Fatalf("sent %+v", f.sent)
+	}
+	run(m, m.handleKey(keyMsg("f1")))
+	if !strings.Contains(m.View(), "this help") {
+		t.Fatal("F1 should open help")
+	}
+}
+
+func TestNameCommand(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	for _, r := range "/name Alice L." {
+		run(m, m.handleKey(keyMsg(string(r))))
+	}
+	run(m, m.handleKey(keyMsg("enter")))
+	if !f.called("name:Alice L.") {
+		t.Fatal("SetDisplay not called")
+	}
+}
+
+// Opening a thread fetches its replies from the server, not just the cache.
+func TestOpenThreadFetchesHistory(t *testing.T) {
+	m, f := newTestModelFake(t, 120, 30)
+	run(m, m.openChannel(10))
+	m.enterSelect()
+	for i, x := range m.main.msgs {
+		if x.ID == 103 {
+			m.main.sel = i
+		}
+	}
+	run(m, m.handleKey(keyMsg("r")))
+	if !m.thread.open() || !f.called("thread-history:10:103") {
+		t.Fatal("thread opened without fetching its history")
+	}
+}
