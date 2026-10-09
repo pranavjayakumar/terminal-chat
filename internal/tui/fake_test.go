@@ -1,0 +1,213 @@
+package tui
+
+import (
+	"bytes"
+	"context"
+	"slices"
+	"sync"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/skailama/tc/internal/client"
+	"github.com/skailama/tc/internal/proto"
+)
+
+// fakeClient is an in-memory Backend.
+type fakeClient struct {
+	mu       sync.Mutex
+	me       proto.User
+	status   client.Status
+	users    []proto.User
+	chans    []client.ChannelView
+	msgs     map[uint64][]client.Message
+	threads  map[uint64][]client.Message
+	typing   map[uint64][]uint64
+	updates  chan client.Update
+	sent     []client.Message
+	reads    map[uint64]uint64
+	history  int
+	histMore bool
+	calls    []string
+}
+
+func newFake() *fakeClient {
+	f := &fakeClient{
+		me:      proto.User{ID: 1, Name: "alice"},
+		status:  client.Status{State: client.Online, Transport: "quic"},
+		msgs:    map[uint64][]client.Message{},
+		threads: map[uint64][]client.Message{},
+		typing:  map[uint64][]uint64{},
+		updates: make(chan client.Update, 1),
+		reads:   map[uint64]uint64{},
+	}
+	close(f.updates) // waitUpdate returns at once in tests
+	f.users = []proto.User{
+		{ID: 1, Name: "alice"}, {ID: 2, Name: "bob"}, {ID: 3, Name: "carol", Display: "Carol C"},
+		{ID: 4, Name: "averyveryverylongusername"},
+	}
+	f.chans = []client.ChannelView{
+		{Channel: proto.Channel{ID: 11, Name: "backend", Kind: proto.ChanPublic, Members: []uint64{1, 2}}, Display: "backend", Member: true, Unread: 3, Last: 300},
+		{Channel: proto.Channel{ID: 10, Name: "general", Kind: proto.ChanPublic, Topic: "team-wide chatter about everything that matters and much more text to truncate", Members: []uint64{1, 2, 3}}, Display: "general", Member: true, Unread: 2, Last: 0},
+		{Channel: proto.Channel{ID: 12, Name: "random", Kind: proto.ChanPublic, Members: []uint64{2}}, Display: "random"},
+		{Channel: proto.Channel{ID: 13, Name: "secret", Kind: proto.ChanPrivate, Members: []uint64{1, 3}}, Display: "secret", Member: true, Unread: 1, Mention: true, Last: 400},
+		{Channel: proto.Channel{ID: 20, Kind: proto.ChanDM, Members: []uint64{1, 2}}, Display: "bob", Member: true},
+	}
+	base := time.Date(2026, 10, 8, 10, 40, 0, 0, time.Local).UnixMilli()
+	var ms []client.Message
+	add := func(id, author uint64, dt time.Duration, body string, mod func(*client.Message)) {
+		x := client.Message{Message: proto.Message{ID: id, Chan: 10, Author: author, Body: body, Time: base + dt.Milliseconds()}}
+		if mod != nil {
+			mod(&x)
+		}
+		ms = append(ms, x)
+	}
+	add(100, 2, 0, "morning! anyone seen the deploy logs from last night?", nil)
+	add(101, 2, time.Minute, "also **bold** and _italic_ and `code` and https://example.com/path.", nil)
+	add(102, 3, 2*time.Minute, "yep, pasting:\n```go\npanic: nil map write at handler.go:42 with a very long trailing line that must be truncated\n  at main.go:7\n```", nil)
+	add(103, 1, 3*time.Minute, "👍 nice 你好世界你好世界你好世界你好世界 👨‍👩‍👧 family", func(x *client.Message) {
+		x.Reactions = map[string][]uint64{"👍": {1, 2}, "🎉": {3}}
+		x.Replies = 2
+	})
+	add(104, 2, 4*time.Minute, "hey @alice can you look? \x1b[31mred\x1b]0;pwned\a ‮evil", nil)
+	add(105, 3, 30*time.Minute, "edited body", func(x *client.Message) { x.Edited = base })
+	add(106, 4, 31*time.Minute, "", func(x *client.Message) { x.Deleted = true })
+	add(107, 2, 24*time.Hour, "next day: "+string(bytes.Repeat([]byte("loooong"), 40)), nil)
+	for i := 0; i < 30; i++ {
+		add(uint64(110+i), uint64(2+i%2), 25*time.Hour+time.Duration(i)*time.Minute, "filler message number "+string(rune('a'+i%26)), nil)
+	}
+	ms = append(ms, client.Message{Message: proto.Message{Chan: 10, Author: 1, Body: "pending one", Time: base + 26*time.Hour.Milliseconds()}, Pending: true, Local: 7})
+	ms = append(ms, client.Message{Message: proto.Message{Chan: 10, Author: 1, Body: "failed one", Time: base + 26*time.Hour.Milliseconds()}, Failed: "forbidden: nope", Local: 8})
+	f.msgs[10] = ms
+	f.chans[1].Last = 139
+	f.threads[103] = []client.Message{ms[3],
+		{Message: proto.Message{ID: 200, Chan: 10, Thread: 103, Author: 2, Body: "reply one", Time: base + 5*time.Minute.Milliseconds()}},
+		{Message: proto.Message{ID: 201, Chan: 10, Thread: 103, Author: 3, Body: "reply two", Time: base + 6*time.Minute.Milliseconds()}},
+	}
+	f.msgs[20] = []client.Message{{Message: proto.Message{ID: 300, Chan: 20, Author: 2, Body: "psst", Time: base}}}
+	return f
+}
+
+func (f *fakeClient) record(s string) {
+	f.mu.Lock()
+	f.calls = append(f.calls, s)
+	f.mu.Unlock()
+}
+
+func (f *fakeClient) called(s string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Contains(f.calls, s)
+}
+
+func (f *fakeClient) Updates() <-chan client.Update { return f.updates }
+func (f *fakeClient) Status() client.Status         { return f.status }
+func (f *fakeClient) Me() proto.User                { return f.me }
+func (f *fakeClient) Channels() []client.ChannelView {
+	return slices.Clone(f.chans)
+}
+func (f *fakeClient) Messages(ch uint64, limit int) []client.Message {
+	ms := f.msgs[ch]
+	var real, pend []client.Message
+	for _, x := range ms {
+		if x.ID == 0 {
+			pend = append(pend, x)
+		} else {
+			real = append(real, x)
+		}
+	}
+	if len(real) > limit {
+		real = real[len(real)-limit:]
+	}
+	return append(slices.Clone(real), pend...)
+}
+func (f *fakeClient) Thread(root uint64) []client.Message { return slices.Clone(f.threads[root]) }
+func (f *fakeClient) Users() []proto.User                 { return slices.Clone(f.users) }
+func (f *fakeClient) TypingUsers(ch uint64) []uint64      { return f.typing[ch] }
+func (f *fakeClient) Presence(user uint64) client.Presence {
+	if user == 2 {
+		return client.Presence{State: proto.PresAway, Status: "lunch"}
+	}
+	return client.Presence{}
+}
+func (f *fakeClient) Send(ch uint64, body string, thread uint64) error {
+	f.sent = append(f.sent, client.Message{Message: proto.Message{Chan: ch, Body: body, Thread: thread}})
+	return nil
+}
+func (f *fakeClient) RetryFailed(local int64) error   { f.record("retry"); return nil }
+func (f *fakeClient) DiscardFailed(local int64) error { f.record("discard"); return nil }
+func (f *fakeClient) MarkRead(ch, seq uint64) error {
+	f.reads[ch] = seq
+	return nil
+}
+func (f *fakeClient) Edit(ctx context.Context, msg uint64, body string) error {
+	f.record("edit")
+	return nil
+}
+func (f *fakeClient) Delete(ctx context.Context, msg uint64) error { f.record("delete"); return nil }
+func (f *fakeClient) React(ctx context.Context, msg uint64, emoji string) error {
+	f.record("react " + emoji)
+	return nil
+}
+func (f *fakeClient) Unreact(ctx context.Context, msg uint64, emoji string) error {
+	f.record("unreact " + emoji)
+	return nil
+}
+func (f *fakeClient) CreateChannel(ctx context.Context, name string, private bool, topic string) (proto.Channel, error) {
+	f.record("create " + name)
+	return proto.Channel{ID: 99, Name: name}, nil
+}
+func (f *fakeClient) Join(ctx context.Context, ch uint64) error  { f.record("join"); return nil }
+func (f *fakeClient) Leave(ctx context.Context, ch uint64) error { f.record("leave"); return nil }
+func (f *fakeClient) AddMember(ctx context.Context, ch, user uint64) error {
+	f.record("add")
+	return nil
+}
+func (f *fakeClient) SetTopic(ctx context.Context, ch uint64, topic string) error {
+	f.record("topic " + topic)
+	return nil
+}
+func (f *fakeClient) OpenDM(ctx context.Context, users []uint64) (proto.Channel, error) {
+	f.record("dm")
+	return proto.Channel{ID: 20}, nil
+}
+func (f *fakeClient) History(ctx context.Context, ch, before uint64) (bool, error) {
+	f.mu.Lock()
+	f.history++
+	f.mu.Unlock()
+	return f.histMore, nil
+}
+func (f *fakeClient) Search(ctx context.Context, q string, ch uint64) ([]proto.Message, error) {
+	return []proto.Message{f.msgs[10][0].Message, f.threads[103][1].Message}, nil
+}
+func (f *fakeClient) CreateInvite(ctx context.Context, user uint64) (string, error) {
+	return "tc1-invite", nil
+}
+func (f *fakeClient) SendTyping(ch uint64) error             { return nil }
+func (f *fakeClient) SetAway(away bool, status string) error { f.record("away"); return nil }
+
+// run executes cmd and feeds every resulting message back into m, giving
+// up on commands that block (cursor blink ticks).
+func run(m *Model, cmd tea.Cmd) {
+	for depth := 0; cmd != nil && depth < 8; depth++ {
+		ch := make(chan tea.Msg, 1)
+		go func() { ch <- cmd() }()
+		var msg tea.Msg
+		select {
+		case msg = <-ch:
+		case <-time.After(30 * time.Millisecond):
+			return
+		}
+		cmd = nil
+		switch msg := msg.(type) {
+		case nil:
+		case tea.BatchMsg:
+			for _, c := range msg {
+				run(m, c)
+			}
+		case tea.QuitMsg, updatesClosedMsg:
+		default:
+			_, cmd = m.Update(msg)
+		}
+	}
+}
