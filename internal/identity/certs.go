@@ -152,16 +152,9 @@ func (s Signed) VerifyKeyEndorse(serverID e2ecrypto.ServerID, endorserPub []byte
 	if err := s.verifySSH(endorserPub, CtxEndorse); err != nil {
 		return KeyEndorse{}, err
 	}
-	var w keyEndorseB
-	if err := decodeB(s.B, &w, &w.V); err != nil {
+	e, err := decodeKeyEndorse(s.B)
+	if err != nil {
 		return KeyEndorse{}, err
-	}
-	e := KeyEndorse{User: w.User, NewSSH: w.NewSSH, Time: w.Time}
-	if !copyFixed(e.ServerID[:], w.ServerID) {
-		return KeyEndorse{}, e2ecrypto.ErrMalformed
-	}
-	if pk, err := ssh.ParsePublicKey(w.NewSSH); err != nil || !allowedKey[pk.Type()] {
-		return KeyEndorse{}, e2ecrypto.ErrMalformed
 	}
 	if e.ServerID != serverID {
 		return KeyEndorse{}, ErrWrongServer
@@ -215,7 +208,22 @@ func revokeB(serverID e2ecrypto.ServerID, user uint64, dev e2ecrypto.DevID, now 
 	return deviceRevokeB{V: signedVersion, ServerID: serverID[:], User: user, Dev: dev[:], Time: now.UnixMilli()}
 }
 
-func decodeRevoke(b []byte, serverID e2ecrypto.ServerID) (DeviceRevoke, error) {
+func decodeKeyEndorse(b []byte) (KeyEndorse, error) {
+	var w keyEndorseB
+	if err := decodeB(b, &w, &w.V); err != nil {
+		return KeyEndorse{}, err
+	}
+	e := KeyEndorse{User: w.User, NewSSH: w.NewSSH, Time: w.Time}
+	if !copyFixed(e.ServerID[:], w.ServerID) {
+		return KeyEndorse{}, e2ecrypto.ErrMalformed
+	}
+	if pk, err := ssh.ParsePublicKey(w.NewSSH); err != nil || !allowedKey[pk.Type()] {
+		return KeyEndorse{}, e2ecrypto.ErrMalformed
+	}
+	return e, nil
+}
+
+func decodeRevokeB(b []byte) (DeviceRevoke, error) {
 	var w deviceRevokeB
 	if err := decodeB(b, &w, &w.V); err != nil {
 		return DeviceRevoke{}, err
@@ -224,10 +232,47 @@ func decodeRevoke(b []byte, serverID e2ecrypto.ServerID) (DeviceRevoke, error) {
 	if !copyFixed(r.ServerID[:], w.ServerID) || !copyFixed(r.Dev[:], w.Dev) {
 		return DeviceRevoke{}, e2ecrypto.ErrMalformed
 	}
+	return r, nil
+}
+
+func decodeRevoke(b []byte, serverID e2ecrypto.ServerID) (DeviceRevoke, error) {
+	r, err := decodeRevokeB(b)
+	if err != nil {
+		return DeviceRevoke{}, err
+	}
 	if r.ServerID != serverID {
 		return DeviceRevoke{}, ErrWrongServer
 	}
 	return r, nil
+}
+
+// The Peek functions decode b WITHOUT checking the signature, the server id or
+// who signed it. They exist to index stored objects (by user, device) and to
+// pick the right error for an object that failed verification. Nothing they
+// return may be trusted.
+
+// PeekDeviceCert decodes an unverified device cert.
+func PeekDeviceCert(s Signed) (DeviceCert, error) {
+	if len(s.B)+len(s.Sig) > MaxSignedSize {
+		return DeviceCert{}, e2ecrypto.ErrTooLarge
+	}
+	return decodeDeviceCert(s.B)
+}
+
+// PeekKeyEndorse decodes an unverified key endorsement.
+func PeekKeyEndorse(s Signed) (KeyEndorse, error) {
+	if len(s.B)+len(s.Sig) > MaxSignedSize {
+		return KeyEndorse{}, e2ecrypto.ErrTooLarge
+	}
+	return decodeKeyEndorse(s.B)
+}
+
+// PeekDeviceRevoke decodes an unverified device revoke.
+func PeekDeviceRevoke(s Signed) (DeviceRevoke, error) {
+	if len(s.B)+len(s.Sig) > MaxSignedSize {
+		return DeviceRevoke{}, e2ecrypto.ErrTooLarge
+	}
+	return decodeRevokeB(s.B)
 }
 
 func sign(signer ssh.Signer, context string, w any) (Signed, error) {

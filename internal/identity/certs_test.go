@@ -405,3 +405,46 @@ func FuzzDeviceCert(f *testing.F) {
 		}
 	})
 }
+
+func TestPeekDecodesWithoutVerifying(t *testing.T) {
+	s, other := newSigner(t), newSigner(t)
+	dev := newDevice(t)
+	sc, err := NewDeviceCert(s, testSID, 7, dev, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc.Sig = append([]byte(nil), sc.Sig...)
+	sc.Sig[len(sc.Sig)-1] ^= 1 // a broken signature doesn't matter to Peek
+	c, err := PeekDeviceCert(sc)
+	if err != nil || c.User != 7 || c.Dev != dev.ID || c.ServerID != testSID {
+		t.Fatalf("peek cert: %+v %v", c, err)
+	}
+	if _, err := sc.VerifyDeviceCert(testSID, s.PublicKey().Marshal()); err == nil {
+		t.Fatal("tampered cert verified")
+	}
+
+	se, err := NewKeyEndorse(s, testSID, 7, other.PublicKey(), testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := PeekKeyEndorse(se)
+	if err != nil || e.User != 7 || string(e.NewSSH) != string(other.PublicKey().Marshal()) {
+		t.Fatalf("peek endorse: %+v %v", e, err)
+	}
+
+	sr, err := NewDeviceRevokeByDevice(newDevice(t), e2ecrypto.ServerID{9}, 7, dev.ID, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := PeekDeviceRevoke(sr)
+	if err != nil || r.User != 7 || r.Dev != dev.ID || r.ServerID != (e2ecrypto.ServerID{9}) {
+		t.Fatalf("peek revoke: %+v %v", r, err)
+	}
+
+	if _, err := PeekDeviceCert(Signed{B: []byte{0x80}}); !errors.Is(err, e2ecrypto.ErrMalformed) && !errors.Is(err, e2ecrypto.ErrVersion) {
+		t.Fatalf("peek garbage: %v", err)
+	}
+	if _, err := PeekDeviceRevoke(Signed{B: make([]byte, MaxSignedSize+1)}); !errors.Is(err, e2ecrypto.ErrTooLarge) {
+		t.Fatalf("peek oversize: %v", err)
+	}
+}
