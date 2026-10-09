@@ -77,8 +77,10 @@ func (c *Client) Channels() []ChannelView {
 		mrows.Close()
 	}
 
+	pins := c.pinIDs()
 	for i := range out {
 		v := &out[i]
+		v.Pins = pins[v.ID]
 		v.Read, v.Last = reads[v.ID], last[v.ID]
 		v.Display = c.displayName(v.Channel, me.ID)
 		if v.Member {

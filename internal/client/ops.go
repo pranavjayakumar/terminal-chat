@@ -257,7 +257,7 @@ func (c *Client) chanHook(r proto.Res) error {
 		if _, ok, err := getChan(tx, cr.Chan.ID); err != nil || ok {
 			return err
 		}
-		return upsertChan(tx, cr.Chan)
+		return storeChan(tx, cr.Chan)
 	})
 	if err == nil {
 		c.post(Update{Channels: true})
