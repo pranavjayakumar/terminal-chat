@@ -101,7 +101,7 @@ func New(cfg Config) (*Server, error) {
 		wlimits:  map[uint64]*bucket{},
 		disabled: map[uint64]bool{},
 	}
-	if s.hk, err = newHookState(cfg.DataDir); err != nil {
+	if s.hk, err = newHookState(cfg.DataDir, func() time.Time { return s.cfg.Now() }); err != nil {
 		st.close()
 		return nil, err
 	}

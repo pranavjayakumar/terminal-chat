@@ -126,9 +126,11 @@ type hookState struct {
 	mu     sync.Mutex
 	limits map[uint64]*bucket // per hook id
 	global map[uint64]*bucket // one bucket, key 0
+	ips    *ipLimiter
+	conns  connCap
 }
 
-func newHookState(dataDir string) (*hookState, error) {
+func newHookState(dataDir string, now func() time.Time) (*hookState, error) {
 	cert, err := transport.LoadOrCreateHTTPCert(dataDir)
 	if err != nil {
 		return nil, err
@@ -138,7 +140,12 @@ func newHookState(dataDir string) (*hookState, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &hookState{cert: cert, pin: pin, curl: curl, limits: map[uint64]*bucket{}, global: map[uint64]*bucket{}}, nil
+	return &hookState{
+		cert: cert, pin: pin, curl: curl,
+		limits: map[uint64]*bucket{}, global: map[uint64]*bucket{},
+		ips:   newIPLimiter(now, ipBurst, ipPerSec, ipMaxEntries),
+		conns: connCap{max: maxHTTPConns},
+	}, nil
 }
 
 // HTTPCert is the certificate for webhook (HTTP) clients, for

@@ -367,4 +367,7 @@ or someone deletes it).
 | 413 | `{"error": "too_large"}` | body or text over the limits |
 | 429 | `{"error": "rate_limited"}` + `Retry-After: <s>` | per hook: burst 20, refill 1/s; all hooks on the server together: burst 50, refill 10/s; or the creator's/bot's send bucket (§9) |
 
-The HTTP server sets header/read/write/idle timeouts and caps headers at 16 KiB.
+Every HTTP request, whatever its path, first spends a token from a per-source bucket
+(burst 30, refill 5/s; IPv6 sources grouped by /64) → 429 + `Retry-After`, before any
+token lookup. The HTTP server sets header (10 s), read/write (30 s) and idle (10 s)
+timeouts, caps headers at 16 KiB, and closes connections beyond 256 open ones unserved.

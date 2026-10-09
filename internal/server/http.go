@@ -34,16 +34,7 @@ const (
 // serveHTTP serves webhooks on hl. The returned function shuts the HTTP
 // server down (in-flight requests get httpShutdownMax) and waits for it.
 func (s *Server) serveHTTP(ctx context.Context, hl net.Listener) (stop func()) {
-	hs := &http.Server{
-		Handler:           s.hookHandler(),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    16 << 10,
-		ErrorLog:          slog.NewLogLogger(s.log.Handler(), slog.LevelDebug),
-		BaseContext:       func(net.Listener) context.Context { return ctx },
-	}
+	hs := s.newHTTPServer(ctx)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -56,6 +47,20 @@ func (s *Server) serveHTTP(ctx context.Context, hl net.Listener) (stop func()) {
 			hs.Close()
 		}
 		<-done
+	}
+}
+
+func (s *Server) newHTTPServer(ctx context.Context) *http.Server {
+	return &http.Server{
+		Handler:           s.hookHandler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       httpIdleTimeout,
+		MaxHeaderBytes:    16 << 10,
+		ConnState:         s.hk.conns.state,
+		ErrorLog:          slog.NewLogLogger(s.log.Handler(), slog.LevelDebug),
+		BaseContext:       func(net.Listener) context.Context { return ctx },
 	}
 }
 
@@ -81,6 +86,12 @@ func hookFail(w http.ResponseWriter, status int, code, msg string) {
 // and unknown or deleted tokens, get the same 404.
 func (s *Server) hookHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Per source, before anything costs a database read.
+		if ok, wait := s.hk.ips.allow(r.RemoteAddr); !ok {
+			retryAfter(w, wait)
+			hookFail(w, http.StatusTooManyRequests, proto.ErrRateLimited, "slow down")
+			return
+		}
 		token, ok := strings.CutPrefix(r.URL.Path, proto.HookPath)
 		if !ok || r.Method != http.MethodPost || !validHookToken(token) {
 			hookFail(w, http.StatusNotFound, proto.ErrNotFound, "")

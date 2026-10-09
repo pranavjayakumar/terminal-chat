@@ -3,12 +3,15 @@ package server
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -21,16 +24,15 @@ import (
 )
 
 // startHookServer is startServer (TCP) with the HTTP side enabled; opts
-// adjust the Config.
-func startHookServer(t *testing.T, opts ...func(*Config)) *testServer {
+// adjust the server before it starts serving.
+func startHookServer(t *testing.T, opts ...func(*Server)) *testServer {
 	t.Helper()
-	cfg := Config{DataDir: t.TempDir(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	for _, o := range opts {
-		o(&cfg)
-	}
-	srv, err := New(cfg)
+	srv, err := New(Config{DataDir: t.TempDir(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, o := range opts {
+		o(srv)
 	}
 	ln, err := transport.ListenWith("127.0.0.1:0", srv.Cert(), transport.ListenOpts{HTTP: true, HTTPCert: srv.HTTPCert()})
 	if err != nil {
@@ -225,10 +227,14 @@ func TestHook404s(t *testing.T) {
 }
 
 // frozenClock stops token buckets from refilling, so limits are exact.
-func frozenClock(c *Config) {
+func frozenClock(s *Server) {
 	t0 := time.Now()
-	c.Now = func() time.Time { return t0 }
+	s.cfg.Now = func() time.Time { return t0 }
 }
+
+// noIPLimit lifts the per-source limit for tests that post a lot from
+// 127.0.0.1.
+func noIPLimit(s *Server) { s.hk.ips = newIPLimiter(s.cfg.Now, 1e9, 1e9, 10) }
 
 func TestHookRateLimit(t *testing.T) {
 	ts := startHookServer(t)
@@ -543,7 +549,7 @@ func TestHookCaps(t *testing.T) {
 // TestHookSendsChargeCreator: many hooks by one person share that person's
 // send budget (M2).
 func TestHookSendsChargeCreator(t *testing.T) {
-	ts := startHookServer(t, frozenClock)
+	ts := startHookServer(t, frozenClock, noIPLimit)
 	alice := ts.register(t, "alice", false)
 	snap, _ := alice.syncFresh()
 	gen := generalID(t, snap)
@@ -569,7 +575,7 @@ func TestHookSendsChargeCreator(t *testing.T) {
 
 // TestHookGlobalLimit: all hook sends share a server-wide bucket (M2).
 func TestHookGlobalLimit(t *testing.T) {
-	ts := startHookServer(t, frozenClock)
+	ts := startHookServer(t, frozenClock, noIPLimit)
 	var hooks []proto.HookCreateRes
 	for i := range 3 {
 		c := ts.register(t, fmt.Sprintf("u%d", i), false)
@@ -600,7 +606,7 @@ func TestHookGlobalLimit(t *testing.T) {
 
 // TestHookListLimited: hook.list counts as a write op (M2).
 func TestHookListLimited(t *testing.T) {
-	ts := startHookServer(t, frozenClock)
+	ts := startHookServer(t, frozenClock, noIPLimit)
 	alice := ts.register(t, "alice", false)
 	alice.syncFresh()
 	for range 60 {
@@ -628,5 +634,88 @@ func TestHookIDsNotReused(t *testing.T) {
 	}
 	if r := ts.post(t, "POST", h3.URL, "text/plain", "second", "Idempotency-Key", "k1"); r.status != 200 {
 		t.Fatalf("new hook, same key: %d %s", r.status, r.raw)
+	}
+}
+
+// TestHookIPLimit: requests from one source are limited before any token
+// lookup, whatever the path (L2).
+func TestHookIPLimit(t *testing.T) {
+	ts := startHookServer(t, frozenClock)
+	bogus := "https://" + ts.addr + "/hooks/aaaaaaaaaaaaaaaaaaaaaaaaaa"
+	for i := range ipBurst {
+		if r := ts.post(t, "POST", bogus, "text/plain", "x"); r.status != 404 {
+			t.Fatalf("request %d: %d %s", i, r.status, r.raw)
+		}
+	}
+	r := ts.post(t, "POST", bogus, "text/plain", "x")
+	if r.status != 429 || r.header.Get("Retry-After") == "" {
+		t.Fatalf("over the per-IP limit: %d %v %s", r.status, r.header, r.raw)
+	}
+}
+
+func TestIPLimiter(t *testing.T) {
+	now := time.Unix(0, 0)
+	l := newIPLimiter(func() time.Time { return now }, 2, 1, 3)
+	for _, a := range []string{"10.0.0.1:1", "10.0.0.1:2"} {
+		if ok, _ := l.allow(a); !ok {
+			t.Fatal("within burst")
+		}
+	}
+	if ok, wait := l.allow("10.0.0.1:3"); ok || wait != time.Second {
+		t.Fatalf("over burst: %v %v", ok, wait)
+	}
+	// IPv6 sources share a bucket per /64; v4-mapped equals v4.
+	l.allow("[2001:db8::1]:1")
+	l.allow("[2001:db8::2]:1")
+	if ok, _ := l.allow("[2001:db8::3]:1"); ok {
+		t.Fatal("same /64 should share a bucket")
+	}
+	if ok, _ := l.allow("[::ffff:10.0.0.1]:1"); ok {
+		t.Fatal("v4-mapped should share the v4 bucket")
+	}
+	// Bounded: a fourth source evicts the least recently used one.
+	l.allow("10.0.0.2:1")
+	l.allow("10.0.0.3:1")
+	if n := l.len(); n != 3 {
+		t.Fatalf("%d entries, want 3", n)
+	}
+	// Idle entries expire.
+	now = now.Add(ipTTL + time.Second)
+	l.allow("10.0.0.9:1")
+	if n := l.len(); n != 1 {
+		t.Fatalf("%d entries after TTL, want 1", n)
+	}
+}
+
+// TestHTTPConnCap: connections beyond the cap are closed unserved, and the
+// idle timeout is short (L2).
+func TestHTTPConnCap(t *testing.T) {
+	const max = 3
+	ts := startHookServer(t, func(s *Server) { s.hk.conns.max = max })
+	if hs := ts.newHTTPServer(context.Background()); hs.IdleTimeout > 10*time.Second {
+		t.Fatalf("IdleTimeout %v", hs.IdleTimeout)
+	}
+	dial := func() *tls.Conn {
+		c, err := tls.Dial("tcp", ts.addr, transport.HTTPSConfig(ts.HTTPPin()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { c.Close() })
+		return c
+	}
+	for range max {
+		dial()
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for ts.hk.conns.active.Load() < max {
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d connections open", ts.hk.conns.active.Load())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	extra := dial()
+	extra.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := extra.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("extra connection not closed: %v", err)
 	}
 }

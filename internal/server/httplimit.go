@@ -1,0 +1,125 @@
+package server
+
+import (
+	"container/list"
+	"net"
+	"net/http"
+	"net/netip"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+// Unauthenticated HTTP traffic limits (PROTOCOL.md §12): a token bucket per
+// source address, checked before a token touches the database, and a cap on
+// open HTTP connections.
+const (
+	ipBurst      = 30
+	ipPerSec     = 5
+	ipMaxEntries = 10000
+	// An idle bucket refills fully in burst/perSec = 6 s; after ipTTL it's
+	// indistinguishable from a new one and can go.
+	ipTTL = time.Minute
+
+	maxHTTPConns    = 256
+	httpIdleTimeout = 10 * time.Second
+)
+
+// ipLimiter is a bounded map of per-address token buckets, evicting the
+// least recently used entry when full and entries idle for ipTTL.
+type ipLimiter struct {
+	now           func() time.Time
+	burst, perSec float64
+	max           int
+
+	mu  sync.Mutex
+	lru *list.List // of *ipEntry, most recent first
+	m   map[netip.Prefix]*list.Element
+}
+
+type ipEntry struct {
+	key netip.Prefix
+	b   bucket
+}
+
+func newIPLimiter(now func() time.Time, burst, perSec float64, max int) *ipLimiter {
+	return &ipLimiter{now: now, burst: burst, perSec: perSec, max: max, lru: list.New(), m: map[netip.Prefix]*list.Element{}}
+}
+
+// ipKey groups IPv6 sources by /64, which one host typically controls.
+func ipKey(remoteAddr string) netip.Prefix {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	a, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Prefix{}
+	}
+	a = a.Unmap()
+	bits := 32
+	if a.Is6() {
+		bits = 64
+	}
+	p, _ := a.Prefix(bits)
+	return p
+}
+
+// allow takes a token for remoteAddr's bucket, or reports how long until one
+// is available.
+func (l *ipLimiter) allow(remoteAddr string) (bool, time.Duration) {
+	key := ipKey(remoteAddr)
+	now := l.now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for back := l.lru.Back(); back != nil && now.Sub(back.Value.(*ipEntry).b.last) > ipTTL; back = l.lru.Back() {
+		delete(l.m, back.Value.(*ipEntry).key)
+		l.lru.Remove(back)
+	}
+	el, ok := l.m[key]
+	if ok {
+		l.lru.MoveToFront(el)
+	} else {
+		if l.lru.Len() >= l.max {
+			back := l.lru.Back()
+			delete(l.m, back.Value.(*ipEntry).key)
+			l.lru.Remove(back)
+		}
+		el = l.lru.PushFront(&ipEntry{key: key, b: bucket{tokens: l.burst, last: now}})
+		l.m[key] = el
+	}
+	b := &el.Value.(*ipEntry).b
+	b.tokens = min(l.burst, b.tokens+now.Sub(b.last).Seconds()*l.perSec)
+	b.last = now
+	if b.tokens < 1 {
+		return false, wait(b, l.perSec)
+	}
+	b.tokens--
+	return true, 0
+}
+
+func (l *ipLimiter) len() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.lru.Len()
+}
+
+// connCap is an http.Server ConnState hook that closes connections beyond
+// max open ones instead of serving them, so slow clients can't pile up
+// goroutines and TLS state. (A ConnState hook rather than a listener
+// wrapper keeps the *tls.Conn visible to net/http.)
+type connCap struct {
+	max    int64
+	active atomic.Int64
+}
+
+func (c *connCap) state(conn net.Conn, st http.ConnState) {
+	switch st {
+	case http.StateNew:
+		if c.active.Add(1) > c.max {
+			conn.Close() // net/http then reports StateClosed
+		}
+	case http.StateClosed, http.StateHijacked:
+		c.active.Add(-1)
+	}
+}
