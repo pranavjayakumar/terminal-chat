@@ -240,23 +240,8 @@ func (c *Client) e2ePass(ctx context.Context, s *session, sid e2ecrypto.ServerID
 // were once seen, encrypted. A channel the trust store remembers as
 // encrypted that the server now calls plaintext is an alarm.
 func (c *Client) e2eChannels(sid e2ecrypto.ServerID, me uint64) ([]proto.Channel, error) {
-	rows, err := c.db.Query(`SELECT ` + chanCols + ` FROM chans WHERE kind != 'public'`)
+	all, err := c.memberChannels(me)
 	if err != nil {
-		return nil, err
-	}
-	var all []proto.Channel
-	for rows.Next() {
-		ch, err := scanChan(rows)
-		if err != nil {
-			rows.Close()
-			return nil, err
-		}
-		if slices.Contains(ch.Members, me) {
-			all = append(all, ch)
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	var out []proto.Channel
@@ -270,6 +255,26 @@ func (c *Client) e2eChannels(sid e2ecrypto.ServerID, me uint64) ([]proto.Channel
 		out = append(out, ch)
 	}
 	return out, nil
+}
+
+// memberChannels lists the cached non-public channels me is a member of.
+func (c *Client) memberChannels(me uint64) ([]proto.Channel, error) {
+	rows, err := c.db.Query(`SELECT ` + chanCols + ` FROM chans WHERE kind != 'public'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var all []proto.Channel
+	for rows.Next() {
+		ch, err := scanChan(rows)
+		if err != nil {
+			return nil, err
+		}
+		if slices.Contains(ch.Members, me) {
+			all = append(all, ch)
+		}
+	}
+	return all, rows.Err()
 }
 
 // ServerID is the server's id as cached by the last snapshot; ok is false
@@ -1129,6 +1134,46 @@ func (c *Client) hasUnverifiedDevice(sid e2ecrypto.ServerID, user uint64) bool {
 }
 
 // ---- status ----
+
+// UnverifiedUsers lists the other members of my encrypted channels whose
+// devices this device trusts only on first use: none of their pinned SSH
+// keys was verified out of band (an endorsed key extends a TOFU anchor, so
+// it counts as TOFU too). Their keys are accepted (Signal-like) but a
+// server present at first contact could have substituted them; the TUI
+// marks them until /verify (step 10). Sorted; works offline.
+func (c *Client) UnverifiedUsers() []uint64 {
+	sid, ok := c.cacheServerID()
+	if !ok {
+		return nil
+	}
+	me := c.Me().ID
+	chans, err := c.memberChannels(me)
+	if err != nil {
+		return nil
+	}
+	seen := map[uint64]bool{}
+	var out []uint64
+	for _, ch := range chans {
+		if was, _ := c.trust.ChannelE2E(sid, ch.ID); !ch.E2E && !was {
+			continue
+		}
+		for _, u := range ch.Members {
+			if u == me || seen[u] {
+				continue
+			}
+			seen[u] = true
+			pins, err := c.trust.PinnedKeys(sid, u)
+			if err != nil || len(pins) == 0 {
+				continue // no device seen yet: nothing trusted at all
+			}
+			if !slices.ContainsFunc(pins, func(k trust.SSHKey) bool { return k.How == trust.Verified }) {
+				out = append(out, u)
+			}
+		}
+	}
+	slices.Sort(out)
+	return out
+}
 
 // TrustAlarm reports a server-wide trust alarm: the server, once seen
 // speaking e2e1, stopped advertising it. Every encrypted channel's

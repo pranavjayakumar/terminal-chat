@@ -587,7 +587,9 @@ kept but ignored. Pinning: a client pins its own login key; for anyone else
 the key of the first valid (self-consistent) cert it sees for that user is
 pinned on first use; a valid cert under any other key that no pinned key
 endorses is a pending key change, not a verified device, until the user
-acknowledges it.
+acknowledges it. Users whose pins are only first-use (or endorsed by a
+first-use key) are reported as unverified until confirmed out of band
+(`docs/E2E.md` "Threat model").
 
 Limits: `Signed` objects here ≤ 4 KiB; ≤ 8 non-revoked devices per user;
 ≤ 32 device registrations per user, ever.

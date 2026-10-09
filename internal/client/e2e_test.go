@@ -871,3 +871,30 @@ func TestE2EBundleAfterRevokeBySignedTime(t *testing.T) {
 		})
 	}
 }
+
+// Members of my e2e channels whose keys are only TOFU-pinned (or endorsed
+// by a TOFU key) are reported as unverified; verified ones, myself, members
+// of plaintext channels and users with no devices aren't.
+func TestE2EUnverifiedUsers(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	b1 := newPeer(t, bob, nil)
+	c1 := newPeer(t, carol, nil)
+	const dave = 4
+	f := startE2E(t, fs, proto.Snapshot{
+		Users: append(users, proto.User{ID: carol, Name: "carol"}, proto.User{ID: dave, Name: "dave"}),
+		Chans: []proto.Channel{dmChan(0),
+			{ID: priv, Name: "sec", Kind: proto.ChanPrivate, Members: []uint64{alice, carol, dave}, E2E: true, Creator: carol},
+			{ID: 103, Name: "plain", Kind: proto.ChanPrivate, Members: []uint64{alice, 5}}},
+		Devs: []proto.Device{{Cert: b1.cert}, {Cert: c1.cert}, {Cert: newPeer(t, 5, nil).cert}},
+	}, proto.DevicesListRes{})
+	f.myKeys(c)
+	waitFor(t, "bob and carol pinned", func() bool { return slices.Equal(c.UnverifiedUsers(), []uint64{bob, carol}) })
+	fp := ssh.FingerprintSHA256(c1.ssh.PublicKey())
+	if err := c.Trust().PinKey(testSID(), carol, fp, c1.ssh.PublicKey().Marshal(), trust.Verified); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.UnverifiedUsers(); !slices.Equal(got, []uint64{bob}) {
+		t.Fatalf("after verifying carol: %v", got)
+	}
+}

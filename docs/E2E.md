@@ -74,6 +74,28 @@ the local cache is therefore sensitive — rely on disk encryption, documented.
 Cap `e2e1`. DMs and new private channels encrypted by default; `/encrypt` converts an existing
 private channel. Public channels unchanged. Bots in encrypted channels get a bot device.
 
+## Threat model (as of step 6)
+
+What a malicious server can and cannot do today, and what closes each gap:
+
+- **Trust on first use (TOFU), Signal-like.** A user's first SSH key the client sees in a valid
+  device cert is pinned without confirmation. A server present at that first contact could
+  substitute its own key and read what is sealed to it. Later key changes are caught (pending key
+  change, nothing sealed until acknowledged). Clients therefore report every user whose pins are
+  only TOFU (or endorsed by a TOFU key) as **unverified** (`Client.UnverifiedUsers`; the TUI marks
+  them). Invite-anchored pins (the invite carries the inviter's SSH fingerprint) arrive in M4;
+  `/verify` (safety numbers, step 10) upgrades a pin to verified.
+- **Server-asserted membership, creator and roster are trusted** until signed membership exists:
+  the server says who is in a channel, who created it (who may sign epoch 1) and so who belongs in
+  an epoch's roster. A server can add a member it controls (who then gets keys sealed to their
+  verified devices) or hide a leave. Clients check that each rotator was in the previous roster
+  and seal only to verified devices, but the roster itself comes from the server.
+- **Server identity is pinned** per address + TLS pin; a changed `server_id` stops the client
+  instead of starting trust over, and dropping `e2e1` after speaking it is a sticky alarm.
+- **Revocation timing**: a bundle is rejected if the server's seq order or its signed time (with
+  5 min clock skew allowed) put it after a revoke of its signer. This defends against a server
+  acting alone; a revoked device colluding with the server can backdate its bundles.
+
 ## Pitfalls checklist
 
 Nonce reuse (random 24-byte XChaCha nonces) · cross-channel replay (chan/epoch in AD) · trusting the

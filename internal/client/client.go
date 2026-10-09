@@ -70,6 +70,7 @@
 //
 //	func (c *Client) E2EStatus(ch uint64) E2EStatus  // off / ok / waiting_key / unverified / alarm
 //	func (c *Client) ServerID() (e2ecrypto.ServerID, bool)
+//	func (c *Client) UnverifiedUsers() []uint64      // e2e channel members trusted only on first use
 //	func (c *Client) TrustAlarm() (string, bool)      // server dropped e2e1 after speaking it (sticky)
 //
 // Server-side refusals are returned as *proto.Error (check Code).
