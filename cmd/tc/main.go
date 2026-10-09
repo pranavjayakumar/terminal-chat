@@ -16,6 +16,7 @@ const usage = `tc — terminal team chat
   tc                         open chat
   tc login <invite> [--name you] [--key ~/.ssh/id_ed25519]
   tc send <#chan|@user> [message...]   (reads stdin if no message)
+  tc send <#chan|@user> --file path[:start[-end]] [--context N] [message...]
   tc tail <#chan>            stream a channel
   tc notify [--to #chan|@user|@me] [--on-fail] -- <cmd...>
                              run a command, then post ✓/✗, time and output tail

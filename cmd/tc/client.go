@@ -16,6 +16,7 @@ import (
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
+	"github.com/skailama/tc/internal/snippet"
 )
 
 func runClient(cmd string, args []string) error {
@@ -135,6 +136,8 @@ func resolve(ctx context.Context, c *client.Client, target string) (uint64, erro
 func cmdSend(args []string) error {
 	fs := flag.NewFlagSet("send", flag.ExitOnError)
 	raw := fs.Bool("raw", false, "don't wrap piped input in a code block")
+	file := fs.String("file", "", "send a file as a code block: path[:start[-end]] (message text goes above it)")
+	ctxLines := fs.Int("context", snippet.DefaultContext, "lines of context around a single --file line")
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		return errUsage
 	}
@@ -142,7 +145,15 @@ func cmdSend(args []string) error {
 	fs.Parse(args[1:])
 
 	body := strings.Join(fs.Args(), " ")
-	if body == "" {
+	if *file != "" {
+		if *ctxLines < 0 {
+			return errors.New("--context must be 0 or more")
+		}
+		var err error
+		if body, err = snippet.Build(snippet.Options{Ref: *file, Context: *ctxLines, Message: body}); err != nil {
+			return err
+		}
+	} else if body == "" {
 		b, err := io.ReadAll(io.LimitReader(os.Stdin, 4<<20))
 		if err != nil {
 			return err
@@ -174,7 +185,8 @@ func cmdSend(args []string) error {
 
 // pipedBody prepares stdin for sending: strips terminal control sequences
 // (logs are often colored), keeps the tail if it's too long, and wraps it in
-// a code block so it renders as a snippet.
+// a code block so it renders as a snippet. A unified diff gets a diff fence
+// so it renders with colors.
 func pipedBody(s string, raw bool) string {
 	s = strings.TrimRight(sanitize.StripANSI(s), "\n")
 	limit := proto.MaxBody - 64
@@ -188,7 +200,11 @@ func pipedBody(s string, raw bool) string {
 	if raw {
 		return s
 	}
-	return "```\n" + strings.ReplaceAll(s, "```", "ʼʼʼ") + "\n```"
+	lang := ""
+	if snippet.LooksLikeDiff(s) {
+		lang = "diff"
+	}
+	return "```" + lang + "\n" + strings.ReplaceAll(s, "```", "ʼʼʼ") + "\n```"
 }
 
 func cmdTail(args []string) error {
