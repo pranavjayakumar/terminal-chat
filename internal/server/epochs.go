@@ -91,7 +91,7 @@ func rosterOf(ctx context.Context, q querier, ch uint64) ([]uint64, error) {
 }
 
 // rosterDevices maps the non-revoked devices of users to their X25519 keys:
-// exactly the devices a bundle must box to.
+// the devices a bundle may box to.
 func rosterDevices(ctx context.Context, q querier, users []uint64) (map[e2ecrypto.DevID][32]byte, error) {
 	js, err := json.Marshal(users)
 	if err != nil {
@@ -126,6 +126,18 @@ func sameBoxes(eb identity.EpochBundle, devs map[e2ecrypto.DevID][32]byte) bool 
 	if len(eb.Boxes) != len(devs) {
 		return false
 	}
+	for _, bx := range eb.Boxes {
+		if _, ok := devs[bx.Dev]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// boxesWithin reports whether every box in eb goes to a device in devs.
+// Boxes may be missing: clients seal only to devices they've verified, and
+// unsealed devices get the key later via key.share (docs/E2E.md).
+func boxesWithin(eb identity.EpochBundle, devs map[e2ecrypto.DevID][32]byte) bool {
 	for _, bx := range eb.Boxes {
 		if _, ok := devs[bx.Dev]; !ok {
 			return false
@@ -201,8 +213,8 @@ func (s *Server) opKeyRotate(ctx context.Context, u proto.User, a proto.KeyRotat
 		if err != nil {
 			return nil, err
 		}
-		if !sameBoxes(eb, devs) {
-			return nil, staleEpoch("boxes are not exactly the members' active devices")
+		if !boxesWithin(eb, devs) {
+			return nil, staleEpoch("bundle boxes a device that isn't an active member device")
 		}
 		if err := eb.CheckBoxKeys(devs); err != nil {
 			return nil, badRequest("bundle seals twice to one key")

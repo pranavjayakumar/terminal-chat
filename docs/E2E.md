@@ -166,7 +166,8 @@ and higher v; first mid wins. Decrypted text must pass §10 checks. Undecryptabl
 Server (honest case): dedupe (author, nonce) first (conflict compares enc bytes), then `stale_epoch`
 if enc.epoch ≠ current or bundle stale, then verify sig vs a registered device of the caller.
 Plaintext into e2e → `bad_request`. `key.rotate` CAS `epoch == cur+1 && prev == H(cur.b)`, roster ==
-non-disabled members, boxes only for registered non-revoked roster devices; losing RES after the
+non-disabled members, boxes only for registered non-revoked roster devices (a subset is fine — clients seal
+only to devices they verified; decided in step 5 review); losing RES after the
 winning `key.epoch` event; ≤ 1 rotate / chan / 10 s / user unless roster/devices changed. Search
 excludes e2e. Webhooks into e2e forbidden. Delete/edit scrub messages AND original event data.
 

@@ -252,8 +252,8 @@ func TestKeyRotateRejects(t *testing.T) {
 	// Roster: missing or extra (a disabled member: below).
 	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 1, nil, []uint64{alice.user.ID}, a1, b1), proto.ErrStaleEpoch)
 	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 1, nil, append(slices.Clone(roster), carol.user.ID), a1, b1), proto.ErrStaleEpoch)
-	// Boxes: missing, extra, or to a revoked device.
-	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 1, nil, roster, a1), proto.ErrStaleEpoch)
+	// Boxes: extra, or to a revoked device. (Missing boxes are allowed: see
+	// TestKeyRotateMissingBoxAllowed.)
 	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 1, nil, roster, a1, b1, c1), proto.ErrStaleEpoch)
 	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 1, nil, roster, a1, b1, a2), proto.ErrStaleEpoch)
 	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 1, nil, roster, a1, b1, newDevKeys(t)), proto.ErrStaleEpoch)
@@ -747,4 +747,23 @@ func TestEpochStale(t *testing.T) {
 	stale(ch.ID, false)
 	bob.ok(proto.OpChanLeave, proto.ChanArgs{Chan: ch.ID}, nil)
 	stale(ch.ID, true) // a member left
+}
+
+// Clients seal only to devices they've verified, so a bundle may skip some
+// member devices (they get the key via key.share); it may never box a device
+// outside the members' active devices.
+func TestKeyRotateMissingBoxAllowed(t *testing.T) {
+	ts := startServer(t, "tcp")
+	fastClock(ts)
+	alice := ts.registerCaps(t, "alice", true, e2eCaps)
+	bob := ts.registerCaps(t, "bob", false, e2eCaps)
+	alice.syncFresh()
+	bob.syncFresh()
+	sid := ts.sid()
+	ch := alice.createE2E("sec")
+	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: bob.user.ID}, nil)
+	a1, _ := alice.registerDevice(ts)
+	bob.registerDevice(ts) // bob's device isn't verified by alice yet
+	roster := []uint64{alice.user.ID, bob.user.ID}
+	alice.ok(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: bundle(t, a1, sid, ch.ID, 1, nil, roster, a1)}, nil)
 }

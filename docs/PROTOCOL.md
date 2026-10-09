@@ -552,7 +552,7 @@ rate limited), checked in this order inside the write transaction:
 | `sig` verifies under `by`'s Ed25519 key | `bad_request` |
 | CAS: `epoch == current + 1` and `prev == ChainHash(current b)` | `stale_epoch` |
 | `roster` == current members that aren't disabled | `stale_epoch` |
-| boxes go exactly to the non-revoked devices of roster users (each once, none else) | `stale_epoch` |
+| every box goes to a non-revoked device of a roster user, each at most once (devices may be missing: clients seal only to devices they verified; the rest get the key via `key.share`) | `stale_epoch` |
 | no two boxes share an X25519 key | `bad_request` |
 | ≤ 1 rotation per channel per user per 10 s, unless the current bundle's roster or boxed-device set differs from the current members/devices | `rate_limited` |
 
