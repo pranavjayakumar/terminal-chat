@@ -80,7 +80,7 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 	case proto.OpEdit:
 		return withArgs(args, func(a proto.EditArgs) (any, error) { return s.opEdit(ctx, u, a) })
 	case proto.OpDelete:
-		return withArgs(args, func(a proto.MsgArgs) (any, error) { return s.opDelete(ctx, u, a) })
+		return withArgs(args, func(a proto.DeleteArgs) (any, error) { return s.opDelete(ctx, u, a) })
 	case proto.OpReact, proto.OpUnreact:
 		return withArgs(args, func(a proto.ReactArgs) (any, error) { return s.opReact(ctx, u, a, op == proto.OpReact) })
 	case proto.OpPin, proto.OpUnpin:
@@ -269,7 +269,7 @@ func (s *Server) send(ctx context.Context, u proto.User, a proto.SendArgs, hook 
 		case !head.e2e && a.Enc != nil:
 			return nil, badRequest("channel is not encrypted")
 		case a.Enc != nil:
-			if err := checkEnc(ctx, tx, sid, u.ID, a, encHdr, head); err != nil {
+			if err := checkEnc(ctx, tx, sid, u.ID, a.Chan, a.Enc, encHdr, head); err != nil {
 				return nil, err
 			}
 		}
@@ -323,9 +323,23 @@ func (s *Server) send(ctx context.Context, u proto.User, a proto.SendArgs, hook 
 }
 
 func (s *Server) opEdit(ctx context.Context, u proto.User, a proto.EditArgs) (any, error) {
-	if err := validBody(a.Body); err != nil {
+	var encHdr e2ecrypto.Enc
+	if a.Enc != nil {
+		// Same framing rules as an encrypted send (§13.5).
+		if a.Body != "" {
+			return nil, badRequest("edit has both body and enc")
+		}
+		if len(a.Enc) > proto.MaxEnc {
+			return nil, proto.Errf(proto.ErrTooLarge, "encrypted message too long")
+		}
+		var err error
+		if encHdr, err = e2ecrypto.ParseEnc(a.Enc); err != nil {
+			return nil, badRequest("malformed enc")
+		}
+	} else if err := validBody(a.Body); err != nil {
 		return nil, err
 	}
+	sid := s.sid()
 	var res proto.SeqRes
 	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
 		m, err := getMessage(ctx, tx, a.Msg)
@@ -335,25 +349,39 @@ func (s *Server) opEdit(ctx context.Context, u proto.User, a proto.EditArgs) (an
 		if m.Author != u.ID {
 			return nil, errForbidden
 		}
-		// Plaintext must never land in an encrypted channel; encrypted
-		// edits are step 8 (docs/E2E.md).
-		if head, err := chanEpoch(ctx, tx, m.Chan); err != nil {
-			return nil, err
-		} else if head.e2e || m.Enc != nil {
-			return nil, badRequest("this channel is end-to-end encrypted — upgrade tc")
-		}
-		if m.Body == a.Body {
-			return nil, nil
-		}
-		now := s.now()
-		ev, err := appendEvent(ctx, tx, proto.KMsgEdit, m.Chan, u.ID, 0, now, proto.MsgEdit{Msg: m.ID, Body: a.Body, Edited: now})
+		// Plaintext must never land in an encrypted channel, and an
+		// encrypted edit refers to the original's enc.
+		head, err := chanEpoch(ctx, tx, m.Chan)
 		if err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE messages SET body = ?, edited = ? WHERE id = ?`, a.Body, now, m.ID); err != nil {
+		switch {
+		case a.Enc == nil && (head.e2e || m.Enc != nil):
+			return nil, badRequest("this channel is end-to-end encrypted — upgrade tc")
+		case a.Enc != nil && !head.e2e:
+			return nil, badRequest("channel is not encrypted")
+		case a.Enc != nil && m.Enc == nil:
+			return nil, badRequest("only encrypted messages can get encrypted edits")
+		case a.Enc == nil && m.Body == a.Body:
+			return nil, nil
+		case a.Enc != nil && bytes.Equal(m.EditEnc, a.Enc):
+			// A retry of the current edit, found before any epoch check
+			// (like a send's nonce).
+			return nil, nil
+		case a.Enc != nil:
+			if err := checkEnc(ctx, tx, sid, u.ID, m.Chan, a.Enc, encHdr, head); err != nil {
+				return nil, err
+			}
+		}
+		now := s.now()
+		ev, err := appendEvent(ctx, tx, proto.KMsgEdit, m.Chan, u.ID, 0, now, proto.MsgEdit{Msg: m.ID, Body: a.Body, Edited: now, Enc: a.Enc})
+		if err != nil {
 			return nil, err
 		}
-		m.Body, m.Edited = a.Body, now
+		if _, err := tx.ExecContext(ctx, `UPDATE messages SET body = ?, edit_enc = ?, edited = ? WHERE id = ?`, a.Body, a.Enc, now, m.ID); err != nil {
+			return nil, err
+		}
+		m.Body, m.EditEnc, m.Edited = a.Body, a.Enc, now
 		if err := scrubMessageEvents(ctx, tx, m, ev.Seq); err != nil {
 			return nil, err
 		}
@@ -363,7 +391,8 @@ func (s *Server) opEdit(ctx context.Context, u proto.User, a proto.EditArgs) (an
 	return res, err
 }
 
-func (s *Server) opDelete(ctx context.Context, u proto.User, a proto.MsgArgs) (any, error) {
+func (s *Server) opDelete(ctx context.Context, u proto.User, a proto.DeleteArgs) (any, error) {
+	sid := s.sid()
 	var res proto.SeqRes
 	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
 		m, err := getMessage(ctx, tx, a.Msg)
@@ -379,11 +408,22 @@ func (s *Server) opDelete(ctx context.Context, u proto.User, a proto.MsgArgs) (a
 		if m.Deleted {
 			return nil, nil
 		}
-		ev, err := appendEvent(ctx, tx, proto.KMsgDelete, m.Chan, u.ID, 0, s.now(), proto.MsgRef{Msg: m.ID})
+		if a.Enc != nil {
+			// Only the author can sign a delete (§13.4); an admin deletes
+			// without one, and clients show that it wasn't the author.
+			if m.Author != u.ID {
+				return nil, errForbidden
+			}
+			if err := checkEncOfMsg(ctx, tx, sid, u.ID, m, a.Enc); err != nil {
+				return nil, err
+			}
+		}
+		ev, err := appendEvent(ctx, tx, proto.KMsgDelete, m.Chan, u.ID, 0, s.now(), proto.MsgDelete{Msg: m.ID, Enc: a.Enc})
 		if err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE messages SET body = '', enc = NULL, deleted = 1 WHERE id = ?`, m.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE messages SET body = '', enc = NULL, edit_enc = NULL, del_enc = ?, deleted = 1 WHERE id = ?`,
+			a.Enc, m.ID); err != nil {
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM reactions WHERE msg = ?`, m.ID); err != nil {
@@ -395,7 +435,7 @@ func (s *Server) opDelete(ctx context.Context, u proto.User, a proto.MsgArgs) (a
 			return nil, err
 		}
 		evs = append(evs, unpin...)
-		m.Body, m.Enc, m.Deleted = "", nil, true
+		m.Body, m.Enc, m.EditEnc, m.DelEnc, m.Deleted = "", nil, nil, a.Enc, true
 		if err := scrubMessageEvents(ctx, tx, m, 0); err != nil {
 			return nil, err
 		}
@@ -409,11 +449,28 @@ func (s *Server) opReact(ctx context.Context, u proto.User, a proto.ReactArgs, a
 	if !validEmoji(a.Emoji) {
 		return nil, badRequest("invalid emoji")
 	}
+	sid := s.sid()
 	var res proto.SeqRes
 	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
 		m, err := getMessage(ctx, tx, a.Msg)
 		if err != nil || m.Deleted || !s.members[m.Chan][u.ID] {
 			return nil, errNotFound
+		}
+		head, err := chanEpoch(ctx, tx, m.Chan)
+		if err != nil {
+			return nil, err
+		}
+		// Encrypted channels see only tags, each proven by a signed enc
+		// that carries the real emoji (§13.4).
+		switch {
+		case !head.e2e && a.Enc != nil:
+			return nil, badRequest("channel is not encrypted")
+		case head.e2e && (a.Enc == nil || !e2ecrypto.ValidReactTag(a.Emoji)):
+			return nil, badRequest("this channel is end-to-end encrypted — upgrade tc")
+		case head.e2e:
+			if err := checkEncOfMsg(ctx, tx, sid, u.ID, m, a.Enc); err != nil {
+				return nil, err
+			}
 		}
 		if add {
 			if len(m.Reactions) >= maxEmojiPerMsg && m.Reactions[a.Emoji] == nil {
@@ -432,7 +489,7 @@ func (s *Server) opReact(ctx context.Context, u proto.User, a proto.ReactArgs, a
 		var r sql.Result
 		kind := proto.KReactAdd
 		if add {
-			r, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO reactions (msg, user, emoji) VALUES (?, ?, ?)`, m.ID, u.ID, a.Emoji)
+			r, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO reactions (msg, user, emoji, enc) VALUES (?, ?, ?, ?)`, m.ID, u.ID, a.Emoji, a.Enc)
 		} else {
 			kind = proto.KReactRemove
 			r, err = tx.ExecContext(ctx, `DELETE FROM reactions WHERE msg = ? AND user = ? AND emoji = ?`, m.ID, u.ID, a.Emoji)
@@ -443,7 +500,7 @@ func (s *Server) opReact(ctx context.Context, u proto.User, a proto.ReactArgs, a
 		if n, _ := r.RowsAffected(); n == 0 {
 			return nil, nil
 		}
-		ev, err := appendEvent(ctx, tx, kind, m.Chan, u.ID, 0, s.now(), proto.Reaction{Msg: m.ID, Emoji: a.Emoji})
+		ev, err := appendEvent(ctx, tx, kind, m.Chan, u.ID, 0, s.now(), proto.Reaction{Msg: m.ID, Emoji: a.Emoji, Enc: a.Enc})
 		if err != nil {
 			return nil, err
 		}
