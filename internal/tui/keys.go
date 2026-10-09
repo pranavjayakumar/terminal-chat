@@ -78,6 +78,7 @@ var helpLines = [][2]string{
 	{"/away [status], /back", "presence"},
 	{"/invite", "invite code (admin)"},
 	{"/share-pane [pane]", "send a herdr pane's output (preview first)"},
+	{"/snippet file[:range]", "send file lines as a code block (preview first)"},
 	{"/webhook name", "webhook here; copies curl"},
 	{"/webhooks", "list webhooks"},
 	{"/webhook-delete id", "delete a webhook"},

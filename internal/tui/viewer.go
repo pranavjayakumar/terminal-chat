@@ -28,7 +28,7 @@ func (m *Model) openViewer(msg client.Message) {
 	when := time.UnixMilli(msg.Time).Format("Mon 2 Jan 15:04")
 	m.view = viewer{
 		title: sanitize.Line(m.r.userName(msg.Author)) + " · " + when,
-		lines: strings.Split(body, "\n"),
+		lines: m.viewerBody(body),
 	}
 	m.mode = modeViewer
 }
@@ -79,4 +79,31 @@ func (m *Model) viewerLines(w, h int) []string {
 		out = append(out, fit(ansi.Cut(l, v.x, v.x+w), w))
 	}
 	return padLines(out, w, h)
+}
+
+// viewerBody splits a message into display lines, coloring diff blocks. The
+// text is already sanitized; fences are kept so the block structure shows.
+func (m *Model) viewerBody(body string) []string {
+	var out []string
+	for _, sg := range splitFences(strings.Split(body, "\n")) {
+		if !sg.code {
+			out = append(out, sg.lines...)
+			continue
+		}
+		out = append(out, sg.open)
+		var ks []diffKind
+		if sg.diff {
+			ks = classifyDiff(sg.lines)
+		}
+		for i, l := range sg.lines {
+			if sg.diff && l != "" {
+				l = m.st.diffStyle(ks[i]).Render(l)
+			}
+			out = append(out, l)
+		}
+		if sg.closed {
+			out = append(out, sg.close)
+		}
+	}
+	return out
 }
