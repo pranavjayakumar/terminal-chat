@@ -844,6 +844,10 @@ func TestE2EBundleAfterRevokeBySignedTime(t *testing.T) {
 		{"unknown seq, signed time after the bundle", time.Hour, 0, true, ""},
 		{"unknown seq, signed time before the bundle", -time.Hour, 0, false,
 			"epoch 1: signed after its device was revoked"},
+		// Clocks differ: a bundle signed up to 5 min after the revoke's time still passes the time rule.
+		{"bundle signed 4 min after the revoke (skew)", -4 * time.Minute, revokeSeqAfterBundle, true, ""},
+		{"bundle signed 6 min after the revoke", -6 * time.Minute, revokeSeqAfterBundle, false,
+			"epoch 1: signed after its device was revoked"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

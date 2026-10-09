@@ -73,6 +73,11 @@ func (e *UnverifiedMembersError) Error() string {
 	return "can't verify any device of: " + strings.Join(e.Names, ", ")
 }
 
+// revokeSkew is the clock skew allowed between a bundle's and a revoke's
+// signed times: a bundle is invalid by time only if signed more than this
+// after the revoke (PROTOCOL §13.3).
+const revokeSkew = 5 * time.Minute
+
 // Bounds on what a server can make the cache hold.
 const (
 	maxCachedBundles = 1024 // unverified bundles per channel
@@ -569,7 +574,8 @@ func (c *Client) validateBundle(sid e2ecrypto.ServerID, ch proto.Channel, epoch 
 	if by.Revoked && by.RevokedSeq != 0 && by.RevokedSeq < cb.seq {
 		return eb, fmt.Errorf("epoch %d: signed by a revoked device", epoch)
 	}
-	if by.Revoked && by.RevokedTime != 0 && eb.Time >= by.RevokedTime {
+	// Signed times come from two devices' clocks: allow revokeSkew.
+	if by.Revoked && by.RevokedTime != 0 && eb.Time > by.RevokedTime+revokeSkew.Milliseconds() {
 		return eb, fmt.Errorf("epoch %d: signed after its device was revoked", epoch)
 	}
 	if prev == nil {

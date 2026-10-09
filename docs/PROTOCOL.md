@@ -701,12 +701,14 @@ logs it) rather than send 0. A client that has a revoke without a seq
 arrives, and an unknown seq never wins the "earliest" comparison.
 
 A *client* additionally rejects a bundle (an alarm, §13.3 client validity)
-whose own signed `time` is at or after the signed `time` of a verified
-`DeviceRevoke` of its `by` device, whatever the seqs say: a bundle is invalid
-if either the server's seq order or the signed times put it after the revoke,
-so a server that misorders seqs cannot rescue a bundle made after the revoke.
-With several valid revokes of one device the earliest seq and the earliest
-time apply. (Boxes to revoked devices are still judged by seq alone.)
+whose own signed `time` is more than 5 minutes (allowed clock skew between
+devices) after the signed `time` of a verified `DeviceRevoke` of its `by`
+device, whatever the seqs say: a bundle is invalid if either the server's
+seq order or the signed times put it after the revoke. This defends against
+a server acting alone, which can misorder seqs but can't re-sign times; a
+revoked device colluding with the server can still backdate its bundles.
+With several valid revokes of one device the earliest known seq and the
+earliest known time apply. (Boxes to revoked devices are still judged by seq alone.)
 
 A channel's current bundle is **stale** (encrypted sends will need a
 rotation first, §13.4) when there is none yet, its roster isn't the current

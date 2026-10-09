@@ -226,7 +226,8 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    any other, which would make every box undecryptable and block rotations) are rejected in certs; clients drop unverified objects for another server_id and keep ≤ 64 per user per kind.
 6. Client bundle logic: verify chain/kc/backlinks, lazy decrypt queue, `key.need/share`; reject bundles with duplicate recipient X25519 keys (one ephemeral + zero nonce per box means a duplicate would reuse key+nonce).
    Decisions (step 6 review): a bundle is invalid if EITHER the server seq order OR its signed `time` puts it
-   after a signed revoke of its `by` device (server can't reorder past both); `key.share` stays a logged,
+   after a signed revoke of its `by` device (time: more than 5 min after, for clock skew; defends against a
+   server acting alone — a revoked device colluding with the server can backdate); `key.share` stays a logged,
    rate-limited event so offline devices get keys; TOFU on the first valid cert in arrival order is accepted
    until invite-anchored pins (M4).
 7. Encrypted send e2e: outbox stores enc once, stale_epoch retry same nonce, DMs epoch 1, self-DM.
