@@ -248,6 +248,16 @@ func TestKeyRotateRejects(t *testing.T) {
 	rot(alice, ch.ID, proto.Signed{B: make([]byte, proto.MaxBundle), Sig: ok1.Sig}, proto.ErrTooLarge)
 	rot(alice, ch.ID, proto.Signed{B: []byte{0xc1}, Sig: ok1.Sig}, proto.ErrBadRequest)
 	rot(alice, ch.ID, bundle(t, a1, e2ecrypto.ServerID{0xee}, ch.ID, 1, nil, roster, a1, b1), proto.ErrBadRequest)
+	// b is canonical: an unknown field is rejected, so extensions need v: 2,
+	// which this server doesn't accept either.
+	type extended struct {
+		rawBundleB `msgpack:",inline"`
+		Ext        []byte `msgpack:"ext"`
+	}
+	rot(alice, ch.ID, signRaw(t, a1, extended{rawOf(t, ok1), []byte{1}}), proto.ErrBadRequest)
+	v2 := rawOf(t, ok1)
+	v2.V = 2
+	rot(alice, ch.ID, signRaw(t, a1, v2), proto.ErrBadRequest)
 	sec2 := alice.createE2E("sec2")
 	rot(alice, sec2.ID, ok1, proto.ErrBadRequest) // bundle.chan != chan
 	// Existence, membership and encryption are checked before b is decoded.
@@ -775,7 +785,7 @@ func TestE2EChannelCreation(t *testing.T) {
 		t.Fatalf("chan.new %+v", c)
 	}
 
-	// dm.open: encrypted when the caller speaks e2e1, at epoch 0.
+	// dm.open: encrypted iff the caller speaks e2e1 (PROTOCOL §13.3), at epoch 0.
 	if c := open(alice, bob.user.ID); !c.E2E || c.Epoch != 0 {
 		t.Fatalf("e2e1 DM %+v", c)
 	}

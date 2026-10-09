@@ -424,7 +424,11 @@ Signed = {b: bin, sig: bin}
 names the object type. Verify `sig` before decoding `b`; `b` is never
 re-encoded (forward it byte for byte). `b` is a msgpack map in canonical form:
 the exact encoding `internal/proto` produces (fields in the listed order,
-smallest int encodings, no extra keys); anything else is rejected. H =
+smallest int encodings, no extra keys); anything else is rejected. In
+particular an unknown field in `b` is rejected, not ignored (unlike the
+additive frame fields of §11): a field one verifier ignores and another
+honours would give one signature two meanings. Format extensions therefore
+need a new `v` (e.g. `v: 2`), which older verifiers reject. H =
 SHA-256; integers in binary layouts are big-endian. Ids are `bin16`, keys
 `bin32`, times Unix ms.
 
@@ -522,7 +526,8 @@ eh = H(b)[:16]        ChainHash = H(b) (the next bundle's prev)
   `roster` is sorted ascending with no duplicates and non-empty; `boxes` is
   non-empty, at most 128, with distinct `dev`. `back` is REQUIRED for epoch
   > 1 and MUST be absent for epoch 1 (every e2e channel shares history).
-  Anything else (including non-canonical msgpack, §13.1) is malformed.
+  Anything else (including non-canonical msgpack or an unknown field,
+  §13.1) is malformed; extending the bundle format needs `v: 2`.
 - `kc = HMAC-SHA256(K, "tc-kc-v1" || server_id || chan || epoch)`; one
   ephemeral X25519 key `eph` per bundle; per box
   `ss = X25519(eph_priv, d.x25519)`,
@@ -610,8 +615,13 @@ device doesn't make it stale (it gets K via `key.share`, §13.7).
 
 Creating encrypted channels: `chan.create {…, e2e: true}` requires `e2e1`
 and `private: true` (else `bad_request`). `dm.open` creates a new DM with
-`e2e = true` when the caller's session has `e2e1`; an existing DM is
-returned unchanged. Neither creates an epoch.
+`e2e = true` if and only if the caller's session has `e2e1`; an existing DM
+is returned unchanged, whoever reopens it. So a legacy caller (no `e2e1`)
+creates a plaintext DM even when every other member speaks `e2e1`; it stays
+plaintext until converted with `chan.encrypt` (step 9). Neither op creates
+an epoch. Once encrypted sends land (step 7), a plaintext `send` into an
+e2e channel is `bad_request` "upgrade tc", so legacy clients can read
+channel metadata but not post into encrypted DMs or channels.
 
 Client validity (step 6, not yet implemented): `sig`; `by` is a verified
 device of a previous-roster user (epoch 1: the creator / any DM member);
@@ -633,7 +643,8 @@ creator leaves before that can't be keyed.
 ### 13.4 Encrypted payload *(not yet implemented)*
 
 `enc` layout and rules: `docs/E2E.md` §13.4. Until it lands, sends into
-e2e channels are plaintext as before.
+e2e channels are plaintext as before; with it, a plaintext `send` into an
+e2e channel is `bad_request` "upgrade tc" (§13.3).
 
 ### 13.5 Ops
 

@@ -112,6 +112,7 @@ Libraries (all pure Go, keeps `CGO_ENABLED=0`): `crypto/ecdh`, `crypto/ed25519`,
 
 ### 13.1 Signed objects
 `Signed = {b: bin, sig: bin}`; sig over `context || b`; verify before decoding b; H = SHA-256; big-endian.
+b is canonical msgpack: unknown fields are rejected (not ignored), so any format extension needs `v: 2`.
 
 ### 13.2 Devices
 - `DeviceCert.b = {v:1, server_id: bin16, user: u64, dev: bin16, x25519: bin32, ed25519: bin32, ssh: bin, created: i64}`;
@@ -168,7 +169,8 @@ and higher v; first mid wins. Decrypted text must pass §10 checks. Undecryptabl
 
 Server (honest case): dedupe (author, nonce) first (conflict compares enc bytes), then `stale_epoch`
 if enc.epoch ≠ current or bundle stale, then verify sig vs a registered device of the caller.
-Plaintext into e2e → `bad_request`. `key.rotate` (channel/membership/e2e checked before decoding the bundle) CAS `epoch == cur+1 && prev == H(cur.b)`, roster ==
+Plaintext into e2e → `bad_request` "upgrade tc" (step 7). DMs: `dm.open` makes a new DM e2e iff the caller
+advertises `e2e1`; a legacy caller creates a plaintext DM, later convertible by `chan.encrypt` (step 9). `key.rotate` (channel/membership/e2e checked before decoding the bundle) CAS `epoch == cur+1 && prev == H(cur.b)`, roster ==
 non-disabled members, boxes only for registered non-revoked roster devices (a subset is fine — clients seal
 only to devices they verified, the remaining devices get K via `key.share`; but ≥ 1 box per roster user
 who has an active device, else `bad_request`; decided in step 5 review; a box to an unknown, non-roster or
