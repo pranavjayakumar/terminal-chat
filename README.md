@@ -29,7 +29,7 @@ tc                                    # chat
 |---|---|
 | `Enter` / `Alt-Enter` | send / newline |
 | `Ctrl-K` | jump to any channel or person |
-| `Ctrl-A` | activity: mentions, replies to you, reactions, DMs (Enter jumps) |
+| `Alt-A` | activity: mentions, replies to you, reactions, DMs (Enter jumps) |
 | `Alt-↑/↓` | previous / next channel (`Alt-Shift` for unread) |
 | `↑` on empty input | select a message: `e` edit · `d` delete · `r` thread · `+` react · `y` copy |
 | `Esc` | back out of anything |

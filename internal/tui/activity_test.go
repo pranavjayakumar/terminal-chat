@@ -27,9 +27,9 @@ func activityFake(f *fakeClient) {
 func TestActivityOpenAndClose(t *testing.T) {
 	m, f := newTestModelFake(t, 100, 30)
 	activityFake(f)
-	press(m, "ctrl+a")
+	press(m, "alt+a")
 	if m.mode != modeActivity {
-		t.Fatalf("Ctrl-A: mode %v", m.mode)
+		t.Fatalf("Alt-A: mode %v", m.mode)
 	}
 	v := checkView(t, m, "activity")
 	for _, want := range []string{"activity — 6 items", "· #general · carol · 🎉 on: 👍 nice", "· @bob · bob · psst",
@@ -46,9 +46,9 @@ func TestActivityOpenAndClose(t *testing.T) {
 	if m.mode != modeNormal {
 		t.Fatal("Esc didn't close")
 	}
-	press(m, "ctrl+a", "ctrl+a")
+	press(m, "alt+a", "alt+a")
 	if m.mode != modeNormal {
-		t.Fatal("Ctrl-A again didn't close")
+		t.Fatal("Alt-A again didn't close")
 	}
 	m.input.SetValue("/activity")
 	press(m, "enter")
@@ -59,7 +59,7 @@ func TestActivityOpenAndClose(t *testing.T) {
 
 func TestActivityEmpty(t *testing.T) {
 	m := newTestModel(t, 80, 24)
-	press(m, "ctrl+a")
+	press(m, "alt+a")
 	v := checkView(t, m, "empty")
 	if !strings.Contains(v, "activity — 0 items") || !strings.Contains(v, "nothing yet") {
 		t.Fatalf("empty state:\n%s", v)
@@ -73,7 +73,7 @@ func TestActivityEmpty(t *testing.T) {
 func TestActivityKeysMoveSelection(t *testing.T) {
 	m, f := newTestModelFake(t, 100, 30)
 	activityFake(f)
-	press(m, "ctrl+a")
+	press(m, "alt+a")
 	step := func(want int, keys ...string) {
 		t.Helper()
 		press(m, keys...)
@@ -115,7 +115,7 @@ func TestActivityEnterJumps(t *testing.T) {
 			m, f := newTestModelFake(t, 100, 30)
 			activityFake(f)
 			run(m, m.openChannel(tc.start))
-			press(m, "ctrl+a")
+			press(m, "alt+a")
 			for i := 0; i < tc.item; i++ {
 				press(m, "down")
 			}
@@ -154,7 +154,7 @@ func TestActivityJumpKeepsDraft(t *testing.T) {
 	m, f := newTestModelFake(t, 100, 30)
 	activityFake(f)
 	typeVia(m, "half typed")
-	press(m, "ctrl+a", "down", "down", "enter") // the DM
+	press(m, "alt+a", "down", "down", "enter") // the DM
 	if m.active != 20 || m.input.Value() != "" {
 		t.Fatalf("active %d input %q", m.active, m.input.Value())
 	}
@@ -174,7 +174,7 @@ func TestActivityTextIsSanitized(t *testing.T) {
 	u := m.users[2]
 	u.Name = "bob\x1b]0;x\a"
 	m.users[2] = u
-	press(m, "ctrl+a")
+	press(m, "alt+a")
 	raw := m.View()
 	if strings.Contains(raw, "\x1b]") || strings.ContainsAny(raw, "\a‮") {
 		t.Fatalf("control characters leaked: %q", raw)
@@ -192,7 +192,7 @@ func TestActivityTextIsSanitized(t *testing.T) {
 func TestActivityRefreshesWhileOpenKeepingSelection(t *testing.T) {
 	m, f := newTestModelFake(t, 100, 30)
 	activityFake(f)
-	press(m, "ctrl+a", "down", "down") // the DM
+	press(m, "alt+a", "down", "down") // the DM
 	dm := f.activity[2]
 	fresh := client.ActivityItem{Kind: client.ActMention, Time: actBase + 20*60_000, Chan: 10, Msg: 104, Author: 3, Preview: "brand new"}
 	f.activity = append([]client.ActivityItem{fresh}, f.activity...)
@@ -223,17 +223,39 @@ func TestActivityFitsAllSizes(t *testing.T) {
 			})
 		}
 		m.input.SetValue("draft text")
-		press(m, "ctrl+a")
+		press(m, "alt+a")
 		checkView(t, m, "open")
 		for _, k := range []string{"down", "down", "pgdown", "pgdown", "end", "up", "pgup", "home", "esc"} {
 			press(m, k)
 			checkView(t, m, k)
 		}
-		press(m, "ctrl+a", "end", "enter") // jump to something unknown
+		press(m, "alt+a", "end", "enter") // jump to something unknown
 		checkView(t, m, "jump")
 		// Narrow sidebar-less layout with the overlay and a thread open.
 		m.openThread(103)
-		press(m, "ctrl+a")
+		press(m, "alt+a")
 		checkView(t, m, "over thread")
+	}
+}
+
+// Ctrl-A belongs to the textarea (line start); the overlay is Alt-A.
+func TestCtrlAIsLineStartNotActivity(t *testing.T) {
+	m := newTestModel(t, 100, 30)
+	typeVia(m, "hello")
+	press(m, "ctrl+a")
+	if m.mode != modeNormal {
+		t.Fatalf("Ctrl-A opened mode %v", m.mode)
+	}
+	typeVia(m, "X")
+	if got := m.input.Value(); got != "Xhello" {
+		t.Fatalf("input = %q, want the cursor at line start", got)
+	}
+	if !strings.Contains(strings.Join(func() (s []string) {
+		for _, l := range helpLines {
+			s = append(s, l[0])
+		}
+		return
+	}(), "\n"), "Alt-A") {
+		t.Fatal("help doesn't mention Alt-A")
 	}
 }

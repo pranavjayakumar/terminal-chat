@@ -35,7 +35,7 @@ func idOf(it client.ActivityItem) activityID {
 	return activityID{it.Kind, it.Msg, it.Author, it.Emoji}
 }
 
-// openActivity shows the overlay (Ctrl-A, /activity). The list comes from
+// openActivity shows the overlay (Alt-A, /activity). The list comes from
 // the local cache.
 func (m *Model) openActivity() {
 	m.leaveSelect()

@@ -306,7 +306,7 @@ func bigCache(tb testing.TB, n int) *Client {
 	return c
 }
 
-// TestActivityIsFastOn10kMessages: the view opens on every Ctrl-A and
+// TestActivityIsFastOn10kMessages: the view opens on every Alt-A and
 // refreshes while open, so it must stay well under a frame budget.
 func TestActivityIsFastOn10kMessages(t *testing.T) {
 	c := bigCache(t, 10_500)

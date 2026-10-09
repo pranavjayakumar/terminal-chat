@@ -50,7 +50,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 |---|---|
 | `Enter` | send |
 | `Ctrl-K` | quick switcher (fuzzy over channels + people; Enter opens; DMs created on demand) |
-| `Ctrl-A` | activity view (also `/activity`); shadows the textarea's "line start", use `Home` |
+| `Alt-A` | activity view (also `/activity`); `Ctrl-A` stays the textarea's line start |
 | `Alt-↑/↓` or `Ctrl-P/N` | previous / next channel |
 | `Alt-Shift-↑/↓` | previous / next unread channel |
 | `PgUp/PgDn`, mouse wheel | scroll history (fetches older via History at top) |
@@ -103,7 +103,7 @@ Unknown command → inline error, input kept.
 
 ## Activity view
 
-`Ctrl-A` or `/activity` opens an overlay over the log with the last 100 things that concern me, newest
+`Alt-A` or `/activity` opens an overlay over the log with the last 100 things that concern me, newest
 first, across all channels I'm in. Everything comes from the local cache (works offline; ~13 ms for the
 whole list over 10k cached messages, see `client.Activity`).
 
@@ -125,7 +125,7 @@ whole list over 10k cached messages, see `client.Activity`).
 
 A message that fits several kinds is listed once, as the first of the order above. Never listed: my own
 messages, bots, deleted messages, channels I'm not in. Keys: `↑/↓` (`Ctrl-P/N`, `k/j`) move, `PgUp/PgDn`,
-`Home/End`, `Enter` jumps, `Esc`/`Ctrl-A`/`q` closes. **Enter** opens the channel (widening the loaded page
+`Home/End`, `Enter` jumps, `Esc`/`Alt-A`/`q` closes. **Enter** opens the channel (widening the loaded page
 if the message is old), opens the thread when the item is a reply, and selects the message (select mode).
 Every field is sanitized and the row is truncated to the width.
 

@@ -6,7 +6,7 @@ import tea "github.com/charmbracelet/bubbletea"
 const (
 	kQuit       = "ctrl+c"
 	kSwitcher   = "ctrl+k"
-	kActivity   = "ctrl+a"
+	kActivity   = "alt+a" // Ctrl-A stays the textarea's line start
 	kSidebar    = "ctrl+b"
 	kEnter      = "enter"
 	kEsc        = "esc"
@@ -47,7 +47,7 @@ var helpLines = [][2]string{
 	{"Enter", "send"},
 	{"Alt-Enter / Ctrl-J", "newline"},
 	{"Ctrl-K", "quick switcher"},
-	{"Ctrl-A, /activity", "mentions, replies, reactions, DMs"},
+	{"Alt-A, /activity", "mentions, replies, reactions, DMs"},
 	{"Alt-↑/↓, Ctrl-P/N", "previous / next channel"},
 	{"Alt-Shift-↑/↓", "previous / next unread"},
 	{"PgUp/PgDn, wheel", "scroll history"},
