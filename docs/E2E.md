@@ -174,7 +174,9 @@ only to devices they verified, the remaining devices get K via `key.share`; but 
 who has an active device, else `bad_request`; decided in step 5 review; a box to an unknown, non-roster or
 already-revoked device is `bad_request`, and `stale_epoch` is only for races: CAS, roster change, a
 boxed device revoked after the current head's `key.epoch`); losing RES after the
-winning `key.epoch` event; ≤ 1 rotate / chan / 10 s / user unless roster/devices changed. Search
+winning `key.epoch` event; ≤ 1 rotate / chan / 10 s / user and ≤ 1 / chan / 2 s, both waived only if a
+hash of (sorted roster ‖ sorted active device ids of roster users), stored per epoch at rotation time,
+differs now (not judged by what the bundle boxed: an unboxed device must not exempt). Search
 excludes e2e. Webhooks into e2e forbidden. Delete/edit scrub messages AND original event data.
 
 ### 13.6 Events

@@ -563,7 +563,18 @@ so non-members can't make the server parse 16 KiB):
 | no box goes to any other revoked device (its revoke came before the head the rotator built on) | `bad_request` |
 | no two boxes share an X25519 key | `bad_request` |
 | at least one box for every roster user who has an active device ("every member with a device needs at least one box") | `bad_request` |
-| ≤ 1 rotation per channel per user per 10 s, unless the current bundle's roster or boxed-device set differs from the current members/devices | `rate_limited` |
+| rate cap, below | `rate_limited` |
+
+Rate cap: with each epoch the server stores `state = H("tc-epoch-state-v1\x00"
+|| u32 len(roster) || roster ids as u64 || sorted active device ids of the
+roster users)` as of that rotation. When the state now equals the current
+epoch's stored state (nothing changed), a rotation is refused if the
+channel's last rotation was < 2 s ago (whoever made it) or the caller's last
+rotation of this channel was < 10 s ago. When it differs (a member joined,
+left or was disabled, or one of their devices was registered or revoked),
+neither cap applies. The comparison is with the server's record, not with
+what the current bundle boxed, so never-boxed devices don't exempt
+anyone. Epoch 1, and epochs stored before `state` existed, are uncapped.
 
 On success the server stores the bundle, sets `Channel.epoch`, appends a
 `key.epoch` event (actor = caller) and answers `{seq}`. Writes are
@@ -652,5 +663,6 @@ Ephemeral `key.need` and op/event `key.share`: `docs/E2E.md` §13.7.
   current epoch, roster or devices. Retryable after catching up.
 - Limits: EpochBundle `len(b) + len(sig)` ≤ 16 KiB and ≤ 128 boxes;
   `key.fetch` ≤ 256 epochs per call; ≤ 1 `key.rotate` per channel per user
-  per 10 s unless the roster or device set changed (plus the §9 write bucket).
+  per 10 s and ≤ 1 per channel per 2 s, both waived when the roster or its
+  active devices changed since the current epoch (§13.3; plus the §9 write bucket).
   Signed device objects ≤ 4 KiB (§13.2).

@@ -164,6 +164,7 @@ func TestEpochLimitsMatchIdentity(t *testing.T) {
 
 func TestKeyRotate(t *testing.T) {
 	forEachTransport(t, func(t *testing.T, ts *testServer) {
+		advance := manualClock(ts)
 		alice := ts.registerCaps(t, "alice", true, e2eCaps)
 		bob := ts.registerCaps(t, "bob", false, e2eCaps)
 		carol := ts.registerCaps(t, "carol", false, e2eCaps)
@@ -192,6 +193,7 @@ func TestKeyRotate(t *testing.T) {
 		carol.noKind(proto.KKeyEpoch, 100*time.Millisecond) // not a member
 		old.noKind(proto.KKeyEpoch, 50*time.Millisecond)    // member without e2e1
 
+		advance(rotateChanEveryMs * time.Millisecond) // nothing changed: past the channel cap
 		// Epoch 2 by bob, chained on epoch 1, with the channel's epoch updated.
 		e2 := bundle(t, b1, sid, ch.ID, 2, &e1, roster, b1, a1)
 		seq2 := bob.rotate(ch.ID, e2)
@@ -477,22 +479,28 @@ func TestKeyRotateRateCap(t *testing.T) {
 
 	e1 := bundle(t, a1, sid, ch.ID, 1, nil, roster, a1, b1)
 	alice.rotate(ch.ID, e1)
-	// Nothing changed: alice must wait 10 s, bob (another user) needn't.
+	// Nothing changed: alice must wait 10 s; bob (another user) only for
+	// the channel's 2 s.
 	e2 := bundle(t, a1, sid, ch.ID, 2, &e1, roster, a1, b1)
 	alice.fail(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: e2}, proto.ErrRateLimited)
-	advance(9 * time.Second)
+	e2b := bundle(t, b1, sid, ch.ID, 2, &e1, roster, a1, b1)
+	advance(1 * time.Second)
+	bob.fail(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: e2b}, proto.ErrRateLimited)
+	advance(8 * time.Second)
 	alice.fail(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: e2}, proto.ErrRateLimited)
-	e2 = bundle(t, b1, sid, ch.ID, 2, &e1, roster, a1, b1)
+	e2 = e2b
 	bob.rotate(ch.ID, e2)
 	e3 := bundle(t, b1, sid, ch.ID, 3, &e2, roster, a1, b1)
 	bob.fail(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: e3}, proto.ErrRateLimited)
-	advance(1 * time.Second)
+	advance(1 * time.Second) // alice's 10 s are up, the channel's 2 s aren't
 	e3 = bundle(t, a1, sid, ch.ID, 3, &e2, roster, a1, b1)
+	alice.fail(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: e3}, proto.ErrRateLimited)
+	advance(1 * time.Second)
 	alice.rotate(ch.ID, e3)
 
-	// A new device changes the device set: no wait.
+	// A new device changes the device set: no wait, boxed or not.
 	a3, _ := alice.registerDevice(ts)
-	e4 := bundle(t, a1, sid, ch.ID, 4, &e3, roster, a1, b1, a3)
+	e4 := bundle(t, a1, sid, ch.ID, 4, &e3, roster, a1, b1)
 	alice.rotate(ch.ID, e4)
 	// A revoked device too.
 	alice.ok(proto.OpDeviceRevoke, proto.DeviceRevokeArgs{Revoke: revokeBySSH(t, alice.signer, sid, alice.user.ID, a3.ID)}, nil)
@@ -507,6 +515,35 @@ func TestKeyRotateRateCap(t *testing.T) {
 	alice.fail(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: e7}, proto.ErrRateLimited)
 	advance(10 * time.Second)
 	alice.rotate(ch.ID, e7)
+}
+
+// The cap's exemption follows the server's record of the roster and
+// devices, not what bundles box: a member with a second device that is
+// never boxed can't use it to rotate without limit.
+func TestKeyRotateRateCapUnboxedDevice(t *testing.T) {
+	ts := startServer(t, "tcp")
+	advance := manualClock(ts)
+	alice := ts.registerCaps(t, "alice", true, e2eCaps)
+	bob := ts.registerCaps(t, "bob", false, e2eCaps)
+	alice.syncFresh()
+	bob.syncFresh()
+	sid := ts.sid()
+	ch := alice.createE2E("sec")
+	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: bob.user.ID}, nil)
+	a1, _ := alice.registerDevice(ts)
+	alice.registerDevice(ts) // a2: never boxed
+	b1, _ := bob.registerDevice(ts)
+	roster := []uint64{alice.user.ID, bob.user.ID}
+	head := bundle(t, a1, sid, ch.ID, 1, nil, roster, a1, b1)
+	alice.rotate(ch.ID, head)
+	for range 3 {
+		advance(3 * time.Second) // past the channel cap, not alice's
+		next := bundle(t, a1, sid, ch.ID, 2, &head, roster, a1, b1)
+		alice.fail(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: next}, proto.ErrRateLimited)
+	}
+	// A real change still goes through at once.
+	b2, _ := bob.registerDevice(ts)
+	alice.rotate(ch.ID, bundle(t, a1, sid, ch.ID, 2, &head, roster, a1, b1, b2))
 }
 
 func TestKeyFetch(t *testing.T) {
@@ -842,10 +879,10 @@ func TestBackfillSeqs(t *testing.T) {
 	sid := ts.sid()
 	ch := alice.createE2E("sec")
 	a1, _ := alice.registerDevice(ts)
-	a2, _ := alice.registerDevice(ts)
 	roster := []uint64{alice.user.ID}
 	e1 := bundle(t, a1, sid, ch.ID, 1, nil, roster, a1)
 	s1 := alice.rotate(ch.ID, e1)
+	a2, _ := alice.registerDevice(ts) // a change: no rate cap
 	s2 := alice.rotate(ch.ID, bundle(t, a1, sid, ch.ID, 2, &e1, roster, a1, a2))
 	var rs proto.SeqRes
 	alice.ok(proto.OpDeviceRevoke, proto.DeviceRevokeArgs{Revoke: revokeBySSH(t, alice.signer, sid, alice.user.ID, a2.ID)}, &rs)

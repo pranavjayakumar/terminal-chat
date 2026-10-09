@@ -1,13 +1,17 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -28,15 +32,20 @@ CREATE TABLE IF NOT EXISTS epochs (
 	by_user INTEGER NOT NULL,
 	time INTEGER NOT NULL, -- server clock, for the rotate rate cap
 	seq INTEGER NOT NULL DEFAULT 0, -- of its key.epoch event
+	state BLOB, -- epochState at rotation time, for the rate cap (NULL before it existed)
 	PRIMARY KEY (chan, epoch)
 );
 -- The rate cap looks up a user's last rotation under the write lock.
 CREATE INDEX IF NOT EXISTS epochs_by ON epochs(chan, by_user, time);
 `
 
-// rotateEveryMs: one key.rotate per channel per user per 10 s, unless the
-// roster or device set changed since the current epoch.
-const rotateEveryMs = 10_000
+// The rotate rate caps, both waived when the roster or its active devices
+// changed since the current epoch: one key.rotate per channel per user per
+// 10 s, and one per channel per 2 s whoever rotates.
+const (
+	rotateEveryMs     = 10_000
+	rotateChanEveryMs = 2_000
+)
 
 // migrateEpochs adds the epochs table, channels.e2e/epoch, epochs.seq and
 // devices.revoked_seq (the seq of the device.revoke event).
@@ -48,6 +57,7 @@ func migrateEpochs(db *sql.DB) error {
 		{"channels", "e2e", `INTEGER NOT NULL DEFAULT 0`},
 		{"channels", "epoch", `INTEGER NOT NULL DEFAULT 0`},
 		{"epochs", "seq", `INTEGER NOT NULL DEFAULT 0`},
+		{"epochs", "state", `BLOB`},
 		{"devices", "revoked_seq", `INTEGER`},
 	} {
 		if err := addColumn(db, c[0], c[1], c[2]); err != nil {
@@ -149,13 +159,16 @@ func backfillSeqs(db *sql.DB) error {
 func isE2EKind(kind string) bool { return isDeviceKind(kind) || kind == proto.KKeyEpoch }
 
 // epochHead is an encrypted channel's chain head: its current bundle (nil
-// at epoch 0), that bundle's chain hash and the seq of its key.epoch event.
+// at epoch 0), that bundle's chain hash, the seq of its key.epoch event,
+// when it was stored and the epochState then (nil for old rows).
 type epochHead struct {
 	e2e    bool
 	epoch  uint32
 	bundle *proto.Signed
 	hash   []byte
 	seq    uint64
+	time   int64
+	state  []byte
 }
 
 // chanEpoch returns ch's chain head.
@@ -167,8 +180,8 @@ func chanEpoch(ctx context.Context, q querier, ch uint64) (h epochHead, err erro
 		return
 	}
 	var raw []byte
-	if err = q.QueryRowContext(ctx, `SELECT bundle, hash, seq FROM epochs WHERE chan = ? AND epoch = ?`, ch, h.epoch).
-		Scan(&raw, &h.hash, &h.seq); err != nil {
+	if err = q.QueryRowContext(ctx, `SELECT bundle, hash, seq, time, state FROM epochs WHERE chan = ? AND epoch = ?`, ch, h.epoch).
+		Scan(&raw, &h.hash, &h.seq, &h.time, &h.state); err != nil {
 		return
 	}
 	h.bundle = new(proto.Signed)
@@ -245,17 +258,21 @@ func boxesEveryUser(eb identity.EpochBundle, owners map[e2ecrypto.DevID]uint64) 
 	return true
 }
 
-// sameBoxes reports whether eb boxes exactly the devices in devs.
-func sameBoxes(eb identity.EpochBundle, devs map[e2ecrypto.DevID][32]byte) bool {
-	if len(eb.Boxes) != len(devs) {
-		return false
+// epochState hashes what a rotation answers to: the sorted roster and the
+// sorted active devices of its users. Stored with each epoch for the
+// rotate rate cap.
+func epochState(roster []uint64, devs map[e2ecrypto.DevID][32]byte) [32]byte {
+	h := sha256.New()
+	h.Write([]byte("tc-epoch-state-v1\x00"))
+	h.Write(binary.BigEndian.AppendUint32(nil, uint32(len(roster)))) // count, then 8-byte ids, then 16-byte ids: unambiguous
+	for _, u := range roster {
+		h.Write(binary.BigEndian.AppendUint64(nil, u))
 	}
-	for _, bx := range eb.Boxes {
-		if _, ok := devs[bx.Dev]; !ok {
-			return false
-		}
+	ids := slices.SortedFunc(maps.Keys(devs), func(a, b e2ecrypto.DevID) int { return bytes.Compare(a[:], b[:]) })
+	for _, id := range ids {
+		h.Write(id[:])
 	}
-	return true
+	return [32]byte(h.Sum(nil))
 }
 
 // checkBoxes checks that every box goes to an active device (in devs) of a
@@ -390,20 +407,22 @@ func (s *Server) opKeyRotate(ctx context.Context, u proto.User, a proto.KeyRotat
 		}
 
 		now := s.now()
-		if head.bundle != nil {
-			old, err := identity.PeekEpochBundle(identity.Signed(*head.bundle))
-			if err != nil {
+		state := epochState(roster, devs)
+		// The caps apply unless the members or their active devices changed
+		// since the current epoch was made. Compared against what the server
+		// recorded then, not what the bundle boxed: otherwise a member with
+		// one never-boxed device could rotate without limit.
+		if head.bundle != nil && bytes.Equal(head.state, state[:]) {
+			if now-head.time < rotateChanEveryMs {
+				return nil, proto.Errf(proto.ErrRateLimited, "nothing changed since the channel's last rotation")
+			}
+			var last sql.NullInt64
+			if err := tx.QueryRowContext(ctx, `SELECT MAX(time) FROM epochs WHERE chan = ? AND by_user = ?`,
+				a.Chan, u.ID).Scan(&last); err != nil {
 				return nil, err
 			}
-			if slices.Equal(old.Roster, roster) && sameBoxes(old, devs) {
-				var last sql.NullInt64
-				if err := tx.QueryRowContext(ctx, `SELECT MAX(time) FROM epochs WHERE chan = ? AND by_user = ?`,
-					a.Chan, u.ID).Scan(&last); err != nil {
-					return nil, err
-				}
-				if last.Valid && now-last.Int64 < rotateEveryMs {
-					return nil, proto.Errf(proto.ErrRateLimited, "nothing changed since the last rotation")
-				}
+			if last.Valid && now-last.Int64 < rotateEveryMs {
+				return nil, proto.Errf(proto.ErrRateLimited, "nothing changed since your last rotation")
 			}
 		}
 
@@ -412,8 +431,8 @@ func (s *Server) opKeyRotate(ctx context.Context, u proto.User, a proto.KeyRotat
 			return nil, err
 		}
 		hash := e2ecrypto.ChainHash(a.Bundle.B)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO epochs (chan, epoch, bundle, hash, by_user, time, seq) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			a.Chan, eb.Epoch, proto.MustRaw(a.Bundle), hash[:], u.ID, now, ev.Seq); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO epochs (chan, epoch, bundle, hash, by_user, time, seq, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			a.Chan, eb.Epoch, proto.MustRaw(a.Bundle), hash[:], u.ID, now, ev.Seq, state[:]); err != nil {
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE channels SET epoch = ? WHERE id = ?`, eb.Epoch, a.Chan); err != nil {
