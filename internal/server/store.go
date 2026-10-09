@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS reads (
 	seq INTEGER NOT NULL,
 	PRIMARY KEY (user, chan)
 );
--- E2E devices (PROTOCOL.md §12.2). cert/endorse/revoked hold msgpack Signed.
+-- E2E devices (PROTOCOL.md §13.2). cert/endorse/revoked hold msgpack Signed.
 CREATE TABLE IF NOT EXISTS devices (
 	dev BLOB PRIMARY KEY,
 	user INTEGER NOT NULL REFERENCES users(id),
@@ -129,6 +129,10 @@ func openStore(path string) (*store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("creating schema: %w", err)
+	}
+	if err := migrateHooks(db); err != nil {
+		db.Close()
+		return nil, err
 	}
 	s := &store{db: db}
 	err = db.QueryRow(`SELECT v FROM meta WHERE k = 'server_id'`).Scan(&s.serverID)
@@ -245,11 +249,11 @@ func nullable(v uint64) any {
 	return int64(v)
 }
 
-const userCols = `id, name, display, admin, disabled, created`
+const userCols = `id, name, display, admin, disabled, created, bot`
 
 func scanUser(sc interface{ Scan(...any) error }) (proto.User, error) {
 	var u proto.User
-	err := sc.Scan(&u.ID, &u.Name, &u.Display, &u.Admin, &u.Disabled, &u.Created)
+	err := sc.Scan(&u.ID, &u.Name, &u.Display, &u.Admin, &u.Disabled, &u.Created, &u.Bot)
 	return u, err
 }
 
@@ -414,7 +418,7 @@ func isMember(ctx context.Context, q querier, ch, u uint64) (bool, error) {
 }
 
 // visibleEvents returns events in (since, h] that u may see (PROTOCOL.md §6
-// Visibility); device events only when e2e (§12).
+// Visibility); device events only when e2e (§13).
 func visibleEvents(ctx context.Context, q querier, u, since, h uint64, limit int, e2e bool) ([]proto.Event, error) {
 	rows, err := q.QueryContext(ctx, `
 		SELECT seq, kind, COALESCE(chan, 0), time, actor, data FROM events e

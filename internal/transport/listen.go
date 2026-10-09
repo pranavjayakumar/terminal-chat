@@ -35,6 +35,7 @@ func quicConfig() *quic.Config {
 }
 
 type listenOpts struct {
+	ListenOpts
 	noQUIC           bool // tests: simulate blocked UDP
 	handshakeTimeout time.Duration
 }
@@ -44,6 +45,7 @@ type listener struct {
 	quic    *quic.Listener // nil if disabled
 	tlsConf *tls.Config
 	timeout time.Duration
+	http    *connListener // nil unless ListenOpts.HTTP
 
 	conns     chan Conn
 	ctx       context.Context // cancelled on Close
@@ -58,6 +60,11 @@ func Listen(addr string, cert tls.Certificate) (Listener, error) {
 	return listen(addr, cert, listenOpts{})
 }
 
+// ListenWith is Listen with options.
+func ListenWith(addr string, cert tls.Certificate, o ListenOpts) (Listener, error) {
+	return listen(addr, cert, listenOpts{ListenOpts: o})
+}
+
 func listen(addr string, cert tls.Certificate, o listenOpts) (Listener, error) {
 	if o.handshakeTimeout == 0 {
 		o.handshakeTimeout = handshakeTimeout
@@ -67,17 +74,21 @@ func listen(addr string, cert tls.Certificate, o listenOpts) (Listener, error) {
 		MinVersion:   tls.VersionTLS13,
 		NextProtos:   []string{proto.ALPN},
 	}
+	tcpConf := tcpConfig(tlsConf, o.ListenOpts)
 	tcpLn, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("listening on tcp %s: %w", addr, err)
 	}
 	l := &listener{
 		tcp:     tcpLn,
-		tlsConf: tlsConf,
+		tlsConf: tcpConf,
 		timeout: o.handshakeTimeout,
 		conns:   make(chan Conn),
 	}
 	l.ctx, l.cancel = context.WithCancel(context.Background())
+	if o.HTTP {
+		l.http = newConnListener(tcpLn.Addr(), l.ctx.Done())
+	}
 	if !o.noQUIC {
 		host, _, err := net.SplitHostPort(addr)
 		if err != nil {
@@ -166,7 +177,9 @@ func (l *listener) acceptTCP() {
 				raw.Close()
 				return
 			}
-			l.deliver(c)
+			if c != nil {
+				l.deliver(c)
+			}
 		}()
 	}
 }
@@ -178,10 +191,16 @@ func (l *listener) handshakeTCP(raw net.Conn) (Conn, error) {
 	if err := tc.HandshakeContext(ctx); err != nil {
 		return nil, err
 	}
-	if tc.ConnectionState().NegotiatedProtocol != proto.ALPN {
-		return nil, errors.New("client did not negotiate ALPN " + proto.ALPN)
+	switch p := tc.ConnectionState().NegotiatedProtocol; {
+	case p == proto.ALPN:
+		return &tcpConn{Conn: tc}, nil
+	case l.http != nil && (p == ALPNHTTP || p == ""):
+		// No ALPN can't be a tc client (they always offer tc/1), and many
+		// HTTP clients don't send any.
+		l.http.deliver(tc)
+		return nil, nil
 	}
-	return &tcpConn{Conn: tc}, nil
+	return nil, errors.New("client did not negotiate ALPN " + proto.ALPN)
 }
 
 func (l *listener) acceptQUIC() {

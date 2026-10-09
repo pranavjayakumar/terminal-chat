@@ -335,6 +335,7 @@ type renderer struct {
 	st   *styles
 	me   proto.User
 	name func(id uint64) string
+	bot  func(id uint64) bool // webhook authors get a dim "bot" tag
 }
 
 func (r *renderer) userName(id uint64) string {
@@ -368,10 +369,15 @@ func (r *renderer) message(m client.Message, w int, header bool) []string {
 		ts := r.st.time.Render(time.UnixMilli(m.Time).Local().Format("15:04"))
 		name := r.userName(m.Author)
 		as := r.st.author(m.Author)
+		isBot := r.bot != nil && r.bot(m.Author)
 		if lay.stacked {
-			out = append(out, truncate(ts+" "+as.Render(name), w))
+			label := as.Render(name)
+			if isBot {
+				label += r.st.dim.Render(botTag)
+			}
+			out = append(out, truncate(ts+" "+label, w))
 		} else {
-			first := ts + " " + as.Render(truncate(name, lay.nameW)) + spaces(lay.nameW-min(strWidth(name), lay.nameW)) + "  "
+			first := ts + " " + r.nameCell(as, name, lay.nameW, isBot) + "  "
 			out = append(out, first+body[0])
 			body = body[1:]
 		}

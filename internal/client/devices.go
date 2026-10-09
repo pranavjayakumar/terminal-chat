@@ -21,7 +21,7 @@ import (
 	"github.com/skailama/tc/internal/proto"
 )
 
-// Devices (PROTOCOL.md §12.2).
+// Devices (PROTOCOL.md §13.2).
 //
 // Everything stored here comes from the server and is NOT trusted: rows are
 // indexed by the unverified claims inside each object, and all distinct

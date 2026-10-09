@@ -1,5 +1,5 @@
 // Package e2ecrypto implements the cryptographic primitives of tc's end-to-end
-// encryption (docs/E2E.md, "Review r1 → r2", PROTOCOL §12.3/§12.4).
+// encryption (docs/E2E.md, "Review r1 → r2", PROTOCOL §13.3/§13.4).
 //
 // It is pure: no I/O beyond the caller-supplied randomness, no global state and
 // no imports of other tc packages. Higher layers decide which keys to trust; this
@@ -13,7 +13,7 @@ import (
 	"errors"
 )
 
-// Limits from §12.8.
+// Limits from §13.8.
 const (
 	MaxEncSize        = 64<<10 + 1<<10 // enc ≤ 64 KiB + 1 KiB
 	MaxDeviceCertSize = 4 << 10

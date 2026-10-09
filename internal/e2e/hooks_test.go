@@ -1,0 +1,75 @@
+package e2e
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/skailama/tc/internal/transport"
+)
+
+func TestWebhook(t *testing.T) {
+	s, addr := startServer(t, t.TempDir(), "127.0.0.1:0")
+	alice := login(t, s, addr, "alice", false)
+	bob := login(t, s, addr, "bob", false)
+	eventually(t, "online", func() bool { return alice.online() && bob.online() && alice.channel("general") != 0 })
+	gen := alice.channel("general")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	nh, err := alice.CreateHook(ctx, gen, "ci")
+	if err != nil {
+		t.Fatal(err)
+	}
+	url := nh.URL
+	// The client-built command reads the URL from the environment (L3).
+	if !strings.HasPrefix(url, "https://"+addr+"/hooks/") || nh.Name != "ci-bot" ||
+		!strings.Contains(nh.Curl, "# export TC_HOOK_URL='"+url+"'\n") || !strings.Contains(nh.Curl, `"$TC_HOOK_URL"`) {
+		t.Fatalf("hook %+v", nh)
+	}
+
+	hc := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: transport.HTTPSConfig(s.HTTPPin())}}
+	resp, err := hc.Post(url, "application/json", strings.NewReader(`{"text":"build #7 passed, branch fix-@bob"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("POST: %d %s", resp.StatusCode, body)
+	}
+
+	eventually(t, "bob sees the bot message", func() bool {
+		for _, m := range bob.Messages(gen, 50) {
+			if m.Body == "build #7 passed, branch fix-@bob" {
+				a := bob.User(m.Author)
+				return a.Name == "ci-bot" && a.Bot
+			}
+		}
+		return false
+	})
+	// Unread, but a bot's @bob is not a mention (L5).
+	if cv, _ := bob.Channel(gen); cv.Unread == 0 || cv.Mention {
+		t.Fatalf("bob's view of general: %+v", cv)
+	}
+
+	hooks, err := bob.ListHooks(ctx)
+	if err != nil || len(hooks) != 1 || hooks[0].Name != "ci-bot" {
+		t.Fatalf("ListHooks: %v %+v", err, hooks)
+	}
+	// Any member of the channel may revoke it.
+	if err := bob.DeleteHook(ctx, hooks[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	resp, err = hc.Post(url, "text/plain", strings.NewReader("again"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 404 {
+		t.Fatalf("after delete: %d", resp.StatusCode)
+	}
+}

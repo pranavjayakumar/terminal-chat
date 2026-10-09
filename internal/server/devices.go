@@ -14,7 +14,7 @@ import (
 	"github.com/skailama/tc/internal/proto"
 )
 
-// Devices (PROTOCOL.md §12.2). The server checks certs so an honest server
+// Devices (PROTOCOL.md §13.2). The server checks certs so an honest server
 // turns garbage away early, but clients never rely on these checks.
 
 func (s *Server) sid() e2ecrypto.ServerID {

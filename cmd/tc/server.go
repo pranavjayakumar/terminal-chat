@@ -30,8 +30,8 @@ func cmdServer(args []string) error {
 	fs.Parse(args)
 
 	if *public != "" {
-		if _, _, err := net.SplitHostPort(*public); err != nil {
-			return fmt.Errorf("--public must be host:port: %w", err)
+		if err := server.ValidPublicAddr(*public); err != nil {
+			return fmt.Errorf("--public: %w", err)
 		}
 		if err := os.MkdirAll(*data, 0o700); err != nil {
 			return err
@@ -53,7 +53,7 @@ func cmdServer(args []string) error {
 		return err
 	}
 	defer srv.Close()
-	ln, err := transport.Listen(*listen, srv.Cert())
+	ln, err := transport.ListenWith(*listen, srv.Cert(), transport.ListenOpts{HTTP: true, HTTPCert: srv.HTTPCert()})
 	if err != nil {
 		return err
 	}

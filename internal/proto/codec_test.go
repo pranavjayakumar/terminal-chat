@@ -214,7 +214,7 @@ func TestDeviceTypesRoundTrip(t *testing.T) {
 	}
 }
 
-// FuzzDevices decodes arbitrary msgpack as every §12 device type. Signed.B
+// FuzzDevices decodes arbitrary msgpack as every §13 device type. Signed.B
 // must survive a decode/encode/decode cycle byte for byte: signatures cover
 // it verbatim.
 func FuzzDevices(f *testing.F) {

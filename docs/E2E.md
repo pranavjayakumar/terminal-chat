@@ -108,19 +108,19 @@ Libraries (all pure Go, keeps `CGO_ENABLED=0`): `crypto/ecdh`, `crypto/ed25519`,
 - Webhooks into e2e channels → `forbidden`. Server search excludes e2e; client FTS instead.
 - **M1 bug found:** delete/edit never scrub `events.data`, so old bodies replay on sync (PR 0).
 
-## Protocol §12 (to land in PROTOCOL.md with the protocol PRs)
+## Protocol §13 (to land in PROTOCOL.md with the protocol PRs)
 
-### 12.1 Signed objects
+### 13.1 Signed objects
 `Signed = {b: bin, sig: bin}`; sig over `context || b`; verify before decoding b; H = SHA-256; big-endian.
 
-### 12.2 Devices
+### 13.2 Devices
 - `DeviceCert.b = {v:1, server_id: bin16, user: u64, dev: bin16, x25519: bin32, ed25519: bin32, ssh: bin, created: i64}`;
   sig = SSH signature by `ssh` over `"tc-device-v1\x00" || b` (§4 algorithm rules; sk-* needs UP flag).
 - `KeyEndorse.b = {v:1, server_id, user, new_ssh: bin, time}`; sig by an endorsed SSH key, context `"tc-endorse-v1\x00"`.
 - `DeviceRevoke.b = {v:1, server_id, user, dev, time}`; sig by an endorsed SSH key (`"tc-revoke-v1\x00"`) or
   Ed25519 of another non-revoked device of the user (`"tc-revoke-dev-v1\x00"`).
 
-### 12.3 Epoch bundles
+### 13.3 Epoch bundles
 ```
 EpochBundle.b = {v:1, server_id, chan: u64, epoch: u32 (first = 1), prev: bin32 (H(prev b), 0 for 1),
   roster: [u64] sorted distinct, by: bin16 (rotator dev), time: i64, kc: bin32, eph: bin32,
@@ -134,7 +134,7 @@ back = nonce24 || XChaCha20-Poly1305(HKDF(K, "tc-back-v1"), nonce, K_prev, AD = 
 Client validity: sig; `by` is a verified device of a previous-roster user (epoch 1: creator / any DM
 member); chain extends pinned head (lower/forked → alarm); K matches kc; boxes only to verified devices.
 
-### 12.4 Encrypted payload
+### 13.4 Encrypted payload
 ```
 enc = 0x01 || epoch(u32) || eh(16) || dev(16) || nonce(24) || ct || sig(64)
 mk  = HKDF(K_epoch, info "tc-msg-v1" || server_id || chan || epoch)
@@ -147,7 +147,7 @@ Accept: sig by a verified device of the author; t matches op; thread_ref matches
 and higher v; first mid wins. Decrypted text must pass §10 checks. Undecryptable events are applied
 (stored as ciphertext, last_seq advances) and decrypted when keys arrive.
 
-### 12.5 Ops (cap `e2e1`)
+### 13.5 Ops (cap `e2e1`)
 | op | args | data |
 |---|---|---|
 | `device.register` | `{cert: Signed, endorse?: Signed}` | `{seq}` |
@@ -170,12 +170,12 @@ non-disabled members, boxes only for registered non-revoked roster devices; losi
 winning `key.epoch` event; ≤ 1 rotate / chan / 10 s / user unless roster/devices changed. Search
 excludes e2e. Webhooks into e2e forbidden. Delete/edit scrub messages AND original event data.
 
-### 12.6 Events
+### 13.6 Events
 `device.new {cert, endorse?}` (all) · `device.revoke {revoke}` (all) · `key.epoch {bundle}` (members at
 seq; after chan.join, after chan.leave) · `key.share` (members) · `msg.*`/`react.*` gain `enc?`.
 `Channel += {e2e, epoch}`; `Message += {enc?}` (body "" when enc). Snapshot += `devs`, `revoked`, `keys`.
 
-### 12.7–12.8
+### 13.7–13.8
 Ephemeral `key.need {chan, epoch, dev}` (≤ 1/chan/30 s) → members answer with `key.share`.
 Error `stale_epoch` (retryable, re-encrypt with the SAME nonce). Optional BYE `upgrade_required`.
 Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle ≤ 16 KiB (≤ 128 boxes).

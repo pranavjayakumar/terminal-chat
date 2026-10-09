@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"slices"
 	"testing"
 	"time"
 
@@ -97,7 +98,7 @@ func TestDeviceLimitsMatchE2ECrypto(t *testing.T) {
 func TestWelcomeAdvertisesE2E(t *testing.T) {
 	ts := startServer(t, "tcp")
 	alice := ts.register(t, "alice", true)
-	if len(alice.welcome.Caps) != 1 || alice.welcome.Caps[0] != proto.CapE2E {
+	if !slices.Contains(alice.welcome.Caps, proto.CapHooks) || !slices.Contains(alice.welcome.Caps, proto.CapE2E) {
 		t.Fatalf("welcome caps = %v", alice.welcome.Caps)
 	}
 }

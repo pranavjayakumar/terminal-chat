@@ -29,13 +29,14 @@ internal/transport/  QUIC + TLS-over-TCP listeners/dialers, Conn interface, cert
 internal/identity/   SSH key loading, ssh-agent signing, auth signature payloads
 internal/server/     hub (sessions, fan-out), handlers, auth, store (SQLite)
 internal/client/     connection manager, reconnect, outbox, local cache (SQLite), event apply
+internal/trust/      E2E trust store TC_HOME/e2e.db (device keys, pins, devices, chain heads)
 internal/tui/        Bubble Tea UI
 internal/sanitize/   terminal-safe text rendering
 internal/e2e/        real client against real server over loopback
 docs/PROTOCOL.md     wire protocol (source of truth)
 ```
 
-Dependency direction: `tui → client → proto/transport/identity`; `server → proto/transport/identity`.
+Dependency direction: `tui → client → proto/transport/identity/trust`, `trust → e2ecrypto`; `server → proto/transport/identity`.
 `client` and `server` never import each other. `proto` imports nothing internal.
 
 ## Stack

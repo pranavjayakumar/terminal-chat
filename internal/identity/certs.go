@@ -18,7 +18,7 @@ const CtxRevokeDev = e2ecrypto.CtxRevokeDev
 
 const signedVersion = 1
 
-// MaxSignedSize bounds len(b)+len(sig) of every object here (§12.8 DeviceCert ≤ 4 KiB).
+// MaxSignedSize bounds len(b)+len(sig) of every object here (§13.8 DeviceCert ≤ 4 KiB).
 const MaxSignedSize = e2ecrypto.MaxDeviceCertSize
 
 var (
@@ -28,7 +28,7 @@ var (
 	ErrWrongKey = errors.New("identity: embedded SSH key differs from verifying key")
 )
 
-// Signed is a signed object on the wire: sig over context || b (§12.1).
+// Signed is a signed object on the wire: sig over context || b (§13.1).
 // B is kept verbatim; it is never re-encoded before verification.
 type Signed struct {
 	B   []byte `msgpack:"b"`

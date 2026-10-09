@@ -44,6 +44,7 @@ type Server struct {
 	cert tls.Certificate
 	pin  string
 	log  *slog.Logger
+	hk   *hookState
 
 	// mu serializes every write transaction together with its fan-out, so
 	// sessions observe events in seq order and sync can take an exact head.
@@ -65,6 +66,15 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
+	}
+	if cfg.PublicAddr != "" {
+		if err := ValidPublicAddr(cfg.PublicAddr); err != nil {
+			return nil, err
+		}
+		if host, _, _ := net.SplitHostPort(cfg.PublicAddr); host == "" {
+			cfg.Logger.Warn("public address has no host; webhook URLs will use localhost. Pass --public host:port so teammates can reach them",
+				"public", cfg.PublicAddr)
+		}
 	}
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("creating data dir: %w", err)
@@ -99,6 +109,10 @@ func New(cfg Config) (*Server, error) {
 		limits:   map[uint64]*bucket{},
 		wlimits:  map[uint64]*bucket{},
 		disabled: map[uint64]bool{},
+	}
+	if s.hk, err = newHookState(cfg.DataDir, func() time.Time { return s.cfg.Now() }); err != nil {
+		st.close()
+		return nil, err
 	}
 	if err := s.loadCache(); err != nil {
 		st.close()
@@ -287,6 +301,9 @@ func (s *Server) ephemeralLocked(e proto.Ephemeral, to map[uint64]bool, from *se
 func (s *Server) Serve(ctx context.Context, ln transport.Listener) error {
 	var wg sync.WaitGroup
 	defer wg.Wait()
+	if hl := transport.HTTPListener(ln); hl != nil {
+		defer s.serveHTTP(ctx, hl)()
+	}
 	var connMu sync.Mutex
 	conns := map[transport.Conn]struct{}{}
 	stopped := false
