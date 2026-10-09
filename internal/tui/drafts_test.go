@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
 )
 
@@ -311,5 +312,57 @@ func TestRestoredDraftIsSanitized(t *testing.T) {
 	press(m, "ctrl+n") // general → secret
 	if got := m.input.Value(); strings.ContainsAny(got, "\x1b\a") || !strings.HasPrefix(got, "other") {
 		t.Fatalf("second draft = %q", got)
+	}
+}
+
+// Another tc process on the same cache wrote a draft after this one started.
+func TestDraftWrittenByAnotherProcessIsPickedUp(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	f.SetDraft(13, 0, "typed in the other pane\u202e") // plus a bidi override, to be dropped
+	press(m, "ctrl+n") // general → secret
+	if m.active != 13 || m.input.Value() != "typed in the other pane" {
+		t.Fatalf("in %d input %q", m.active, m.input.Value())
+	}
+}
+
+// A slot with unsaved local changes is not overwritten by what the cache has.
+func TestDraftWithUnsavedChangesIsNotReplacedByTheCache(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	key := draftKey{13, 0}
+	m.setDraft(key, "local, not saved yet")
+	f.SetDraft(13, 0, "remote")
+	press(m, "ctrl+n") // into the slot
+	if m.input.Value() != "local, not saved yet" {
+		t.Fatalf("input = %q", m.input.Value())
+	}
+	m.setDraft(draftKey{10, 0}, "also local")
+	f.SetDraft(10, 0, "remote 2")
+	m.Update(updateMsg(client.Update{Channels: true}))
+	if got := m.drafts[draftKey{10, 0}]; got != "also local" {
+		t.Fatalf("refresh replaced unsaved changes: %q", got)
+	}
+}
+
+func TestDraftMarksFollowTheCacheOnChannelUpdates(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	if row := sidebarRow(t, checkView(t, m, "start"), "secret"); strings.Contains(row, "✎") {
+		t.Fatalf("mark before any draft: %q", row)
+	}
+	f.SetDraft(13, 0, "from elsewhere")
+	m.Update(updateMsg(client.Update{Channels: true}))
+	if row := sidebarRow(t, checkView(t, m, "written"), "secret"); !strings.Contains(row, "✎") {
+		t.Fatalf("no mark for a draft written by another process: %q", row)
+	}
+	f.SetDraft(13, 0, "")
+	m.Update(updateMsg(client.Update{Channels: true}))
+	if row := sidebarRow(t, checkView(t, m, "cleared"), "secret"); strings.Contains(row, "✎") {
+		t.Fatalf("mark stays after the draft was removed: %q", row)
+	}
+	// The draft being typed is never overwritten by a refresh.
+	typeVia(m, "typing now")
+	f.SetDraft(10, 0, "stale")
+	m.Update(updateMsg(client.Update{Channels: true}))
+	if m.input.Value() != "typing now" || m.drafts[m.dk] != "typing now" {
+		t.Fatalf("input %q draft %q", m.input.Value(), m.drafts[m.dk])
 	}
 }

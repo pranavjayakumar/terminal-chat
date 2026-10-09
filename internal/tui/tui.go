@@ -41,6 +41,7 @@ type Backend interface {
 	DiscardFailed(local int64) error
 	MarkRead(ch, seq uint64) error
 	Drafts() []client.Draft
+	Draft(ch, thread uint64) string
 	SetDraft(ch, thread uint64, body string) error
 	Highlights() []string
 	AddHighlight(word string) (bool, error)

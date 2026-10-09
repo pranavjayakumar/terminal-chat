@@ -38,6 +38,39 @@ func (m *Model) loadDrafts() {
 	}
 }
 
+// freshDraft re-reads key's draft from the cache unless it has unsaved
+// changes here: another tc process on the same cache may have written it
+// since this one started. The cache is untrusted input, hence sanitize.
+func (m *Model) freshDraft(key draftKey) string {
+	if m.draftDirty[key] || key.ch == 0 {
+		return m.drafts[key]
+	}
+	if d := sanitize.Text(m.c.Draft(key.ch, key.root)); strings.TrimSpace(d) != "" {
+		m.drafts[key] = d
+	} else {
+		delete(m.drafts, key)
+	}
+	return m.drafts[key]
+}
+
+// refreshDrafts re-reads every draft except the one in the input and the
+// ones with unsaved changes, so the ✎ marks follow other processes.
+func (m *Model) refreshDrafts() {
+	seen := map[draftKey]bool{}
+	for _, d := range m.c.Drafts() {
+		key := draftKey{d.Chan, d.Thread}
+		seen[key] = true
+		if key != m.dk && !m.draftDirty[key] && strings.TrimSpace(d.Body) != "" {
+			m.drafts[key] = sanitize.Text(d.Body)
+		}
+	}
+	for key := range m.drafts {
+		if !seen[key] && key != m.dk && !m.draftDirty[key] {
+			delete(m.drafts, key)
+		}
+	}
+}
+
 // syncDraft keeps the input and the drafts in step. It runs after every
 // Update: when the pane the input acts on changed (channel switch, thread
 // opened or closed) the text moves to the slot it was typed in and the new
@@ -56,7 +89,7 @@ func (m *Model) syncDraft() {
 		prev := m.dk
 		m.setDraft(prev, val)
 		m.dk = key
-		if d := m.drafts[key]; d != "" || prev.ch != 0 {
+		if d := m.freshDraft(key); d != "" || prev.ch != 0 {
 			m.input.SetValue(d)
 			m.layoutInput()
 		} else {

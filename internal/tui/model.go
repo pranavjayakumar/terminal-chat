@@ -792,6 +792,9 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 			cmds = append(cmds, m.fetchHistory(m.active))
 		}
 	}
+	if u.Reset || u.Channels {
+		m.refreshDrafts()
+	}
 	if u.Reset {
 		m.reloadAll()
 		if m.mode == modeActivity {

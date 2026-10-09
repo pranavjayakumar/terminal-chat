@@ -214,6 +214,8 @@ func (f *fakeClient) Drafts() []client.Draft {
 	return out
 }
 
+func (f *fakeClient) Draft(ch, thread uint64) string { return f.draft(ch, thread) }
+
 func (f *fakeClient) SetDraft(ch, thread uint64, body string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
