@@ -100,9 +100,12 @@ func highlightModel(t *testing.T, w, h int) (*Model, *fakeClient) {
 	return m, f
 }
 
-// markedLines returns which of the pane's message texts carry the mention
-// marker in their gutter.
-func markedLines(m *Model) []string {
+// markedLines returns which of the pane's message texts carry a mention or
+// keyword marker in their gutter.
+func markedLines(m *Model) []string { return gutterLines(m, "▎", "*") }
+
+// gutterLines returns the lines whose gutter is one of marks, without it.
+func gutterLines(m *Model, marks ...string) []string {
 	lines, owner := m.paneLines(&m.main, m.dims().msgW)
 	var out []string
 	for i, l := range lines {
@@ -110,8 +113,10 @@ func markedLines(m *Model) []string {
 			continue
 		}
 		p := ansi.Strip(l)
-		if strings.HasPrefix(p, "▎") {
-			out = append(out, strings.TrimSpace(p))
+		for _, mark := range marks {
+			if strings.HasPrefix(p, mark) {
+				out = append(out, strings.TrimSpace(strings.TrimPrefix(p, mark)))
+			}
 		}
 	}
 	return out
@@ -233,5 +238,38 @@ func TestUnhighlightChecksTheFreshList(t *testing.T) {
 	submitCmd(m, "/unhighlight deploy")
 	if !m.noticeErr || !strings.Contains(m.notice, "isn't a highlight word") {
 		t.Fatalf("removing a word that is gone: err=%v %q", m.noticeErr, m.notice)
+	}
+}
+
+// An @mention keeps the bar; a keyword shows "*" (both still count as
+// mentions for the sidebar and notifications).
+func TestHighlightGutterIsAsteriskNotMentionBar(t *testing.T) {
+	m, _ := highlightModel(t, 100, 50)
+	bars := strings.Join(gutterLines(m, "▎"), "\n")
+	stars := strings.Join(gutterLines(m, "*"), "\n")
+	if !strings.Contains(stars, "Deploy is broken") || strings.Contains(bars, "Deploy is broken") {
+		t.Fatalf("keyword message: bars\n%s\nstars\n%s", bars, stars)
+	}
+	if !strings.Contains(bars, "can you look?") || strings.Contains(stars, "can you look?") {
+		t.Fatalf("@mention: bars\n%s\nstars\n%s", bars, stars)
+	}
+	// Mention and keyword in one message: the stronger signal wins.
+	x := client.Message{Message: proto.Message{ID: 160, Chan: 10, Author: 2, Body: "@alice the deploy"}}
+	if got := ansi.Strip(m.concernMark(x.Body)); got != "▎" {
+		t.Fatalf("mention + keyword = %q", got)
+	}
+}
+
+func TestHighlightIgnoresFencedCode(t *testing.T) {
+	m, _ := highlightModel(t, 100, 50)
+	fenced := "log:\n```\ndeploy step failed\n```"
+	if got := ansi.Strip(m.concernMark(fenced)); got != " " {
+		t.Fatalf("gutter for a keyword in a code block = %q", got)
+	}
+	if m.shouldNotify(proto.Message{ID: 700, Chan: 11, Author: 2, Body: fenced}) {
+		t.Error("a keyword in a code block notifies")
+	}
+	if !m.shouldNotify(proto.Message{ID: 701, Chan: 11, Author: 2, Body: "deploy?\n" + fenced}) {
+		t.Error("a keyword in prose next to a code block doesn't notify")
 	}
 }

@@ -92,8 +92,8 @@ func (m *Model) paneLines(p *pane, w int) ([]string, []int) {
 		switch {
 		case i == sel:
 			gutter = m.st.selMark.Render("▌")
-		case x.Author != m.me.ID && !x.Deleted && !m.users[x.Author].Bot && m.concernsMe(x.Body):
-			gutter = m.st.mentionMark.Render("▎")
+		case x.Author != m.me.ID && !x.Deleted && !m.users[x.Author].Bot:
+			gutter = m.concernMark(x.Body)
 		}
 		for _, l := range m.rc.get(&m.r, x, cw, header) {
 			lines = append(lines, gutter+l)

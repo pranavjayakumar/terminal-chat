@@ -106,6 +106,18 @@ func (m *Model) concernsMe(body string) bool {
 	return mentionsMe(body, m.me.Name) || client.Highlighted(body, m.highlights)
 }
 
+// concernMark is the log gutter for a message by someone else: "▎" for an
+// @mention, "*" when only a highlight word matched, blank otherwise.
+func (m *Model) concernMark(body string) string {
+	switch {
+	case mentionsMe(body, m.me.Name):
+		return m.st.mentionMark.Render("▎")
+	case client.Highlighted(body, m.highlights):
+		return m.st.mentionMark.Render("*")
+	}
+	return " "
+}
+
 func joinWords(ss []string) string {
 	out := make([]string, len(ss))
 	for i, s := range ss {
