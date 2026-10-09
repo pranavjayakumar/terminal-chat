@@ -744,7 +744,9 @@ The chain link is about the signed bundle, not its keys: a bundle that
 verifies and whose `prev` is the pinned head is accepted and becomes the
 new head even if its box to this device is missing, fails to open or
 fails `kc`. The client then has no K for that epoch and recovers it via
-`key.need` / `key.share` (§13.7); it MUST NOT treat this as a fork. Only a
+`key.need` / `key.share` (§13.7); it MUST NOT treat this as a fork. Until
+it has K the client keeps the bundle (e.g. its device keys weren't loaded
+yet) and retries its box on later passes. Only a
 second, different bundle for the same epoch (or one that doesn't chain to
 the pinned head) is a fork.
 

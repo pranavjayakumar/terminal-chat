@@ -814,8 +814,22 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 				if proto.Unmarshal(o.raw, &b) != nil {
 					continue
 				}
-				if ep, ok, _ := ts.Epoch(sid, ch.ID, o.epoch); ok && e2ecrypto.ChainHash(b.B) != ep.Hash {
+				ep, ok, _ := ts.Epoch(sid, ch.ID, o.epoch)
+				if ok && e2ecrypto.ChainHash(b.B) != ep.Hash {
 					return c.alarm(sid, ch.ID, fmt.Sprintf("fork: a second bundle for epoch %d", o.epoch))
+				}
+				if ok && ep.Key == nil {
+					// The verified bundle, kept because we had no K from it
+					// yet (no device keys then, or the box didn't open): try
+					// again, and keep it until we have K one way or another.
+					if eb, err := identity.PeekEpochBundle(identity.Signed(b)); err == nil {
+						if k := openBox(sid, eb, s.myDevice()); k != nil && ts.SetEpochKey(sid, ch.ID, o.epoch, *k) == nil {
+							changed = true
+						}
+					}
+					if ep, _, _ = ts.Epoch(sid, ch.ID, o.epoch); ep.Key == nil {
+						continue
+					}
 				}
 				// Only rows we checked: one arriving meanwhile gets checked next pass.
 				c.db.Exec(`DELETE FROM epochs WHERE chan = ? AND epoch = ? AND hash = ?`, ch.ID, o.epoch, o.hash)
@@ -899,6 +913,9 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 		// Only a verified bundle moves the cached channel epoch (the server
 		// sends no chan.update for rotations); unverified ones never do.
 		c.db.Exec(`UPDATE chans SET epoch = max(epoch, ?) WHERE id = ?`, next, ch.ID)
+		if e.Key == nil {
+			continue // keep the bundle: our box may open once we have device keys
+		}
 		for _, cb := range cands {
 			c.db.Exec(`DELETE FROM epochs WHERE chan = ? AND epoch = ? AND hash = ?`, ch.ID, next, cb.hash)
 		}

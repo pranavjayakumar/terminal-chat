@@ -1069,3 +1069,48 @@ func TestE2EKeyNeedFormerMember(t *testing.T) {
 		t.Fatal("current member not answered")
 	}
 }
+
+// A verified bundle stays cached until we have its K: without device keys
+// (or with a box that doesn't open) the head moves but the bundle is kept,
+// and a later pass with our keys opens our box from it.
+func TestE2EBundleKeptUntilKey(t *testing.T) {
+	fs, c := e2eClient(t)
+	c.timing.keyNeed = time.Hour // no periodic passes: we drive syncChannel
+	run(t, c)
+	b1 := newPeer(t, bob, nil)
+	f := startE2E(t, fs, proto.Snapshot{Chans: []proto.Channel{dmChan(0)}, Devs: []proto.Device{{Cert: b1.cert}}}, proto.DevicesListRes{})
+	me := f.myKeys(c)
+	waitFor(t, "online", online(c))
+	k1 := newK(t)
+	e1 := mkBundle(t, b1.dev, dm, 1, nil, []uint64{alice, bob}, k1, nil, me, b1.dev)
+	// Hold e2eMu throughout so the real worker can't take the bundle in between.
+	c.e2eMu.Lock()
+	defer c.e2eMu.Unlock()
+	if err := c.tx(func(tx *sql.Tx) error { return c.storeBundle(tx, dm, e1, 30) }); err != nil {
+		t.Fatal(err)
+	}
+	sid := testSID()
+	ch, _, _ := getChan(c.db, dm)
+	noKeys := &session{welcome: proto.Welcome{ServerID: serverID}, done: make(chan struct{}), devReady: make(chan struct{})}
+	pass := func(s *session) { c.syncChannel(context.Background(), s, sid, ch) }
+	pass(noKeys)
+	if headOf(t, c, dm) != 1 {
+		t.Fatal("head didn't move")
+	}
+	if ep, _, _ := c.Trust().Epoch(sid, dm, 1); ep.Key != nil {
+		t.Fatal("K without device keys?")
+	}
+	if n := count(t, c, "epochs"); n != 1 {
+		t.Fatalf("bundle dropped before we had K (%d cached)", n)
+	}
+	withKeys := &session{welcome: proto.Welcome{ServerID: serverID}, done: make(chan struct{}), devReady: make(chan struct{})}
+	withKeys.dev.Store(me)
+	pass(withKeys)
+	if ep, _, _ := c.Trust().Epoch(sid, dm, 1); ep.Key == nil || *ep.Key != k1 {
+		t.Fatal("K not recovered from the kept bundle")
+	}
+	pass(withKeys)
+	if n := count(t, c, "epochs"); n != 0 {
+		t.Fatalf("bundle kept after K was obtained (%d cached)", n)
+	}
+}
