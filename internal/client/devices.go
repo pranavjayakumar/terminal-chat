@@ -3,7 +3,6 @@ package client
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"encoding/binary"
 	"errors"
@@ -19,6 +18,7 @@ import (
 	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/identity"
 	"github.com/skailama/tc/internal/proto"
+	"github.com/skailama/tc/internal/trust"
 )
 
 // Devices (PROTOCOL.md §13.2).
@@ -73,14 +73,25 @@ func storeEndorse(q dbtx, e proto.Signed) error {
 	return err
 }
 
-func storeRevoke(q dbtx, r proto.Signed) error {
+// storeRevoke keeps a revoke with the seq of its device.revoke event (0 if
+// unknown, which counts as before every bundle). The lowest seq seen wins.
+func storeRevoke(q dbtx, r proto.Signed, seq uint64) error {
 	dr, err := identity.PeekDeviceRevoke(identity.Signed(r))
 	if err != nil || !keepUnverified(q, "device_revokes", dr.ServerID[:], dr.User) {
 		return nil
 	}
-	_, err = q.Exec(`INSERT OR IGNORE INTO device_revokes (revoke, dev, user) VALUES (?, ?, ?)`,
-		[]byte(proto.MustRaw(r)), dr.Dev[:], dr.User)
+	_, err = q.Exec(`INSERT INTO device_revokes (revoke, dev, user, seq) VALUES (?, ?, ?, ?)
+		ON CONFLICT (revoke) DO UPDATE SET seq = min(seq, excluded.seq)`,
+		[]byte(proto.MustRaw(r)), dr.Dev[:], dr.User, seq)
 	return err
+}
+
+// seqAt is seqs[i], or 0 when the server sent no (or too few) seqs.
+func seqAt(seqs []uint64, i int) uint64 {
+	if i < len(seqs) {
+		return seqs[i]
+	}
+	return 0
 }
 
 // ensureDevice runs once per e2e1 session, after sync: it refreshes the
@@ -93,10 +104,11 @@ func (c *Client) ensureDevice(ctx context.Context, s *session, signer ssh.Signer
 	var sid e2ecrypto.ServerID
 	copy(sid[:], s.welcome.ServerID)
 	me := c.Me().ID
-	keys, err := loadDeviceKeys(c.home, sid, me, nil)
+	keys, err := c.trust.DeviceKeys(sid, me)
 	if err != nil {
 		return err
 	}
+	s.dev.Store(keys)
 	// Once the cache holds every device (a full list, or a reset snapshot
 	// in an e2e1 session) events keep it current; then only our own
 	// devices need checking.
@@ -134,8 +146,8 @@ func (c *Client) ensureDevice(ctx context.Context, s *session, signer ssh.Signer
 					return err
 				}
 			}
-			for _, r := range res.Revoked {
-				if err := storeRevoke(tx, r); err != nil {
+			for i, r := range res.Revoked {
+				if err := storeRevoke(tx, r, seqAt(res.RevokedSeqs, i)); err != nil {
 					return err
 				}
 			}
@@ -156,13 +168,15 @@ func (c *Client) ensureDevice(ctx context.Context, s *session, signer ssh.Signer
 	mySSH := signer.PublicKey().Marshal()
 	if ownRevoked(sid, me, keys.ID, mySSH, certs, revokes) {
 		// This device is gone for good: continue as a new one.
-		if keys, err = loadDeviceKeys(c.home, sid, me, &keys.ID); err != nil {
+		if keys, err = c.trust.RetireDeviceKeys(sid, me, keys.ID); err != nil {
 			return err
 		}
+		s.dev.Store(keys)
 	} else if slices.ContainsFunc(certs, func(sc proto.Signed) bool {
 		dc, err := identity.PeekDeviceCert(identity.Signed(sc))
 		return err == nil && dc.User == me && dc.Dev == keys.ID && bytes.Equal(dc.Ed25519, keys.Ed25519Pub)
 	}) {
+		s.devOnce.Do(func() { close(s.devReady) })
 		return nil
 	}
 	cert, err := identity.NewDeviceCert(signer, sid, me, keys, time.Now())
@@ -170,8 +184,11 @@ func (c *Client) ensureDevice(ctx context.Context, s *session, signer ssh.Signer
 		return err
 	}
 	// The device.new event lands in the cache through the event stream.
-	_, err = s.call(ctx, proto.OpDeviceRegister, proto.DeviceRegisterArgs{Cert: proto.Signed(cert)}, nil)
-	return err
+	if _, err = s.call(ctx, proto.OpDeviceRegister, proto.DeviceRegisterArgs{Cert: proto.Signed(cert)}, nil); err != nil {
+		return err
+	}
+	s.devOnce.Do(func() { close(s.devReady) })
+	return nil
 }
 
 // ownRevoked reports whether dev has a revoke we can check ourselves: signed
@@ -202,85 +219,57 @@ func ownRevoked(sid e2ecrypto.ServerID, me uint64, dev e2ecrypto.DevID, mySSH []
 
 // ---- device keys ----
 
-// deviceKeyFile holds this device's E2E secret keys:
-// server_id(16) || user(u64 BE) || e2ecrypto.DeviceKeys.MarshalBinary.
-// device.key.lock serializes processes sharing TC_HOME (TUI + tc send).
-//
-// TODO(internal/trust): temporary. The trust store (TC_HOME/e2e.db,
-// docs/E2E.md PR plan step 3) owns device keys once it lands on this branch;
-// migrate this file into it.
+// deviceKeyFile is where device keys lived before the trust store owned
+// them: server_id(16) || user(u64 BE) || e2ecrypto.DeviceKeys.MarshalBinary,
+// with device.key.lock serializing processes sharing TC_HOME. Open moves it
+// into the trust store once and deletes it.
 const deviceKeyFile = "device.key"
 
 const deviceKeyHeader = e2ecrypto.IDSize + 8
 
-// loadDeviceKeys returns this device's keys for (sid, user), generating and
-// persisting them (0600) on first use. A file for another server or user
-// (TC_HOME re-used for a different login), or holding the keys of device
-// retire, is replaced by fresh keys.
-func loadDeviceKeys(home string, sid e2ecrypto.ServerID, user uint64, retire *e2ecrypto.DevID) (*e2ecrypto.DeviceKeys, error) {
+// migrateDeviceKeyFile imports home/device.key into ts (unless ts already
+// has keys for that server: then another process got there first) and
+// removes the file. It holds the old lock while doing so, so a concurrent
+// process (old or new) never sees a half-migrated state. A malformed file
+// is left alone (and doesn't stop Open): it may be the only copy of a key.
+func migrateDeviceKeyFile(home string, ts *trust.Store) error {
 	path := filepath.Join(home, deviceKeyFile)
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	lock, err := os.OpenFile(path+".lock", os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("locking device key: %w", err)
+		return fmt.Errorf("locking device key: %w", err)
 	}
 	defer lock.Close() // releases the flock
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		return nil, fmt.Errorf("locking device key: %w", err)
+		return fmt.Errorf("locking device key: %w", err)
 	}
-
 	b, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("reading device key: %w", err)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil // migrated by another process while we waited
 	}
-	if err == nil && len(b) == deviceKeyHeader+e2ecrypto.DeviceKeysSize &&
-		bytes.Equal(b[:e2ecrypto.IDSize], sid[:]) && binary.BigEndian.Uint64(b[e2ecrypto.IDSize:]) == user {
-		var k e2ecrypto.DeviceKeys
-		if err := k.UnmarshalBinary(b[deviceKeyHeader:]); err != nil {
-			return nil, fmt.Errorf("reading device key: %w", err)
+	if err != nil {
+		return fmt.Errorf("reading device key: %w", err)
+	}
+	if len(b) != deviceKeyHeader+e2ecrypto.DeviceKeysSize {
+		return nil
+	}
+	var sid e2ecrypto.ServerID
+	copy(sid[:], b)
+	user := binary.BigEndian.Uint64(b[e2ecrypto.IDSize:])
+	var k e2ecrypto.DeviceKeys
+	if k.UnmarshalBinary(b[deviceKeyHeader:]) != nil {
+		return nil
+	}
+	if user != 0 {
+		if _, err := ts.ImportDeviceKeys(sid, user, &k); err != nil {
+			return err
 		}
-		if retire == nil || k.ID != *retire {
-			return &k, nil
-		}
 	}
-	return writeDeviceKeys(path, sid, user)
-}
-
-// writeDeviceKeys replaces path with fresh keys (atomically, 0600). The
-// caller holds the lock.
-func writeDeviceKeys(path string, sid e2ecrypto.ServerID, user uint64) (*e2ecrypto.DeviceKeys, error) {
-	k, err := e2ecrypto.Generate(rand.Reader)
-	if err != nil {
-		return nil, err
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("removing %s: %w", deviceKeyFile, err)
 	}
-	secret, err := k.MarshalBinary()
-	if err != nil {
-		return nil, err
-	}
-	b := make([]byte, deviceKeyHeader, deviceKeyHeader+len(secret))
-	copy(b, sid[:])
-	binary.BigEndian.PutUint64(b[e2ecrypto.IDSize:], user)
-	b = append(b, secret...)
-
-	tmp, err := os.CreateTemp(filepath.Dir(path), "device-*.key")
-	if err != nil {
-		return nil, fmt.Errorf("writing device key: %w", err)
-	}
-	defer os.Remove(tmp.Name())
-	err = tmp.Chmod(0o600)
-	if err == nil {
-		_, err = tmp.Write(b)
-	}
-	if err == nil {
-		err = tmp.Sync()
-	}
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Rename(tmp.Name(), path)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("writing device key: %w", err)
-	}
-	return k, nil
+	_ = os.Remove(path + ".lock")
+	return nil
 }

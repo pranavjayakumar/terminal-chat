@@ -165,6 +165,16 @@ type Client struct {
 
 	running atomic.Bool
 	timing  timing
+
+	// E2E (e2e.go). e2eMu serializes chain processing and rotation.
+	e2eMu    sync.Mutex
+	e2eKick  chan struct{}
+	keyNeeds chan proto.Ephemeral
+	// under mu:
+	e2eSoft   map[uint64]string // channel → why its next bundle can't be judged yet
+	needSent  map[uint64]time.Time
+	shared    map[shareKey]time.Time
+	autoTried map[uint64]time.Time
 }
 
 // timing holds the protocol's timers; tests shrink them.
@@ -172,13 +182,14 @@ type timing struct {
 	pingIdle, recvTimeout, tick   time.Duration
 	backoffMin, backoffMax        time.Duration
 	dial, handshake, retry, type_ time.Duration
+	keyNeed, autoEpoch            time.Duration // §13.7: ≤ 1 key.need per channel per keyNeed
 }
 
 var defaultTiming = timing{
 	pingIdle: 20 * time.Second, recvTimeout: 45 * time.Second, tick: time.Second,
 	backoffMin: 250 * time.Millisecond, backoffMax: 30 * time.Second,
 	dial: 15 * time.Second, handshake: 30 * time.Second, retry: 2 * time.Second,
-	type_: 6 * time.Second,
+	type_: 6 * time.Second, keyNeed: 30 * time.Second, autoEpoch: time.Minute,
 }
 
 // DefaultHome is $TC_HOME, else ~/.config/tc.
@@ -231,12 +242,20 @@ func Open(home string) (*Client, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrateDeviceKeyFile(home, ts); err != nil {
+		db.Close()
+		ts.Close()
+		return nil, err
+	}
 	c := &Client{
 		home: home, cfg: cfg, db: db, trust: ts, users: users,
 		typing: map[uint64]map[uint64]time.Time{}, typingTimers: map[uint64]*time.Timer{}, presence: map[uint64]Presence{},
 		typed:   map[uint64]time.Time{},
 		updates: make(chan Update, 1), obKick: make(chan struct{}, 1),
 		obChanged: make(chan struct{}), timing: defaultTiming,
+		e2eKick: make(chan struct{}, 1), keyNeeds: make(chan proto.Ephemeral, 32),
+		e2eSoft: map[uint64]string{}, needSent: map[uint64]time.Time{}, shared: map[shareKey]time.Time{},
+		autoTried: map[uint64]time.Time{},
 	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	c.me = users[cfg.UserID]

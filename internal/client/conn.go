@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/identity"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
@@ -49,11 +50,18 @@ type session struct {
 	// read goroutine only
 	syncing     bool
 	sawSnapshot bool
+
+	// E2E: our login key, our device keys once loaded, and devReady,
+	// closed once the server has our device (e2e.go).
+	sshPub   []byte
+	dev      atomic.Pointer[e2ecrypto.DeviceKeys]
+	devReady chan struct{}
+	devOnce  sync.Once
 }
 
 func newSession(conn transport.Conn, codec *proto.Codec, w proto.Welcome, recvTimeout time.Duration) *session {
 	s := &session{conn: conn, codec: codec, welcome: w, done: make(chan struct{}),
-		pending: map[uint32]pendingReq{}, syncing: true}
+		pending: map[uint32]pendingReq{}, syncing: true, devReady: make(chan struct{})}
 	s.lastSend.Store(time.Now().UnixNano())
 	// A timer rather than a polling goroutine: a blocked write must not be
 	// able to delay the receive timeout.
@@ -432,11 +440,11 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 			c.outboxLoop(sctx, s)
 		}()
 		if s.e2e() {
+			s.sshPub = signer.PublicKey().Marshal()
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				// Best effort: a failure is retried on the next connection.
-				_ = c.ensureDevice(sctx, s, signer)
+				c.e2eLoop(sctx, s, signer)
 			}()
 		}
 		err = <-readErr
@@ -514,6 +522,9 @@ func (c *Client) readLoop(s *session) error {
 				return fmt.Errorf("applying event %d: %w", ev.Seq, err)
 			}
 			c.post(u)
+			if e2eKind(ev.Kind) {
+				c.kickE2E()
+			}
 		case proto.TSnapshot:
 			var sn proto.Snapshot
 			if err := f.Decode(&sn); err != nil {
@@ -522,6 +533,7 @@ func (c *Client) readLoop(s *session) error {
 			if err := c.applySnapshot(s, sn); err != nil {
 				return fmt.Errorf("applying snapshot: %w", err)
 			}
+			c.kickE2E()
 		case proto.TEphemeral:
 			var e proto.Ephemeral
 			if f.Decode(&e) == nil {

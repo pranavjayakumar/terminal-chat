@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"slices"
@@ -131,9 +132,8 @@ func TestDeviceRegisteredOnceAndEventsApplied(t *testing.T) {
 		t.Fatalf("revoke not cached: %x %v", revDev, err)
 	}
 
-	st, err := os.Stat(filepath.Join(home, deviceKeyFile))
-	if err != nil || st.Mode().Perm() != 0o600 {
-		t.Fatalf("device.key: %v %v", st, err)
+	if _, err := os.Stat(filepath.Join(home, deviceKeyFile)); !os.IsNotExist(err) {
+		t.Fatalf("device.key written: %v", err)
 	}
 
 	// Reconnect: the server already has our device, so no second register.
@@ -150,7 +150,7 @@ func TestDeviceRegisteredOnceAndEventsApplied(t *testing.T) {
 	fc2.noReq(proto.OpDeviceRegister, 300*time.Millisecond)
 
 	// A restarted process reuses the same device keys.
-	keys1, err := loadDeviceKeys(home, testSID(), alice, nil)
+	keys1, err := c.Trust().DeviceKeys(testSID(), alice)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,8 +172,10 @@ func TestDeviceFullListAfterUpgrade(t *testing.T) {
 	fc.bootstrap()
 	waitFor(t, "online", online(c))
 	fc.noReq(proto.OpDevicesList, 200*time.Millisecond) // no e2e1: nothing
-	if _, err := os.Stat(filepath.Join(home, deviceKeyFile)); !os.IsNotExist(err) {
-		t.Fatalf("device.key without e2e1: %v", err)
+	var nkeys int
+	c.Trust() // keys are only made for e2e1 sessions
+	if err := c.db.QueryRow(`SELECT COUNT(*) FROM devices`).Scan(&nkeys); err != nil || nkeys != 0 {
+		t.Fatalf("devices without e2e1: %d %v", nkeys, err)
 	}
 
 	fs.caps.Store([]string{proto.CapE2E})
@@ -204,23 +206,94 @@ func TestDeviceFullListAfterUpgrade(t *testing.T) {
 	}
 }
 
-func TestDeviceKeyFileReplacedForOtherLogin(t *testing.T) {
-	home := t.TempDir()
-	a, err := loadDeviceKeys(home, testSID(), alice, nil)
+// writeOldKeyFile writes a pre-trust-store TC_HOME/device.key.
+func writeOldKeyFile(t *testing.T, home string, sid e2ecrypto.ServerID, user uint64) *e2ecrypto.DeviceKeys {
+	t.Helper()
+	k, err := e2ecrypto.Generate(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, err := loadDeviceKeys(home, testSID(), alice, nil)
-	if err != nil || again.ID != a.ID {
-		t.Fatalf("reload: %v", err)
+	secret, _ := k.MarshalBinary()
+	b := append(append(sid[:0:0], sid[:]...), binary.BigEndian.AppendUint64(nil, user)...)
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	other, err := loadDeviceKeys(home, e2ecrypto.ServerID{1}, alice, nil)
-	if err != nil || other.ID == a.ID {
-		t.Fatalf("other server got the same device: %v", err)
+	if err := os.WriteFile(filepath.Join(home, deviceKeyFile), append(b, secret...), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	b, err := loadDeviceKeys(home, e2ecrypto.ServerID{1}, bob, nil)
-	if err != nil || b.ID == other.ID {
-		t.Fatalf("other user got the same device: %v", err)
+	return k
+}
+
+// An existing device.key moves into the trust store once and is deleted;
+// the device keeps its identity (no re-registration).
+func TestDeviceKeyFileMigrated(t *testing.T) {
+	testEnv(t)
+	fs := newFakeServer(t)
+	home := login(t, fs)
+	old := writeOldKeyFile(t, home, testSID(), alice)
+	os.WriteFile(filepath.Join(home, deviceKeyFile+".lock"), nil, 0o600)
+	c := open(t, home)
+	for _, f := range []string{deviceKeyFile, deviceKeyFile + ".lock"} {
+		if _, err := os.Stat(filepath.Join(home, f)); !os.IsNotExist(err) {
+			t.Fatalf("%s still there: %v", f, err)
+		}
+	}
+	k, err := c.Trust().DeviceKeys(testSID(), alice)
+	if err != nil || k.ID != old.ID || k.X25519Pub != old.X25519Pub {
+		t.Fatalf("migrated keys differ: %v", err)
+	}
+	c.Close()
+
+	// A store that already has keys (another process migrated first) keeps them.
+	writeOldKeyFile(t, home, testSID(), alice)
+	c = open(t, home)
+	defer c.Close()
+	if k2, _ := c.Trust().DeviceKeys(testSID(), alice); k2.ID != old.ID {
+		t.Fatal("second migration overwrote keys")
+	}
+	if _, err := os.Stat(filepath.Join(home, deviceKeyFile)); !os.IsNotExist(err) {
+		t.Fatalf("device.key still there: %v", err)
+	}
+
+	// A malformed file is left alone and doesn't stop Open.
+	os.WriteFile(filepath.Join(home, deviceKeyFile), []byte("junk"), 0o600)
+	c3 := open(t, home)
+	c3.Close()
+	if _, err := os.Stat(filepath.Join(home, deviceKeyFile)); err != nil {
+		t.Fatalf("malformed device.key removed: %v", err)
+	}
+}
+
+// Two processes opening the same TC_HOME at once both end up with the
+// migrated keys.
+func TestDeviceKeyFileMigratedConcurrently(t *testing.T) {
+	testEnv(t)
+	fs := newFakeServer(t)
+	home := login(t, fs)
+	old := writeOldKeyFile(t, home, testSID(), alice)
+	ids := make(chan e2ecrypto.DevID, 4)
+	for range 4 {
+		go func() {
+			c, err := Open(home)
+			if err != nil {
+				t.Error(err)
+				ids <- e2ecrypto.DevID{}
+				return
+			}
+			defer c.Close()
+			k, err := c.Trust().DeviceKeys(testSID(), alice)
+			if err != nil {
+				t.Error(err)
+				ids <- e2ecrypto.DevID{}
+				return
+			}
+			ids <- k.ID
+		}()
+	}
+	for range 4 {
+		if id := <-ids; id != old.ID {
+			t.Fatal("a process got other keys than the migrated ones")
+		}
 	}
 }
 
@@ -269,7 +342,7 @@ func TestRevokedDeviceReKeys(t *testing.T) {
 	if nc.Dev == old.Dev || nc.Ed25519.Equal(old.Ed25519) {
 		t.Fatal("revoked device registered again with its old keys")
 	}
-	if k, _ := loadDeviceKeys(home, testSID(), alice, nil); k.ID != nc.Dev {
+	if k, _ := c.Trust().DeviceKeys(testSID(), alice); k.ID != nc.Dev {
 		t.Fatal("new keys not persisted")
 	}
 }
@@ -311,28 +384,6 @@ func TestDevicesFullClearedByNonE2ESession(t *testing.T) {
 	r = fc.expectReq(proto.OpDevicesList, &again)
 	if len(again.Users) != 0 {
 		t.Fatalf("after a non-e2e1 session: list %+v, want everyone", again)
-	}
-}
-
-func TestDeviceKeysConcurrentFirstUse(t *testing.T) {
-	home := t.TempDir()
-	ids := make(chan e2ecrypto.DevID, 8)
-	for range 8 {
-		go func() {
-			k, err := loadDeviceKeys(home, testSID(), alice, nil)
-			if err != nil {
-				t.Error(err)
-				ids <- e2ecrypto.DevID{}
-				return
-			}
-			ids <- k.ID
-		}()
-	}
-	first := <-ids
-	for range 7 {
-		if id := <-ids; id != first {
-			t.Fatal("concurrent first use produced different device keys")
-		}
 	}
 }
 

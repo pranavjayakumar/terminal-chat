@@ -272,10 +272,23 @@ func (c *Client) CreateChannel(ctx context.Context, name string, private bool, t
 	return r.Chan, err
 }
 
+// CreateEncryptedChannel creates an end-to-end encrypted private channel
+// (needs a server with e2e1). Its first epoch key is created in the
+// background once this device is registered; see E2EStatus.
+func (c *Client) CreateEncryptedChannel(ctx context.Context, name, topic string) (proto.Channel, error) {
+	var r proto.ChanRes
+	err := c.call(ctx, proto.OpChanCreate, proto.ChanCreateArgs{Name: name, Private: true, Topic: topic, E2E: true}, &r, c.chanHook)
+	c.kickE2E()
+	return r.Chan, err
+}
+
 // OpenDM returns (creating if needed) the DM with exactly these other users.
+// A new DM is encrypted when the server speaks e2e1; its first epoch key is
+// created in the background (see E2EStatus).
 func (c *Client) OpenDM(ctx context.Context, users []uint64) (proto.Channel, error) {
 	var r proto.ChanRes
 	err := c.call(ctx, proto.OpDMOpen, proto.DMOpenArgs{Users: users}, &r, c.chanHook)
+	c.kickE2E()
 	return r.Chan, err
 }
 
