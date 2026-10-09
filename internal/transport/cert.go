@@ -1,7 +1,10 @@
 package transport
 
 import (
+	"crypto"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -27,7 +30,24 @@ var ErrPinMismatch = errors.New("server certificate pin mismatch")
 // (PROTOCOL.md §2), so a half-present pair is an error rather than a reason
 // to regenerate.
 func LoadOrCreateCert(dir string) (tls.Certificate, error) {
-	keyPath, crtPath := filepath.Join(dir, "server.key"), filepath.Join(dir, "server.crt")
+	return loadOrCreate(dir, "server", func() (any, crypto.Signer, error) { return ed25519.GenerateKey(rand.Reader) })
+}
+
+// LoadOrCreateHTTPCert is LoadOrCreateCert for https.key/https.crt, an ECDSA
+// P-256 certificate served to webhook (HTTP) clients: common TLS stacks, e.g.
+// LibreSSL in macOS curl, can't verify Ed25519 (PROTOCOL.md §12).
+func LoadOrCreateHTTPCert(dir string) (tls.Certificate, error) {
+	return loadOrCreate(dir, "https", func() (any, crypto.Signer, error) {
+		k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return nil, nil, err
+		}
+		return k.Public(), k, nil
+	})
+}
+
+func loadOrCreate(dir, base string, gen func() (any, crypto.Signer, error)) (tls.Certificate, error) {
+	keyPath, crtPath := filepath.Join(dir, base+".key"), filepath.Join(dir, base+".crt")
 	_, kerr := os.Stat(keyPath)
 	_, cerr := os.Stat(crtPath)
 	switch {
@@ -46,7 +66,7 @@ func LoadOrCreateCert(dir string) (tls.Certificate, error) {
 		return tls.Certificate{}, fmt.Errorf("only one of %s and %s exists; refusing to regenerate", keyPath, crtPath)
 	}
 
-	keyPEM, crtPEM, err := generateCert()
+	keyPEM, crtPEM, err := generateCert(gen)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
@@ -66,8 +86,8 @@ func LoadOrCreateCert(dir string) (tls.Certificate, error) {
 	return cert, nil
 }
 
-func generateCert() (keyPEM, crtPEM []byte, err error) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+func generateCert(gen func() (any, crypto.Signer, error)) (keyPEM, crtPEM []byte, err error) {
+	pub, priv, err := gen()
 	if err != nil {
 		return nil, nil, fmt.Errorf("generating key: %w", err)
 	}

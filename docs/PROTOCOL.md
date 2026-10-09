@@ -307,20 +307,24 @@ Cap `hooks`. Lets scripts, CI jobs and agents post into a channel with a plain H
 request — no tc install, no SSH key.
 
 **Endpoint.** The TLS-over-TCP listener offers ALPN `tc/1` and `http/1.1` (in that
-order). Connections that negotiate `http/1.1` — or no ALPN at all, which a tc client
-never does — are served by an HTTP/1.1 server; `tc/1` gets the frame protocol; any other
-offer fails the TLS handshake. QUIC stays `tc/1` only, and tc clients offer only `tc/1`.
+order of preference). Connections that negotiate `http/1.1` — or no ALPN at all, which a
+tc client never does — are served by an HTTP/1.1 server; `tc/1` gets the frame protocol;
+any other offer fails the TLS handshake. QUIC stays `tc/1` only, and tc clients offer only `tc/1`.
 
 ```
 POST https://<host>:<port>/hooks/<token>
 ```
 
 `token` = 16 random bytes, lowercase base32 without padding (like invites); the server
-stores only its SHA-256. The URL **is** the credential. The server certificate is the
-self-signed one from §2, so callers pin it: curl
-`-k --pinnedpubkey 'sha256//<b64>'`, where `<b64>` is the same SPKI SHA-256 as the pin
-but in standard base64 with padding (`-k` only skips CA/hostname checks; the pin is
-still enforced). `hook.create` returns a ready-made `curl` command.
+stores only its SHA-256. The URL **is** the credential.
+
+HTTP clients are served a second long-lived self-signed certificate, **ECDSA P-256**
+(`https.key`/`https.crt` in the data dir), because common TLS stacks (e.g. LibreSSL in
+macOS curl) can't verify Ed25519. The server picks it for any ClientHello that doesn't
+offer `tc/1`. Callers pin it like tc clients pin theirs: curl
+`-k --pinnedpubkey 'sha256//<b64>'`, where `<b64>` is the SPKI SHA-256 of the HTTP
+certificate in standard base64 with padding (`-k` only skips CA/hostname checks; the pin
+is still enforced). `hook.create` returns a ready-made `curl` command.
 
 **Request.** `Content-Type: application/json` → body `{"text": str}`; any other type →
 the raw body is the text. Reads at most 128 KiB (→ 413). The text must be valid UTF-8
