@@ -247,6 +247,8 @@ type Channel struct {
 	// Creator created the channel; 0 for #general and for some old DMs.
 	// Only it may sign epoch 1 of a non-DM e2e channel (§13.3).
 	Creator uint64 `msgpack:"creator,omitempty"`
+	// Pins are the ids of pinned messages, newest pin first (cap pins).
+	Pins []uint64 `msgpack:"pins,omitempty"`
 }
 
 type Message struct {
