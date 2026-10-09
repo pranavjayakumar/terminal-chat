@@ -243,7 +243,13 @@ func TestKeyRotateRejects(t *testing.T) {
 	rot(alice, ch.ID, proto.Signed{B: make([]byte, proto.MaxBundle), Sig: ok1.Sig}, proto.ErrTooLarge)
 	rot(alice, ch.ID, proto.Signed{B: []byte{0xc1}, Sig: ok1.Sig}, proto.ErrBadRequest)
 	rot(alice, ch.ID, bundle(t, a1, e2ecrypto.ServerID{0xee}, ch.ID, 1, nil, roster, a1, b1), proto.ErrBadRequest)
-	rot(alice, plain.Chan.ID, ok1, proto.ErrBadRequest) // bundle.chan != chan
+	sec2 := alice.createE2E("sec2")
+	rot(alice, sec2.ID, ok1, proto.ErrBadRequest) // bundle.chan != chan
+	// Existence, membership and encryption are checked before b is decoded.
+	garbage := proto.Signed{B: []byte{0xc1}, Sig: ok1.Sig}
+	rot(carol, ch.ID, garbage, proto.ErrForbidden)
+	rot(alice, 999999, garbage, proto.ErrNotFound)
+	rot(alice, 999999, ok1, proto.ErrNotFound)
 	rot(alice, 999999, bundle(t, a1, sid, 999999, 1, nil, roster, a1, b1), proto.ErrNotFound)
 	rot(carol, ch.ID, bundle(t, c1, sid, ch.ID, 1, nil, roster, a1, b1), proto.ErrForbidden) // not a member
 	rot(alice, plain.Chan.ID, bundle(t, a1, sid, plain.Chan.ID, 1, nil, []uint64{alice.user.ID}, a1), proto.ErrBadRequest)

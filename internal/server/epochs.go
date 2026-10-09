@@ -153,19 +153,9 @@ func (s *Server) opKeyRotate(ctx context.Context, u proto.User, a proto.KeyRotat
 		return nil, proto.Errf(proto.ErrTooLarge, "epoch bundles are limited to 16 KiB")
 	}
 	sid := s.sid()
-	peek, err := identity.PeekEpochBundle(identity.Signed(a.Bundle))
-	switch {
-	case errors.Is(err, e2ecrypto.ErrTooLarge):
-		return nil, proto.Errf(proto.ErrTooLarge, "epoch bundles are limited to 128 boxes")
-	case err != nil:
-		return nil, badRequest("malformed epoch bundle")
-	case peek.ServerID != sid:
-		return nil, badRequest("epoch bundle is for another server")
-	case peek.Chan != a.Chan:
-		return nil, badRequest("epoch bundle is for another channel")
-	}
 	var res proto.SeqRes
-	_, err = s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
+	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
+		// Cheap checks first: non-members never make the server decode 16 KiB.
 		if _, ok := s.kinds[a.Chan]; !ok {
 			return nil, errNotFound
 		}
@@ -179,7 +169,17 @@ func (s *Server) opKeyRotate(ctx context.Context, u proto.User, a proto.KeyRotat
 		if !e2e {
 			return nil, badRequest("channel is not encrypted")
 		}
-
+		peek, err := identity.PeekEpochBundle(identity.Signed(a.Bundle))
+		switch {
+		case errors.Is(err, e2ecrypto.ErrTooLarge):
+			return nil, proto.Errf(proto.ErrTooLarge, "epoch bundles are limited to 128 boxes")
+		case err != nil:
+			return nil, badRequest("malformed epoch bundle")
+		case peek.ServerID != sid:
+			return nil, badRequest("epoch bundle is for another server")
+		case peek.Chan != a.Chan:
+			return nil, badRequest("epoch bundle is for another channel")
+		}
 		// The rotator: one of the caller's active devices, whose key signed it.
 		var owner uint64
 		var edPub, revoked []byte

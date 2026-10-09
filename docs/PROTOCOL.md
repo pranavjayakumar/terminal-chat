@@ -538,17 +538,19 @@ eh = H(b)[:16]        ChainHash = H(b) (the next bundle's prev)
 session's Channel objects; clients without `e2e1` ignore them (§11).
 
 Server rules (honest case) for **key.rotate** `{chan, bundle}` (write op,
-rate limited), checked in this order inside the write transaction:
+rate limited), checked in this order inside the write transaction (the
+bundle is decoded only after the channel, membership and encryption checks,
+so non-members can't make the server parse 16 KiB):
 
 | check | error |
 |---|---|
 | `len(b) + len(sig)` ≤ 16 KiB | `too_large` |
-| `b` well formed (canonical, §13.1) | `bad_request` |
-| ≤ 128 boxes | `too_large` |
-| `server_id` is this server's; `chan` equals the arg | `bad_request` |
 | channel exists | `not_found` |
 | caller is a current member | `forbidden` |
 | channel is encrypted | `bad_request` |
+| `b` well formed (canonical, §13.1) | `bad_request` |
+| ≤ 128 boxes | `too_large` |
+| `server_id` is this server's; `chan` equals the arg | `bad_request` |
 | `by` is a registered, non-revoked device **of the caller** | `forbidden` |
 | `sig` verifies under `by`'s Ed25519 key | `bad_request` |
 | CAS: `epoch == current + 1` and `prev == ChainHash(current b)` | `stale_epoch` |
