@@ -219,7 +219,7 @@ func (c *Client) e2ePass(ctx context.Context, s *session, sid e2ecrypto.ServerID
 	defer c.e2eMu.Unlock()
 	me := c.Me().ID
 	changed := c.verifyDevices(sid, s.sshPub, me)
-	chans, err := c.e2eChannels(me)
+	chans, err := c.e2eChannels(sid, me)
 	if err != nil {
 		return
 	}
@@ -239,7 +239,7 @@ func (c *Client) e2ePass(ctx context.Context, s *session, sid e2ecrypto.ServerID
 // e2eChannels lists the cached channels we're a member of that are, or
 // were once seen, encrypted. A channel the trust store remembers as
 // encrypted that the server now calls plaintext is an alarm.
-func (c *Client) e2eChannels(me uint64) ([]proto.Channel, error) {
+func (c *Client) e2eChannels(sid e2ecrypto.ServerID, me uint64) ([]proto.Channel, error) {
 	rows, err := c.db.Query(`SELECT ` + chanCols + ` FROM chans WHERE kind != 'public'`)
 	if err != nil {
 		return nil, err
@@ -258,10 +258,6 @@ func (c *Client) e2eChannels(me uint64) ([]proto.Channel, error) {
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
-	}
-	sid, ok := c.cacheServerID()
-	if !ok {
-		return nil, errors.New("no server id")
 	}
 	var out []proto.Channel
 	for _, ch := range all {

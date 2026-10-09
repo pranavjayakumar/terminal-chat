@@ -56,6 +56,13 @@
 //	History(ctx, ch, before) (more bool, err error)  // older messages into the cache
 //	Search(ctx, q, ch) ([]proto.Message, error)
 //	CreateInvite(ctx, user) (string, error); DisableUser(ctx, user) error
+//	CreateEncryptedChannel(ctx, name, topic) (proto.Channel, error)
+//	RotateKey(ctx, ch) error                          // new epoch key (e2e.go)
+//
+// End-to-end keys (e2e.go; verification runs in the background per session):
+//
+//	func (c *Client) E2EStatus(ch uint64) E2EStatus  // off / ok / waiting_key / unverified / alarm
+//	func (c *Client) ServerID() (e2ecrypto.ServerID, bool)
 //	SendTyping(ch) error; SetAway(away bool, status string) error
 //
 // Server-side refusals are returned as *proto.Error (check Code).

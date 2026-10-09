@@ -504,13 +504,18 @@ Server rules (honest case):
 Clients store what they receive and decide trust locally: a cert counts only
 if it verifies under an SSH key pinned for its `user` (directly or via a
 KeyEndorse chain from a pinned key), and a revoke only if it verifies under a
-pinned key or a verified device of that user. Unverifiable objects are kept
-but ignored.
+pinned key or a verified device of that user (not revoked before it), and
+names a device the client knows to be that user's. Unverifiable objects are
+kept but ignored. Pinning: a client pins its own login key; for anyone else
+the key of the first valid (self-consistent) cert it sees for that user is
+pinned on first use; a valid cert under any other key that no pinned key
+endorses is a pending key change, not a verified device, until the user
+acknowledges it.
 
 Limits: `Signed` objects here ≤ 4 KiB; ≤ 8 non-revoked devices per user;
 ≤ 32 device registrations per user, ever.
 
-### 13.3 Epoch bundles *(implemented: format, server rules)*
+### 13.3 Epoch bundles *(implemented: format, server rules, client checks)*
 
 An encrypted channel (`Channel.e2e`) has a chain of epochs. **Epoch = roster
 version**: each epoch fixes the members and a fresh 32-byte key K, sealed to

@@ -9,7 +9,7 @@ Last updated: 2026-10-10 (end of session 1; branch `m2-activity` adds drafts, hi
 | M0 scaffold, spec, agents, CI | ✅ done |
 | M1 core chat (server, client, TUI, sync, offline outbox) | ✅ done, battle-tested (chaos + adversarial + live herdr) |
 | M2 collaboration | ~60%: herdr/desktop notifications, unread badge, `/share-pane`, auto-away, `tc notify`, notes (`@me`), display names (server), thread history (server+client), webhooks + bots, privacy scrubbing — all merged |
-| M3 end-to-end encryption | steps 1–3 merged (#9 crypto, #10 device certs, #11 trust store); **step 4 in PR #13** (`e2e/server-devices`) |
+| M3 end-to-end encryption | steps 1–5 merged; **step 6 (client verification, key.need/key.share, RotateKey) on `e2e/client-bundles`** |
 | M4 zero-setup onboarding | not started |
 | M5 voice | not started |
 
@@ -24,7 +24,11 @@ Release tag: `v0.1.0` = M1. No newer tag yet.
    `internal/trust` (`trust.Store.DeviceKeys`); registration errors are silent (no client logger); hardware
    keys prompt for a touch once per device in the background; no cap on unverified objects a server can push
    into the client cache; a revoked device only notices on next connect.
-2. **E2E steps 5–12** per `docs/E2E.md` "PR plan": 5 server epochs (`key.rotate` CAS, roster, `key.fetch`,
+2. **E2E step 6** (`e2e/client-bundles`): device trust (TOFU/endorse/pending key change), chain
+   verification with sticky alarms, epoch keys (boxes, backlinks, key.need/key.share), `Client.RotateKey`,
+   `Client.E2EStatus`; device key moved into `trust` (old `device.key` migrated). Needs protocol-guardian
+   + breaker review. Open: no API yet to clear an alarm (step 10), revoke seqs are server-claimed.
+   **E2E steps 5–12** per `docs/E2E.md` "PR plan": 5 server epochs (`key.rotate` CAS, roster, `key.fetch`,
    `key.epoch`), 6 client bundle verification (reject duplicate recipient X25519 keys), 7 encrypted send +
    outbox, 8 encrypted edit/delete/react + local FTS, 9 membership changes + `chan.remove` + backlinks,
    10 TUI warnings + `/verify`, 11 malicious-server test suite, 12 security pass + chaos during rotations.
