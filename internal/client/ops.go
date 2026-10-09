@@ -294,8 +294,16 @@ func (c *Client) call(ctx context.Context, op string, args, out any, hook func(p
 
 // Edit changes the body of one of our messages.
 func (c *Client) Edit(ctx context.Context, msg uint64, body string) error {
+	var ch uint64
+	if c.db.QueryRow(`SELECT chan FROM msgs WHERE id = ?`, msg).Scan(&ch) == nil && c.needsEnc(ch) {
+		return ErrEncryptedEdit // never send the new text in the clear
+	}
 	return c.call(ctx, proto.OpEdit, proto.EditArgs{Msg: msg, Body: body}, nil, nil)
 }
+
+// ErrEncryptedEdit: editing messages of encrypted channels comes with
+// encrypted edits (docs/E2E.md step 8).
+var ErrEncryptedEdit = errors.New("editing messages in encrypted channels isn't supported yet")
 
 // Delete deletes a message (ours, or any as admin). Deleting twice is ok.
 func (c *Client) Delete(ctx context.Context, msg uint64) error {

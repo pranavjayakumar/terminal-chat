@@ -29,7 +29,7 @@
 //
 // Writes:
 //
-//	func (c *Client) Send(ch uint64, body string, thread uint64) error // outbox, works offline
+//	func (c *Client) Send(ch uint64, body string, thread uint64) error // outbox, works offline; encrypts in e2e channels (encmsg.go), ErrE2EAlarm in alarm
 //	func (c *Client) Flush(ctx context.Context) error                   // wait until the outbox has nothing left to send
 //	func (c *Client) RetryFailed(local int64) error
 //	func (c *Client) DiscardFailed(local int64) error
@@ -57,7 +57,8 @@
 //	Join(ctx, ch) error; Leave(ctx, ch) error; AddMember(ctx, ch, user) error
 //	SetTopic(ctx, ch, topic) error; OpenDM(ctx, users) (proto.Channel, error)
 //	History(ctx, ch, before) (more bool, err error)  // older messages into the cache
-//	Search(ctx, q, ch) ([]proto.Message, error)
+//	Search(ctx, q, ch) ([]proto.Message, error)        // server + decrypted e2e messages in the cache
+//	Edit refuses messages of e2e channels (ErrEncryptedEdit) until encrypted edits exist
 //	CreateInvite(ctx, user) (string, error); DisableUser(ctx, user) error
 //	SetGroup(ctx, name, members) error (admin); FetchGroups(ctx) ([]proto.Group, error)
 //	Remind(ctx, at, text, ch) (id, error); Reminders(ctx) ([]proto.Reminder, error); DeleteReminder(ctx, id) error
@@ -65,6 +66,10 @@
 //	SendTyping(ch) error; SetAway(away bool, status string) error
 //	CreateEncryptedChannel(ctx, name, topic) (proto.Channel, error)
 //	RotateKey(ctx, ch) error                          // new epoch key (e2e.go)
+//
+// Messages in e2e channels carry Message.Sec (encrypted and verified, waiting
+// for a key, invalid, legacy or server-inserted plaintext); the cache holds
+// decrypted text and is as sensitive as the conversation (encmsg.go).
 //
 // End-to-end keys (e2e.go; verification runs in the background per session):
 //

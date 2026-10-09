@@ -375,6 +375,19 @@ func TestEncNoKeyFailsThenRequeues(t *testing.T) {
 	flush(t, c)
 }
 
+// Editing a message of an encrypted channel would send the new text in the
+// clear: refused locally until encrypted edits exist.
+func TestEncEditRefused(t *testing.T) {
+	d := newEncDM(t, proto.Snapshot{})
+	id := d.f.post(proto.Message{Chan: dm, Author: alice, Enc: sealAs(t, d.me, d.k1, 1, d.e1, plainMsg{T: "msg", TS: 1, Body: "typo"})})
+	waitFor(t, "applied", func() bool { return lastSeq(t, d.c) >= id })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := d.c.Edit(ctx, id, "fixed"); !errors.Is(err, ErrEncryptedEdit) {
+		t.Fatalf("edit: %v", err)
+	}
+}
+
 // A send into a channel in alarm is refused at once.
 func TestEncSendBlockedInAlarm(t *testing.T) {
 	d := newEncDM(t, proto.Snapshot{})
