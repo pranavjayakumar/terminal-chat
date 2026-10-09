@@ -60,6 +60,8 @@
 //	Search(ctx, q, ch) ([]proto.Message, error)
 //	CreateInvite(ctx, user) (string, error); DisableUser(ctx, user) error
 //	SetGroup(ctx, name, members) error (admin); FetchGroups(ctx) ([]proto.Group, error)
+//	Remind(ctx, at, text, ch) (id, error); Reminders(ctx) ([]proto.Reminder, error); DeleteReminder(ctx, id) error
+//	func ParseRemind(args string, now time.Time) (at time.Time, text string, err error) // "10m text", "tomorrow 9am text"
 //	SendTyping(ch) error; SetAway(away bool, status string) error
 //
 // Server-side refusals are returned as *proto.Error (check Code).
