@@ -35,6 +35,12 @@
 //	func (c *Client) DiscardFailed(local int64) error
 //	func (c *Client) MarkRead(ch, seq uint64) error                     // local now, server best-effort
 //
+// Local-only state (cache, never sent to the server, kept across snapshot resets):
+//
+//	func (c *Client) Drafts() []Draft                                   // unsent input per (channel, thread)
+//	func (c *Client) Draft(ch, thread uint64) string
+//	func (c *Client) SetDraft(ch, thread uint64, body string) error     // "" removes
+//
 // Online-only (return ErrOffline unless Status().State == Online):
 //
 //	Edit(ctx, msg, body) error; Delete(ctx, msg) error

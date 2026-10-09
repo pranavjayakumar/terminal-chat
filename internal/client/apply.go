@@ -412,7 +412,7 @@ func (c *Client) msgChan(tx *sql.Tx, id, fallback uint64) uint64 {
 // forgetChan drops a channel we left: its messages and read marker go; a
 // public channel stays listed (it is still visible and joinable) without us.
 func (c *Client) forgetChan(tx *sql.Tx, id, me uint64) error {
-	for _, q := range []string{`DELETE FROM msgs WHERE chan = ?`, `DELETE FROM reads WHERE chan = ?`} {
+	for _, q := range []string{`DELETE FROM msgs WHERE chan = ?`, `DELETE FROM reads WHERE chan = ?`, `DELETE FROM drafts WHERE chan = ?`} {
 		if _, err := tx.Exec(q, id); err != nil {
 			return err
 		}
