@@ -34,11 +34,11 @@ internal/client/     connection manager, reconnect, outbox, local cache (SQLite)
 internal/trust/      E2E trust store TC_HOME/e2e.db (device keys, pins, devices, chain heads)
 internal/tui/        Bubble Tea UI
 internal/sanitize/   terminal-safe text rendering
-internal/release/    GitHub Releases: latest tag, sha256-verified download, atomic self-replace, daily check
+internal/release/    GitHub Releases: latest tag, SSHSIG-signed checksums (signers.go), https-only download, atomic self-replace, daily check
 internal/e2e/        real client against real server over loopback
 docs/PROTOCOL.md     wire protocol (source of truth)
 install.sh           one-line installer (POSIX sh; tested by internal/release/install_test.go)
-.github/workflows/   ci.yml (tests), release.yml (v* tags → binaries + checksums.txt)
+.github/workflows/   ci.yml (tests), release.yml (vX.Y.Z tags on main → DRAFT release; `make release-sign` signs + publishes, docs/DEPLOY.md)
 ```
 
 Dependency direction: `tui → client → proto/transport/identity/trust`, `tui → release`, `trust → e2ecrypto`; `server → proto/transport/identity`.
