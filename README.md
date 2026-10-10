@@ -45,7 +45,7 @@ tc with `/invite [uses] [ttl]`, e.g. `/invite 15 3d`, which copies the one-liner
 | `F1` or `/help` | all keys and commands |
 | `Ctrl-C` twice | quit |
 
-Commands: `/join #x` `/create #x [--private]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/pins` `/activity` `/highlight [word…]` `/unhighlight word…` `/group name @a @b` (admin) `/groups` `/remind <when> <text>` `/reminders` `/remind-delete id` `/away [status]` `/back` `/snippet file[:range]` `/share-pane [pane]` `/invite [uses] [ttl]` (admin) `/webhook name` `/webhooks` `/webhook-delete id` `/verify @user` `/accept-key @user` `/members` `/alarm`.
+Commands: `/join #x` `/create #x [--private]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/pins` `/activity` `/highlight [word…]` `/unhighlight word…` `/group name @a @b` (admin) `/groups` `/remind <when> <text>` `/reminders` `/remind-delete id` `/away [status]` `/back` `/snippet file[:range]` `/share-pane [pane]` `/invite [uses] [ttl]` `/invites` `/invite-revoke id` (admin) `/webhook name` `/webhooks` `/webhook-delete id` `/verify @user` `/accept-key @user` `/members` `/alarm`.
 
 Unsent text is kept per channel and thread (a dim `✎` in the sidebar marks channels with a draft) and
 survives restarts. `/remind 10m stand up` or `/remind tomorrow 9am …` posts `⏰ …` in your private notes on time, even

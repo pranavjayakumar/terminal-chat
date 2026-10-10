@@ -85,6 +85,86 @@ func (m *Model) inviteCommand(args []string) (tea.Cmd, error) {
 	}), nil
 }
 
+// InviteBackend is implemented by backends that can list and revoke
+// invites (*client.Client does); separate from Backend like HookBackend.
+type InviteBackend interface {
+	ListInvites(ctx context.Context) ([]proto.InviteInfo, error)
+	RevokeInvite(ctx context.Context, id string) error
+}
+
+var _ InviteBackend = (*client.Client)(nil)
+
+// inviteManageCommand runs /invites and /invite-revoke; ok is false for
+// other commands.
+func (m *Model) inviteManageCommand(c command) (cmd tea.Cmd, ok bool, err error) {
+	if c.name != "invites" && c.name != "invite-revoke" {
+		return nil, false, nil
+	}
+	be, has := m.c.(InviteBackend)
+	if !has {
+		return nil, true, errors.New("invite management isn't supported here")
+	}
+	if !m.me.Admin {
+		return nil, true, errors.New("only admins can list or revoke invites")
+	}
+	if c.name == "invite-revoke" {
+		if len(c.args) != 1 || !proto.ValidInviteID(strings.ToLower(c.args[0])) {
+			return nil, true, errors.New("usage: /invite-revoke id (the 12-character id from /invites)")
+		}
+		id := strings.ToLower(c.args[0])
+		return m.callThen("invite-revoke", func(ctx context.Context) (tea.Msg, error) {
+			if err := be.RevokeInvite(ctx, id); err != nil {
+				return nil, err
+			}
+			return infoMsg("invite " + id + " revoked"), nil
+		}), true, nil
+	}
+	if len(c.args) != 0 {
+		return nil, true, errors.New("usage: /invites")
+	}
+	names := map[uint64]string{}
+	for id := range m.users {
+		names[id] = m.atName(id)
+	}
+	return m.callThen("invites", func(ctx context.Context) (tea.Msg, error) {
+		invs, err := be.ListInvites(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if len(invs) == 0 {
+			return infoMsg("no open invites"), nil
+		}
+		parts := make([]string, len(invs))
+		for i, inv := range invs {
+			parts[i] = describeInvite(inv, names)
+		}
+		return infoMsg("invites (/invite-revoke id): " + strings.Join(parts, " · ")), nil
+	}), true, nil
+}
+
+// describeInvite is "<id> <kind> <n> left, exp <time>, by <who>". Every
+// server-supplied field is sanitized or numeric.
+func describeInvite(inv proto.InviteInfo, names map[uint64]string) string {
+	kind := sanitize.Line(inv.Kind)
+	switch inv.Kind {
+	case proto.InviteKindUser:
+		kind = "team"
+	case proto.InviteKindKey:
+		kind = "key"
+		if n := names[inv.User]; n != "" {
+			kind += " for " + n
+		}
+	}
+	by := "server host"
+	if inv.CreatedBy != 0 {
+		if by = names[inv.CreatedBy]; by == "" {
+			by = fmt.Sprintf("user%d", inv.CreatedBy)
+		}
+	}
+	return fmt.Sprintf("%s %s %d left, exp %s, by %s", sanitize.Line(inv.ID), kind, inv.UsesLeft,
+		time.UnixMilli(inv.Expires).Format("Jan 2 15:04"), by)
+}
+
 // updateCheckCmd runs Options.UpdateCheck off the UI goroutine; startup
 // never waits for it.
 func (m *Model) updateCheckCmd() tea.Cmd {

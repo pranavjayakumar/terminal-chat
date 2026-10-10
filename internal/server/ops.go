@@ -52,7 +52,7 @@ var writeOps = map[string]bool{
 	proto.OpGroupSet: true, proto.OpRemindCreate: true, proto.OpRemindDelete: true,
 	proto.OpRead: true, proto.OpChanCreate: true, proto.OpChanJoin: true, proto.OpChanAdd: true,
 	proto.OpChanLeave: true, proto.OpChanRemove: true, proto.OpChanEncrypt: true, proto.OpChanTopic: true, proto.OpDMOpen: true,
-	proto.OpInviteCreate: true, proto.OpUserDisable: true, proto.OpUserUpdate: true,
+	proto.OpInviteCreate: true, proto.OpInviteList: true, proto.OpInviteRevoke: true, proto.OpUserDisable: true, proto.OpUserUpdate: true,
 	proto.OpHookCreate: true, proto.OpHookDelete: true, proto.OpHookList: true,
 	proto.OpDeviceRegister: true, proto.OpDeviceRevoke: true, proto.OpKeyRotate: true,
 	proto.OpKeyShare: true,
@@ -131,6 +131,14 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 		return proto.UsersRes{Users: users}, err
 	case proto.OpInviteCreate:
 		return withArgs(args, func(a proto.InviteCreateArgs) (any, error) { return s.opInviteCreate(ctx, u, a) })
+	case proto.OpInviteList:
+		if !u.Admin {
+			return nil, errForbidden
+		}
+		invs, err := s.ListInvites(ctx)
+		return proto.InvitesRes{Invites: invs}, err
+	case proto.OpInviteRevoke:
+		return withArgs(args, func(a proto.InviteRevokeArgs) (any, error) { return s.opInviteRevoke(ctx, u, a) })
 	case proto.OpUserUpdate:
 		return withArgs(args, func(a proto.UserUpdateArgs) (any, error) { return s.opUserUpdate(ctx, u, a) })
 	case proto.OpUserDisable:
@@ -832,7 +840,25 @@ func (s *Server) opInviteCreate(ctx context.Context, u proto.User, a proto.Invit
 		(a.TTLMs != 0 && a.TTLMs < time.Minute.Milliseconds()) {
 		return nil, badRequest("ttl must be between 1 minute and 30 days")
 	}
-	return s.CreateInviteOpts(ctx, InviteOpts{User: a.User, Uses: int(a.Uses), TTL: time.Duration(a.TTLMs) * time.Millisecond})
+	return s.CreateInviteOpts(ctx, InviteOpts{User: a.User, Uses: int(a.Uses), TTL: time.Duration(a.TTLMs) * time.Millisecond, CreatedBy: u.ID})
+}
+
+func (s *Server) opInviteRevoke(ctx context.Context, u proto.User, a proto.InviteRevokeArgs) (any, error) {
+	if !u.Admin {
+		return nil, errForbidden
+	}
+	if !proto.ValidInviteID(a.ID) {
+		return nil, badRequest(fmt.Sprintf("invite id is %d hex digits (see invite.list)", proto.InviteIDLen))
+	}
+	switch err := s.RevokeInvite(ctx, a.ID); {
+	case errors.Is(err, ErrInviteNotFound):
+		return nil, errNotFound
+	case errors.Is(err, errInviteAmbiguous):
+		return nil, proto.Errf(proto.ErrConflict, err.Error())
+	case err != nil:
+		return nil, err
+	}
+	return proto.Empty{}, nil
 }
 
 func (s *Server) opUserDisable(ctx context.Context, u proto.User, a proto.UserArgs) (any, error) {

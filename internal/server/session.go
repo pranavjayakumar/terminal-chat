@@ -87,7 +87,7 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 	}
 	defer s.unregister(sess)
 	w := proto.Welcome{
-		Server: Version, Caps: []string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapTeamInvites}, ServerID: s.st.serverID, User: user, Time: s.now(),
+		Server: Version, Caps: []string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapTeamInvites, proto.CapInviteManage}, ServerID: s.st.serverID, User: user, Time: s.now(),
 	}
 	if tamperEnabled {
 		s.tamper.welcome(user.ID, &w)

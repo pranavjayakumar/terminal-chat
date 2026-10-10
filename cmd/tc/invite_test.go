@@ -57,3 +57,45 @@ func TestParseServerInviteAdmin(t *testing.T) {
 		t.Fatalf("defaults: %+v", c.opts)
 	}
 }
+
+func TestParseServerInviteListRevoke(t *testing.T) {
+	if c, err := parseServerInvite([]string{"--list"}); err != nil || !c.list {
+		t.Fatalf("--list: %+v %v", c, err)
+	}
+	if c, err := parseServerInvite([]string{"--revoke", "0123456789AB"}); err != nil || c.revoke != "0123456789ab" {
+		t.Fatalf("--revoke: %+v %v", c, err)
+	}
+	for _, args := range [][]string{
+		{"--revoke", "xyz"}, {"--revoke", ""}, {"--revoke", "0123456789ab0"},
+		{"--list", "--revoke", "0123456789ab"}, {"--list", "--uses", "5"}, {"--revoke", "0123456789ab", "--admin"},
+	} {
+		if _, err := parseServerInvite(args); err == nil {
+			t.Errorf("%v accepted", args)
+		}
+	}
+}
+
+func TestPrintInvites(t *testing.T) {
+	exp := time.Now().Add(time.Hour).UnixMilli()
+	names := map[uint64]string{1: "admin", 2: "bob\x1b[2J"}
+	var b bytes.Buffer
+	printInvites(&b, []proto.InviteInfo{
+		{ID: "0123456789ab", Kind: proto.InviteKindUser, UsesLeft: 14, Expires: exp, CreatedBy: 1},
+		{ID: "ba9876543210", Kind: proto.InviteKindKey, User: 2, UsesLeft: 1, Expires: exp},
+		{ID: "ffffffffffff", Kind: proto.InviteKindAdmin, UsesLeft: 1, Expires: exp, CreatedBy: 7},
+	}, func(id uint64) string { return names[id] })
+	out := b.String()
+	for _, want := range []string{"0123456789ab", "14", "@admin", "key for @bob", "server host", "user 7", "--revoke ID"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "\x1b") {
+		t.Fatalf("unsanitized name:\n%q", out)
+	}
+	b.Reset()
+	printInvites(&b, nil, nil)
+	if !strings.Contains(b.String(), "No open invites") {
+		t.Fatal(b.String())
+	}
+}

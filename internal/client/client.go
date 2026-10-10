@@ -62,6 +62,7 @@
 //	messages that aren't our own verified ones (edit) or verified (react); E2ERejects() []string
 //	says why received ones were ignored
 //	CreateInvite(ctx, user) (string, error); CreateTeamInvite(ctx, uses, ttl) (proto.InviteRes, error)
+//	ListInvites(ctx) ([]proto.InviteInfo, error); RevokeInvite(ctx, id) error (admin, cap invite_manage)
 //	DisableUser(ctx, user) error
 //	SetGroup(ctx, name, members) error (admin); FetchGroups(ctx) ([]proto.Group, error)
 //	Remind(ctx, at, text, ch) (id, error); Reminders(ctx) ([]proto.Reminder, error); DeleteReminder(ctx, id) error

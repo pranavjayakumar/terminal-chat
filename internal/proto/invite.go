@@ -13,6 +13,59 @@ import (
 // and ttl_ms (PROTOCOL.md §4.1).
 const CapTeamInvites = "team_invites"
 
+// CapInviteManage is advertised in WELCOME when the server supports
+// invite.list and invite.revoke (PROTOCOL.md §4.1).
+const CapInviteManage = "invite_manage"
+
+// Invite management ops (admin; PROTOCOL.md §5).
+const (
+	OpInviteList   = "invite.list"
+	OpInviteRevoke = "invite.revoke"
+)
+
+// Invite kinds in InviteInfo.
+const (
+	InviteKindUser  = "user"  // new member
+	InviteKindAdmin = "admin" // new admin
+	InviteKindKey   = "key"   // adds a key to an existing user
+)
+
+// InviteIDLen is the length of an invite id: the first hex digits of the
+// SHA-256 of its token. It names the invite without revealing the token.
+const InviteIDLen = 12
+
+// InviteInfo describes a live invite. The token is never returned.
+type InviteInfo struct {
+	ID        string `msgpack:"id"`
+	Kind      string `msgpack:"kind"`
+	User      uint64 `msgpack:"user,omitempty"` // add-key invites: whose key
+	UsesLeft  int64  `msgpack:"uses_left"`
+	Expires   int64  `msgpack:"expires"`
+	Created   int64  `msgpack:"created"`
+	CreatedBy uint64 `msgpack:"created_by"` // 0: made on the server host
+}
+
+type InvitesRes struct {
+	Invites []InviteInfo `msgpack:"invites"`
+}
+
+type InviteRevokeArgs struct {
+	ID string `msgpack:"id"`
+}
+
+// ValidInviteID reports whether id has the InviteInfo.ID form.
+func ValidInviteID(id string) bool {
+	if len(id) != InviteIDLen {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		if c := id[i]; !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // Invite limits (PROTOCOL.md §4.1).
 const (
 	DefaultInviteTTL = 7 * 24 * time.Hour

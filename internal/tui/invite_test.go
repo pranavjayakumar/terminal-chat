@@ -160,3 +160,77 @@ func runIfUpdate(c tea.Cmd) (tea.Msg, bool) {
 		}
 	}
 }
+
+type inviteFake struct {
+	*fakeClient
+	invites []proto.InviteInfo
+	revoked []string
+}
+
+func (f *inviteFake) ListInvites(context.Context) ([]proto.InviteInfo, error) { return f.invites, nil }
+func (f *inviteFake) RevokeInvite(_ context.Context, id string) error {
+	f.revoked = append(f.revoked, id)
+	return nil
+}
+
+func TestInviteListRevokeCommands(t *testing.T) {
+	f := &inviteFake{fakeClient: newFake()}
+	f.me.Admin = true
+	f.users[0].Admin = true // alice: the user list is what the model trusts
+	exp := time.Date(2026, 3, 4, 15, 4, 0, 0, time.Local).UnixMilli()
+	f.invites = []proto.InviteInfo{
+		{ID: "0123456789ab", Kind: proto.InviteKindUser, UsesLeft: 14, Expires: exp, CreatedBy: 1},
+		{ID: "ba9876543210", Kind: proto.InviteKindAdmin, UsesLeft: 1, Expires: exp},
+		{ID: "\x1b]52;c;x\a", Kind: "\x1b[2Jodd", UsesLeft: 1, Expires: exp, CreatedBy: 2},
+	}
+	m := New(context.Background(), f, Options{Out: &syncBuf{}, styles: testStyles(true)})
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	do := func(in string) {
+		t.Helper()
+		m.input.SetValue(in)
+		run(m, m.submit())
+	}
+
+	do("/invites")
+	for _, want := range []string{"0123456789ab team 14 left, exp Mar 4 15:04, by @alice", "ba9876543210 admin 1 left", "by server host", "by @bob"} {
+		if !strings.Contains(m.notice, want) {
+			t.Fatalf("missing %q in notice %q", want, m.notice)
+		}
+	}
+	if strings.ContainsAny(m.notice, "\x1b\a") {
+		t.Fatalf("unsanitized server text in notice %q", m.notice)
+	}
+	for _, sz := range [][2]int{{100, 30}, {40, 12}, {20, 6}} {
+		m.Update(tea.WindowSizeMsg{Width: sz[0], Height: sz[1]})
+		checkView(t, m, "invites notice")
+	}
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+
+	do("/invite-revoke 0123456789AB")
+	if len(f.revoked) != 1 || f.revoked[0] != "0123456789ab" || !strings.Contains(m.notice, "revoked") {
+		t.Fatalf("revoked %v notice %q", f.revoked, m.notice)
+	}
+	for _, in := range []string{"/invite-revoke", "/invite-revoke xyz", "/invite-revoke 0123456789ab extra", "/invites now"} {
+		do(in)
+		if !m.noticeErr || !strings.Contains(m.notice, "usage") {
+			t.Errorf("%q: notice %q", in, m.notice)
+		}
+	}
+	if len(f.revoked) != 1 {
+		t.Fatalf("bad input reached the server: %v", f.revoked)
+	}
+
+	f.invites = nil
+	do("/invites")
+	if m.notice != "no open invites" {
+		t.Fatalf("empty: %q", m.notice)
+	}
+
+	// Non-admins are told up front; nothing is sent.
+	m.me.Admin = false
+	f.users[0].Admin = false
+	do("/invite-revoke 0123456789ab")
+	if !m.noticeErr || !strings.Contains(m.notice, "only admins") || len(f.revoked) != 1 {
+		t.Fatalf("non-admin: %q %v", m.notice, f.revoked)
+	}
+}

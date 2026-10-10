@@ -136,6 +136,11 @@ func openStore(path string) (*store, error) {
 		db.Close()
 		return nil, err
 	}
+	// invite.list (PROTOCOL.md §5): who minted it; 0 = the server host.
+	if err := addColumn(db, "invites", "created_by", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := migrateHooks(db); err != nil {
 		db.Close()
 		return nil, err

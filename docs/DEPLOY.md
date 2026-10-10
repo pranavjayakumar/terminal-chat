@@ -66,6 +66,8 @@ Run the admin invite's one-liner (or `tc join '<code>'`) on your laptop.
 sudo -u tc tc server invite --data /var/lib/tc --uses 15 --ttl 72h   # one invite, 15 people, 3 days
 sudo -u tc tc server invite --data /var/lib/tc                       # one person, 7 days
 sudo -u tc tc server invite --data /var/lib/tc --admin               # another admin (single use, 24h)
+sudo -u tc tc server invite --data /var/lib/tc --list                # open invites: id, kind, uses left, expiry, creator
+sudo -u tc tc server invite --data /var/lib/tc --revoke ID           # kill a leaked invite at once
 ```
 
 Each prints a line like
@@ -75,7 +77,8 @@ curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/
 ```
 
 Teammates paste it: it installs tc and runs `tc join`. Inside tc, admins can run
-`/invite 15 3d` instead; it copies the same line. Invites are limited to 100 uses and 30 days
+`/invite 15 3d` instead; it copies the same line. `/invites` lists open invites and
+`/invite-revoke ID` revokes one. Invites are limited to 100 uses and 30 days
 (admin invites: one use, 24 hours); anyone holding one can join, so share it where only your
 team can read it.
 

@@ -51,3 +51,48 @@ func TestTeamInviteViaClient(t *testing.T) {
 		t.Fatalf("101 uses: %v", err)
 	}
 }
+
+// /invites and /invite-revoke through the real client: a revoked invite
+// stops working at once.
+func TestInviteListRevokeViaClient(t *testing.T) {
+	s, addr := startServer(t, t.TempDir(), "127.0.0.1:0")
+	admin := login(t, s, addr, "admin", true)
+	bob := login(t, s, addr, "bob", false)
+	eventually(t, "online", func() bool { return admin.online() && bob.online() })
+	ctx := context.Background()
+
+	res, err := admin.CreateTeamInvite(ctx, 5, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invs, err := admin.ListInvites(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	for _, inv := range invs {
+		if inv.Kind == proto.InviteKindUser && inv.UsesLeft == 5 && inv.CreatedBy == admin.Me().ID {
+			id = inv.ID
+		}
+	}
+	if id == "" {
+		t.Fatalf("team invite not listed: %+v", invs)
+	}
+	var pe *proto.Error
+	if _, err := bob.ListInvites(ctx); !errors.As(err, &pe) || pe.Code != proto.ErrForbidden {
+		t.Fatalf("non-admin list: %v", err)
+	}
+	if err := bob.RevokeInvite(ctx, id); !errors.As(err, &pe) || pe.Code != proto.ErrForbidden {
+		t.Fatalf("non-admin revoke: %v", err)
+	}
+	if err := admin.RevokeInvite(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var bye *client.ByeError
+	if _, err := client.Login(lctx, home, res.Code, "late", writeKey(t, home)); !errors.As(err, &bye) || bye.Code != proto.ByeInviteInvalid {
+		t.Fatalf("join with revoked invite: %v", err)
+	}
+}

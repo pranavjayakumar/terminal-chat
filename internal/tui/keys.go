@@ -85,6 +85,8 @@ var helpLines = [][2]string{
 	{"/unhighlight word…", "stop highlighting"},
 	{"/away [status], /back", "presence"},
 	{"/invite [uses] [ttl]", "invite: copies the install one-liner (admin; e.g. /invite 15 3d)"},
+	{"/invites", "open invites with ids (admin)"},
+	{"/invite-revoke id", "make an invite unusable at once (admin)"},
 	{"/share-pane [pane]", "send a herdr pane's output (preview first)"},
 	{"/group name @a @b", "user group: @name mentions them all (admin; no users deletes)"},
 	{"/groups", "list the groups"},

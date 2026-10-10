@@ -528,6 +528,25 @@ func (c *Client) CreateTeamInvite(ctx context.Context, uses int, ttl time.Durati
 	return r, err
 }
 
+// ListInvites (admin) returns the invites that can still be redeemed (cap
+// invite_manage). Tokens are never returned, only ids.
+func (c *Client) ListInvites(ctx context.Context) ([]proto.InviteInfo, error) {
+	if err := c.requireCap(proto.CapInviteManage, "listing invites"); err != nil {
+		return nil, err
+	}
+	var r proto.InvitesRes
+	err := c.call(ctx, proto.OpInviteList, proto.Empty{}, &r, nil)
+	return r.Invites, err
+}
+
+// RevokeInvite (admin) makes the invite with id unusable at once.
+func (c *Client) RevokeInvite(ctx context.Context, id string) error {
+	if err := c.requireCap(proto.CapInviteManage, "revoking invites"); err != nil {
+		return err
+	}
+	return c.call(ctx, proto.OpInviteRevoke, proto.InviteRevokeArgs{ID: id}, nil, nil)
+}
+
 // ---- ephemeral ----
 
 const typingEvery = 3 * time.Second

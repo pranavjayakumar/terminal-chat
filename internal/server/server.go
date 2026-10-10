@@ -382,6 +382,8 @@ type InviteOpts struct {
 	User  uint64 // add-key invite for this user (always single-use)
 	Uses  int
 	TTL   time.Duration
+	// CreatedBy is the admin minting it over the protocol; 0: the server host.
+	CreatedBy uint64
 }
 
 // CreateInviteOpts mints an invite that Uses people can redeem before TTL
@@ -420,12 +422,82 @@ func (s *Server) CreateInviteOpts(ctx context.Context, o InviteOpts) (proto.Invi
 	now := s.now()
 	expires := now + o.TTL.Milliseconds()
 	_, err := s.st.db.ExecContext(ctx,
-		`INSERT INTO invites (token, admin, user, created, expires, uses) VALUES (?, ?, ?, ?, ?, ?)`,
-		tokenHash(token), o.Admin, nullable(o.User), now, expires, o.Uses)
+		`INSERT INTO invites (token, admin, user, created, expires, uses, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		tokenHash(token), o.Admin, nullable(o.User), now, expires, o.Uses, o.CreatedBy)
 	if err != nil {
 		return proto.InviteRes{}, fmt.Errorf("creating invite: %w", err)
 	}
 	return proto.InviteRes{Code: proto.FormatInvite(s.cfg.PublicAddr, token, s.pin), Uses: int64(o.Uses), Expires: expires}, nil
+}
+
+// ListInvites returns the invites that can still be redeemed, soonest to
+// expire first. Tokens aren't stored, so they can't be returned.
+func (s *Server) ListInvites(ctx context.Context) ([]proto.InviteInfo, error) {
+	rows, err := s.st.db.QueryContext(ctx, `SELECT token, admin, COALESCE(user, 0), uses, expires, created, created_by
+		FROM invites WHERE used = 0 AND uses > 0 AND expires > ? ORDER BY expires, token`, s.now())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []proto.InviteInfo{}
+	for rows.Next() {
+		var hash string
+		var admin bool
+		var inv proto.InviteInfo
+		if err := rows.Scan(&hash, &admin, &inv.User, &inv.UsesLeft, &inv.Expires, &inv.Created, &inv.CreatedBy); err != nil {
+			return nil, err
+		}
+		inv.ID = hash[:proto.InviteIDLen]
+		switch {
+		case inv.User != 0:
+			inv.Kind = proto.InviteKindKey
+		case admin:
+			inv.Kind = proto.InviteKindAdmin
+		default:
+			inv.Kind = proto.InviteKindUser
+		}
+		out = append(out, inv)
+	}
+	return out, rows.Err()
+}
+
+// UserName is user id's name, or "" if there is none.
+func (s *Server) UserName(ctx context.Context, id uint64) string {
+	u, err := getUser(ctx, s.st.db, id)
+	if err != nil {
+		return ""
+	}
+	return u.Name
+}
+
+// ErrInviteNotFound: no live invite has that id.
+var ErrInviteNotFound = errors.New("no such invite (see the invite list)")
+
+var errInviteAmbiguous = errors.New("invite id matches more than one invite")
+
+// RevokeInvite deletes the live invite with id (InviteInfo.ID). It runs in
+// the same serialized write path as redemption, so a redemption either
+// finished before it or fails after.
+func (s *Server) RevokeInvite(ctx context.Context, id string) error {
+	if !proto.ValidInviteID(id) {
+		return ErrInviteNotFound
+	}
+	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
+		res, err := tx.ExecContext(ctx, `DELETE FROM invites WHERE substr(token, 1, ?) = ? AND used = 0 AND uses > 0 AND expires > ?`,
+			proto.InviteIDLen, id, s.now())
+		if err != nil {
+			return nil, err
+		}
+		switch n, _ := res.RowsAffected(); n {
+		case 0:
+			return nil, ErrInviteNotFound
+		case 1:
+			return nil, nil
+		default: // a 48-bit prefix collision: revoke neither, say so
+			return nil, errInviteAmbiguous
+		}
+	})
+	return err
 }
 
 // tokenHash is what the database stores, so lookups don't compare secrets

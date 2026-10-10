@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -253,5 +255,123 @@ func TestInviteUsesMigration(t *testing.T) {
 		st2.close()
 	} else {
 		t.Fatal(err)
+	}
+}
+
+// invite.list shows live invites without their tokens; invite.revoke kills
+// one at once. Both are admin-only.
+func TestInviteListRevoke(t *testing.T) {
+	ts := startServer(t, "tcp")
+	ctx := context.Background()
+	admin := ts.register(t, "admin", true)
+	admin.syncFresh()
+	user := ts.register(t, "user", false)
+	user.syncFresh()
+	if !containsCap(admin.welcome.Caps, proto.CapInviteManage) {
+		t.Fatalf("WELCOME caps %v lack %s", admin.welcome.Caps, proto.CapInviteManage)
+	}
+
+	var team proto.InviteRes
+	admin.ok(proto.OpInviteCreate, proto.InviteCreateArgs{Uses: 5, TTLMs: time.Hour.Milliseconds()}, &team)
+	key := teamInvite(t, ts, InviteOpts{User: user.user.ID})
+	boss := teamInvite(t, ts, InviteOpts{Admin: true})
+	// Not listed: used up, or expired.
+	used := teamInvite(t, ts, InviteOpts{})
+	if _, bye := ts.connect(t, newKey(t), used.Token, "early"); bye != "" {
+		t.Fatal(bye)
+	}
+	gone := teamInvite(t, ts, InviteOpts{TTL: time.Minute})
+	ts.st.db.Exec(`UPDATE invites SET expires = ? WHERE token = ?`, ts.now()-1, tokenHash(gone.Token))
+
+	user.fail(proto.OpInviteList, nil, proto.ErrForbidden)
+	user.fail(proto.OpInviteRevoke, proto.InviteRevokeArgs{ID: "000000000000"}, proto.ErrForbidden)
+
+	var res proto.InvitesRes
+	admin.ok(proto.OpInviteList, nil, &res)
+	if len(res.Invites) != 3 {
+		t.Fatalf("listed %+v", res.Invites)
+	}
+	byKind := map[string]proto.InviteInfo{}
+	teamInv, _ := proto.ParseInvite(team.Code)
+	for _, inv := range res.Invites {
+		byKind[inv.Kind] = inv
+		if !proto.ValidInviteID(inv.ID) {
+			t.Fatalf("bad id %q", inv.ID)
+		}
+		for _, tok := range []string{teamInv.Token, key.Token, boss.Token} {
+			if strings.Contains(inv.ID, tok) || strings.Contains(fmt.Sprintf("%+v", inv), tok) {
+				t.Fatal("token leaked in invite.list")
+			}
+		}
+	}
+	tm := byKind[proto.InviteKindUser]
+	if tm.UsesLeft != 5 || tm.CreatedBy != admin.user.ID || tm.Expires != team.Expires || tm.ID != tokenHash(teamInv.Token)[:proto.InviteIDLen] {
+		t.Fatalf("team invite %+v", tm)
+	}
+	if k := byKind[proto.InviteKindKey]; k.User != user.user.ID || k.CreatedBy != 0 || k.UsesLeft != 1 {
+		t.Fatalf("key invite %+v", k)
+	}
+	if _, ok := byKind[proto.InviteKindAdmin]; !ok {
+		t.Fatalf("admin invite missing: %+v", res.Invites)
+	}
+
+	// One redemption shows up as one use fewer.
+	if _, bye := ts.connect(t, newKey(t), teamInv.Token, "m1"); bye != "" {
+		t.Fatal(bye)
+	}
+	admin.ok(proto.OpInviteList, nil, &res)
+	for _, inv := range res.Invites {
+		if inv.ID == tm.ID && inv.UsesLeft != 4 {
+			t.Fatalf("uses left %d after a redemption", inv.UsesLeft)
+		}
+	}
+
+	admin.fail(proto.OpInviteRevoke, proto.InviteRevokeArgs{ID: "nothex"}, proto.ErrBadRequest)
+	admin.fail(proto.OpInviteRevoke, proto.InviteRevokeArgs{ID: "%"}, proto.ErrBadRequest)
+	admin.fail(proto.OpInviteRevoke, proto.InviteRevokeArgs{ID: "000000000000"}, proto.ErrNotFound)
+	admin.ok(proto.OpInviteRevoke, proto.InviteRevokeArgs{ID: tm.ID}, nil)
+	if _, bye := ts.connect(t, newKey(t), teamInv.Token, "m2"); bye != proto.ByeInviteInvalid {
+		t.Fatalf("revoked invite redeemed: %q", bye)
+	}
+	admin.fail(proto.OpInviteRevoke, proto.InviteRevokeArgs{ID: tm.ID}, proto.ErrNotFound)
+	admin.ok(proto.OpInviteList, nil, &res)
+	if len(res.Invites) != 2 {
+		t.Fatalf("after revoke: %+v", res.Invites)
+	}
+
+	// The server-host API used by `tc server invite --revoke`.
+	if err := ts.RevokeInvite(ctx, byKind[proto.InviteKindAdmin].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, bye := ts.connect(t, newKey(t), boss.Token, "boss"); bye != proto.ByeInviteInvalid {
+		t.Fatalf("revoked admin invite redeemed: %q", bye)
+	}
+	if err := ts.RevokeInvite(ctx, "zz"); !errors.Is(err, ErrInviteNotFound) {
+		t.Fatalf("bad id: %v", err)
+	}
+}
+
+// Invites from before created_by existed list as made on the server host.
+func TestInviteCreatedByMigration(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "tc.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE invites (token TEXT PRIMARY KEY, admin INTEGER NOT NULL DEFAULT 0,
+		user INTEGER, created INTEGER NOT NULL, expires INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0,
+		uses INTEGER NOT NULL DEFAULT 1);
+		INSERT INTO invites (token, created, expires) VALUES ('abc', 0, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	st, err := openStore(filepath.Join(dir, "tc.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.close()
+	var by int64
+	if err := st.db.QueryRow(`SELECT created_by FROM invites WHERE token = 'abc'`).Scan(&by); err != nil || by != 0 {
+		t.Fatalf("created_by %d %v", by, err)
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/skailama/tc/internal/proto"
+	"github.com/skailama/tc/internal/sanitize"
 	"github.com/skailama/tc/internal/server"
 	"github.com/skailama/tc/internal/transport"
 )
@@ -83,9 +84,11 @@ func cmdServer(args []string) error {
 
 // serverInviteCmd is a parsed `tc server invite`.
 type serverInviteCmd struct {
-	data string
-	opts server.InviteOpts
-	raw  bool
+	data   string
+	opts   server.InviteOpts
+	raw    bool
+	list   bool   // --list: show open invites instead
+	revoke string // --revoke ID
 }
 
 func parseServerInvite(args []string) (serverInviteCmd, error) {
@@ -96,6 +99,8 @@ func parseServerInvite(args []string) (serverInviteCmd, error) {
 	fs.IntVar(&c.opts.Uses, "uses", 1, fmt.Sprintf("how many people can join with it (1-%d)", proto.MaxInviteUses))
 	fs.DurationVar(&c.opts.TTL, "ttl", proto.DefaultInviteTTL, "how long it stays valid (at most 720h; admin: 24h)")
 	fs.BoolVar(&c.raw, "raw", false, "print only the tc:// code")
+	fs.BoolVar(&c.list, "list", false, "list open invites (ids, kind, uses left, expiry, creator); tokens are never shown")
+	fs.StringVar(&c.revoke, "revoke", "", "make the invite with this id (from --list) unusable at once")
 	if err := fs.Parse(args); err != nil {
 		return c, errUsage
 	}
@@ -104,6 +109,21 @@ func parseServerInvite(args []string) (serverInviteCmd, error) {
 	}
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if c.list || set["revoke"] {
+		if c.list && set["revoke"] {
+			return c, errors.New("use --list or --revoke, not both")
+		}
+		for _, f := range []string{"admin", "uses", "ttl", "raw"} {
+			if set[f] {
+				return c, fmt.Errorf("--%s doesn't go with --list or --revoke", f)
+			}
+		}
+		c.revoke = strings.ToLower(strings.TrimSpace(c.revoke))
+		if set["revoke"] && !proto.ValidInviteID(c.revoke) {
+			return c, fmt.Errorf("--revoke takes the %d-character id from --list", proto.InviteIDLen)
+		}
+		return c, nil
+	}
 	if c.opts.Admin {
 		if c.opts.Uses != 1 {
 			return c, errors.New("--admin invites are single-use: drop --uses")
@@ -128,7 +148,23 @@ func cmdServerInvite(args []string) error {
 		return err
 	}
 	defer srv.Close()
-	inv, err := srv.CreateInviteOpts(context.Background(), c.opts)
+	ctx := context.Background()
+	switch {
+	case c.list:
+		invs, err := srv.ListInvites(ctx)
+		if err != nil {
+			return err
+		}
+		printInvites(os.Stdout, invs, func(id uint64) string { return srv.UserName(ctx, id) })
+		return nil
+	case c.revoke != "":
+		if err := srv.RevokeInvite(ctx, c.revoke); err != nil {
+			return err
+		}
+		fmt.Printf("Revoked invite %s; it can't be used any more.\n", c.revoke)
+		return nil
+	}
+	inv, err := srv.CreateInviteOpts(ctx, c.opts)
 	if err != nil {
 		return err
 	}
@@ -155,6 +191,36 @@ func printInvite(w io.Writer, inv proto.InviteRes, version string) {
 		fmt.Fprintf(w, "  %s\n\n", cmd)
 	}
 	fmt.Fprintf(w, "Already have tc? Run:\n\n  tc join '%s'\n\n", inv.Code)
+}
+
+// printInvites is the --list table. Names come from the server's own
+// database but still pass through sanitize.Line.
+func printInvites(w io.Writer, invs []proto.InviteInfo, name func(uint64) string) {
+	if len(invs) == 0 {
+		fmt.Fprintln(w, "No open invites.")
+		return
+	}
+	fmt.Fprintf(w, "%-12s  %-14s  %9s  %-17s  %s\n", "ID", "KIND", "USES LEFT", "EXPIRES", "CREATED BY")
+	for _, inv := range invs {
+		kind := sanitize.Line(inv.Kind)
+		if inv.Kind == proto.InviteKindKey {
+			kind = "key for " + who(inv.User, name)
+		}
+		by := "server host"
+		if inv.CreatedBy != 0 {
+			by = who(inv.CreatedBy, name)
+		}
+		fmt.Fprintf(w, "%-12s  %-14s  %9d  %-17s  %s\n", sanitize.Line(inv.ID), kind, inv.UsesLeft,
+			time.UnixMilli(inv.Expires).Format("Jan 2 15:04 MST"), by)
+	}
+	fmt.Fprintln(w, "\nRevoke one with: tc server invite --revoke ID")
+}
+
+func who(id uint64, name func(uint64) string) string {
+	if n := sanitize.Line(name(id)); n != "" {
+		return "@" + n
+	}
+	return fmt.Sprintf("user %d", id)
 }
 
 func firstRun(srv *server.Server) (bool, error) { return srv.UserCount() == 0, nil }
