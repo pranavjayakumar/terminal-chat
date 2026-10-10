@@ -435,7 +435,8 @@ func (c *Client) saveMsg(q dbtx, m *proto.Message, replace bool, memo *keyMemo) 
 	return sec, nil
 }
 
-// reopenBatch is how many waiting messages one reopenMsgs pass re-judges.
+// reopenBatch is how many waiting messages one reopenMsgs pass re-judges
+// (Client.reopenBatch; tests shrink it).
 const reopenBatch = 1000
 
 // reopenMsgs is the lazy decrypt queue: it re-judges cached messages that
@@ -463,7 +464,7 @@ func (c *Client) reopenMsgs(sid e2ecrypto.ServerID, chans []proto.Channel) {
 	// many that never open (a member's replies to a root we don't have)
 	// can't keep newer ones from being re-checked.
 	rows, err := c.db.Query(`SELECT `+msgCols+`, enc, denc, COALESCE(mid, cmid) FROM msgs WHERE sec = ? AND id > ? ORDER BY id LIMIT ?`,
-		SecWaiting, c.reopenAfter, reopenBatch)
+		SecWaiting, c.reopenAfter, c.reopenBatch)
 	if err != nil {
 		return
 	}
@@ -482,7 +483,7 @@ func (c *Client) reopenMsgs(sid e2ecrypto.ServerID, chans []proto.Channel) {
 		}
 	}
 	rows.Close()
-	if len(waiting) < reopenBatch {
+	if len(waiting) < c.reopenBatch {
 		c.reopenAfter = 0
 	} else {
 		c.reopenAfter = waiting[len(waiting)-1].m.ID

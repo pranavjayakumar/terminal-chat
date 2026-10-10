@@ -903,9 +903,9 @@ func TestEncRecoversFromPoisonedBox(t *testing.T) {
 // we don't have) can't keep a later one from being re-checked: the queue
 // walks them batch by batch (step 12 security pass).
 func TestEncReopenQueueNoStarvation(t *testing.T) {
-	d := newEncDM(t, proto.Snapshot{})
+	d := newEncDMWith(t, proto.Snapshot{}, func(c *Client) { c.reopenBatch = 20 })
 	var last uint64
-	for i := 0; i < reopenBatch+5; i++ {
+	for i := 0; i < 25; i++ {
 		enc := sealAs(t, d.b1.dev, d.k1, 1, d.e1, plainMsg{T: "msg", TS: 1, Body: "junk", ThreadRef: make([]byte, 16)})
 		last = d.f.post(proto.Message{Chan: dm, Author: bob, Thread: 5, Enc: enc})
 	}

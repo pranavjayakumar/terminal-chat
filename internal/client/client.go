@@ -210,7 +210,8 @@ type Client struct {
 	needSent     map[uint64]time.Time
 	shared       map[shareKey]time.Time
 	autoTried    map[uint64]time.Time
-	reopenAfter  uint64                  // reopenMsgs' cursor (under e2eMu)
+	reopenAfter  uint64 // reopenMsgs' cursor (under e2eMu)
+	reopenBatch  int
 	poisonSeen   map[[2]uint64]time.Time // (chan, epoch) → when our box there first proved unusable
 	probed       map[uint64]uint32       // channel → highest waiting-message epoch fetched ahead for, this session
 	badCerts     map[[32]byte]struct{}   // hashes of certs that failed verification
@@ -300,7 +301,7 @@ func Open(home string) (*Client, error) {
 		obChanged: make(chan struct{}), timing: defaultTiming,
 		e2eKick: make(chan struct{}, 1), keyNeeds: make(chan proto.Ephemeral, 32),
 		e2eSoft: map[uint64]string{}, needSent: map[uint64]time.Time{}, shared: map[shareKey]time.Time{},
-		autoTried: map[uint64]time.Time{}, poisonSeen: map[[2]uint64]time.Time{}, badCerts: map[[32]byte]struct{}{}, probed: map[uint64]uint32{},
+		autoTried: map[uint64]time.Time{}, poisonSeen: map[[2]uint64]time.Time{}, reopenBatch: reopenBatch, badCerts: map[[32]byte]struct{}{}, probed: map[uint64]uint32{},
 	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	c.me = users[cfg.UserID]
