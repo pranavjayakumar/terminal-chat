@@ -20,7 +20,7 @@ cut release v0.2.0, redeploy the droplet, hand the owner the one-line install/in
 → tag v0.2.0 (release workflow builds binaries) → redeploy droplet with the release binary
 (`docs/DEPLOY.md`) → test the one-liner from a clean HOME → give the owner the command → update this file → pause.
 
-**Rules:** kiro hard cap 55–60% of monthly credits (check `kiro-cli chat --no-interactive "/usage"`; stop at 55%).
+**Rules:** kiro hard cap 55–60% of monthly credits; once reached, run workers as Claude subagents (owner) (check `kiro-cli chat --no-interactive "/usage"`; stop at 55%).
 Claude only orchestrates (review/merge/log); workers on kiro, launched with herdr env vars unset. Merge only with
 `gh pr checks <n> --watch` exit 0 (CI works again since the repo is public). Log every event in `docs/WORKLOG.md`.
 

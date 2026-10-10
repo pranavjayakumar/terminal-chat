@@ -17,3 +17,4 @@ The current resume point always lives in [STATUS.md](STATUS.md) → "Handoff".
 - 11:40 · Switched Claude account; resumed from handoff
 - 11:45 · M4 onboarding built (kiro) · PR #34 · security review (kiro Sonnet): H1 release trust root, M1–M4, L1–L7
 - 11:50 · M4 security fixes · kiro Opus in .claude/worktrees/kiro-onboard (branch m4-onboarding) · running · signed releases with the owner's SSH key (signing step done locally by the coordinator at release time) · kiro 48.3%
+- 12:30 · Owner: if kiro reaches the cap, run workers as Claude subagents · kiro 50.3%
