@@ -1377,6 +1377,18 @@ func (c *Client) e2eStatus(sid e2ecrypto.ServerID, ch proto.Channel) E2EStatus {
 		st.State, st.Detail = E2EUnverified, soft
 		return st
 	}
+	if hasHead && max(ch.Epoch, c.cachedMaxEpoch(ch.ID)) <= head.Epoch {
+		// Caught up, and still someone in the member list that no verified
+		// epoch includes: only an unsigned chan.join put them there.
+		if un := c.unconfirmed(sid, ch); len(un) > 0 {
+			names := make([]string, len(un))
+			for i, u := range un {
+				names[i] = "@" + sanitize.Line(c.User(u).Name)
+			}
+			st.State, st.Detail = E2EAlarm, unconfirmedPrefix+strings.Join(names, ", ")
+			return st
+		}
+	}
 	if !hasHead {
 		st.State, st.Detail = E2EWaitingKey, "the channel has no key yet"
 		if ch.Epoch > 0 {

@@ -527,7 +527,7 @@ func (c *Client) sendAllowed(ch uint64) error {
 	if !c.needsEnc(ch) {
 		return nil
 	}
-	if st := c.E2EStatus(ch); st.State == E2EAlarm {
+	if st := c.E2EStatus(ch); st.State == E2EAlarm && !unconfirmedAlarm(st) {
 		return fmt.Errorf("%w (%s)", ErrE2EAlarm, sanitize.Line(st.Detail))
 	}
 	return nil
@@ -574,9 +574,24 @@ func (c *Client) seal(sid e2ecrypto.ServerID, dev *e2ecrypto.DeviceKeys, ep trus
 		e2ecrypto.EpochHash(ep.Hash[:e2ecrypto.IDSize]), dev.ID, raw)
 }
 
-// rosterNow is ch's current non-disabled members, sorted (what a fresh
-// bundle's roster must be).
+// rosterNow is who a fresh bundle of ch seals to: its current
+// non-disabled members, sorted, and — once the channel has a verified
+// epoch — only those that epoch includes. The member list is the
+// server's word; a verified epoch is a member's (§13.3: the rotator was in
+// the previous roster), so a user the server alone added (an unsigned
+// chan.join; honest adds carry the next epoch) is unconfirmed and never
+// sealed to. Before epoch 1 the member list is all there is: its creator
+// builds epoch 1 from it.
 func (c *Client) rosterNow(ch proto.Channel) []uint64 {
+	r := c.liveMembers(ch)
+	if head, ok := c.headRoster(ch.ID); ok {
+		r = slices.DeleteFunc(r, func(u uint64) bool { return !slices.Contains(head, u) })
+	}
+	return r
+}
+
+// liveMembers is ch's non-disabled members, sorted.
+func (c *Client) liveMembers(ch proto.Channel) []uint64 {
 	c.mu.Lock()
 	var r []uint64
 	for _, u := range ch.Members {
@@ -587,6 +602,45 @@ func (c *Client) rosterNow(ch proto.Channel) []uint64 {
 	c.mu.Unlock()
 	slices.Sort(r)
 	return slices.Compact(r)
+}
+
+// headRoster is the roster of ch's verified head; ok is false before the
+// channel has one.
+func (c *Client) headRoster(ch uint64) ([]uint64, bool) {
+	sid, ok := c.cacheServerID()
+	if !ok {
+		return nil, false
+	}
+	head, ok, err := c.trust.ChainHead(sid, ch)
+	if err != nil || !ok {
+		return nil, false
+	}
+	ep, ok, err := c.trust.Epoch(sid, ch, head.Epoch)
+	if err != nil || !ok {
+		return nil, false
+	}
+	return ep.Roster, true
+}
+
+// unconfirmedPrefix starts the E2EStatus alarm for members no verified
+// epoch includes.
+const unconfirmedPrefix = "membership not confirmed by a member: "
+
+// unconfirmed lists ch's live members that its verified head doesn't
+// include (none before epoch 1).
+func (c *Client) unconfirmed(sid e2ecrypto.ServerID, ch proto.Channel) []uint64 {
+	head, ok := c.headRoster(ch.ID)
+	if !ok {
+		return nil
+	}
+	return slices.DeleteFunc(c.liveMembers(ch), func(u uint64) bool { return slices.Contains(head, u) })
+}
+
+// unconfirmedAlarm: st is the alarm for unconfirmed members, which also
+// shows for a moment between an honest add's chan.join and its key.epoch,
+// so senders wait a little before failing on it.
+func unconfirmedAlarm(st E2EStatus) bool {
+	return st.State == E2EAlarm && strings.HasPrefix(st.Detail, unconfirmedPrefix)
 }
 
 // sealOffline encrypts a new outbox entry right away when this device holds
@@ -606,7 +660,7 @@ func (c *Client) sealOffline(e outboxEntry) []byte {
 		return nil
 	}
 	ep, ok, err := c.trust.Epoch(sid, e.chan_, head.Epoch)
-	if err != nil || !ok || ep.Key == nil || !slices.Equal(ep.Roster, c.rosterNow(ch)) {
+	if err != nil || !ok || ep.Key == nil || !slices.Equal(ep.Roster, c.liveMembers(ch)) {
 		return nil
 	}
 	dev, err := c.trust.DeviceKeys(sid, c.Me().ID)
@@ -640,7 +694,7 @@ func (c *Client) encCurrent(e outboxEntry) bool {
 		return false
 	}
 	ep, ok, err := c.trust.Epoch(sid, e.chan_, head.Epoch)
-	return err == nil && ok && ep.Key != nil && slices.Equal(ep.Roster, c.rosterNow(ch))
+	return err == nil && ok && ep.Key != nil && slices.Equal(ep.Roster, c.liveMembers(ch)) // not rosterNow: an unconfirmed member must reach sealWith
 }
 
 // sealEntry encrypts an outbox entry for sending (§13.4 "Sending"): it
@@ -719,6 +773,12 @@ func (c *Client) sealWith(ctx context.Context, s *session, chID uint64, prev []b
 			return nil, err
 		}
 		st := c.e2eStatus(sid, ch)
+		if unconfirmedAlarm(st) && attempt < attempts-1 {
+			if err := behind(attempt); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if st.State == E2EAlarm {
 			return nil, failErr{"encryption alarm: " + sanitize.Line(st.Detail)}
 		}
