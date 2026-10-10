@@ -14,3 +14,7 @@ The current resume point always lives in [STATUS.md](STATUS.md) → "Handoff".
 - 09:00 · Owner: finish M3 + M4 end to end, then pause; kiro cap 55–60% (now 46.8%); Claude orchestrates only
 - 10:30 · E2E step 11 merged · PR #32 (CI green — Actions back after repo went public) · 24 cases; bug fixed: dropped key.epoch left clients stuck
 - 10:35 · E2E step 12 (chaos during rotations, signed-time drift, security pass, fuzz, docs) · kiro Opus, worktree .claude/worktrees/kiro-step12, branch e2e/final-pass · running · kiro 47.0%
+- 11:40 · Switched Claude account; resumed from handoff
+- 11:45 · M4 onboarding built (kiro) · PR #34 · security review (kiro Sonnet): H1 release trust root, M1–M4, L1–L7
+- 11:50 · M4 security fixes · kiro Opus in .claude/worktrees/kiro-onboard (branch m4-onboarding) · running · signed releases with the owner's SSH key (signing step done locally by the coordinator at release time) · kiro 48.3%
+- 12:30 · Owner: if kiro reaches the cap, run workers as Claude subagents · kiro 50.3%

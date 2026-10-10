@@ -10,15 +10,17 @@ cut release v0.2.0, redeploy the droplet, hand the owner the one-line install/in
 **In flight**
 - E2E step 12 (final pass) — kiro; worktree `.claude/worktrees/kiro-step12`, branch `e2e/final-pass`: chaos during
   rotations, signed-time drift marker, security pass (findings → docs/E2E.md), fuzzing, docs; closes M3.
-- M4 onboarding — kiro; worktree `.claude/worktrees/kiro-onboard`, branch `m4-onboarding`; release workflow,
-  install.sh, `tc join`, invite one-liner, multi-use invites, `tc update`.
+- M4 onboarding — PR #34 (branch `m4-onboarding`, worktree `.claude/worktrees/kiro-onboard`); kiro is applying the
+  security review fixes: SSH-signed releases (owner signs `checksums.txt` locally via `make release-sign`), pinned
+  install URL, least-privilege release workflow, admin invites single-use, `invite.list/revoke`, https-only.
+  Release v0.2.0 requires: embed the owner's signing public key constant, tag, wait for the draft, `make release-sign`.
 - Step 11 is DONE (PR #32).
 
 **Next (in order):** review + merge M4 and step 12 (whichever lands first; run protocol/security review on each)
 → tag v0.2.0 (release workflow builds binaries) → redeploy droplet with the release binary
 (`docs/DEPLOY.md`) → test the one-liner from a clean HOME → give the owner the command → update this file → pause.
 
-**Rules:** kiro hard cap 55–60% of monthly credits (check `kiro-cli chat --no-interactive "/usage"`; stop at 55%).
+**Rules:** kiro hard cap 55–60% of monthly credits; once reached, run workers as Claude subagents (owner) (check `kiro-cli chat --no-interactive "/usage"`; stop at 55%).
 Claude only orchestrates (review/merge/log); workers on kiro, launched with herdr env vars unset. Merge only with
 `gh pr checks <n> --watch` exit 0 (CI works again since the repo is public). Log every event in `docs/WORKLOG.md`.
 
