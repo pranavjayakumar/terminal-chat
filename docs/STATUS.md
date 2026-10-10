@@ -10,14 +10,11 @@ cut release v0.2.0, redeploy the droplet, hand the owner the one-line install/in
 **In flight**
 - E2E step 12 (final pass) — kiro; worktree `.claude/worktrees/kiro-step12`, branch `e2e/final-pass`: chaos during
   rotations, signed-time drift marker, security pass (findings → docs/E2E.md), fuzzing, docs; closes M3.
-- M4 onboarding — PR #34 (branch `m4-onboarding`, worktree `.claude/worktrees/kiro-onboard`); kiro is applying the
-  security review fixes: SSH-signed releases (owner signs `checksums.txt` locally via `make release-sign`), pinned
-  install URL, least-privilege release workflow, admin invites single-use, `invite.list/revoke`, https-only.
-  Release v0.2.0 requires: embed the owner's signing public key constant, tag, wait for the draft, `make release-sign`.
+- M4 onboarding — DONE (PR #34). Signing key (owner's ~/.ssh/id_ed25519 public half) embedded.
 - Step 11 is DONE (PR #32).
 
-**Next (in order):** review + merge M4 and step 12 (whichever lands first; run protocol/security review on each)
-→ tag v0.2.0 (release workflow builds binaries) → redeploy droplet with the release binary
+**Next (in order):** review + merge step 12 (run a security review on it) → `git tag v0.2.0 && git push origin v0.2.0`
+→ `gh run watch` (draft release) → `make release-sign TAG=v0.2.0 KEY=~/.ssh/id_ed25519` → tag v0.2.0 done (release workflow builds binaries) → redeploy droplet with the release binary
 (`docs/DEPLOY.md`) → test the one-liner from a clean HOME → give the owner the command → update this file → pause.
 
 **Rules:** kiro hard cap 55–60% of monthly credits; once reached, run workers as Claude subagents (owner) (check `kiro-cli chat --no-interactive "/usage"`; stop at 55%).
