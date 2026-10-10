@@ -80,6 +80,15 @@ type Backend interface {
 	DeleteReminder(ctx context.Context, id uint64) error
 	// E2EStatus is an encrypted channel's key state (Off for others).
 	E2EStatus(ch uint64) client.E2EStatus
+	// Trust UX (local; VerifyGitHub fetches from GitHub).
+	UnverifiedUsers() []uint64
+	SafetyNumber(user uint64) (client.SafetyNumber, error)
+	MarkVerified(user uint64, digits string) error
+	VerifyGitHub(ctx context.Context, user uint64, login string) (client.GitHubCheck, error)
+	KeyChangedMembers(ch uint64) []uint64
+	AcceptKeyChange(user uint64) error
+	Alarm(ch uint64) (client.AlarmInfo, bool)
+	ClearAlarm(ch uint64) error
 }
 
 var _ Backend = (*client.Client)(nil)

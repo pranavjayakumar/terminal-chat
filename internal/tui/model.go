@@ -34,6 +34,7 @@ const (
 	modeActivity
 	modeViewer
 	modeList
+	modeVerify
 )
 
 // pane is a scrollable message list: a channel (root 0) or a thread.
@@ -132,6 +133,12 @@ type Model struct {
 	list       listState
 
 	jump jumpState
+
+	unverified map[uint64]bool     // users trusted only on first use (e2e channels)
+	keyChg     map[uint64][]uint64 // e2e channel → members with an unacknowledged key change
+	hinted     map[uint64]bool     // channels that showed the "?" hint this run
+	verify     verifyState
+	noticeDim  bool // the notice is a quiet hint
 }
 
 // ---- tea messages ----
@@ -309,8 +316,10 @@ func (m *Model) reloadChans() {
 	if cur, ok := m.e2e[m.active]; ok && hadPrev && prev.Epoch > 0 && cur.Epoch > prev.Epoch && cur.State == client.E2EOK {
 		m.setInfo(fmt.Sprintf("🔒 new channel key (epoch %d)", cur.Epoch))
 	}
+	m.refreshTrust()
 	m.refreshHighlights()
 	m.refreshMentionNames()
+	defer m.unverifiedHint()
 	if m.active != 0 {
 		if v, ok := m.chanView(m.active); !ok || (!v.Member && !v.Removed && v.Kind != proto.ChanPublic) {
 			// Left or removed: fall back to something we're in.
@@ -454,6 +463,7 @@ func (m *Model) openChannel(ch uint64) tea.Cmd {
 		cmds = append(cmds, m.call("join", func(ctx context.Context) error { return m.c.Join(ctx, ch) }))
 	}
 	cmds = append(cmds, m.markRead(), m.typingTick())
+	m.unverifiedHint()
 	if len(m.main.msgs) < 30 {
 		cmds = append(cmds, m.fetchHistory(ch))
 	}
@@ -633,6 +643,7 @@ func (m *Model) setHint(s string) { m.setNotice(s, false, true, 0) }
 
 func (m *Model) setNotice(s string, isErr, sticky bool, ttl time.Duration) {
 	m.notice, m.noticeErr, m.noticeSticky, m.noticeTTL = sanitize.Line(s), isErr, sticky, ttl
+	m.noticeDim = false
 	m.noticeGen++
 }
 
@@ -640,7 +651,7 @@ func (m *Model) clearNotice() {
 	if m.notice == "" {
 		return
 	}
-	m.notice, m.noticeErr, m.noticeSticky = "", false, false
+	m.notice, m.noticeErr, m.noticeSticky, m.noticeDim = "", false, false, false
 	m.noticeGen++
 }
 
@@ -746,6 +757,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.checkAway()
 	case panesMsg:
 		return m, m.gotPanes(msg)
+	case verifyGHMsg:
+		m.gotVerifyGH(msg)
+		return m, nil
 	case snippetMsg:
 		m.gotSnippet(msg)
 		return m, nil
@@ -952,6 +966,9 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 		return nil
 	case modeHelp:
 		m.helpKey(key)
+		return nil
+	case modeVerify:
+		m.verifyKey(key)
 		return nil
 	case modeViewer:
 		if key == kSelCopy {

@@ -41,6 +41,7 @@ type fakeClient struct {
 	pinOrder []uint64 // pinned message ids, newest pin first
 	e2eSt    map[uint64]client.E2EStatus
 	addErr   error
+	tr       fakeTrust
 
 	groups    []proto.Group
 	reminders []proto.Reminder

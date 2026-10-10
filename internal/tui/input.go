@@ -172,6 +172,11 @@ func (m *Model) submit() tea.Cmd {
 		m.setErr("", fmt.Errorf("not sent: this channel's encryption is in alarm (%s)", sanitize.Line(st.Detail)))
 		return nil
 	}
+	if us := m.keyChg[p.ch]; len(us) > 0 {
+		n := m.atName(us[0])
+		m.setErr("", fmt.Errorf("not sent: %s's key changed — /verify %s or /accept-key %s first", n, n, n))
+		return nil
+	}
 	if err := m.c.Send(p.ch, body, p.root); err != nil {
 		m.setErr("send", err)
 		return nil
@@ -445,6 +450,9 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 			res, err := be.Search(ctx, q, 0)
 			return searchMsg{q, res, err}
 		}, nil
+	}
+	if cmd, ok, err := m.trustCommand(c); ok {
+		return cmd, err
 	}
 	if ok, err := m.highlightCommand(c); ok {
 		return nil, err

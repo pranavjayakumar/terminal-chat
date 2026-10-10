@@ -20,6 +20,7 @@ type dims struct {
 	msgW, thrW     int
 	split, thrFull bool
 	inputH, bodyH  int
+	banner         bool // the key-change banner row under the header
 }
 
 // statusRows is the notice/typing row. It is always reserved so the log
@@ -61,7 +62,12 @@ func (m *Model) dims() dims {
 	if m.mode != modeReact {
 		d.inputH = min(inputLines(m.input.Value(), d.mainW-2), m.inputMax())
 	}
-	d.bodyH = max(m.h-1-statusRows-1-d.inputH, 0)
+	d.banner = m.bannerText() != ""
+	extra := 0
+	if d.banner {
+		extra = 1
+	}
+	d.bodyH = max(m.h-1-extra-statusRows-1-d.inputH, 0)
 	return d
 }
 
@@ -180,6 +186,9 @@ func (m *Model) mainColumn(d dims) []string {
 	w := d.mainW
 	out := make([]string, 0, m.h)
 	out = append(out, fit(m.headerLine(w), w))
+	if d.banner {
+		out = append(out, fit(m.st.noticeErr.Render(truncate(m.bannerText(), w)), w))
+	}
 	out = append(out, m.bodyLines(d)...)
 	out = append(out, fit(m.statusLine(w), w))
 	out = append(out, m.st.border.Render(strings.Repeat("─", w)))
@@ -214,6 +223,8 @@ func (m *Model) bodyLines(d dims) []string {
 	switch m.mode {
 	case modeHelp:
 		return m.helpLines(w, h)
+	case modeVerify:
+		return m.verifyLines(w, h)
 	case modeSwitcher:
 		return m.switcherLines(w, h)
 	case modeSearch:
@@ -292,7 +303,7 @@ func (m *Model) statusLine(w int) string {
 		switch {
 		case m.noticeErr:
 			b.WriteString(m.st.noticeErr.Render("! " + m.notice))
-		case m.noticeTTL == escWindow || m.noticeSticky:
+		case m.noticeTTL == escWindow || m.noticeSticky || m.noticeDim:
 			b.WriteString(m.st.dim.Render(m.notice))
 		default:
 			b.WriteString(m.st.noticeInfo.Render(m.notice))
@@ -361,8 +372,14 @@ func (m *Model) headerLeft(w int) string {
 	}
 	v, _ := m.chanView(m.active)
 	b.WriteString(m.st.header.Render(m.chanTitle(m.active)))
+	if m.dmUnverified(v) {
+		b.WriteString(m.st.dim.Render("?"))
+	}
 	if st, ok := m.e2e[m.active]; ok {
 		b.WriteString(" 🔒")
+		if n := len(m.unverifiedIn(m.active)); n > 0 && v.Kind != proto.ChanDM {
+			b.WriteString(m.st.dim.Render(fmt.Sprintf(" ?%d unverified", n)))
+		}
 		switch st.State {
 		case client.E2EWaitingKey:
 			b.WriteString(m.st.dim.Render(" waiting for key"))
