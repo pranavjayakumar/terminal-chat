@@ -288,7 +288,8 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    admin's delete is unsigned and shows "removed (not by author)"; deleted messages keep `del_enc`
    (`Message.del_enc`) so a fresh device can tell, comparing `ref` with the mid only when it knows it.
    Reaction tags are `"~" + base64url(HMAC(mk, "tc-react"‖mid‖emoji)[:12])`; `Message.renc` carries each
-   reaction's enc; removes need no proof (a server can always withhold a reaction). The server's
+   reaction's enc; removes need no proof (a server can always withhold a reaction), and a server can
+   replay a reaction its author since removed (adds carry no version; accepted for v1). The server's
    `edited` and tag map are never shown for encrypted messages. Edits of a waiting message (or whose key
    or device is missing) and unjudgeable reactions are kept (cache `epend`, `rencs`) and retried by the
    e2e worker. Rejections go to a bounded in-memory log (`Client.E2ERejects`). Local search stays the
