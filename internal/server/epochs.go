@@ -462,12 +462,20 @@ func (s *Server) rotateTx(ctx context.Context, tx *sql.Tx, u proto.User, ch uint
 			return none, proto.Errf(proto.ErrForbidden, "only the channel's creator may create epoch 1")
 		}
 	}
+	// dispatch checked "disabled" before the write lock: a user disabled
+	// meanwhile must not commit a rotation (they'd hold the new K).
+	if s.disabled[u.ID] {
+		return none, proto.Errf(proto.ErrUnauthorized, "account disabled")
+	}
 	roster, err := rosterOf(ctx, tx, ch)
 	if err != nil {
 		return none, err
 	}
 	if !slices.Equal(eb.Roster, roster) {
 		return none, staleEpoch("roster is not the channel's current members")
+	}
+	if !slices.Contains(roster, u.ID) {
+		return none, proto.Errf(proto.ErrForbidden, "only members of the new epoch may rotate")
 	}
 	devs, owners, err := rosterDevices(ctx, tx, roster)
 	if err != nil {

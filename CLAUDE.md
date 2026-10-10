@@ -61,7 +61,7 @@ appear to hang. Pick dependency versions whose `go` directive is ≤ 1.25.
 ```
 make build        # ./bin/tc
 make test         # go test -race ./...
-make fuzz         # short fuzz run on proto decoder, sanitizer, e2ecrypto
+make fuzz         # every untrusted-input decoder, 30 s each (FUZZTIME=60s for longer)
 make lint         # go vet + staticcheck (if installed)
 make dev          # local server on :7443 with ./dev-data
 ```
@@ -92,8 +92,8 @@ Local two-user test: `make dev`, then in two panes
 - **M0** scaffold, spec, agents, CI  ✓
 - **M1** core text chat: server, auth, channels, DMs, sync, reconnect, TUI  ✓
 - **M2** herdr, notifications, webhooks, display names, `tc notify`, activity view (docs/ROADMAP.md)  ← in progress
-- **M3** end-to-end encryption for DMs + private channels (docs/E2E.md)  ← in progress (steps 1–3 done)
-- **M4** zero-setup onboarding: install-command invites, `tc join`, brew, `tc update`  ← in progress (branch m4-onboarding)
+- **M3** end-to-end encryption for DMs + private channels (docs/E2E.md)  ✓ (steps 1–12)
+- **M4** zero-setup onboarding: install-command invites, `tc join`, `tc update`, signed releases  ✓
 - **M5** voice huddles (QUIC datagrams, Opus)
 
 ## Herdr

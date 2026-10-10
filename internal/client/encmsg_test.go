@@ -37,8 +37,17 @@ type encDM struct {
 
 func newEncDM(t *testing.T, sn proto.Snapshot) *encDM {
 	t.Helper()
+	return newEncDMWith(t, sn, nil)
+}
+
+// newEncDMWith is newEncDM with prep run on the client before it starts.
+func newEncDMWith(t *testing.T, sn proto.Snapshot, prep func(*Client)) *encDM {
+	t.Helper()
 	fs, c := e2eClient(t)
 	c.timing.devWait = 5 * time.Second
+	if prep != nil {
+		prep(c)
+	}
 	run(t, c)
 	d := &encDM{fs: fs, c: c, b1: newPeer(t, bob, nil), k1: newK(t)}
 	sn.Chans = append(sn.Chans, dmChan(0))
@@ -776,5 +785,170 @@ func TestConfirmedJoinNoAlarm(t *testing.T) {
 	cv, _, _ := getChan(d.c.db, dm)
 	if r := d.c.rosterNow(cv); !slices.Equal(r, []uint64{alice, bob, carol}) {
 		t.Fatalf("sealing roster %v", r)
+	}
+}
+
+// The server shows a DM encrypted, stalls devices.list so the e2e worker
+// never reaches the channel, then claims it's plaintext: queued messages
+// must not go out in the clear (step 12 security pass: the e2e flag is
+// sticky from the first sight, not from the worker's first pass).
+func TestEncStickyFlagBeforeWorker(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	hold := make(chan struct{})
+	t.Cleanup(func() { close(hold) })
+	f := startE2EWith(t, fs, proto.Snapshot{Chans: []proto.Channel{dmChan(0)}}, proto.DevicesListRes{},
+		func(f *e2eFake) { f.devHold = hold })
+	waitFor(t, "dm cached", func() bool { _, ok, _ := getChan(c.db, dm); return ok })
+	if err := c.Send(dm, "first secret", 0); err != nil {
+		t.Fatal(err)
+	}
+	plain := dmChan(0)
+	plain.E2E = false
+	f.event(proto.KChanUpdate, dm, bob, plain)
+	waitFor(t, "update applied", func() bool { cv, _, _ := getChan(c.db, dm); return !cv.E2E })
+	if err := c.Send(dm, "second secret", 0); err != nil && !errors.Is(err, ErrE2EAlarm) {
+		t.Logf("second send: %v", err)
+	}
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case a := <-f.sends:
+			if a.Body != "" || len(a.Enc) == 0 {
+				t.Fatalf("plaintext sent into a channel seen encrypted: %+v", a)
+			}
+		case <-deadline:
+			return
+		}
+	}
+}
+
+// bob revokes b1 (stolen) and the server doesn't call our epoch stale: the
+// next send still rotates first, and the new epoch has no box for b1
+// (step 12 security pass).
+func TestEncRotatesAfterBoxedDeviceRevoked(t *testing.T) {
+	d := newEncDM(t, proto.Snapshot{})
+	rev, err := identity.NewDeviceRevoke(d.b1.ssh, testSID(), bob, d.b1.dev.ID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.f.event(proto.KDeviceRevoke, 0, bob, proto.DeviceRevokeArgs{Revoke: proto.Signed(rev)})
+	waitFor(t, "b1 revoked", func() bool { r, _, _ := d.c.Trust().Device(testSID(), d.b1.dev.ID); return r.Revoked })
+	if err := d.c.Send(dm, "after the theft", 0); err != nil {
+		t.Fatal(err)
+	}
+	var a proto.KeyRotateArgs
+	select {
+	case a = <-d.f.rotates:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no rotation before sending")
+	}
+	eb, err := identity.PeekEpochBundle(identity.Signed(a.Bundle))
+	if err != nil || eb.Epoch != 2 {
+		t.Fatalf("rotation %+v %v", eb, err)
+	}
+	for _, bx := range eb.Boxes {
+		if bx.Dev == d.b1.dev.ID {
+			t.Fatal("new epoch sealed to the revoked device")
+		}
+	}
+	if s := nextSend(t, d.f); s.Body != "" || len(s.Enc) == 0 {
+		t.Fatalf("send %+v", s)
+	} else if h, _ := e2ecrypto.ParseEnc(s.Enc); h.Epoch != 2 {
+		t.Fatalf("sent under epoch %d", h.Epoch)
+	}
+}
+
+// bob's epoch 2 seals alice a box that can't open, and nobody ever shares
+// K: after poisonWait alice rotates past it (backlink to a random key), so
+// a malicious member can't wedge the channel (step 12 security pass).
+func TestEncRecoversFromPoisonedBox(t *testing.T) {
+	d := newEncDMWith(t, proto.Snapshot{}, func(c *Client) { c.timing.poisonWait = 300 * time.Millisecond })
+	k2 := newK(t)
+	e2 := mkBundle(t, d.b1.dev, dm, 2, &d.e1, dmRoster, k2, &d.k1, d.me, d.b1.dev)
+	e2 = retamper(t, e2, d.b1.dev, func(w *rawBundle) {
+		for i := range w.Boxes {
+			if bytes.Equal(w.Boxes[i].Dev, d.me.ID[:]) {
+				rand.Read(w.Boxes[i].CT)
+			}
+		}
+	})
+	d.f.keyEpoch(dm, bob, e2)
+	waitFor(t, "waiting for epoch 2's key", status(d.c, dm, E2EWaitingKey))
+	var a proto.KeyRotateArgs
+	select {
+	case a = <-d.f.rotates:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no recovery rotation")
+	}
+	eb, err := identity.PeekEpochBundle(identity.Signed(a.Bundle))
+	if err != nil || eb.Epoch != 3 || eb.Prev != e2ecrypto.ChainHash(e2.B) {
+		t.Fatalf("recovery bundle %+v %v", eb, err)
+	}
+	waitFor(t, "epoch 3 ok", func() bool { st := d.c.E2EStatus(dm); return st.State == E2EOK && st.Epoch == 3 })
+	if _, ok := d.c.Alarm(dm); ok {
+		t.Fatal("alarm")
+	}
+	if err := d.c.Send(dm, "unwedged", 0); err != nil {
+		t.Fatal(err)
+	}
+	if s := nextSend(t, d.f); len(s.Enc) == 0 {
+		t.Fatal("not encrypted")
+	} else if h, _ := e2ecrypto.ParseEnc(s.Enc); h.Epoch != 3 {
+		t.Fatalf("sent under epoch %d", h.Epoch)
+	}
+}
+
+// More than a pass's worth of messages that never open (replies to a root
+// we don't have) can't keep a later one from being re-checked: the queue
+// walks them batch by batch (step 12 security pass).
+func TestEncReopenQueueNoStarvation(t *testing.T) {
+	d := newEncDMWith(t, proto.Snapshot{}, func(c *Client) { c.reopenBatch = 20 })
+	var last uint64
+	for i := 0; i < 25; i++ {
+		enc := sealAs(t, d.b1.dev, d.k1, 1, d.e1, plainMsg{T: "msg", TS: 1, Body: "junk", ThreadRef: make([]byte, 16)})
+		last = d.f.post(proto.Message{Chan: dm, Author: bob, Thread: 5, Enc: enc})
+	}
+	waitFor(t, "junk applied", func() bool { return lastSeq(t, d.c) >= last })
+	b2 := newPeer(t, bob, d.b1.ssh)
+	id := d.f.post(proto.Message{Chan: dm, Author: bob, Enc: sealAs(t, b2.dev, d.k1, 1, d.e1, plainMsg{T: "msg", TS: 1, Body: "from b2"})})
+	waitFor(t, "waiting for b2", func() bool { m, ok := findMsg(d.c, id); return ok && m.Sec == SecWaiting })
+	d.f.event(proto.KDeviceNew, 0, bob, proto.Device{Cert: b2.cert})
+	waitFor(t, "b2's message opens", func() bool { m, _ := findMsg(d.c, id); return m.Sec == SecE2E && m.Body == "from b2" })
+}
+
+// A verified message keeps its signed time; one whose server time differs
+// by more than MaxTimeDrift shows the signed time and says so (step 12:
+// closes step 11's "rewritten time" limit). Plaintext never drifts.
+func TestEncSignedTimeDrift(t *testing.T) {
+	d := newEncDM(t, proto.Snapshot{})
+	now := time.Now()
+	signed := now.Add(-time.Hour).UnixMilli()
+	far := d.f.post(proto.Message{Chan: dm, Author: bob, Time: now.UnixMilli(),
+		Enc: sealAs(t, d.b1.dev, d.k1, 1, d.e1, plainMsg{T: "msg", TS: signed, Body: "an hour ago"})})
+	near := d.f.post(proto.Message{Chan: dm, Author: bob, Time: now.UnixMilli(),
+		Enc: sealAs(t, d.b1.dev, d.k1, 1, d.e1, plainMsg{T: "msg", TS: now.Add(-4 * time.Minute).UnixMilli(), Body: "skewed clock"})})
+	waitFor(t, "applied", func() bool { m, _ := findMsg(d.c, near); return m.Sec == SecE2E })
+	m, _ := findMsg(d.c, far)
+	if m.SignedTime != signed || !m.TimeDrift() || m.ShownTime() != signed {
+		t.Fatalf("far: signed %d drift %v shown %d", m.SignedTime, m.TimeDrift(), m.ShownTime())
+	}
+	if m, _ := findMsg(d.c, near); m.SignedTime == 0 || m.TimeDrift() || m.ShownTime() != m.Time {
+		t.Fatalf("near: signed %d drift %v", m.SignedTime, m.TimeDrift())
+	}
+	// Another process on this TC_HOME sees it too (cache column).
+	c2 := open(t, d.c.Home())
+	defer c2.Close()
+	var got Message
+	for _, x := range c2.Messages(dm, 10) {
+		if x.ID == far {
+			got = x
+		}
+	}
+	if got.SignedTime != signed || !got.TimeDrift() {
+		t.Fatalf("after reopen: %+v", got)
+	}
+	if (Message{Message: proto.Message{Time: 1}}).TimeDrift() {
+		t.Fatal("a message without a signed time drifts")
 	}
 }

@@ -22,6 +22,32 @@ type Message struct {
 	// verified, is waiting for a key, is invalid, or is plaintext (legacy
 	// or inserted by the server). Body is "" unless the text can be shown.
 	Sec Sec
+	// SignedTime is a verified encrypted message's own timestamp (its
+	// author's clock, Plain ts), 0 otherwise. Time is the server's claim.
+	SignedTime int64
+}
+
+// MaxTimeDrift is how far a verified message's signed time may be from
+// the server's before the UI says so (clock skew; PROTOCOL §13.4).
+const MaxTimeDrift = 5 * time.Minute
+
+// TimeDrift reports whether m's signed time differs from the server's by
+// more than MaxTimeDrift: the server may have rewritten when it was sent.
+func (m Message) TimeDrift() bool {
+	if m.SignedTime == 0 || m.Time == 0 {
+		return false
+	}
+	d := m.SignedTime - m.Time
+	return d > MaxTimeDrift.Milliseconds() || -d > MaxTimeDrift.Milliseconds()
+}
+
+// ShownTime is the time to show for m (Unix ms): the signed time when the
+// server's differs by more than MaxTimeDrift, else the server's.
+func (m Message) ShownTime() int64 {
+	if m.TimeDrift() {
+		return m.SignedTime
+	}
+	return m.Time
 }
 
 // ChannelView is a channel plus per-user state. Display is the name to show:
@@ -197,7 +223,7 @@ func (c *Client) Messages(ch uint64, limit int) []Message {
 	if limit <= 0 {
 		limit = 100
 	}
-	out := c.queryMsgs(`SELECT `+msgCols+`, sec, (SELECT COUNT(*) FROM msgs r WHERE r.thread = m.id)
+	out := c.queryMsgs(`SELECT `+msgCols+`, sec, sts, (SELECT COUNT(*) FROM msgs r WHERE r.thread = m.id)
 		FROM (SELECT * FROM msgs WHERE chan = ? AND thread = 0 ORDER BY id DESC LIMIT ?) m ORDER BY id`, ch, limit)
 	c.markPinned(out)
 	return append(out, c.outboxMsgs(`chan = ? AND thread = 0`, ch)...)
@@ -205,9 +231,9 @@ func (c *Client) Messages(ch uint64, limit int) []Message {
 
 // Thread returns the root message, its replies, then our unsent replies.
 func (c *Client) Thread(root uint64) []Message {
-	out := c.queryMsgs(`SELECT `+msgCols+`, sec, (SELECT COUNT(*) FROM msgs r WHERE r.thread = m.id)
+	out := c.queryMsgs(`SELECT `+msgCols+`, sec, sts, (SELECT COUNT(*) FROM msgs r WHERE r.thread = m.id)
 		FROM msgs m WHERE id = ?`, root)
-	out = append(out, c.queryMsgs(`SELECT `+msgCols+`, sec, 0 FROM msgs WHERE thread = ? ORDER BY id`, root)...)
+	out = append(out, c.queryMsgs(`SELECT `+msgCols+`, sec, sts, 0 FROM msgs WHERE thread = ? ORDER BY id`, root)...)
 	c.markPinned(out)
 	return append(out, c.outboxMsgs(`thread = ?`, root)...)
 }
@@ -221,7 +247,7 @@ func (c *Client) queryMsgs(q string, args ...any) []Message {
 	var out []Message
 	for rows.Next() {
 		var m Message
-		pm, err := scanMsg(rows, &m.Sec, &m.Replies)
+		pm, err := scanMsg(rows, &m.Sec, &m.SignedTime, &m.Replies)
 		if err != nil {
 			return out
 		}

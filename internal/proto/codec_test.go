@@ -243,3 +243,39 @@ func FuzzDevices(f *testing.F) {
 		_ = Unmarshal(data, &Snapshot{})
 	})
 }
+
+// FuzzKeyOps: the epoch and key.share payloads (args from members, events
+// and results from the server) decode without panicking, and what decodes
+// survives a round trip unchanged.
+func FuzzKeyOps(f *testing.F) {
+	sig := Signed{B: []byte{0x81, 0xa1, 'v', 1}, Sig: bytes.Repeat([]byte{7}, 64)}
+	f.Add([]byte(MustRaw(KeyShareArgs{Chan: 1, Epoch: 2, Dev: make([]byte, 16), Eph: make([]byte, 32), CT: make([]byte, 48)})))
+	f.Add([]byte(MustRaw(KeyRotateArgs{Chan: 1, Bundle: sig})))
+	f.Add([]byte(MustRaw(KeyEpoch{Bundle: sig})))
+	f.Add([]byte(MustRaw(KeyFetchArgs{Chan: 1, From: 1, To: 3})))
+	f.Add([]byte(MustRaw(KeyFetchRes{Bundles: []Signed{sig}, Seqs: []uint64{9}})))
+	f.Add([]byte(MustRaw(ChanAddArgs{Chan: 1, User: 2, Bundle: &sig})))
+	f.Add([]byte{0xc1})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		var ks KeyShareArgs
+		if Unmarshal(data, &ks) == nil {
+			var again KeyShareArgs
+			if err := Unmarshal(MustRaw(ks), &again); err != nil || again.Chan != ks.Chan || again.Epoch != ks.Epoch ||
+				!bytes.Equal(again.Dev, ks.Dev) || !bytes.Equal(again.Eph, ks.Eph) || !bytes.Equal(again.CT, ks.CT) {
+				t.Fatalf("key.share changed across round trip: %+v vs %+v (%v)", ks, again, err)
+			}
+		}
+		var fr KeyFetchRes
+		if Unmarshal(data, &fr) == nil {
+			var again KeyFetchRes
+			if err := Unmarshal(MustRaw(fr), &again); err != nil || len(again.Bundles) != len(fr.Bundles) || len(again.Seqs) != len(fr.Seqs) {
+				t.Fatalf("key.fetch result changed across round trip (%v)", err)
+			}
+		}
+		_ = Unmarshal(data, &KeyRotateArgs{})
+		_ = Unmarshal(data, &KeyEpoch{})
+		_ = Unmarshal(data, &KeyFetchArgs{})
+		_ = Unmarshal(data, &ChanAddArgs{})
+		_ = Unmarshal(data, &EpochKey{})
+	})
+}

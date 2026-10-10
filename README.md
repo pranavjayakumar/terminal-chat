@@ -82,6 +82,41 @@ sees it and marks them with a dim `?` until you verify them:
 - If a channel shows `⚠ alarm`, `/alarm` explains what the server did; `/alarm-clear #name` clears it
   once you know why.
 
+## Security model
+
+**What's encrypted.** DMs and private channels are end-to-end encrypted: message text, edits,
+deletes and reaction emoji are sealed on your device with a key only the channel's members hold, and
+every message is signed by its author's device. The server stores and forwards ciphertext; it (or
+anyone who steals its database) can't read or forge those messages. Each membership change starts a
+new key: someone removed can't read anything sent after, and new members get the history. Public
+channels are not encrypted.
+
+**What the server still sees.** Who is in which channel, who talks to whom and when, message sizes
+(rounded), thread links, read markers, channel names and topics. It can also delay or drop messages.
+Search in encrypted channels runs on your machine.
+
+**Verifying teammates.** tc trusts a teammate's key the first time it sees it (like SSH or Signal).
+Compare safety numbers once (`/verify @bob`, see [Verifying teammates](#verifying-teammates)) to rule
+out a server that substituted keys at that first contact. After that, a changed key shows a red
+banner and nothing is sent to them until you accept it; a server that tampers with keys, members or
+history raises a `⚠ alarm` in that channel and tc stops sending there.
+
+**Accepted limits.**
+
+- The server decides who is a member: it can't add itself unnoticed, but it can hide that someone
+  left. The first time your device sees a channel someone else created, the server could present it
+  as unencrypted (tc then treats it as plaintext; DMs and channels you create are always encrypted).
+- Messages from before a channel was encrypted, and anything the server inserts, are shown as
+  `⚠ unauthenticated`. A message whose server timestamp is off by more than 5 minutes shows the
+  author's own time and `⚠ server time differs`.
+- A stolen device reads what it could already read. Once it is revoked, tc rotates keys before
+  anything new is sent (there is no `tc` command to revoke a device yet: log in with a new SSH key and
+  ask an admin to disable the old account, or see docs/E2E.md). Losing every device loses your
+  encrypted history: there is no backup.
+- Your local cache (`~/.config/tc`) holds decrypted messages and your keys. Use disk encryption.
+
+Design and threat model: [docs/E2E.md](docs/E2E.md).
+
 ## herdr
 
 Run tc in a herdr pane and it notices (`HERDR_ENV=1`):

@@ -301,7 +301,7 @@ func (c *Client) e2ePass(ctx context.Context, s *session, sid e2ecrypto.ServerID
 		if ctx.Err() != nil {
 			return
 		}
-		if c.syncChannel(ctx, s, sid, ch) {
+		if c.syncAndRecover(ctx, s, sid, ch) {
 			changed = true
 		}
 		if c.e2eStatus(sid, ch).State == E2EOK {
@@ -421,11 +421,7 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 
 	var certs []certRow
 	var endorse []identity.Signed
-	type revRow struct {
-		s   identity.Signed
-		seq uint64
-	}
-	var revokes []revRow
+	var revokes []seqRevoke
 	load := func(q string, fn func(raw []byte, seq uint64)) {
 		rows, err := c.db.Query(q)
 		if err != nil {
@@ -464,7 +460,7 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 	})
 	load(`SELECT revoke, seq FROM device_revokes ORDER BY rowid`, func(raw []byte, seq uint64) {
 		if s, ok := decode(raw); ok {
-			revokes = append(revokes, revRow{s, seq})
+			revokes = append(revokes, seqRevoke{s, seq})
 		}
 	})
 	pins := map[uint64][][]byte{}
@@ -577,45 +573,71 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 		}
 	}
 
-	for _, r := range revokes {
-		pr, err := identity.PeekDeviceRevoke(r.s)
-		if err != nil || pr.ServerID != sid {
-			continue
+	// Revokes signed by an SSH key first: a stolen device's own revoke must
+	// be known before a revoke it signed is judged (step 12 security pass).
+	for pass := 0; pass < 2; pass++ {
+		for _, r := range revokes {
+			if c.applyRevoke(sid, r, pass == 1, pinsOf) {
+				changed = true
+			}
 		}
-		d, ok, _ := ts.Device(sid, pr.Dev)
-		// Only a known device of the revoke's user: a member must not be able
-		// to pre-revoke someone else's device id. Skip a revoke if we already
-		// hold one at least as early in both seq and signed time.
-		if !ok || d.User != pr.User || (d.Revoked && d.RevokedSeq != 0 && d.RevokedSeq <= r.seq && d.RevokedTime != 0 && d.RevokedTime <= pr.Time) {
-			continue
-		}
-		valid := false
-		var signedAt int64
+	}
+	return changed
+}
+
+// applyRevoke records r if it verifies: under a pinned SSH key of its user,
+// or (byDevice) under another device of that user that wasn't revoked
+// before it. A revoked signer counts only if both the seq order and the
+// signed times (with revokeSkew) put r before the signer's own revoke, and
+// neither seq is unknown: a revoked device must not revoke its owner's
+// healthy devices with a server that claims seq 0.
+func (c *Client) applyRevoke(sid e2ecrypto.ServerID, r seqRevoke, byDevice bool, pinsOf func(uint64) [][]byte) bool {
+	ts := c.trust
+	pr, err := identity.PeekDeviceRevoke(r.s)
+	if err != nil || pr.ServerID != sid {
+		return false
+	}
+	d, ok, _ := ts.Device(sid, pr.Dev)
+	// Only a known device of the revoke's user: a member must not be able
+	// to pre-revoke someone else's device id. Skip a revoke if we already
+	// hold one at least as early in both seq and signed time.
+	if !ok || d.User != pr.User || (d.Revoked && d.RevokedSeq != 0 && d.RevokedSeq <= r.seq && d.RevokedTime != 0 && d.RevokedTime <= pr.Time) {
+		return false
+	}
+	valid := false
+	var signedAt int64
+	if !byDevice {
 		for _, p := range pinsOf(pr.User) {
 			if v, err := r.s.VerifyDeviceRevoke(sid, p); err == nil && v.User == pr.User && v.Dev == pr.Dev {
 				valid, signedAt = true, v.Time
 				break
 			}
 		}
-		if !valid {
-			devs, _ := ts.Devices(sid, pr.User)
-			for _, o := range devs {
-				// A signer revoked at an unknown seq may have been revoked
-				// before this revoke: it doesn't count.
-				if o.ID == pr.Dev || (o.Revoked && (o.RevokedSeq == 0 || o.RevokedSeq < r.seq)) {
-					continue
-				}
-				if v, err := r.s.VerifyDeviceRevokeByDevice(sid, o.Ed25519[:]); err == nil && v.User == pr.User && v.Dev == pr.Dev {
-					valid, signedAt = true, v.Time
-					break
-				}
+	} else {
+		devs, _ := ts.Devices(sid, pr.User)
+		for _, o := range devs {
+			if o.ID == pr.Dev {
+				continue
 			}
-		}
-		if valid && ts.RevokeDeviceAtTime(sid, pr.Dev, r.seq, signedAt) == nil {
-			changed = true
+			v, err := r.s.VerifyDeviceRevokeByDevice(sid, o.Ed25519[:])
+			if err != nil || v.User != pr.User || v.Dev != pr.Dev {
+				continue
+			}
+			if o.Revoked && (r.seq == 0 || o.RevokedSeq == 0 || o.RevokedSeq <= r.seq ||
+				o.RevokedTime == 0 || v.Time > o.RevokedTime+revokeSkew.Milliseconds()) {
+				continue
+			}
+			valid, signedAt = true, v.Time
+			break
 		}
 	}
-	return changed
+	return valid && ts.RevokeDeviceAtTime(sid, pr.Dev, r.seq, signedAt) == nil
+}
+
+// seqRevoke is a cached DeviceRevoke with its event seq (0 = unknown).
+type seqRevoke struct {
+	s   identity.Signed
+	seq uint64
 }
 
 // maxBadCerts bounds the negative cache of certs that failed verification.
@@ -707,6 +729,11 @@ func (c *Client) validateBundle(sid e2ecrypto.ServerID, ch proto.Channel, epoch 
 		if !slices.Contains(prev.Roster, by.User) {
 			return eb, fmt.Errorf("epoch %d: rotated by someone not in epoch %d", epoch, prev.Epoch)
 		}
+		// The rotator holds the new K: one outside the new roster (a member
+		// removed or disabled while rotating) would keep reading.
+		if !slices.Contains(eb.Roster, by.User) {
+			return eb, fmt.Errorf("epoch %d: rotated by someone not in its roster", epoch)
+		}
 	}
 	keys := map[[32]byte]bool{}
 	for _, bx := range eb.Boxes {
@@ -747,6 +774,78 @@ func openBox(sid e2ecrypto.ServerID, eb identity.EpochBundle, me *e2ecrypto.Devi
 		return &k
 	}
 	return nil
+}
+
+// badBox reports whether eb has a box for our device that doesn't yield
+// a K matching kc. The box is inside b, which its rotator signed, so this
+// proves the rotator sealed us garbage (or another K): nothing a server
+// can do.
+func badBox(sid e2ecrypto.ServerID, eb identity.EpochBundle, me *e2ecrypto.DeviceKeys) bool {
+	if me == nil {
+		return false
+	}
+	for _, bx := range eb.Boxes {
+		if bx.Dev == me.ID {
+			return openBox(sid, eb, me) == nil
+		}
+	}
+	return false
+}
+
+// poisonedLong reports whether ch's verified epoch, whose K we lack, gave
+// us a bad box (badBox) at least timing.poisonWait ago: long enough for a
+// member to have answered our key.need. A malicious member who poisons
+// every box and never shares would otherwise wedge the channel: nobody
+// could rotate (the backlink needs K) or remove them (step 12 security
+// pass). Then the next rotation links back to a random key instead.
+func (c *Client) poisonedLong(sid e2ecrypto.ServerID, ch uint64, epoch uint32, me *e2ecrypto.DeviceKeys) bool {
+	cands, err := c.cachedBundles(ch, epoch)
+	if err != nil {
+		return false
+	}
+	ep, ok, err := c.trust.Epoch(sid, ch, epoch)
+	if err != nil || !ok || ep.Key != nil {
+		return false
+	}
+	bad := false
+	for _, cb := range cands {
+		if e2ecrypto.ChainHash(cb.b.B) != ep.Hash {
+			continue
+		}
+		if eb, err := identity.PeekEpochBundle(cb.b); err == nil && badBox(sid, eb, me) {
+			bad = true
+		}
+	}
+	key := [2]uint64{ch, uint64(epoch)}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !bad {
+		delete(c.poisonSeen, key)
+		return false
+	}
+	first, ok := c.poisonSeen[key]
+	if !ok {
+		c.poisonSeen[key] = time.Now()
+		return false
+	}
+	return time.Since(first) >= c.timing.poisonWait
+}
+
+// recoverPoisoned rotates ch past a poisoned head (poisonedLong), at most
+// once per channel per timing.autoEpoch. Caller holds e2eMu.
+func (c *Client) recoverPoisoned(ctx context.Context, s *session, sid e2ecrypto.ServerID, ch uint64) {
+	head, ok, err := c.trust.ChainHead(sid, ch)
+	if err != nil || !ok || !c.poisonedLong(sid, ch, head.Epoch, s.myDevice()) {
+		return
+	}
+	c.mu.Lock()
+	if t, ok := c.autoTried[ch]; ok && time.Since(t) < c.timing.autoEpoch {
+		c.mu.Unlock()
+		return
+	}
+	c.autoTried[ch] = time.Now()
+	c.mu.Unlock()
+	_ = c.rotateLocked(ctx, s, sid, ch)
 }
 
 func (c *Client) alarm(sid e2ecrypto.ServerID, ch uint64, detail string) bool {
@@ -963,6 +1062,10 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 		if eb.Back != nil {
 			e.Back = eb.Back[:]
 		}
+		e.Boxed = make([]e2ecrypto.DevID, 0, len(eb.Boxes))
+		for _, bx := range eb.Boxes {
+			e.Boxed = append(e.Boxed, bx.Dev)
+		}
 		if err := ts.AdvanceEpoch(sid, ch.ID, e); err != nil {
 			if errors.Is(err, trust.ErrFork) || errors.Is(err, trust.ErrRollback) {
 				return c.alarm(sid, ch.ID, err.Error())
@@ -970,6 +1073,7 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 			break // another process advanced meanwhile; the next pass catches up
 		}
 		changed = true
+		c.invalidateSuperseded(ch.ID, next, e.Seq)
 		// Only a verified bundle moves the cached channel epoch (the server
 		// sends no chan.update for rotations); unverified ones never do.
 		c.db.Exec(`UPDATE chans SET epoch = max(epoch, ?) WHERE id = ?`, next, ch.ID)
@@ -991,6 +1095,16 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 	}
 	c.sendKeyNeed(s, sid, ch.ID)
 	c.autoEpoch1(ctx, s, sid, ch)
+	return changed
+}
+
+// syncAndRecover is syncChannel for the e2e worker's pass, which also
+// rotates past a poisoned head. Caller holds e2eMu.
+func (c *Client) syncAndRecover(ctx context.Context, s *session, sid e2ecrypto.ServerID, ch proto.Channel) bool {
+	changed := c.syncChannel(ctx, s, sid, ch)
+	if _, ok, _ := c.trust.Alarm(sid, ch.ID); !ok {
+		c.recoverPoisoned(ctx, s, sid, ch.ID)
+	}
 	return changed
 }
 
@@ -1253,10 +1367,21 @@ func (c *Client) commitBundle(ctx context.Context, s *session, sid e2ecrypto.Ser
 		if err != nil || !ok {
 			return fmt.Errorf("epoch %d isn't verified", head.Epoch)
 		}
-		if cur.Key == nil {
-			return fmt.Errorf("waiting for the key of epoch %d", head.Epoch)
+		prevK := cur.Key
+		if prevK == nil {
+			if !c.poisonedLong(sid, chID, head.Epoch, me) {
+				return fmt.Errorf("waiting for the key of epoch %d", head.Epoch)
+			}
+			// Nobody gave us K and its rotator sealed us a box that can't
+			// yield it: link back to a random key (a history gap for the
+			// poisoned epoch) rather than leave the channel wedged.
+			gap, err := e2ecrypto.NewEpochKey(rand.Reader)
+			if err != nil {
+				return err
+			}
+			prevK = &gap
 		}
-		p.Epoch, p.Prev, p.PrevK = head.Epoch+1, head.Hash, cur.Key
+		p.Epoch, p.Prev, p.PrevK = head.Epoch+1, head.Hash, prevK
 	} else if ch.Epoch > 0 || c.cachedMaxEpoch(chID) > 0 {
 		return errors.New("the channel's key chain isn't verified yet")
 	} else if ch.Kind != proto.ChanDM && ch.Creator != user {

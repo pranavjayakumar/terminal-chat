@@ -21,3 +21,4 @@ The current resume point always lives in [STATUS.md](STATUS.md) → "Handoff".
 - 13:20 · M4 security fixes done (kiro) + owner's signing key embedded · PR #34 merged (CI green) · M4 on main
 - 13:20 · Waiting for E2E step 12 before tagging v0.2.0 (release must include M3 final pass)
 - 13:50 · Repo cleanup: 37 merged remote branches deleted, local merged branches + obsolete stash removed, GitHub 'delete branch on merge' enabled · only main + e2e/final-pass (step 12, in flight) remain
+- 14:00 · E2E step 12 final pass (security pass: 1 high + 6 medium fixed, 3 low fixed, rest documented; chaos during rotations 5/5; signed-time drift warning; 14 fuzz targets 60 s, no crashers) · kiro, worktree kiro-step12, branch e2e/final-pass · done, not pushed; M3 done

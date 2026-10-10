@@ -515,3 +515,38 @@ func TestStoreShareBounds(t *testing.T) {
 		t.Fatal("carol's oldest share not evicted first")
 	}
 }
+
+// A device of mine that another of my devices revoked is retired, unless
+// that signer is itself revoked by me: a stolen device I revoked can't make
+// my healthy devices drop their keys (step 12 security pass).
+func TestOwnRevokedIgnoresRevokedSigner(t *testing.T) {
+	_, _, key := bobDevice(t)
+	sid := testSID()
+	mk := func() (*e2ecrypto.DeviceKeys, proto.Signed) {
+		d, err := e2ecrypto.Generate(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sc, err := identity.NewDeviceCert(key, sid, alice, d, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d, proto.Signed(sc)
+	}
+	stolen, c1 := mk()
+	healthy, c2 := mk()
+	certs := []proto.Signed{c1, c2}
+	mine := key.PublicKey().Marshal()
+	byStolen, _ := identity.NewDeviceRevokeByDevice(stolen, sid, alice, healthy.ID, time.Now())
+	if !ownRevoked(sid, alice, healthy.ID, mine, certs, []proto.Signed{proto.Signed(byStolen)}) {
+		t.Fatal("a revoke by my other, unrevoked device doesn't count")
+	}
+	revStolen, _ := identity.NewDeviceRevoke(key, sid, alice, stolen.ID, time.Now())
+	revs := []proto.Signed{proto.Signed(byStolen), proto.Signed(revStolen)}
+	if ownRevoked(sid, alice, healthy.ID, mine, certs, revs) {
+		t.Fatal("a revoked device revoked my healthy one")
+	}
+	if !ownRevoked(sid, alice, stolen.ID, mine, certs, revs) {
+		t.Fatal("the SSH-signed revoke doesn't count")
+	}
+}

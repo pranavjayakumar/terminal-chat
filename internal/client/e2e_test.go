@@ -153,6 +153,7 @@ type e2eFake struct {
 	onOp      func(f *e2eFake, r proto.Req) bool            // other ops; true: answered (encops_test.go)
 	searchRes proto.MsgsRes
 	searched  atomic.Int32
+	devHold   chan struct{} // non-nil: devices.list is answered once it's closed
 
 	registered chan proto.Signed
 	sends      chan proto.SendArgs
@@ -232,6 +233,12 @@ func (f *e2eFake) keyEpoch(ch, actor uint64, b proto.Signed) uint64 {
 // (a reset at head 20) and then serves e2e requests in the background.
 func startE2E(t *testing.T, fs *fakeServer, sn proto.Snapshot, devs proto.DevicesListRes) *e2eFake {
 	t.Helper()
+	return startE2EWith(t, fs, sn, devs, nil)
+}
+
+// startE2EWith is startE2E with setup run before the fake starts serving.
+func startE2EWith(t *testing.T, fs *fakeServer, sn proto.Snapshot, devs proto.DevicesListRes, setup func(*e2eFake)) *e2eFake {
+	t.Helper()
 	fc := fs.accept()
 	f := &e2eFake{t: t, fc: fc, seq: 20, devs: devs, bundles: map[uint64]map[uint32]proto.EpochKey{},
 		registered: make(chan proto.Signed, 4), rotates: make(chan proto.KeyRotateArgs, 16), sends: make(chan proto.SendArgs, 16),
@@ -245,6 +252,9 @@ func startE2E(t *testing.T, fs *fakeServer, sn proto.Snapshot, devs proto.Device
 	}
 	f.write(proto.TSnapshot, sn)
 	f.ok(r.ID, proto.SyncRes{Head: 20, Reset: true})
+	if setup != nil {
+		setup(f)
+	}
 	go f.serve()
 	return f
 }
@@ -267,6 +277,16 @@ func (f *e2eFake) serve() {
 			}
 			switch r.Op {
 			case proto.OpDevicesList:
+				if f.devHold != nil {
+					go func(id uint32) {
+						<-f.devHold
+						f.mu.Lock()
+						res := f.devs
+						f.mu.Unlock()
+						f.ok(id, res)
+					}(r.ID)
+					continue
+				}
 				f.mu.Lock()
 				res := f.devs
 				f.mu.Unlock()
@@ -664,6 +684,25 @@ func TestE2ERevokedRotator(t *testing.T) {
 	}
 }
 
+// A rotator outside its own new roster (removed or disabled while it
+// rotated) would hold K without being a member: an alarm (step 12).
+func TestE2ERotatorNotInNewRoster(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	b1 := newPeer(t, bob, nil)
+	f := startE2E(t, fs, proto.Snapshot{Chans: []proto.Channel{dmChan(0)}, Devs: []proto.Device{{Cert: b1.cert}}}, proto.DevicesListRes{})
+	me := f.myKeys(c)
+	k1 := newK(t)
+	e1 := mkBundle(t, b1.dev, dm, 1, nil, []uint64{alice, bob}, k1, nil, me, b1.dev)
+	f.keyEpoch(dm, bob, e1)
+	waitFor(t, "epoch 1", status(c, dm, E2EOK))
+	f.keyEpoch(dm, bob, mkBundle(t, b1.dev, dm, 2, &e1, []uint64{alice}, newK(t), &k1, me))
+	waitFor(t, "alarm", status(c, dm, E2EAlarm))
+	if st := c.E2EStatus(dm); headOf(t, c, dm) != 1 || st.Detail != "epoch 2: rotated by someone not in its roster" {
+		t.Fatalf("status %+v head %d", st, headOf(t, c, dm))
+	}
+}
+
 // A server that shows an older epoch than the one we verified (after a
 // forced reset) is rolling us back.
 func TestE2ERollback(t *testing.T) {
@@ -936,6 +975,45 @@ func TestE2EBundleAfterRevokeBySignedTime(t *testing.T) {
 			waitFor(t, "alarm", status(c, dm, E2EAlarm))
 			if st := c.E2EStatus(dm); headOf(t, c, dm) != 0 || st.Detail != tc.detail {
 				t.Fatalf("status %+v head %d, want alarm %q and no head", st, headOf(t, c, dm), tc.detail)
+			}
+		})
+	}
+}
+
+// A stolen device bob revoked (b1) signs a revoke of his healthy device b2,
+// and the server presents it with an unknown seq or one before b1's revoke
+// but signed after it: b2 must stay trusted (step 12 security pass). The
+// forged revoke comes first so a single pass would judge it before b1's.
+func TestE2ERevokedDeviceCantRevokeOthers(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		seq      uint64
+		signedAt time.Duration // relative to b1's revoke
+	}{
+		{"unknown seq", 0, -time.Hour},
+		{"earlier seq, signed after", 3, 10 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs, c := e2eClient(t)
+			run(t, c)
+			b1 := newPeer(t, bob, nil)
+			b2 := newPeer(t, bob, b1.ssh)
+			now := time.Now()
+			revB1, _ := identity.NewDeviceRevoke(b1.ssh, testSID(), bob, b1.dev.ID, now)
+			forged, _ := identity.NewDeviceRevokeByDevice(b1.dev, testSID(), bob, b2.dev.ID, now.Add(tc.signedAt))
+			f := startE2E(t, fs, proto.Snapshot{
+				Chans:       []proto.Channel{dmChan(0)},
+				Devs:        []proto.Device{{Cert: b1.cert}, {Cert: b2.cert}},
+				Revoked:     []proto.Signed{proto.Signed(forged), proto.Signed(revB1)},
+				RevokedSeqs: []uint64{tc.seq, 5},
+			}, proto.DevicesListRes{})
+			f.myKeys(c)
+			waitFor(t, "b1 revoked", func() bool { d, _, _ := c.Trust().Device(testSID(), b1.dev.ID); return d.Revoked })
+			c.e2eMu.Lock()
+			c.verifyDevices(testSID(), nil, alice) // once more: the order of passes mustn't matter
+			c.e2eMu.Unlock()
+			if d, ok, _ := c.Trust().Device(testSID(), b2.dev.ID); !ok || d.Revoked {
+				t.Fatalf("b2 revoked=%v seq=%d (known %v): revoked by an already revoked device", d.Revoked, d.RevokedSeq, ok)
 			}
 		})
 	}

@@ -212,11 +212,14 @@ type Client struct {
 	needSent     map[uint64]time.Time
 	shared       map[shareKey]time.Time
 	autoTried    map[uint64]time.Time
-	probed       map[uint64]uint32     // channel → highest waiting-message epoch fetched ahead for, this session
-	badCerts     map[[32]byte]struct{} // hashes of certs that failed verification
-	needVerified time.Time             // last verifyDevices run from answerKeyNeed
-	certVerifies atomic.Int64          // cert signature checks (tests)
-	rejects      []string              // why recent encrypted edits/deletes/reactions were ignored (encops.go)
+	reopenAfter  uint64 // reopenMsgs' cursor (under e2eMu)
+	reopenBatch  int
+	poisonSeen   map[[2]uint64]time.Time // (chan, epoch) → when our box there first proved unusable
+	probed       map[uint64]uint32       // channel → highest waiting-message epoch fetched ahead for, this session
+	badCerts     map[[32]byte]struct{}   // hashes of certs that failed verification
+	needVerified time.Time               // last verifyDevices run from answerKeyNeed
+	certVerifies atomic.Int64            // cert signature checks (tests)
+	rejects      []string                // why recent encrypted edits/deletes/reactions were ignored (encops.go)
 }
 
 // timing holds the protocol's timers; tests shrink them.
@@ -226,6 +229,7 @@ type timing struct {
 	dial, handshake, retry, type_ time.Duration
 	keyNeed, autoEpoch            time.Duration // §13.7: ≤ 1 key.need per channel per keyNeed
 	devWait                       time.Duration // how long an encrypted send waits for device registration
+	poisonWait                    time.Duration // how long a provably bad box waits for a key.share before rotating past it
 }
 
 var defaultTiming = timing{
@@ -233,7 +237,7 @@ var defaultTiming = timing{
 	backoffMin: 250 * time.Millisecond, backoffMax: 30 * time.Second,
 	dial: 15 * time.Second, handshake: 30 * time.Second, retry: 2 * time.Second,
 	type_: 6 * time.Second, keyNeed: 30 * time.Second, autoEpoch: time.Minute,
-	devWait: 15 * time.Second,
+	devWait: 15 * time.Second, poisonWait: 2 * time.Minute,
 }
 
 // DefaultHome is $TC_HOME, else ~/.config/tc.
@@ -299,7 +303,7 @@ func Open(home string) (*Client, error) {
 		obChanged: make(chan struct{}), timing: defaultTiming,
 		e2eKick: make(chan struct{}, 1), keyNeeds: make(chan proto.Ephemeral, 32),
 		e2eSoft: map[uint64]string{}, needSent: map[uint64]time.Time{}, shared: map[shareKey]time.Time{},
-		autoTried: map[uint64]time.Time{}, badCerts: map[[32]byte]struct{}{}, probed: map[uint64]uint32{},
+		autoTried: map[uint64]time.Time{}, poisonSeen: map[[2]uint64]time.Time{}, reopenBatch: reopenBatch, badCerts: map[[32]byte]struct{}{}, probed: map[uint64]uint32{},
 	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	c.me = users[cfg.UserID]

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -108,6 +110,54 @@ func (c *Client) openEnc(sid e2ecrypto.ServerID, ch, author, seq uint64, enc []b
 	return raw, d, SecE2E, ""
 }
 
+// checkSealer applies to what is sealed under the current epoch (messages
+// and edits; not deletes or reactions, sealed under their message's epoch):
+// the author must be in the roster of the epoch it names, and with a known
+// seq the event must not come after the next epoch's key.epoch. An honest
+// server refuses both (stale_epoch, not a member), so a removed member
+// can't go on posting under the last epoch it held, even with the server's
+// help (step 12 security pass). Messages judged before the next epoch
+// verified are re-checked then (invalidateSuperseded).
+func (c *Client) checkSealer(sid e2ecrypto.ServerID, ch, author, seq uint64, enc []byte, memo *keyMemo) (Sec, string) {
+	e, err := e2ecrypto.ParseEnc(enc)
+	if err != nil {
+		return SecInvalid, "malformed enc"
+	}
+	ep := memo.epoch(c.trust, sid, ch, e.Epoch)
+	if ep == nil {
+		return SecWaiting, ""
+	}
+	if !slices.Contains(ep.Roster, author) {
+		return SecInvalid, fmt.Sprintf("author not in the roster of epoch %d", e.Epoch)
+	}
+	if seq == 0 {
+		return SecE2E, ""
+	}
+	if next := memo.epoch(c.trust, sid, ch, e.Epoch+1); next != nil {
+		if next.Seq != 0 && seq > next.Seq {
+			return SecInvalid, fmt.Sprintf("sealed under epoch %d after epoch %d", e.Epoch, e.Epoch+1)
+		}
+	}
+	return SecE2E, ""
+}
+
+// invalidateSuperseded is checkSealer for messages judged before epoch
+// (now verified, its key.epoch at seq) was: those sealed under the epoch
+// before it with a later id become invalid.
+func (c *Client) invalidateSuperseded(ch uint64, epoch uint32, seq uint64) bool {
+	if epoch < 2 || seq == 0 {
+		return false
+	}
+	prev := binary.BigEndian.AppendUint32([]byte{e2ecrypto.EncVersion}, epoch-1)
+	r, err := c.db.Exec(`UPDATE msgs SET sec = ?, body = '' WHERE chan = ? AND sec = ? AND id > ? AND substr(enc, 1, 5) = ?`,
+		SecInvalid, ch, SecE2E, seq, prev)
+	if err != nil {
+		return false
+	}
+	n, _ := r.RowsAffected()
+	return n > 0
+}
+
 // revokedAt: a revoke whose seq we don't know is judged by its signed
 // time, with the same clock skew as bundles (§13.3).
 func revokedAt(d *trust.Device, ts int64) bool {
@@ -160,6 +210,9 @@ func (c *Client) applyEdit(q dbtx, row msgRow, enc []byte, seq uint64, memo *key
 		return false
 	}
 	raw, d, sec, why := c.openEnc(sid, row.ch, row.author, seq, enc, memo)
+	if sec == SecE2E {
+		sec, why = c.checkSealer(sid, row.ch, row.author, seq, enc, memo)
+	}
 	if sec == SecWaiting {
 		q.Exec(`UPDATE msgs SET epend = ? WHERE id = ?`, enc, row.id)
 		c.trimPending(q, row.ch)
@@ -184,8 +237,11 @@ func (c *Client) applyEdit(q dbtx, row msgRow, enc []byte, seq uint64, memo *key
 	case !newerEdit(p.V, p.TS, enc, row):
 		c.reject(row.id, "edit: (v %d, ts %d) is not newer than the applied (v %d, ts %d)", p.V, p.TS, row.ev, row.ets)
 	default:
-		_, err := q.Exec(`UPDATE msgs SET body = ?, edited = ?, ev = ?, ets = ?, eenc = ?, epend = NULL WHERE id = ?`,
-			p.Body, max(p.TS, 1), p.V, p.TS, enc, row.id)
+		// Only the row we judged (the e2e worker runs outside the event
+		// transaction): not if it was deleted or replaced meanwhile.
+		_, err := q.Exec(`UPDATE msgs SET body = ?, edited = ?, ev = ?, ets = ?, eenc = ?, epend = NULL
+			WHERE id = ? AND deleted = 0 AND author = ? AND mid = ?`,
+			p.Body, max(p.TS, 1), p.V, p.TS, enc, row.id, row.author, row.mid)
 		return err == nil
 	}
 	return false

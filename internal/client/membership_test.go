@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"math"
 	"slices"
@@ -11,6 +12,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/trust"
 )
@@ -115,6 +117,71 @@ func TestAddRemoveMemberCarryBundles(t *testing.T) {
 	}
 	if ep, _, _ := c.Trust().Epoch(testSID(), secChan, 3); !slices.Equal(ep.Roster, []uint64{alice}) {
 		t.Fatalf("epoch 3 roster %v", ep.Roster)
+	}
+}
+
+// After bob's removal (epoch 3 without him) a server that still accepts
+// his messages under epoch 2, the last key he holds, gets them shown as
+// invalid; one ordered before epoch 3 is still his (step 12 security pass).
+func TestRemovedMemberCantPostUnderOldEpoch(t *testing.T) {
+	bp := newPeer(t, bob, nil)
+	f, c := secSetup(t, []proto.Device{{Cert: bp.cert}}, nil)
+	f.mu.Lock()
+	f.onOp = func(f *e2eFake, r proto.Req) bool {
+		if r.Op != proto.OpChanAdd && r.Op != proto.OpChanRemove {
+			return false
+		}
+		var a proto.ChanAddArgs
+		proto.Unmarshal(r.Args, &a)
+		ch, _ := c.Channel(secChan)
+		if r.Op == proto.OpChanAdd {
+			ch.Channel.Members = append(slices.Clone(ch.Members), a.User)
+			f.event(proto.KChanJoin, secChan, alice, proto.ChanJoin{User: a.User, Chan: ch.Channel})
+		} else {
+			f.event(proto.KChanLeave, secChan, alice, proto.UserRef{User: a.User})
+		}
+		f.keyEpoch(secChan, alice, *a.Bundle)
+		f.ok(r.ID, proto.Empty{})
+		return true
+	}
+	f.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.AddMember(ctx, secChan, bob); err != nil {
+		t.Fatal(err)
+	}
+	e2, _, _ := c.Trust().Epoch(testSID(), secChan, 2)
+	seal := func(body string) []byte {
+		raw, _ := proto.Marshal(plainMsg{T: "msg", TS: time.Now().UnixMilli(), Body: body})
+		enc, err := e2ecrypto.Encrypt(rand.Reader, *e2.Key, bp.dev.Ed25519, testSID(), secChan, 2,
+			e2ecrypto.EpochHash(e2.Hash[:e2ecrypto.IDSize]), bp.dev.ID, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return enc
+	}
+	before := f.post(proto.Message{Chan: secChan, Author: bob, Enc: seal("while a member")})
+	if err := c.RemoveMember(ctx, secChan, bob); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "epoch 3", func() bool { return headOf(t, c, secChan) == 3 })
+	late := f.post(proto.Message{Chan: secChan, Author: bob, Enc: seal("after my removal")})
+	waitFor(t, "applied", func() bool { return lastSeq(t, c) >= late })
+	flush(t, c)
+	found := 0
+	for _, m := range c.Messages(secChan, 20) {
+		if m.ID == late || m.ID == before {
+			found++
+		}
+		switch {
+		case m.ID == late && m.Sec != SecInvalid:
+			t.Fatalf("post-removal message under the old epoch: sec %v body %q", m.Sec, m.Body)
+		case m.ID == before && m.Sec != SecE2E:
+			t.Fatalf("pre-removal message: sec %v", m.Sec)
+		}
+	}
+	if found != 2 {
+		t.Fatalf("found %d of bob's 2 messages", found)
 	}
 }
 

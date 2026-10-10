@@ -390,6 +390,19 @@ func TestDevices(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+	// A new device id with an existing device's key (step 12 security pass).
+	for name, twin := range map[string]func(*Device){
+		"twin x25519": func(x *Device) { x.Ed25519[0] ^= 1 },
+		"twin ed":     func(x *Device) { x.X25519[0] ^= 1 },
+	} {
+		x := d
+		x.ID[0] ^= 1
+		x.User = 3
+		twin(&x)
+		if err := s.PutDevice(sidA, x); !errors.Is(err, ErrDeviceConflict) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
 	if err := s.PutDevice(sidA, Device{ID: e2ecrypto.DevID{9}, User: bob}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("no cert: %v", err)
 	}
@@ -1177,7 +1190,19 @@ func TestEpochsAndKeys(t *testing.T) {
 	if err := s.AdvanceEpoch(sidA, ch, e2); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AdvanceEpoch(sidA, ch, e1); !errors.Is(err, ErrRollback) {
+	// A process sharing this home may offer an epoch the other already
+	// recorded and moved past (step 12 M1): the same bundle is a no-op, a
+	// different one a fork, an unrecorded lower epoch a rollback.
+	if err := open(t, home).AdvanceEpoch(sidA, ch, e1); err != nil {
+		t.Fatalf("recorded epoch again from a second store: %v", err)
+	}
+	if err := s.AdvanceEpoch(sidA, ch, fork); !errors.Is(err, ErrFork) {
+		t.Fatalf("different bundle below the head: %v", err)
+	}
+	if err := s.AdvanceChain(sidA, ch+1, Head{Epoch: 3, Hash: e2.Hash, EH: [e2ecrypto.IDSize]byte(e2.Hash[:])}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AdvanceEpoch(sidA, ch+1, e1); !errors.Is(err, ErrRollback) {
 		t.Fatalf("rollback: %v", err)
 	}
 	s.Close()
@@ -1326,5 +1351,40 @@ func TestDeviceKeysArchivedOnUserMismatch(t *testing.T) {
 	}
 	if other, _ := s.ArchivedDeviceKeys(sidB); len(other) != 0 {
 		t.Fatal("archive leaked to another server")
+	}
+}
+
+// An epoch's boxed devices round-trip; epochs recorded without them (and
+// files from before schema v11) read as unknown (nil).
+func TestEpochBoxed(t *testing.T) {
+	s, home := newStore(t)
+	k := e2ecrypto.Key{1}
+	devs := []e2ecrypto.DevID{{1}, {2}}
+	e := Epoch{Epoch: 1, Hash: sha256.Sum256([]byte("b")), KC: e2ecrypto.KeyCommitment(k, sidA, 7, 1), Roster: []uint64{bob}, Boxed: devs}
+	if err := s.AdvanceEpoch(sidA, 7, e); err != nil {
+		t.Fatal(err)
+	}
+	e.Boxed = nil
+	if err := s.AdvanceEpoch(sidA, 8, e); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s = open(t, home)
+	if got, _, _ := s.Epoch(sidA, 7, 1); !reflect.DeepEqual(got.Boxed, devs) {
+		t.Fatalf("boxed %v", got.Boxed)
+	}
+	if got, _, _ := s.Epoch(sidA, 8, 1); got.Boxed != nil {
+		t.Fatalf("unknown boxed %v", got.Boxed)
+	}
+	// A v10 file gains the column.
+	for _, q := range []string{`ALTER TABLE epochs DROP COLUMN boxed`, `PRAGMA user_version = 10`} {
+		if _, err := s.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+	s = open(t, home)
+	if got, ok, err := s.Epoch(sidA, 7, 1); err != nil || !ok || got.Boxed != nil {
+		t.Fatalf("after migration %+v %v %v", got, ok, err)
 	}
 }
