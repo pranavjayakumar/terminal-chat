@@ -402,3 +402,42 @@ func TestMembershipAdminRemovesWithoutBundle(t *testing.T) {
 		t.Fatal("bob can read what was sent after his removal")
 	}
 }
+
+// Converting a channel with a webhook: the hook goes, its retired bot
+// stays a member, and client and server agree on the roster with it, so
+// the conversion, later adds and sends all work.
+func TestMembershipEncryptChannelWithHookBot(t *testing.T) {
+	_, _, us := team(t, "alice", "bob", "carol")
+	alice, bob, carol := us[0], us[1], us[2]
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ch, err := alice.CreateChannel(ctx, "team", true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := alice.AddMember(ctx, ch.ID, bob.Me().ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.CreateHook(ctx, ch.ID, "ci"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "bot joined", func() bool { v, _ := alice.Channel(ch.ID); return len(v.Members) == 3 })
+	if err := alice.EncryptChannel(ctx, ch.ID); err != nil {
+		t.Fatal(err)
+	}
+	if hooks, err := alice.ListHooks(ctx); err != nil || len(hooks) != 0 {
+		t.Fatalf("hooks after encrypt: %+v %v", hooks, err)
+	}
+	eventually(t, "bob at epoch 1", bob.e2eAt(ch.ID, 1))
+	alice.send(t, ctx, ch.ID, "encrypted with a bot around")
+	eventually(t, "bob reads", bob.reads(ch.ID, "encrypted with a bot around"))
+	if err := bob.AddMember(ctx, ch.ID, carol.Me().ID); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "carol at epoch 2", carol.e2eAt(ch.ID, 2))
+	carol.send(t, ctx, ch.ID, "hi from carol")
+	eventually(t, "alice reads carol", alice.reads(ch.ID, "hi from carol"))
+	if st := alice.status(ch.ID); st.State != client.E2EOK {
+		t.Fatalf("alice's status %+v", st)
+	}
+}
