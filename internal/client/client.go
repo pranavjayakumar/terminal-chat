@@ -211,11 +211,11 @@ type Client struct {
 	shared       map[shareKey]time.Time
 	autoTried    map[uint64]time.Time
 	poisonSeen   map[[2]uint64]time.Time // (chan, epoch) → when our box there first proved unusable
-	probed       map[uint64]uint32     // channel → highest waiting-message epoch fetched ahead for, this session
-	badCerts     map[[32]byte]struct{} // hashes of certs that failed verification
-	needVerified time.Time             // last verifyDevices run from answerKeyNeed
-	certVerifies atomic.Int64          // cert signature checks (tests)
-	rejects      []string              // why recent encrypted edits/deletes/reactions were ignored (encops.go)
+	probed       map[uint64]uint32       // channel → highest waiting-message epoch fetched ahead for, this session
+	badCerts     map[[32]byte]struct{}   // hashes of certs that failed verification
+	needVerified time.Time               // last verifyDevices run from answerKeyNeed
+	certVerifies atomic.Int64            // cert signature checks (tests)
+	rejects      []string                // why recent encrypted edits/deletes/reactions were ignored (encops.go)
 }
 
 // timing holds the protocol's timers; tests shrink them.
