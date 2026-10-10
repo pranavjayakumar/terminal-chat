@@ -106,6 +106,11 @@ What a malicious server can and cannot do today, and what closes each gap:
 - **Revocation timing**: a bundle is rejected if the server's seq order or its signed time (with
   5 min clock skew allowed) put it after a revoke of its signer. This defends against a server
   acting alone; a revoked device colluding with the server can backdate its bundles.
+- **Edits don't hide the original** from members holding that epoch's key: the original `enc` stays
+  (the edit refers to its mid). Delete removes the ciphertext. (Step 8.)
+- **Edits and reactions over time**: the server can withhold the newest edit from a device that never
+  saw it (it shows an older verified one), and can replay a reaction its author since removed (adds
+  carry no version). It can't forge, move or reorder edits a client has seen. (Step 8.)
 
 ## Pitfalls checklist
 
@@ -279,9 +284,10 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    send; the server dedupes a retry of the stored `edit_enc` first) and keep the original `enc` next to the
    latest `edit_enc`: the original anchors the mid, so **an edit doesn't hide the original text from
    members holding its epoch key** (only delete removes ciphertext); superseded edit encs are scrubbed
-   from the log. `v` = last applied + 1, chosen by the editor; the server can't order edits, so two
-   devices editing at once can diverge (the higher-v one wins where both arrive; a refetch shows the
-   server's latest) and a server can serve an older edit to a fresh device (rollback of edits is not
+   from the log. `v` = last applied + 1, chosen by the editor; the server can't order edits, so clients
+   do, the same way everywhere: the higher (v, Plain ts, mid of the edit's enc) wins and an equal tuple
+   is the same edit, so two devices editing at once with the same v converge whatever the arrival
+   order (coordinator decision). A server can still serve an older edit to a fresh device (rollback of edits is not
    detected without history). Deletes and reactions are sealed under the **message's own epoch** (the
    tag needs that mk anyway; nothing secret in them); the server checks their epoch/eh match the
    message's enc and the signer is the caller's active device, and caps their enc at one padding
@@ -295,6 +301,9 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    or device is missing) and unjudgeable reactions are kept (cache `epend`, `rencs`) and retried by the
    e2e worker. Rejections go to a bounded in-memory log (`Client.E2ERejects`). Local search stays the
    step-7 LIKE scan over decrypted bodies (not FTS5): edits update the body, deletes clear it.
+   Coordinator decisions (step 8 review): deletes and reactions into a channel in alarm are refused
+   client-side like sends and edits (`ErrE2EAlarm`); `enc` on edit/delete/react isn't gated on `e2e1`
+   (same as `send`).
 9. `chan.add{bundle}`, `chan.remove`, `chan.encrypt`, disable → rotate; history via backlinks.
 10. TUI: key-change banner + send block, fork alarm, "⚠ unencrypted", "waiting for key", `/verify`.
 11. Malicious-server suite (`Tamper` hook): injected devices/keys, fake joins, rollback, fork,

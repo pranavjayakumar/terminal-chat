@@ -857,7 +857,11 @@ a refetched copy — by the Plain `ts` rule, AEAD) and then:
 
 - **edit** (`msg.edit.enc`, `Message.edit_enc`): signed by a device of the
   **original** message's author; `t = "edit"`; `ref` = the original's `mid`;
-  `body` passes §10; `v` greater than the last applied version. Then the
+  `body` passes §10; `v ≥ 1`; and the edit is **newer** than the applied
+  one: the higher `(v, ts, mid of the edit's enc)` wins, compared in that
+  order (mid as bytes), and an equal tuple is the same edit. Every client
+  thus ends on the same edit whatever order concurrent edits (e.g. two
+  devices both sending `v = 2`) arrive in. Then the
   text and edited time change; otherwise nothing does. The original must be
   verified; an edit of a message still waiting is kept and judged once it
   opens (same for an edit whose own key or device is missing).
@@ -879,7 +883,8 @@ a refetched copy — by the Plain `ts` rule, AEAD) and then:
 Anything rejected changes nothing and is logged locally (`E2ERejects`).
 A client sends an encrypted edit only of its own verified message, signs
 its own deletes (an admin's delete of someone else's message has no `enc`),
-and reacts only to verified messages. Local search follows edits and
+and reacts only to verified messages. Like sends and edits, it refuses
+deletes and reactions in a channel with an alarm. Local search follows edits and
 deletes (it searches the current decrypted text of undeleted messages).
 
 **Plaintext in encrypted channels.** DMs created as encrypted before
@@ -902,6 +907,11 @@ Implemented: `device.register`, `device.revoke`, `devices.list` (§13.2),
 `dm.open` (e2e DMs; a DM with no other members — private notes — is never e2e, because the server
 posts reminders into it), `send + enc`, `edit/delete/react/unreact + enc`. Not yet: `chan.add +
 bundle`, `chan.remove`, `chan.encrypt` (`docs/E2E.md` §13.5).
+
+The `enc` fields of `send`, `edit`, `delete` and `react`/`unreact` are
+**not** gated on `e2e1` (the ops exist for every session): a session
+without the cap that sends one gets the same checks as below. Only the
+e2e-specific ops and events of this section are cap-gated.
 
 | op | args | data |
 |---|---|---|
@@ -952,7 +962,8 @@ rules from `enc.epoch` on (`stale_epoch` for another epoch or a stale
 bundle, `eh`, signer = an active device of the caller, signature). The
 server stores it as `Message.edit_enc` next to the original `enc`, sets
 `edited`, emits `msg.edit {msg, body: "", edited, enc}` and scrubs the
-previous edit's `enc` from the log (§6). It can't read `v`; clients order
+previous edit's `enc` from the log (§6). It stores the latest edit it
+received; it can't read `v`, so clients order
 edits.
 
 **delete** with `enc`: only the author may sign (`forbidden` for anyone
