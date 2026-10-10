@@ -513,6 +513,21 @@ func (c *Client) CreateInvite(ctx context.Context, user uint64) (string, error) 
 	return r.Code, err
 }
 
+// CreateTeamInvite (admin) returns a new-user invite that uses people can
+// redeem within ttl; 0 means the server default (1 use, 7 days). Anything
+// but the defaults needs cap team_invites, so an older server can't silently
+// mint a single-use invite instead.
+func (c *Client) CreateTeamInvite(ctx context.Context, uses int, ttl time.Duration) (proto.InviteRes, error) {
+	if uses > 1 || ttl != 0 {
+		if err := c.requireCap(proto.CapTeamInvites, "multi-use or custom-expiry invites"); err != nil {
+			return proto.InviteRes{}, err
+		}
+	}
+	var r proto.InviteRes
+	err := c.call(ctx, proto.OpInviteCreate, proto.InviteCreateArgs{Uses: int64(uses), TTLMs: ttl.Milliseconds()}, &r, nil)
+	return r, err
+}
+
 // ---- ephemeral ----
 
 const typingEvery = 3 * time.Second

@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -407,17 +406,7 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 		}
 		return m.openDM(ids), nil
 	case "invite":
-		out := m.opt.Out
-		return m.callThen("invite", func(ctx context.Context) (tea.Msg, error) {
-			code, err := be.CreateInvite(ctx, 0)
-			if err != nil {
-				return nil, err
-			}
-			if out != nil {
-				_, _ = out.Write([]byte("\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(code)) + "\a"))
-			}
-			return infoMsg("invite (copied): " + code), nil
-		}), nil
+		return m.inviteCommand(c.args)
 	case "away":
 		status := c.rest
 		m.manualAway, m.autoAway = true, false

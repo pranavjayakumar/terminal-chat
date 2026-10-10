@@ -21,6 +21,7 @@ import (
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/notify"
 	"github.com/skailama/tc/internal/proto"
+	"github.com/skailama/tc/internal/release"
 )
 
 // Backend is the subset of *client.Client the UI uses. Tests fake it.
@@ -65,6 +66,7 @@ type Backend interface {
 	History(ctx context.Context, ch, before uint64) (bool, error)
 	Search(ctx context.Context, q string, ch uint64) ([]proto.Message, error)
 	CreateInvite(ctx context.Context, user uint64) (string, error)
+	CreateTeamInvite(ctx context.Context, uses int, ttl time.Duration) (proto.InviteRes, error)
 	SendTyping(ch uint64) error
 	SetAway(away bool, status string) error
 	SetDisplay(ctx context.Context, display string) error
@@ -97,9 +99,13 @@ var _ Backend = (*client.Client)(nil)
 
 // Run shows the UI until the user quits or ctx is cancelled. The caller
 // runs c.Run(ctx) separately; the UI works from the cache while offline.
-func Run(ctx context.Context, c *client.Client) error {
+// version is this build's release tag, for the update notice.
+func Run(ctx context.Context, c *client.Client, version string) error {
 	env := notify.OSEnv()
 	o := Options{Out: os.Stdout, Notifier: notify.New(env, os.Stdout), AwayAfter: awayAfter(os.Getenv("TC_AWAY_MIN"))}
+	o.UpdateCheck = func() string {
+		return release.Check(ctx, c.Home(), version, release.NewSource(), time.Now())
+	}
 	if h := notify.DetectHerdr(env); h != nil {
 		o.Herdr = h
 	}
@@ -127,6 +133,10 @@ type Options struct {
 	Herdr Herdr
 	// AwayAfter sets presence to away after this long without a key; 0: never.
 	AwayAfter time.Duration
+
+	// UpdateCheck returns a newer release tag or "". It runs once, in the
+	// background, after startup; nil: no check.
+	UpdateCheck func() string
 
 	// SnippetDir is the base for relative /snippet paths; "": the working directory.
 	SnippetDir string

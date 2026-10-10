@@ -447,11 +447,7 @@ func (m *Model) typingText() string {
 // ---- sidebar ----
 
 func (m *Model) sidebarLines(w, h int) []string {
-	title := m.st.sideTitle.Render("tc")
-	if m.status.State != client.Online || m.status.Stopped {
-		title += m.st.status.Render(" · " + m.statusText())
-	}
-	head := []string{title, ""}
+	head := []string{m.sidebarTitle(), ""}
 	var lines []string
 	active := -1
 	section := func(name string, dm bool) {

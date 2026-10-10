@@ -61,7 +61,8 @@
 //	In e2e channels Edit/Delete/React/Unreact send signed encs (encops.go); ErrNotEditable for
 //	messages that aren't our own verified ones (edit) or verified (react); E2ERejects() []string
 //	says why received ones were ignored
-//	CreateInvite(ctx, user) (string, error); DisableUser(ctx, user) error
+//	CreateInvite(ctx, user) (string, error); CreateTeamInvite(ctx, uses, ttl) (proto.InviteRes, error)
+//	DisableUser(ctx, user) error
 //	SetGroup(ctx, name, members) error (admin); FetchGroups(ctx) ([]proto.Group, error)
 //	Remind(ctx, at, text, ch) (id, error); Reminders(ctx) ([]proto.Reminder, error); DeleteReminder(ctx, id) error
 //	func ParseRemind(args string, now time.Time) (at time.Time, text string, err error) // "10m text", "tomorrow 9am text"

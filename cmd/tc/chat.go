@@ -22,5 +22,5 @@ func cmdChat() error {
 	ctx, cancel := signalContext()
 	defer cancel()
 	go c.Run(ctx)
-	return tui.Run(ctx, c)
+	return tui.Run(ctx, c, version)
 }

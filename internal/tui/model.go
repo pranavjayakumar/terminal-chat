@@ -138,7 +138,8 @@ type Model struct {
 	keyChg     map[uint64][]uint64 // e2e channel → members with an unacknowledged key change
 	hinted     map[uint64]bool     // channels that showed the "?" hint this run
 	verify     verifyState
-	noticeDim  bool // the notice is a quiet hint
+	noticeDim  bool   // the notice is a quiet hint
+	newRelease string // newer release tag, shown in the sidebar title
 }
 
 // ---- tea messages ----
@@ -234,7 +235,7 @@ func (m *Model) defaultChannelExcept(skip uint64) uint64 {
 
 // Init starts listening for client updates.
 func (m *Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.waitUpdate(), textarea.Blink, m.awayTick()}
+	cmds := []tea.Cmd{m.waitUpdate(), textarea.Blink, m.awayTick(), m.updateCheckCmd()}
 	if m.active != 0 && len(m.main.msgs) < 30 {
 		cmds = append(cmds, m.fetchHistory(m.active))
 	}
@@ -788,6 +789,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case infoMsg:
 		m.setInfo(string(msg))
+		return m, nil
+	case updateAvailMsg:
+		m.newRelease = string(msg)
 		return m, nil
 	case historyMsg:
 		m.histBusy[msg.ch] = false
