@@ -109,8 +109,10 @@ What a malicious server can and cannot do today, and what closes each gap:
 - **Membership changes rotate atomically** (step 9): a removed member's devices hold no key for
   anything sent after the removal, even given the server's raw rows; a leaver's last epoch goes stale
   and the next sender rotates first. A malicious server can still add a member it controls (the roster
-  is its word), or withhold a removal; a converted channel's legacy cutoff comes from the server only
-  for a device that cached none of the old plaintext.
+  is its word) — clients don't seal to anyone no verified epoch includes, so it needs an epoch-0
+  channel or a colluding member — or withhold a removal; a converted channel's legacy cutoff comes
+  from the server only for a device that cached none of the old plaintext, and only up to epoch 1.
+  A removed member still sees deletes/reactions on pre-removal messages (sealed under their epochs).
 - **Edits don't hide the original** from members holding that epoch's key: the original `enc` stays
   (the edit refers to its mid). Delete removes the ciphertext. (Step 8.)
 - **Edits and reactions over time**: the server can withhold the newest edit from a device that never
@@ -343,11 +345,23 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    channel and its history (`ChannelView.Removed`, "you were removed") until `/leave` closes it; it
    keeps its old epoch keys (trust store) and gets nothing newer. `/add` refuses with the names of
    members who have devices but none verified.
+   Security review fixes (step 9): a server-claimed legacy cutoff (`Channel.legacy`, used only with
+   nothing cached) counts only if it is ≤ the seq of the channel's verified epoch 1 (else 0), and what it
+   classifies shows "⚠ unauthenticated (legacy, server-claimed)" (trust store v9 records the claim);
+   re-adding someone removed by another user (their last leave's actor ≠ themselves) to an encrypted
+   channel needs the creator or an admin; the creator can't be removed at epoch 0 (only they can make
+   epoch 1); clients seal and rotate only to members confirmed by the verified head's roster (a verified
+   epoch is signed by a previous-roster member): a user present only through an unsigned chan.join is
+   "unconfirmed", never sealed to, and an alarm ("membership not confirmed by a member") once the chain is
+   caught up. Epoch-0 channels still trust the server's member list (the creator builds epoch 1 from it).
    Known limits (step 9): a removed member keeps the channel's history only until their next snapshot
    reset (it wipes the cache; their trust store keeps the old keys, but the server no longer serves
    them the messages). `Channel.legacy` is server-asserted and used only when a device cached none of
    the channel's plaintext; carrying a signed cutoff in the epoch-1 bundle (bundle `v: 2`) is a future
-   improvement.
+   improvement. Deletes and reactions are sealed under their message's own epoch (step 8), so for
+   messages from before a removal they use a key the removed member holds: a removed member colluding
+   with the server (or reading its database) can still see later deletes of, and reactions (real emoji)
+   to, those old messages — never new bodies.
 10. TUI: key-change banner + send block, fork alarm, "⚠ unencrypted", "waiting for key", `/verify`.
 11. Malicious-server suite (`Tamper` hook): injected devices/keys, fake joins, rollback, fork,
     forged bundles, swapped/withheld boxes, hidden leave, stripped cap/flag, plaintext injection,

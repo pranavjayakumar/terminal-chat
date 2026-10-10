@@ -822,7 +822,16 @@ idempotency (§5) holds across reconnects and rotations. Before encrypting it
 catches up on the channel's chain, and rotates first (§13.3) when the
 current bundle is stale as far as it can tell: there is none yet (epoch 1:
 only the creator, or any DM member), or its roster isn't the current
-non-disabled members. Only a `stale_epoch` RES (proof the message wasn't
+non-disabled members. Once the channel has a verified epoch, the roster of
+a new bundle (and who a sender seals to) is only the members the verified
+head's roster includes: a verified epoch is signed by a previous-roster
+member, while the member list is the server's word, so a user who appears
+only through a `chan.join` without such an epoch (honest servers never do
+that: adds carry the next epoch, §13.5) is **unconfirmed**: never sealed
+to, and once the client has caught up on the chain the channel shows an
+alarm ("membership not confirmed by a member") and sends fail. Before
+epoch 1 the member list is all there is (the creator builds epoch 1 from
+it). Only a `stale_epoch` RES (proof the message wasn't
 stored) makes it encrypt again: it applies the events that came before the
 RES, fetches missing bundles, rotates if it holds the current epoch yet the
 server calls it stale (e.g. it boxes a revoked device), and re-encrypts the
@@ -915,7 +924,11 @@ encrypted sends existed, and channels converted by `chan.encrypt`, may hold
 plaintext messages. When a client first sees a channel as encrypted it
 records, once, a **legacy cutoff**: the newest message id it had cached in
 it, or, if it had none cached (e.g. it joined after the conversion), the
-server's `Channel.legacy`. A client that watched the conversion knows the
+server's `Channel.legacy` — recorded as a claim, and counted only while it
+is ≤ the seq of the channel's verified epoch 1 (an honest conversion's
+last plaintext precedes its epoch 1); above that, or before epoch 1 is
+verified, the cutoff is 0. Plaintext legacy only by such a claim is shown
+as "⚠ unauthenticated (legacy, server-claimed)". A client that watched the conversion knows the
 cutoff itself: events apply in order, so every earlier `msg.new` came before
 the `chan.update`. A message without `enc` at or below
 the cutoff is shown as "⚠ unauthenticated (legacy)"; any other can only have
@@ -985,6 +998,8 @@ is then not applied either):
 | encrypted channel with an epoch, no `bundle`, caller a member ("needs a key bundle — upgrade tc") | `bad_request` |
 | `chan.remove` with `bundle` by a non-member (e.g. an admin outside the channel) | `forbidden` |
 | removing yourself with `bundle` (leaving needs none) | `bad_request` |
+| `chan.remove` of the channel's creator while the channel is at epoch 0 (only they can make epoch 1) | `bad_request` |
+| `chan.add` of a user whose last leave of the channel was by someone else (a removal), by anyone but the creator or an admin | `forbidden` |
 
 `bundle` is optional at epoch 0 (no key exists; the creator's epoch 1 will
 have the new roster), for removing a disabled user (in no roster already;
