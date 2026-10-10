@@ -648,18 +648,115 @@ func TestStickyFlags(t *testing.T) {
 	}
 
 	// The only exported ways to touch the flags are Mark* and the getters:
-	// nothing the sync code can call clears them.
+	// nothing the sync code can call clears them. The only Clear* methods
+	// are the deliberate, audited alarm clears (TestAlarmClearAudited).
 	allowed := map[string]bool{"MarkServerE2E": true, "ServerUsesE2E": true, "MarkChannelE2E": true, "ChannelE2E": true}
+	clears := map[string]bool{"ClearChannelAlarm": true, "ClearTrustAlarm": true}
 	typ := reflect.TypeOf(s)
 	for i := range typ.NumMethod() {
 		name := typ.Method(i).Name
 		if strings.Contains(name, "E2E") && !allowed[name] {
 			t.Errorf("unexpected flag method %s", name)
 		}
-		if strings.HasPrefix(name, "Clear") || strings.HasPrefix(name, "Unmark") || strings.HasPrefix(name, "Reset") {
+		if (strings.HasPrefix(name, "Clear") && !clears[name]) || strings.HasPrefix(name, "Unmark") || strings.HasPrefix(name, "Reset") {
 			t.Errorf("unexpected method %s", name)
 		}
 	}
+}
+
+// Clearing an alarm is the user's deliberate act: it needs an alarm, and
+// it never silently deletes — the alarm's detail, its raise time, who
+// cleared it and when go to the audit log, which survives a reopen.
+func TestAlarmClearAudited(t *testing.T) {
+	s, home := newStore(t)
+	if err := s.ClearChannelAlarm(sidA, 3, 1); !errors.Is(err, ErrNoAlarm) {
+		t.Fatalf("clear without alarm: %v", err)
+	}
+	if err := s.ClearTrustAlarm(sidA, 1); !errors.Is(err, ErrNoAlarm) {
+		t.Fatalf("clear without server alarm: %v", err)
+	}
+	if a, _ := s.Audit(sidA); len(a) != 0 {
+		t.Fatalf("audit after no-op clears: %+v", a)
+	}
+	s.RaiseAlarm(sidA, 3, "fork: a second bundle for epoch 2")
+	s.RaiseAlarm(sidA, 4, "rollback")
+	s.RaiseServerAlarm(sidA, "dropped e2e1")
+	_, raised, _, _ := s.AlarmSince(sidA, 3)
+	before := time.Now()
+	if err := s.ClearChannelAlarm(sidA, 3, 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ClearTrustAlarm(sidA, 7); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := s.Alarm(sidA, 3); ok {
+		t.Fatal("alarm still there")
+	}
+	if _, ok, _ := s.Alarm(sidA, 4); !ok {
+		t.Fatal("another channel's alarm cleared")
+	}
+	if _, ok, _ := s.ServerAlarm(sidA); ok {
+		t.Fatal("server alarm still there")
+	}
+	s.Close()
+	s = open(t, home)
+	a, err := s.Audit(sidA)
+	if err != nil || len(a) != 2 {
+		t.Fatalf("audit = %+v %v", a, err)
+	}
+	if a[0].Action != "clear_alarm" || a[0].Chan != 3 || a[0].By != 7 || a[0].Detail != "fork: a second bundle for epoch 2" ||
+		!a[0].Raised.Equal(raised) || a[0].Time.Before(before) {
+		t.Fatalf("channel clear audit = %+v", a[0])
+	}
+	if a[1].Action != "clear_server_alarm" || a[1].Detail != "dropped e2e1" || a[1].By != 7 {
+		t.Fatalf("server clear audit = %+v", a[1])
+	}
+	if b, _ := s.Audit(sidB); len(b) != 0 {
+		t.Fatal("audit leaked across servers")
+	}
+	// A cleared alarm can be raised again.
+	s.RaiseAlarm(sidA, 3, "fork again")
+	if d, ok, _ := s.Alarm(sidA, 3); !ok || d != "fork again" {
+		t.Fatalf("re-raised alarm %q %v", d, ok)
+	}
+}
+
+// VerifyKeys upgrades exactly the compared pinned keys and audits it; a
+// pinned set that changed since the comparison is refused.
+func TestVerifyKeys(t *testing.T) {
+	s, _ := newStore(t)
+	k1, k2, k3 := sshKey(t), sshKey(t), sshKey(t)
+	if err := s.VerifyKeys(sidA, bob, []string{k1.fp}, "safety number", 1); !errors.Is(err, ErrPinsChanged) {
+		t.Fatalf("no pins: %v", err)
+	}
+	s.PinKey(sidA, bob, k1.fp, k1.wire, TOFU)
+	s.PinKey(sidA, bob, k2.fp, k2.wire, Endorsed)
+	for _, bad := range [][]string{{k1.fp}, {k1.fp, k3.fp}, {k1.fp, k2.fp, k3.fp}} {
+		if err := s.VerifyKeys(sidA, bob, bad, "safety number", 1); !errors.Is(err, ErrPinsChanged) {
+			t.Fatalf("%v: %v", bad, err)
+		}
+	}
+	if got := fps(s.PinnedKeys(sidA, bob)); strings.Contains(got, "verified") {
+		t.Fatalf("refused verify changed pins: %s", got)
+	}
+	if err := s.VerifyKeys(sidA, bob, []string{k2.fp, k1.fp}, "github:bob", 1); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range must(s.PinnedKeys(sidA, bob)) {
+		if k.How != Verified {
+			t.Fatalf("pin %s is %s", k.Fingerprint, k.How)
+		}
+	}
+	if a, _ := s.Audit(sidA); len(a) != 1 || a[0].Action != "verify" || a[0].User != bob || a[0].Detail != "github:bob" {
+		t.Fatalf("audit %+v", a)
+	}
+}
+
+func must[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
 }
 
 // ---- isolation ----

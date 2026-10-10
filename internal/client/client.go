@@ -80,6 +80,15 @@
 //	func (c *Client) UnverifiedUsers() []uint64      // e2e channel members trusted only on first use
 //	func (c *Client) TrustAlarm() (string, bool)      // server dropped e2e1 after speaking it (sticky)
 //
+// Trust UX (verify.go; local, offline except the GitHub fetch):
+//
+//	func (c *Client) SafetyNumber(user uint64) (SafetyNumber, error)   // 60 digits over both users' pinned keys
+//	func (c *Client) MarkVerified(user uint64, digits string) error    // numbers matched: their pins become Verified
+//	func (c *Client) VerifyGitHub(ctx, user, login) (GitHubCheck, error); ConfirmGitHub(res) error // compare, then confirm
+//	func (c *Client) KeyChanges() []KeyChange; KeyChangedMembers(ch) []uint64 // sends blocked there (ErrKeyChange)
+//	func (c *Client) PendingKeys(user) []string; AcceptKeyChanges(user, fps, only) error // exactly the shown keys
+//	func (c *Client) Alarm(ch uint64) (AlarmInfo, bool); ClearAlarm(ch) error // clearing is audited
+//
 // Server-side refusals are returned as *proto.Error (check Code).
 package client
 
@@ -188,6 +197,8 @@ type Client struct {
 
 	running atomic.Bool
 	timing  timing
+
+	githubBase string // VerifyGitHub's base URL; "" = https://github.com (tests)
 
 	// E2E (e2e.go). e2eMu serializes chain processing and rotation.
 	e2eMu    sync.Mutex

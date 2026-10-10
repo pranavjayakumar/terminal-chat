@@ -6,8 +6,11 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
+	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -156,6 +159,139 @@ func TestSendNotifyTailEncrypted(t *testing.T) {
 	for _, m := range bob.Messages(dm, 10) {
 		if m.Sec != client.SecE2E {
 			t.Fatalf("message %+v not end-to-end encrypted", m)
+		}
+	}
+}
+
+// Two real clients compute the same safety number for each other, and
+// tc verify shows it and, confirmed, marks the other user's key verified;
+// declining changes nothing.
+func TestVerifySafetyNumberSymmetric(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	t.Setenv("TC_TRANSPORT", "tcp")
+	srv, err := server.New(server.Config{DataDir: t.TempDir(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := transport.ListenWith("127.0.0.1:0", srv.Cert(), transport.ListenOpts{HTTP: true, HTTPCert: srv.HTTPCert()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetPublicAddr(ln.Addr().String())
+	sctx, scancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { srv.Serve(sctx, ln); close(done) }()
+	t.Cleanup(func() { scancel(); <-done; srv.Close() })
+
+	homes := map[string]string{"alice": loginHome(t, srv, "alice"), "bob": loginHome(t, srv, "bob")}
+	clients := map[string]*client.Client{}
+	for name, home := range homes {
+		c, err := client.Open(home)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		stopped := make(chan struct{})
+		go func() { c.Run(ctx); close(stopped) }()
+		clients[name] = c
+		t.Cleanup(func() { cancel(); <-stopped; c.Close() })
+	}
+	id := func(c *client.Client, name string) uint64 {
+		for _, u := range c.Users() {
+			if u.Name == name {
+				return u.ID
+			}
+		}
+		return 0
+	}
+	var na, nb client.SafetyNumber
+	until(t, "both sides see each other's key", func() bool {
+		var ea, eb error
+		na, ea = clients["alice"].SafetyNumber(id(clients["alice"], "bob"))
+		nb, eb = clients["bob"].SafetyNumber(id(clients["bob"], "alice"))
+		return ea == nil && eb == nil
+	})
+	if na.Digits != nb.Digits || len(na.Digits) != 60 {
+		t.Fatalf("alice sees %s, bob sees %s", na.Digits, nb.Digits)
+	}
+
+	t.Setenv("TC_HOME", homes["alice"])
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+	if err := verify(ctx, []string{"@bob"}, strings.NewReader("n\n"), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), strings.Join(na.Groups()[:4], " ")) || !strings.Contains(out.String(), "not verified") {
+		t.Fatalf("output:\n%s", out.String())
+	}
+	sid, _ := clients["alice"].ServerID()
+	bobID := id(clients["alice"], "bob")
+	verified := func() bool {
+		ks, _ := clients["alice"].Trust().PinnedKeys(sid, bobID)
+		return len(ks) == 1 && ks[0].How == "verified"
+	}
+	if verified() {
+		t.Fatal("declined but verified")
+	}
+	out.Reset()
+	if err := verify(ctx, []string{"@bob"}, strings.NewReader("y\n"), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "✓ @bob verified") || !verified() {
+		t.Fatalf("not verified; output:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "pinned different key sets") {
+		t.Errorf("no key-set hint:\n%s", out.String())
+	}
+
+	// --github: the comparison, then y to verify because the account is bob's.
+	ks, _ := clients["alice"].Trust().PinnedKeys(sid, bobID)
+	pk, err := ssh.ParsePublicKey(ks[0].Wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/bob-gh.keys" {
+			w.Write(ssh.MarshalAuthorizedKey(pk))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer gh.Close()
+	testGitHubBase = gh.URL
+	defer func() { testGitHubBase = "" }()
+	ghAudits := func() int {
+		n := 0
+		a, _ := clients["alice"].Trust().Audit(sid)
+		for _, e := range a {
+			if e.Detail == "github:bob-gh" {
+				n++
+			}
+		}
+		return n
+	}
+	out.Reset()
+	if err := verify(ctx, []string{"@bob", "--github", "bob-gh"}, strings.NewReader("n\n"), &out); err != nil {
+		t.Fatal(err)
+	}
+	if ghAudits() != 0 || !strings.Contains(out.String(), "Verify @bob because you confirmed github.com/bob-gh is theirs?") {
+		t.Fatalf("declined GitHub verified, or no question:\n%s", out.String())
+	}
+	out.Reset()
+	if err := verify(ctx, []string{"@bob", "--github", "bob-gh"}, strings.NewReader("y\n"), &out); err != nil {
+		t.Fatal(err)
+	}
+	if ghAudits() != 1 {
+		t.Fatalf("GitHub confirmation not recorded:\n%s", out.String())
+	}
+	out.Reset()
+	if err := verify(ctx, []string{"@bob", "--github", "nobody"}, strings.NewReader("y\n"), &out); err == nil {
+		t.Fatal("404 account verified")
+	}
+	for _, bad := range [][]string{{}, {"bob"}, {"@bob", "--github"}, {"@bob", "@carol"}} {
+		if err := verify(ctx, bad, strings.NewReader(""), &out); !errors.Is(err, errUsage) {
+			t.Errorf("%q: %v", bad, err)
 		}
 	}
 }

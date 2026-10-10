@@ -522,11 +522,21 @@ func (c *Client) needsEnc(ch uint64) bool {
 	return c.chanIsE2E(c.db, sid, ok, ch)
 }
 
-// sendAllowed refuses sends into an encrypted channel in alarm.
+// sendAllowed refuses sends into an encrypted channel in alarm or with a
+// member's unacknowledged key change.
 func (c *Client) sendAllowed(ch uint64) error {
 	if !c.needsEnc(ch) {
 		return nil
 	}
+	if err := c.alarmAllowed(ch); err != nil {
+		return err
+	}
+	return c.keyChangeAllowed(ch)
+}
+
+// alarmAllowed refuses anything into an encrypted channel in alarm. Deletes
+// check only this: they never seal to a changed key (docs/E2E.md step 10).
+func (c *Client) alarmAllowed(ch uint64) error {
 	if st := c.E2EStatus(ch); st.State == E2EAlarm && !unconfirmedAlarm(st) {
 		return fmt.Errorf("%w (%s)", ErrE2EAlarm, sanitize.Line(st.Detail))
 	}

@@ -36,7 +36,7 @@ tc                                    # chat
 | `F1` or `/help` | all keys and commands |
 | `Ctrl-C` twice | quit |
 
-Commands: `/join #x` `/create #x [--private]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/pins` `/activity` `/highlight [word…]` `/unhighlight word…` `/group name @a @b` (admin) `/groups` `/remind <when> <text>` `/reminders` `/remind-delete id` `/away [status]` `/back` `/snippet file[:range]` `/share-pane [pane]` `/invite` (admin) `/webhook name` `/webhooks` `/webhook-delete id`.
+Commands: `/join #x` `/create #x [--private]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/pins` `/activity` `/highlight [word…]` `/unhighlight word…` `/group name @a @b` (admin) `/groups` `/remind <when> <text>` `/reminders` `/remind-delete id` `/away [status]` `/back` `/snippet file[:range]` `/share-pane [pane]` `/invite` (admin) `/webhook name` `/webhooks` `/webhook-delete id` `/verify @user` `/accept-key @user` `/members` `/alarm`.
 
 Unsent text is kept per channel and thread (a dim `✎` in the sidebar marks channels with a draft) and
 survives restarts. `/remind 10m stand up` or `/remind tomorrow 9am …` posts `⏰ …` in your private notes on time, even
@@ -51,7 +51,22 @@ kubectl logs pod/api | tc send @priya        # piped → code block (colors stri
 (git diff) | tc send '#review'               # a diff block, colored in tc
 tc send '#backend' --file pkg/db.go:40-60 look at this   # lines 40-60 as a code block + permalink
 tc tail '#deploys'                           # stream a channel
+tc verify @priya                             # compare safety numbers
 ```
+
+## Verifying teammates
+
+DMs and private channels are end-to-end encrypted. tc trusts a teammate's SSH key the first time it
+sees it and marks them with a dim `?` until you verify them:
+
+- `/verify @bob` shows a 60-digit safety number. Read it to bob over another channel (in person, a
+  call); if every digit matches on his screen, press `v`. From the shell: `tc verify @bob`.
+- `/verify @bob --github bobs-login` (or `tc verify @bob --github bobs-login`) checks his key against
+  `https://github.com/bobs-login.keys` instead; if they match, confirm the account is really his (`v` / `y`).
+- If bob's key changes, a red banner says so and sending to channels with him waits until you
+  `/accept-key @bob` (it shows the new key; `y` accepts), then `/verify @bob` again.
+- If a channel shows `⚠ alarm`, `/alarm` explains what the server did; `/alarm-clear #name` clears it
+  once you know why.
 
 ## herdr
 

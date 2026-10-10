@@ -143,6 +143,11 @@ func (c *Client) sendEntry(ctx context.Context, s *session, e outboxEntry) error
 	if st := c.E2EStatus(e.chan_); st.State == E2EAlarm && !unconfirmedAlarm(st) { // sealEntry judges that one
 		return failErr{"not sent: encryption alarm: " + sanitize.Line(st.Detail)}
 	}
+	// A member's key changed after this was queued: hold it (failed) until
+	// the change is accepted, which requeues it (requeueKeyChange).
+	if err := c.keyChangeAllowed(e.chan_); err != nil {
+		return failErr{keyChangeReason}
+	}
 	// An entry encrypted while queued but never handed to the server is
 	// re-encrypted if the channel moved on meanwhile (new head, other
 	// members). Once sent, only a stale_epoch may change its bytes.

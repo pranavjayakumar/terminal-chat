@@ -306,6 +306,7 @@ func (c *Client) e2ePass(ctx context.Context, s *session, sid e2ecrypto.ServerID
 		}
 	}
 	c.reopenMsgs(sid, chans)
+	c.requeueKeyChange() // a change accepted elsewhere (another process)
 	if changed {
 		c.post(Update{Channels: true})
 	}
@@ -1288,9 +1289,10 @@ func (c *Client) hasUnverifiedDevice(sid e2ecrypto.ServerID, user uint64) bool {
 // UnverifiedUsers lists the other members of my encrypted channels whose
 // devices this device trusts only on first use: none of their pinned SSH
 // keys was verified out of band (an endorsed key extends a TOFU anchor, so
-// it counts as TOFU too). Their keys are accepted (Signal-like) but a
-// server present at first contact could have substituted them; the TUI
-// marks them until /verify (step 10). Sorted; works offline.
+// it counts as TOFU too), or one of them was pinned by accepting a key
+// change after the last verification. Their keys are accepted (Signal-like)
+// but a server present at first contact could have substituted them; the
+// TUI marks them until /verify. Sorted; works offline.
 func (c *Client) UnverifiedUsers() []uint64 {
 	sid, ok := c.cacheServerID()
 	if !ok {
@@ -1316,13 +1318,20 @@ func (c *Client) UnverifiedUsers() []uint64 {
 			if err != nil || len(pins) == 0 {
 				continue // no device seen yet: nothing trusted at all
 			}
-			if !slices.ContainsFunc(pins, func(k trust.SSHKey) bool { return k.How == trust.Verified }) {
+			if !userVerified(pins) {
 				out = append(out, u)
 			}
 		}
 	}
 	slices.Sort(out)
 	return out
+}
+
+// userVerified: some pin is Verified and none is only TOFU (an accepted key
+// change is pinned TOFU; endorsed keys hang off the verified ones).
+func userVerified(pins []trust.SSHKey) bool {
+	return slices.ContainsFunc(pins, func(k trust.SSHKey) bool { return k.How == trust.Verified }) &&
+		!slices.ContainsFunc(pins, func(k trust.SSHKey) bool { return k.How == trust.TOFU })
 }
 
 // TrustAlarm reports a server-wide trust alarm: the server, once seen

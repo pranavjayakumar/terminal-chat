@@ -75,8 +75,40 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 `/invite` (admin; prints code), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps), `/pins` (overlay of this channel's pinned messages, newest pin first, as `author · preview`; Enter jumps, Esc closes),
 `/activity`, `/highlight [word…]`, `/unhighlight word…`, `/group name @a @b…` (admin), `/groups`,
 `/remind <when> <text>`, `/reminders`, `/remind-delete id`, `/snippet path[:range] [message]`,
-`/share-pane [pane]` (herdr only), `/quit`.
+`/share-pane [pane]` (herdr only), `/verify @user [--github login]`, `/accept-key @user`, `/members`,
+`/alarm`, `/alarm-clear #name`, `/quit`.
 Unknown command → inline error, input kept.
+
+## Verifying people (encrypted channels)
+
+- **`?` marks**: a member trusted only on first use (their SSH key was pinned the first time this device
+  saw it, or a changed key was accepted since the last verification) gets a dim `?`: right after the name
+  in a DM's header (`@bob?`), as `?N unverified` after the 🔒 in a channel header, and `? @bob` in
+  `/members` (`!` = key changed). The first time a channel with such members opens in a run, a dim
+  notice suggests `/verify @bob`. Plaintext channels show none of this.
+- **`/verify @bob`** opens an overlay: the 60-digit safety number (12 groups of 5, 4 per row; 2 below 26
+  columns), then both users' SSH key fingerprints and the instructions. The title always says `v: they
+  match · Esc: cancel`; ↑/↓/PgUp/PgDn scroll when it doesn't fit. `v` marks bob's pinned keys verified
+  (notice `✓ @bob verified`; if his keys changed meanwhile the client refuses and says to compare again).
+  All trust overlays ignore keys except Esc for 500 ms after opening, so type-ahead can't confirm.
+- **`/verify @bob --github login`** fetches `github.com/login.keys` (only on this command) and shows a
+  green `✓ every key … is on github.com/login` plus "Press v to verify @bob because you confirmed
+  github.com/login is theirs" (title `v: verify · Esc: cancel`), or a red `✗ MISMATCH` with each pinned key
+  marked `✓`/`✗` and the account's keys listed. Nothing changes without `v`, or on a mismatch.
+- **Key-change banner**: when a member of the active encrypted channel presents a new SSH key that no
+  pinned key endorsed, one red line under the header reads `⚠ /accept-key @bob, then /verify @bob —
+  @bob's key changed` (the command first, so it survives truncation; several: `⚠ /accept-key, then
+  /verify each — keys changed: @bob, @carol`). Enter, edits and reactions are refused (input kept, red
+  notice); deletes and receiving go on. `/accept-key @bob [fingerprint]` opens an overlay listing the
+  pending fingerprints; `y` accepts exactly those (if the pending set changed meanwhile it refuses and
+  shows the new set), Esc cancels. Accepting pins the new key unverified, so bob gets his `?` back.
+- **Alarms**: the header shows `⚠ alarm: <detail>` in red (fork, rollback, plaintext downgrade, server
+  dropped e2e, unconfirmed member) and sending is blocked. `/alarm` opens a list with the detail, when it
+  was raised, what it means and how it can happen, and how to clear it. `/alarm-clear` alone or with a
+  wrong name only says what to type; `/alarm-clear #name` (`@bob` in a DM) clears it, recorded in the
+  trust store's audit log. For the server-wide alarm the list, prompt and result say "server-wide —
+  clears the alarm for all encrypted channels". Alarms derived from current state (unconfirmed member)
+  can't be cleared.
 
 ## Behavior
 

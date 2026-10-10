@@ -20,6 +20,8 @@ const usage = `tc — terminal team chat
   tc tail <#chan>            stream a channel
   tc notify [--to #chan|@user|@me] [--on-fail] -- <cmd...>
                              run a command, then post ✓/✗, time and output tail
+  tc verify @user [--github login]
+                             compare safety numbers (or GitHub keys) to verify someone
   tc server [--listen :7443] [--public host:port] [--data dir]
   tc server invite [--admin]
   tc version
