@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"errors"
 
 	"github.com/skailama/tc/internal/proto"
 )
@@ -64,6 +65,22 @@ func (s *Server) opChanAdd(ctx context.Context, u proto.User, a proto.ChanAddArg
 			// bundle (the creator's) will include the new member.
 			return nil, errNeedBundle
 		}
+		if head.e2e && !u.Admin {
+			// Someone removed from an encrypted channel (their last leave
+			// was by someone else) comes back only by the creator or an
+			// admin: a member can't undo a removal on their own.
+			removed, err := removedByOther(ctx, tx, a.Chan, a.User)
+			if err != nil {
+				return nil, err
+			}
+			var creator uint64
+			if err := tx.QueryRowContext(ctx, `SELECT creator FROM channels WHERE id = ?`, a.Chan).Scan(&creator); err != nil {
+				return nil, err
+			}
+			if removed && creator != u.ID {
+				return nil, proto.Errf(proto.ErrForbidden, "they were removed: only the channel's creator or an admin can add them back")
+			}
+		}
 		ev, err := addMember(ctx, tx, s.now(), u.ID, a.Chan, a.User)
 		if err != nil || a.Bundle == nil {
 			return []proto.Event{ev}, err
@@ -75,6 +92,18 @@ func (s *Server) opChanAdd(ctx context.Context, u proto.User, a proto.ChanAddArg
 		return []proto.Event{ev, kev}, nil
 	})
 	return proto.Empty{}, err
+}
+
+// removedByOther reports whether user's last leave of ch was done by
+// someone else (a chan.remove), not by themselves.
+func removedByOther(ctx context.Context, tx *sql.Tx, ch, user uint64) (bool, error) {
+	var actor uint64
+	err := tx.QueryRowContext(ctx, `SELECT e.actor FROM membership m JOIN events e ON e.seq = m.leave_seq
+		WHERE m.chan = ? AND m.user = ? AND m.leave_seq IS NOT NULL ORDER BY m.leave_seq DESC LIMIT 1`, ch, user).Scan(&actor)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil && actor != user, err
 }
 
 // leaveTx appends a chan.leave event for user (actor: who did it) and
@@ -151,6 +180,10 @@ func (s *Server) opChanRemove(ctx context.Context, u proto.User, a proto.ChanAdd
 			return nil, err
 		}
 		switch {
+		case head.e2e && head.epoch == 0 && a.User == creator:
+			// Only the creator can make epoch 1: without them the channel
+			// could never get a key.
+			return nil, badRequest("the channel's creator can't be removed before it has a key")
 		case head.e2e && head.epoch > 0 && a.Bundle == nil && !target.Disabled && s.members[a.Chan][u.ID]:
 			return nil, errNeedBundle
 		case a.Bundle != nil && !s.members[a.Chan][u.ID]:

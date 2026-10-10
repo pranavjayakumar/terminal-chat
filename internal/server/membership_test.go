@@ -484,3 +484,75 @@ func TestChanEncryptDeletesHooks(t *testing.T) {
 		t.Fatalf("another channel's hook broke: %d", r.status)
 	}
 }
+
+// In an encrypted channel, someone removed by another member comes back
+// only through the creator or an admin; people who left on their own or
+// were never members can be added by any member. Plaintext channels are
+// unchanged.
+func TestChanReaddAfterRemoval(t *testing.T) {
+	ts := startServer(t, "tcp")
+	fastClock(ts)
+	admin := ts.registerCaps(t, "admin", true, e2eCaps)
+	bob := ts.registerCaps(t, "bob", false, e2eCaps)
+	carol := ts.registerCaps(t, "carol", false, e2eCaps)
+	dave := ts.registerCaps(t, "dave", false, e2eCaps)
+	eve := ts.registerCaps(t, "eve", false, e2eCaps)
+	for _, c := range []*tclient{admin, bob, carol, dave, eve} {
+		c.syncFresh()
+	}
+	ch := bob.createE2E("sec") // epoch 0: no bundles needed for this test
+	add := func(by, who *tclient) *proto.Error {
+		return by.errOf(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: who.user.ID})
+	}
+	for _, c := range []*tclient{carol, dave, admin} {
+		if e := add(bob, c); e != nil {
+			t.Fatal(e)
+		}
+	}
+	bob.ok(proto.OpChanRemove, proto.ChanAddArgs{Chan: ch.ID, User: dave.user.ID}, nil)
+	wantErr(t, "member re-adds a removed user", add(carol, dave), proto.ErrForbidden, "removed")
+	if e := add(carol, eve); e != nil { // never a member
+		t.Fatal(e)
+	}
+	eve.ok(proto.OpChanLeave, proto.ChanArgs{Chan: ch.ID}, nil)
+	if e := add(carol, eve); e != nil { // left on her own
+		t.Fatal(e)
+	}
+	if e := add(bob, dave); e != nil { // the creator may
+		t.Fatal(e)
+	}
+	bob.ok(proto.OpChanRemove, proto.ChanAddArgs{Chan: ch.ID, User: dave.user.ID}, nil)
+	if e := add(admin, dave); e != nil { // an admin (member) may
+		t.Fatal(e)
+	}
+
+	// Plaintext private channels: any member may add anyone back.
+	var plain proto.ChanRes
+	bob.ok(proto.OpChanCreate, proto.ChanCreateArgs{Name: "plain", Private: true}, &plain)
+	bob.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: plain.Chan.ID, User: carol.user.ID}, nil)
+	bob.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: plain.Chan.ID, User: dave.user.ID}, nil)
+	bob.ok(proto.OpChanRemove, proto.ChanAddArgs{Chan: plain.Chan.ID, User: dave.user.ID}, nil)
+	carol.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: plain.Chan.ID, User: dave.user.ID}, nil)
+}
+
+// Only the creator can make epoch 1, so it can't be removed from an
+// encrypted channel that has no key yet.
+func TestChanRemoveCreatorAtEpoch0(t *testing.T) {
+	ts := startServer(t, "tcp")
+	fastClock(ts)
+	admin := ts.registerCaps(t, "admin", true, e2eCaps)
+	bob := ts.registerCaps(t, "bob", false, e2eCaps)
+	carol := ts.registerCaps(t, "carol", false, e2eCaps)
+	for _, c := range []*tclient{admin, bob, carol} {
+		c.syncFresh()
+	}
+	sid := ts.sid()
+	b1, _ := bob.registerDevice(ts)
+	ch := bob.createE2E("sec")
+	bob.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: carol.user.ID}, nil)
+	wantErr(t, "creator at epoch 0", admin.errOf(proto.OpChanRemove, proto.ChanAddArgs{Chan: ch.ID, User: bob.user.ID}), proto.ErrBadRequest, "creator")
+	// Others can be, and once there is a key the creator can be too.
+	admin.ok(proto.OpChanRemove, proto.ChanAddArgs{Chan: ch.ID, User: carol.user.ID}, nil)
+	bob.rotate(ch.ID, bundle(t, b1, sid, ch.ID, 1, nil, []uint64{bob.user.ID}, b1))
+	admin.ok(proto.OpChanRemove, proto.ChanAddArgs{Chan: ch.ID, User: bob.user.ID}, nil)
+}
