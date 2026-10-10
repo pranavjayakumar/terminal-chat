@@ -29,7 +29,13 @@ type srv struct {
 // startServer runs a server on addr ("127.0.0.1:0" picks a port) over dir.
 func startServer(t *testing.T, dir, addr string) (*srv, string) {
 	t.Helper()
-	s, err := server.New(server.Config{DataDir: dir, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	return startServerClock(t, dir, addr, nil)
+}
+
+// startServerClock is startServer with the server's clock (nil: time.Now).
+func startServerClock(t *testing.T, dir, addr string, now func() time.Time) (*srv, string) {
+	t.Helper()
+	s, err := server.New(server.Config{DataDir: dir, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}
