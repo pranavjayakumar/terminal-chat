@@ -94,7 +94,9 @@ func TestChaosRotations(t *testing.T) {
 	// retry runs op until it succeeds or done says it took effect anyway
 	// (a lost RES); transient failures (offline, stale, rate limited) retry.
 	retry := func(what string, op func(context.Context) error, done func() bool) {
-		deadline := time.Now().Add(60 * time.Second)
+		// Outlive the chaos phase: under constant kills a client's reconnect
+		// backoff reaches 30 s, and slow CI runners stretch chaos past 60 s.
+		deadline := time.Now().Add(180 * time.Second)
 		for {
 			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			err := op(cctx)
