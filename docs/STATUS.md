@@ -17,6 +17,10 @@ cut release v0.2.0, redeploy the droplet, hand the owner the one-line install/in
 → `gh run watch` (draft release) → `make release-sign TAG=v0.2.0 KEY=~/.ssh/id_ed25519` → tag v0.2.0 done (release workflow builds binaries) → redeploy droplet with the release binary
 (`docs/DEPLOY.md`) → test the one-liner from a clean HOME → give the owner the command → update this file → pause.
 
+**Repo hygiene:** GitHub deletes PR branches on merge; after merging, remove the worktree and local branch so
+only `main` (plus in-flight work) exists. Owner wants an onboarding session after the pause — prepare a clear
+walkthrough of the product workflow (install → join → chat → herdr → encryption/verify → admin/invites → deploy).
+
 **Rules:** kiro hard cap 55–60% of monthly credits; once reached, run workers as Claude subagents (owner) (check `kiro-cli chat --no-interactive "/usage"`; stop at 55%).
 Claude only orchestrates (review/merge/log); workers on kiro, launched with herdr env vars unset. Merge only with
 `gh pr checks <n> --watch` exit 0 (CI works again since the repo is public). Log every event in `docs/WORKLOG.md`.
