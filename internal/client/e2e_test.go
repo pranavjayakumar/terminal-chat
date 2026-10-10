@@ -941,6 +941,45 @@ func TestE2EBundleAfterRevokeBySignedTime(t *testing.T) {
 	}
 }
 
+// A stolen device bob revoked (b1) signs a revoke of his healthy device b2,
+// and the server presents it with an unknown seq or one before b1's revoke
+// but signed after it: b2 must stay trusted (step 12 security pass). The
+// forged revoke comes first so a single pass would judge it before b1's.
+func TestE2ERevokedDeviceCantRevokeOthers(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		seq      uint64
+		signedAt time.Duration // relative to b1's revoke
+	}{
+		{"unknown seq", 0, -time.Hour},
+		{"earlier seq, signed after", 3, 10 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs, c := e2eClient(t)
+			run(t, c)
+			b1 := newPeer(t, bob, nil)
+			b2 := newPeer(t, bob, b1.ssh)
+			now := time.Now()
+			revB1, _ := identity.NewDeviceRevoke(b1.ssh, testSID(), bob, b1.dev.ID, now)
+			forged, _ := identity.NewDeviceRevokeByDevice(b1.dev, testSID(), bob, b2.dev.ID, now.Add(tc.signedAt))
+			f := startE2E(t, fs, proto.Snapshot{
+				Chans:       []proto.Channel{dmChan(0)},
+				Devs:        []proto.Device{{Cert: b1.cert}, {Cert: b2.cert}},
+				Revoked:     []proto.Signed{proto.Signed(forged), proto.Signed(revB1)},
+				RevokedSeqs: []uint64{tc.seq, 5},
+			}, proto.DevicesListRes{})
+			f.myKeys(c)
+			waitFor(t, "b1 revoked", func() bool { d, _, _ := c.Trust().Device(testSID(), b1.dev.ID); return d.Revoked })
+			c.e2eMu.Lock()
+			c.verifyDevices(testSID(), nil, alice) // once more: the order of passes mustn't matter
+			c.e2eMu.Unlock()
+			if d, ok, _ := c.Trust().Device(testSID(), b2.dev.ID); !ok || d.Revoked {
+				t.Fatalf("b2 revoked=%v seq=%d (known %v): revoked by an already revoked device", d.Revoked, d.RevokedSeq, ok)
+			}
+		})
+	}
+}
+
 // Members of my e2e channels whose keys are only TOFU-pinned (or endorsed
 // by a TOFU key) are reported as unverified; verified ones, myself, members
 // of plaintext channels and users with no devices aren't.

@@ -200,6 +200,16 @@ func (c *Client) ensureDevice(ctx context.Context, s *session, signer ssh.Signer
 // signed. A revoke we can't check (made with another of our SSH keys) is
 // left for the trust store; a server can't make us drop keys by claiming one.
 func ownRevoked(sid e2ecrypto.ServerID, me uint64, dev e2ecrypto.DevID, mySSH []byte, certs, revokes []proto.Signed) bool {
+	return revokedBy(sid, me, dev, mySSH, certs, revokes, true)
+}
+
+// revokedBy reports whether a revoke of dev verifies under mySSH or under
+// another of our devices. With strict, a signing device counts only if no
+// revoke of it verifies the same way: a stolen, already revoked device
+// can't make our healthy devices drop their keys (step 12 security pass).
+// Two devices revoking each other thus cancel out; the trust store judges
+// them by seq and time.
+func revokedBy(sid e2ecrypto.ServerID, me uint64, dev e2ecrypto.DevID, mySSH []byte, certs, revokes []proto.Signed, strict bool) bool {
 	for _, r := range revokes {
 		pr, err := identity.PeekDeviceRevoke(identity.Signed(r))
 		if err != nil || pr.User != me || pr.Dev != dev {
@@ -211,6 +221,9 @@ func ownRevoked(sid e2ecrypto.ServerID, me uint64, dev e2ecrypto.DevID, mySSH []
 		for _, sc := range certs {
 			dc, err := identity.Signed(sc).VerifyDeviceCert(sid, mySSH)
 			if err != nil || dc.User != me || dc.Dev == dev {
+				continue
+			}
+			if strict && revokedBy(sid, me, dc.Dev, mySSH, certs, revokes, false) {
 				continue
 			}
 			if vr, err := identity.Signed(r).VerifyDeviceRevokeByDevice(sid, dc.Ed25519); err == nil && vr.User == me && vr.Dev == dev {

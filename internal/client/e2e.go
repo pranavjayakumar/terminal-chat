@@ -421,11 +421,7 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 
 	var certs []certRow
 	var endorse []identity.Signed
-	type revRow struct {
-		s   identity.Signed
-		seq uint64
-	}
-	var revokes []revRow
+	var revokes []seqRevoke
 	load := func(q string, fn func(raw []byte, seq uint64)) {
 		rows, err := c.db.Query(q)
 		if err != nil {
@@ -464,7 +460,7 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 	})
 	load(`SELECT revoke, seq FROM device_revokes ORDER BY rowid`, func(raw []byte, seq uint64) {
 		if s, ok := decode(raw); ok {
-			revokes = append(revokes, revRow{s, seq})
+			revokes = append(revokes, seqRevoke{s, seq})
 		}
 	})
 	pins := map[uint64][][]byte{}
@@ -577,45 +573,71 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 		}
 	}
 
-	for _, r := range revokes {
-		pr, err := identity.PeekDeviceRevoke(r.s)
-		if err != nil || pr.ServerID != sid {
-			continue
+	// Revokes signed by an SSH key first: a stolen device's own revoke must
+	// be known before a revoke it signed is judged (step 12 security pass).
+	for pass := 0; pass < 2; pass++ {
+		for _, r := range revokes {
+			if c.applyRevoke(sid, r, pass == 1, pinsOf) {
+				changed = true
+			}
 		}
-		d, ok, _ := ts.Device(sid, pr.Dev)
-		// Only a known device of the revoke's user: a member must not be able
-		// to pre-revoke someone else's device id. Skip a revoke if we already
-		// hold one at least as early in both seq and signed time.
-		if !ok || d.User != pr.User || (d.Revoked && d.RevokedSeq != 0 && d.RevokedSeq <= r.seq && d.RevokedTime != 0 && d.RevokedTime <= pr.Time) {
-			continue
-		}
-		valid := false
-		var signedAt int64
+	}
+	return changed
+}
+
+// applyRevoke records r if it verifies: under a pinned SSH key of its user,
+// or (byDevice) under another device of that user that wasn't revoked
+// before it. A revoked signer counts only if both the seq order and the
+// signed times (with revokeSkew) put r before the signer's own revoke, and
+// neither seq is unknown: a revoked device must not revoke its owner's
+// healthy devices with a server that claims seq 0.
+func (c *Client) applyRevoke(sid e2ecrypto.ServerID, r seqRevoke, byDevice bool, pinsOf func(uint64) [][]byte) bool {
+	ts := c.trust
+	pr, err := identity.PeekDeviceRevoke(r.s)
+	if err != nil || pr.ServerID != sid {
+		return false
+	}
+	d, ok, _ := ts.Device(sid, pr.Dev)
+	// Only a known device of the revoke's user: a member must not be able
+	// to pre-revoke someone else's device id. Skip a revoke if we already
+	// hold one at least as early in both seq and signed time.
+	if !ok || d.User != pr.User || (d.Revoked && d.RevokedSeq != 0 && d.RevokedSeq <= r.seq && d.RevokedTime != 0 && d.RevokedTime <= pr.Time) {
+		return false
+	}
+	valid := false
+	var signedAt int64
+	if !byDevice {
 		for _, p := range pinsOf(pr.User) {
 			if v, err := r.s.VerifyDeviceRevoke(sid, p); err == nil && v.User == pr.User && v.Dev == pr.Dev {
 				valid, signedAt = true, v.Time
 				break
 			}
 		}
-		if !valid {
-			devs, _ := ts.Devices(sid, pr.User)
-			for _, o := range devs {
-				// A signer revoked at an unknown seq may have been revoked
-				// before this revoke: it doesn't count.
-				if o.ID == pr.Dev || (o.Revoked && (o.RevokedSeq == 0 || o.RevokedSeq < r.seq)) {
-					continue
-				}
-				if v, err := r.s.VerifyDeviceRevokeByDevice(sid, o.Ed25519[:]); err == nil && v.User == pr.User && v.Dev == pr.Dev {
-					valid, signedAt = true, v.Time
-					break
-				}
+	} else {
+		devs, _ := ts.Devices(sid, pr.User)
+		for _, o := range devs {
+			if o.ID == pr.Dev {
+				continue
 			}
-		}
-		if valid && ts.RevokeDeviceAtTime(sid, pr.Dev, r.seq, signedAt) == nil {
-			changed = true
+			v, err := r.s.VerifyDeviceRevokeByDevice(sid, o.Ed25519[:])
+			if err != nil || v.User != pr.User || v.Dev != pr.Dev {
+				continue
+			}
+			if o.Revoked && (r.seq == 0 || o.RevokedSeq == 0 || o.RevokedSeq <= r.seq ||
+				o.RevokedTime == 0 || v.Time > o.RevokedTime+revokeSkew.Milliseconds()) {
+				continue
+			}
+			valid, signedAt = true, v.Time
+			break
 		}
 	}
-	return changed
+	return valid && ts.RevokeDeviceAtTime(sid, pr.Dev, r.seq, signedAt) == nil
+}
+
+// seqRevoke is a cached DeviceRevoke with its event seq (0 = unknown).
+type seqRevoke struct {
+	s   identity.Signed
+	seq uint64
 }
 
 // maxBadCerts bounds the negative cache of certs that failed verification.
