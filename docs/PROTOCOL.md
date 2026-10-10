@@ -147,7 +147,8 @@ session **before** the RES. The `seq` in a RES is informational: clients advance
 | `read` | `{chan, seq}` | `{}` |
 | `chan.create` | `{name, private: bool, topic?: str, e2e?: bool}` | `{chan: Channel}` (`e2e`: §13.3) |
 | `chan.join` / `chan.leave` | `{chan}` | `{}` |
-| `chan.add` | `{chan, user}` | `{}` |
+| `chan.add` | `{chan, user, bundle?: Signed}` | `{}` (`bundle`: e2e channels, §13.5) |
+| `chan.remove` | `{chan, user, bundle?: Signed}` | `{}` (`bundle`: e2e channels, §13.5) |
 | `chan.topic` | `{chan, topic: str}` | `{seq}` |
 | `dm.open` | `{users: [u64]}` (0–7 others; 0 = your private notes) | `{chan: Channel}` |
 | `users.list` | `{}` | `{users: [User]}` |
@@ -190,6 +191,12 @@ Rules:
   Responses stop at `limit` or ~768 KiB of encoded messages, whichever comes first, but always hold at least one message: one too big on its own loses `renc` entries (from the end) until it fits.
 - **chan.join** works on public channels only (private → `forbidden`).
   **chan.add**: any member of a public channel; members of a private channel.
+  Adding a current member is ok and emits nothing; a disabled or unknown user → `not_found`.
+  **chan.remove** (private channels only; public → `bad_request`, DMs → `forbidden`,
+  unknown channel → `not_found`): removing yourself is `chan.leave`; anyone else may be removed
+  by the channel's creator while a member, or by an admin (else `forbidden`). Removing a
+  non-member is ok and emits nothing. It emits `chan.leave {user}` with actor = the remover.
+  In encrypted channels both ops carry the next epoch bundle (§13.5).
   DMs can't be joined, added to, or left.
 - **hook.create**: caller must be a member of `chan` (else `forbidden`); DMs → `bad_request`.
   `name` names the hook's **bot user**. Bot names always end in `-bot`: the server appends
@@ -643,10 +650,13 @@ eh = H(b)[:16]        ChainHash = H(b) (the next bundle's prev)
   reject such bundles.
 
 `Channel` gains `e2e: bool` and `epoch: u32` (both omitted when false/0;
-`epoch` is 0 until the first `key.rotate`), and `creator: u64`, the user
+`epoch` is 0 until the first `key.rotate`), `creator: u64`, the user
 who created it (omitted when 0: `#general`, and channels whose `chan.new`
-predates the field get it from that event's actor). The fields are present in every
-session's Channel objects; clients without `e2e1` ignore them (§11).
+predates the field get it from that event's actor), and `legacy: u64`, the
+newest message id when `chan.encrypt` converted the channel (omitted when 0,
+e.g. channels encrypted from birth; §13.4 "Plaintext in encrypted channels").
+The fields are present in every session's Channel objects; clients without
+`e2e1` ignore them (§11).
 
 Server rules (honest case) for **key.rotate** `{chan, bundle}` (write op,
 rate limited), checked in this order inside the write transaction (the
@@ -738,7 +748,7 @@ and `private: true` (else `bad_request`). `dm.open` creates a new DM with
 `e2e = true` if and only if the caller's session has `e2e1`; an existing DM
 is returned unchanged, whoever reopens it. So a legacy caller (no `e2e1`)
 creates a plaintext DM even when every other member speaks `e2e1`; it stays
-plaintext until converted with `chan.encrypt` (step 9). Neither op creates
+plaintext until converted with `chan.encrypt` (§13.5). Neither op creates
 an epoch. A plaintext `send` (or `edit`) into an e2e channel is
 `bad_request` "upgrade tc" (§13.5), so legacy clients can read channel
 metadata but not post into encrypted DMs or channels.
@@ -901,9 +911,13 @@ channel), the newest dropped beyond that; reactions of deleted or invalid
 messages aren't kept; a message keeps at most 256 reactions.
 
 **Plaintext in encrypted channels.** DMs created as encrypted before
-encrypted sends existed may hold plaintext messages. When a client first
-sees a channel as encrypted it records, once, a **legacy cutoff**: the
-newest message id it had cached in it. A message without `enc` at or below
+encrypted sends existed, and channels converted by `chan.encrypt`, may hold
+plaintext messages. When a client first sees a channel as encrypted it
+records, once, a **legacy cutoff**: the newest message id it had cached in
+it, or, if it had none cached (e.g. it joined after the conversion), the
+server's `Channel.legacy`. A client that watched the conversion knows the
+cutoff itself: events apply in order, so every earlier `msg.new` came before
+the `chan.update`. A message without `enc` at or below
 the cutoff is shown as "⚠ unauthenticated (legacy)"; any other can only have
 been inserted by the server (honest servers refuse plaintext sends there)
 and is shown as "⚠ inserted by server". Neither is authenticated: neither
@@ -918,8 +932,8 @@ server result from an encrypted channel (the server never returns them).
 Implemented: `device.register`, `device.revoke`, `devices.list` (§13.2),
 `key.rotate`, `key.fetch` (§13.3), `key.share` (§13.7), `chan.create + e2e?`,
 `dm.open` (e2e DMs; a DM with no other members — private notes — is never e2e, because the server
-posts reminders into it), `send + enc`, `edit/delete/react/unreact + enc`. Not yet: `chan.add +
-bundle`, `chan.remove`, `chan.encrypt` (`docs/E2E.md` §13.5).
+posts reminders into it), `send + enc`, `edit/delete/react/unreact + enc`, `chan.add + bundle`,
+`chan.remove + bundle`, `chan.encrypt` (below).
 
 The `enc` fields of `send`, `edit`, `delete` and `react`/`unreact` are
 **not** gated on `e2e1` (the ops exist for every session): a session
@@ -935,6 +949,69 @@ e2e-specific ops and events of this section are cap-gated.
 | `key.rotate` | `{chan, bundle: Signed}` | `{seq}` |
 | `key.fetch` | `{chan, from: u32, to: u32}` | `{bundles: [Signed], seqs: [u64]}` |
 | `key.share` | `{chan, epoch: u32, dev: bin16, eph: bin32, ct: bin48}` | `{}` |
+| `chan.add` | `{chan, user, bundle?: Signed}` | `{}` |
+| `chan.remove` | `{chan, user, bundle?: Signed}` | `{}` |
+| `chan.encrypt` | `{chan, bundle: Signed}` (cap `e2e1`) | `{seq}` (of its `key.epoch`) |
+
+**Membership changes in encrypted channels.** Every membership change
+rotates (epoch = roster version, §13.3). In an encrypted channel with an
+epoch (`Channel.epoch` ≥ 1), `chan.add` and `chan.remove` must carry
+`bundle`: the channel's next epoch, whose roster is the members after the
+change (the current non-disabled members plus the new one, or without the
+removed one), signed by the caller's device, boxed to at least one device
+of every roster user who has one (so adding someone requires a verified
+device of theirs), with the backlink to the current key (so the joiner can
+walk back through every earlier epoch: all encrypted channels share
+history). The server applies the membership change and then the
+`key.rotate` checks of §13.3 from "channel is encrypted" on, against the
+new members, **in the same write**: either both commit or neither does. So
+no message can be stored under the old key once the change is visible,
+and the events are, in this order:
+
+- add: `chan.join`, then `key.epoch` — the joiner sees both (it is a member
+  at the `key.epoch`'s seq), live and on replay;
+- remove: `chan.leave`, then `key.epoch` — the removed user sees their
+  `chan.leave` but never the new `key.epoch` (nor can they `key.fetch` it).
+
+Errors, besides those of the op itself (§5) and of `key.rotate` (§13.3;
+`stale_epoch` when the roster isn't exactly the new members, e.g. the
+bundle doesn't include the joiner, or someone rotated meanwhile; the change
+is then not applied either):
+
+| case | error |
+|---|---|
+| `len(b) + len(sig)` > 16 KiB | `too_large` |
+| `bundle` given for a plaintext channel | `bad_request` |
+| encrypted channel with an epoch, no `bundle` ("needs a key bundle — upgrade tc") | `bad_request` |
+| `chan.remove` with `bundle` by a non-member (e.g. an admin outside the channel) | `forbidden` |
+| removing yourself with `bundle` (leaving needs none) | `bad_request` |
+
+`bundle` is optional at epoch 0 (no key exists; the creator's epoch 1 will
+have the new roster) and for removing a disabled user (in no roster
+already; the channel's bundle is stale if it still boxes their devices,
+and the next sender rotates). A no-op (adding a member, removing a
+non-member) ignores `bundle`. Only a member of the current roster can make
+the bundle, so in an encrypted channel an admin must be a member to remove
+someone. **Leaving** (`chan.leave`, or `chan.remove` of yourself) carries
+no bundle: the leaver would know the next key. The channel's bundle is
+then stale (§13.3), the server refuses sends under it (`stale_epoch`), and
+the next sender rotates first (§13.4), so nothing sent after the leave is
+sealed to a key the leaver holds. `user.disable` likewise makes the bundles
+of the disabled user's channels stale; the disabling admin's client rotates
+those it is a member of right away (best effort).
+
+**chan.encrypt** `{chan, bundle}` (cap `e2e1`, write op) converts a
+plaintext channel: channel exists (`not_found`); caller is a member
+(`forbidden`); not public (`bad_request`); not already encrypted
+(`conflict`); a DM must have other members (private notes stay plaintext:
+the server posts reminders there; `bad_request`); a private channel only by
+its creator (`forbidden`; any member of a DM). Then, in one write: the
+channel becomes encrypted with `legacy` = its newest message id (0 if
+none), a `chan.update` (the new Channel) is emitted, and `bundle` must pass
+the `key.rotate` checks as epoch 1 (creator, or any DM member; roster = all
+current non-disabled members), emitting `key.epoch`; any failure leaves the
+channel plaintext. Existing messages stay as they are (plaintext,
+"legacy", §13.4); from then on plaintext sends and webhooks are refused.
 
 Server rules (honest case) for **send**, in this order:
 
@@ -1003,6 +1080,11 @@ Implemented: `device.new`, `device.revoke` (§13.2), and:
 | `key.epoch` | the channel | `{bundle: Signed}` | `e2e1` sessions of users who are members at its seq (§6): after `chan.join` the joiner sees it, after `chan.leave` the leaver doesn't — identically live and on replay |
 | `key.share` | the channel | the `key.share` args (actor = the sharer) | same as `key.epoch` |
 
+A `key.epoch` committed with a membership change (§13.5) directly follows
+its `chan.join` / `chan.leave` (and `chan.encrypt`'s `chan.update`). A
+client removed by someone else (`chan.leave` about it, actor ≠ itself) may
+keep the channel and the history it had; it gets nothing newer.
+
 Snapshot (§6) adds `keys: [{bundle: Signed, seq: u64}]` for `e2e1` sessions: the current
 bundle of every encrypted channel the user is a member of, with the seq of its
 `key.epoch` event (channels at epoch 0 have none), possibly over several parts.
@@ -1059,9 +1141,12 @@ registered device (`not_found`), not revoked, of a current member
 
 - `stale_epoch` (RES error code): the bundle doesn't build on the channel's
   current epoch, roster or devices; for `send`, the `enc` isn't for the
-  channel's current epoch or that epoch's bundle is stale (§13.5). Nothing
-  was stored. Retryable after catching up: a sender re-encrypts with the
-  same nonces (§13.4).
+  channel's current epoch or that epoch's bundle is stale (§13.5); for
+  `chan.add`/`chan.remove`/`chan.encrypt`, the bundle's roster isn't the
+  members after the change or someone rotated first (the change isn't
+  applied either). Nothing was stored. Retryable after catching up: a
+  sender re-encrypts with the same nonces (§13.4); a membership change
+  rebuilds its bundle.
 - Limits: `enc` ≤ 64 KiB + 1 KiB (Plain ≤ the padded capacity), a delete's or reaction's `enc` ≤ 397 bytes (one padding block); EpochBundle `len(b) + len(sig)` ≤ 16 KiB and ≤ 128 boxes;
   `key.fetch` ≤ 256 epochs per call; ≤ 1 `key.rotate` per channel per user
   per 10 s and ≤ 1 per channel per 2 s, both waived when the roster or its

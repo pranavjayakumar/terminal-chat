@@ -106,6 +106,11 @@ What a malicious server can and cannot do today, and what closes each gap:
 - **Revocation timing**: a bundle is rejected if the server's seq order or its signed time (with
   5 min clock skew allowed) put it after a revoke of its signer. This defends against a server
   acting alone; a revoked device colluding with the server can backdate its bundles.
+- **Membership changes rotate atomically** (step 9): a removed member's devices hold no key for
+  anything sent after the removal, even given the server's raw rows; a leaver's last epoch goes stale
+  and the next sender rotates first. A malicious server can still add a member it controls (the roster
+  is its word), or withhold a removal; a converted channel's legacy cutoff comes from the server only
+  for a device that cached none of the old plaintext.
 - **Edits don't hide the original** from members holding that epoch's key: the original `enc` stays
   (the edit refers to its mid). Delete removes the ciphertext. (Step 8.)
 - **Edits and reactions over time**: the server can withhold the newest edit from a device that never
@@ -316,6 +321,25 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    reactions/edits per channel), reactions of deleted/invalid messages are dropped, and pending
    items no longer wake the e2e worker (it runs on key/device events), so it can't spin.
 9. `chan.add{bundle}`, `chan.remove`, `chan.encrypt`, disable → rotate; history via backlinks.
+   Decisions (step 9): in an encrypted channel with an epoch, `chan.add`/`chan.remove` carry the next
+   bundle and the server commits it in the same write as the membership change (events: chan.join /
+   chan.leave, then key.epoch; the joiner sees both, the removed user only its chan.leave). The bundle is
+   optional at epoch 0 (no key yet; the creator's epoch 1 includes everyone) and for removing a disabled
+   user (in no roster). `chan.remove`: the creator (while a member) or an admin may remove others,
+   anyone may remove themselves (= leave); private channels only (public: bad_request, DMs: forbidden);
+   in an encrypted channel only a roster member can make the bundle, so an admin must be a member.
+   Leaving can't carry a bundle (the leaver would know K): the bundle goes stale and the next sender
+   rotates (unchanged step-7 path). `chan.encrypt` is cap-gated; only the creator of a private channel
+   (any member of a DM with others) may convert, because epoch 1 must be signed by the creator / a DM
+   member and clients already check exactly that — letting any member convert would need clients to
+   accept epoch 1 from anyone. It records `Channel.legacy` (newest message id); a client uses its own
+   newest cached id as the legacy cutoff, and the server's `legacy` only when it cached nothing (so the
+   server's word only affects devices that never saw the plaintext; both classes are unauthenticated).
+   A conversion marks cached plaintext legacy at once. `user.disable`: the admin's client rotates every
+   encrypted channel it shares with the user (best effort). A client removed by someone else keeps the
+   channel and its history (`ChannelView.Removed`, "you were removed") until `/leave` closes it; it
+   keeps its old epoch keys (trust store) and gets nothing newer. `/add` refuses with the names of
+   members who have devices but none verified.
 10. TUI: key-change banner + send block, fork alarm, "⚠ unencrypted", "waiting for key", `/verify`.
 11. Malicious-server suite (`Tamper` hook): injected devices/keys, fake joins, rollback, fork,
     forged bundles, swapped/withheld boxes, hidden leave, stripped cap/flag, plaintext injection,
