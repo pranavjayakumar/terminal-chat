@@ -8,14 +8,14 @@ Last updated: 2026-10-10 (end of session 1; branch `m2-activity` adds drafts, hi
 cut release v0.2.0, redeploy the droplet, hand the owner the one-line install/invite command, then PAUSE.
 
 **In flight**
-- E2E step 11 malicious-server suite — Claude subagent; worktree `.claude/worktrees/agent-ab2d5e801827b592f`,
-  branch `e2e/malicious-server` (not pushed yet). If that worktree is gone/unfinished: re-run step 11 per
-  `docs/E2E.md` PR plan on a fresh branch.
-- M4 onboarding — kiro; worktree `.claude/worktrees/kiro-onboard`, branch `m4-onboarding`; prompt covers release
-  workflow, install.sh, `tc join`, invite one-liner, multi-use invites, `tc update`.
+- E2E step 12 (final pass) — kiro; worktree `.claude/worktrees/kiro-step12`, branch `e2e/final-pass`: chaos during
+  rotations, signed-time drift marker, security pass (findings → docs/E2E.md), fuzzing, docs; closes M3.
+- M4 onboarding — kiro; worktree `.claude/worktrees/kiro-onboard`, branch `m4-onboarding`; release workflow,
+  install.sh, `tc join`, invite one-liner, multi-use invites, `tc update`.
+- Step 11 is DONE (PR #32).
 
-**Next (in order):** review + merge step 11 → review + merge M4 → E2E step 12 (security pass + chaos during
-rotations) on kiro → tag v0.2.0 (release workflow builds binaries) → redeploy droplet with the release binary
+**Next (in order):** review + merge M4 and step 12 (whichever lands first; run protocol/security review on each)
+→ tag v0.2.0 (release workflow builds binaries) → redeploy droplet with the release binary
 (`docs/DEPLOY.md`) → test the one-liner from a clean HOME → give the owner the command → update this file → pause.
 
 **Rules:** kiro hard cap 55–60% of monthly credits (check `kiro-cli chat --no-interactive "/usage"`; stop at 55%).
