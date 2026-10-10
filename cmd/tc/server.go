@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -12,7 +13,9 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/server"
 	"github.com/skailama/tc/internal/transport"
 )
@@ -65,9 +68,11 @@ func cmdServer(args []string) error {
 		slog.Warn("invites point at localhost; pass --public host:port so teammates can connect")
 	}
 	if first, _ := firstRun(srv); first {
-		code, err := srv.CreateInvite(ctx, true, 0)
+		inv, err := srv.CreateInviteOpts(ctx, server.InviteOpts{Admin: true})
 		if err == nil {
-			fmt.Printf("\nNo users yet. Admin invite (single use, 7 days):\n\n  tc login %s\n\n", code)
+			fmt.Println("\nNo users yet. Admin invite for you (single use, 7 days):")
+			printInvite(os.Stdout, inv)
+			fmt.Println("Then invite your team with: tc server invite --uses 15 --ttl 72h")
 		}
 	}
 	return srv.Serve(ctx, ln)
@@ -77,19 +82,46 @@ func cmdServerInvite(args []string) error {
 	fs := flag.NewFlagSet("server invite", flag.ExitOnError)
 	data := fs.String("data", defaultDataDir(), "data directory")
 	admin := fs.Bool("admin", false, "invite grants admin")
+	uses := fs.Int("uses", 1, fmt.Sprintf("how many people can join with it (1-%d)", proto.MaxInviteUses))
+	ttl := fs.Duration("ttl", proto.DefaultInviteTTL, "how long it stays valid (at most 720h)")
+	raw := fs.Bool("raw", false, "print only the tc:// code")
 	fs.Parse(args)
+	if fs.NArg() > 0 {
+		return errUsage
+	}
 	srv, err := server.New(server.Config{DataDir: *data, PublicAddr: readPublic(*data, ":7443"),
 		Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		return err
 	}
 	defer srv.Close()
-	code, err := srv.CreateInvite(context.Background(), *admin, 0)
+	inv, err := srv.CreateInviteOpts(context.Background(), server.InviteOpts{Admin: *admin, Uses: *uses, TTL: *ttl})
 	if err != nil {
 		return err
 	}
-	fmt.Println(code)
+	if *raw {
+		fmt.Println(inv.Code)
+		return nil
+	}
+	printInvite(os.Stdout, inv)
 	return nil
+}
+
+// printInvite shows an invite as the install one-liner (for people without
+// tc) and as the raw code (for `tc join`).
+func printInvite(w io.Writer, inv proto.InviteRes) {
+	what := "single use"
+	if inv.Uses > 1 {
+		what = fmt.Sprintf("%d uses", inv.Uses)
+	}
+	if inv.Expires > 0 {
+		what += ", expires " + time.UnixMilli(inv.Expires).Format("Mon Jan 2 15:04 MST")
+	}
+	fmt.Fprintf(w, "\nInvite (%s). Share this line; it installs tc and joins:\n\n", what)
+	if cmd, err := proto.InstallCommand(inv.Code); err == nil {
+		fmt.Fprintf(w, "  %s\n\n", cmd)
+	}
+	fmt.Fprintf(w, "Already have tc? Run:\n\n  tc join '%s'\n\n", inv.Code)
 }
 
 func firstRun(srv *server.Server) (bool, error) { return srv.UserCount() == 0, nil }

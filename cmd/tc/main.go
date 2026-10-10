@@ -23,7 +23,7 @@ const usage = `tc — terminal team chat
   tc verify @user [--github login]
                              compare safety numbers (or GitHub keys) to verify someone
   tc server [--listen :7443] [--public host:port] [--data dir]
-  tc server invite [--admin]
+  tc server invite [--uses N] [--ttl 72h] [--admin] [--raw]
   tc version
 `
 
