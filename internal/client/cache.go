@@ -28,9 +28,15 @@ CREATE TABLE IF NOT EXISTS msgs (
 	id INTEGER PRIMARY KEY, chan INTEGER NOT NULL, author INTEGER NOT NULL, body TEXT NOT NULL,
 	thread INTEGER NOT NULL, time INTEGER NOT NULL, edited INTEGER NOT NULL,
 	deleted INTEGER NOT NULL, reactions TEXT NOT NULL,
-	enc BLOB, sec INTEGER NOT NULL DEFAULT 0, mid BLOB);
+	enc BLOB, sec INTEGER NOT NULL DEFAULT 0, mid BLOB,
+	eenc BLOB, epend BLOB, ev INTEGER NOT NULL DEFAULT 0, denc BLOB);
 CREATE INDEX IF NOT EXISTS msgs_chan ON msgs (chan, thread, id);
 CREATE INDEX IF NOT EXISTS msgs_thread ON msgs (thread, id);
+-- Encrypted reactions (encops.go): the server's (msg, user, tag, enc) and
+-- our verdict: st 0 not judged yet, 1 verified (emoji is the real one), 2 invalid.
+CREATE TABLE IF NOT EXISTS rencs (
+	msg INTEGER NOT NULL, user INTEGER NOT NULL, tag TEXT NOT NULL, enc BLOB NOT NULL,
+	emoji TEXT NOT NULL DEFAULT '', st INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (msg, user, tag));
 CREATE TABLE IF NOT EXISTS reads (
 	chan INTEGER PRIMARY KEY, seq INTEGER NOT NULL, dirty INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS outbox (
@@ -187,7 +193,7 @@ func resetCache(q dbtx, serverID []byte) error {
 		}
 	}
 	for _, s := range []string{
-		`DELETE FROM users`, `DELETE FROM chans`, `DELETE FROM msgs`, `DELETE FROM pins`, `DELETE FROM groups`, `DELETE FROM reads WHERE dirty = 0`,
+		`DELETE FROM users`, `DELETE FROM chans`, `DELETE FROM msgs`, `DELETE FROM rencs`, `DELETE FROM pins`, `DELETE FROM groups`, `DELETE FROM reads WHERE dirty = 0`,
 		`DELETE FROM devices`, `DELETE FROM device_endorse`, `DELETE FROM device_revokes`,
 		`DELETE FROM meta WHERE k = 'devices_full'`, `DELETE FROM epochs`, `DELETE FROM key_shares`,
 	} {
@@ -431,7 +437,7 @@ func matchOutbox(q dbtx, m proto.Message) error {
 
 // wipe empties the whole cache, outbox included (new login).
 func wipe(q dbtx) error {
-	for _, t := range []string{"meta", "users", "chans", "msgs", "reads", "outbox", "devices", "device_endorse", "device_revokes", "drafts", "highlights", "reacts", "epochs", "key_shares", "pins", "groups"} {
+	for _, t := range []string{"meta", "users", "chans", "msgs", "rencs", "reads", "outbox", "devices", "device_endorse", "device_revokes", "drafts", "highlights", "reacts", "epochs", "key_shares", "pins", "groups"} {
 		if _, err := q.Exec(`DELETE FROM ` + t); err != nil {
 			return err
 		}

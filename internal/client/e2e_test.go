@@ -150,6 +150,7 @@ type e2eFake struct {
 	bundles   map[uint64]map[uint32]proto.EpochKey // key.fetch answers
 	onRotate  func(f *e2eFake, id uint32, a proto.KeyRotateArgs)
 	onSend    func(f *e2eFake, id uint32, a proto.SendArgs) // nil: store and answer (encmsg_test.go)
+	onOp      func(f *e2eFake, r proto.Req) bool            // other ops; true: answered (encops_test.go)
 	searchRes proto.MsgsRes
 	searched  atomic.Int32
 
@@ -339,7 +340,12 @@ func (f *e2eFake) serve() {
 				default:
 				}
 			default:
-				f.ok(r.ID, proto.Empty{})
+				f.mu.Lock()
+				on := f.onOp
+				f.mu.Unlock()
+				if on == nil || !on(f, r) {
+					f.ok(r.ID, proto.Empty{})
+				}
 			}
 		}
 	}

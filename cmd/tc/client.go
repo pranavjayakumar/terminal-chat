@@ -262,6 +262,8 @@ func printMsg(w io.Writer, c *client.Client, m client.Message) {
 	name := sanitize.Line(c.User(m.Author).Name)
 	body := sanitize.Text(m.Body)
 	switch {
+	case m.Deleted && m.Sec == client.SecRemoved:
+		body = "(removed, not by author)"
 	case m.Deleted:
 		body = "(deleted)"
 	case m.Sec == client.SecWaiting:

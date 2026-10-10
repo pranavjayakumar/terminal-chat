@@ -1305,6 +1305,12 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 			m.setInfo("you can only edit your own sent messages")
 			return nil, true
 		}
+		if !sel.Sec.Trusted() {
+			// Encrypted channels: only verified messages carry the id an
+			// encrypted edit refers to.
+			m.setInfo("this message can't be edited")
+			return nil, true
+		}
 		m.leaveSelect()
 		// A jump can leave select mode with a draft in the input: keep it
 		// in its slot; cancelEdit puts it back.

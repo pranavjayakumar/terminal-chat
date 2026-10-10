@@ -23,7 +23,7 @@ const viewerStep = 8
 func (m *Model) openViewer(msg client.Message) {
 	body := sanitize.Text(msg.Body)
 	if msg.Deleted {
-		body = "message deleted"
+		body = deletedText(msg)
 	}
 	when := time.UnixMilli(msg.Time).Format("Mon 2 Jan 15:04")
 	m.view = viewer{

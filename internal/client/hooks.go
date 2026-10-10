@@ -53,6 +53,10 @@ func migrateE2E(db *sql.DB) error {
 		{"msgs", "enc", "BLOB"},
 		{"msgs", "sec", "INTEGER NOT NULL DEFAULT 0"},
 		{"msgs", "mid", "BLOB"},
+		{"msgs", "eenc", "BLOB"},
+		{"msgs", "epend", "BLOB"},
+		{"msgs", "ev", "INTEGER NOT NULL DEFAULT 0"},
+		{"msgs", "denc", "BLOB"},
 		{"outbox", "enc", "BLOB"},
 		{"outbox", "encnonce", "BLOB"},
 	} {

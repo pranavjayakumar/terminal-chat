@@ -20,6 +20,15 @@ import (
 
 func strWidth(s string) int { return ansi.StringWidth(s) }
 
+// deletedText is what a deleted message shows: in an encrypted channel, a
+// delete its author didn't sign says so (PROTOCOL §13.4).
+func deletedText(m client.Message) string {
+	if m.Sec == client.SecRemoved {
+		return "removed (not by author)"
+	}
+	return "message deleted"
+}
+
 // truncate cuts s (which may contain styling) to at most w cells, ending in
 // "…" when something was cut.
 func truncate(s string, w int) string {
@@ -399,7 +408,7 @@ func (r *renderer) message(m client.Message, w int, header bool) []string {
 func (r *renderer) body(m client.Message, bw int) []string {
 	st := r.st
 	if m.Deleted {
-		return []string{st.deleted.Render(truncate("message deleted", bw))}
+		return []string{st.deleted.Render(truncate(deletedText(m), bw))}
 	}
 	// Encrypted channels: what can't be shown, and plaintext that may not
 	// be what its author wrote (PROTOCOL §13.4).
