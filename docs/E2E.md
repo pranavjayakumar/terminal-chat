@@ -274,6 +274,25 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    the head or members changed, and refuses everything in alarm; e2e-scoped search stays local; edits of
    uncached messages and reminders into e2e channels are refused; the cache uses secure_delete.
 8. Encrypted edit/delete/react, thread_ref, HMAC emoji, local FTS.
+   Decisions (step 8): Plain types `edit {t, ts, body, ref, v}`, `del {t, ts, ref}`, `react {t, ts, ref,
+   emoji, add}` (ref = the original's mid). Edits are sealed with the current epoch (stale_epoch like a
+   send; the server dedupes a retry of the stored `edit_enc` first) and keep the original `enc` next to the
+   latest `edit_enc`: the original anchors the mid, so **an edit doesn't hide the original text from
+   members holding its epoch key** (only delete removes ciphertext); superseded edit encs are scrubbed
+   from the log. `v` = last applied + 1, chosen by the editor; the server can't order edits, so two
+   devices editing at once can diverge (the higher-v one wins where both arrive; a refetch shows the
+   server's latest) and a server can serve an older edit to a fresh device (rollback of edits is not
+   detected without history). Deletes and reactions are sealed under the **message's own epoch** (the
+   tag needs that mk anyway; nothing secret in them); the server checks their epoch/eh match the
+   message's enc and the signer is the caller's active device. Only the author can sign a delete; an
+   admin's delete is unsigned and shows "removed (not by author)"; deleted messages keep `del_enc`
+   (`Message.del_enc`) so a fresh device can tell, comparing `ref` with the mid only when it knows it.
+   Reaction tags are `"~" + base64url(HMAC(mk, "tc-react"‖mid‖emoji)[:12])`; `Message.renc` carries each
+   reaction's enc; removes need no proof (a server can always withhold a reaction). The server's
+   `edited` and tag map are never shown for encrypted messages. Edits of a waiting message (or whose key
+   or device is missing) and unjudgeable reactions are kept (cache `epend`, `rencs`) and retried by the
+   e2e worker. Rejections go to a bounded in-memory log (`Client.E2ERejects`). Local search stays the
+   step-7 LIKE scan over decrypted bodies (not FTS5): edits update the body, deletes clear it.
 9. `chan.add{bundle}`, `chan.remove`, `chan.encrypt`, disable → rotate; history via backlinks.
 10. TUI: key-change banner + send block, fork alarm, "⚠ unencrypted", "waiting for key", `/verify`.
 11. Malicious-server suite (`Tamper` hook): injected devices/keys, fake joins, rollback, fork,

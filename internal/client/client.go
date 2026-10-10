@@ -58,7 +58,9 @@
 //	SetTopic(ctx, ch, topic) error; OpenDM(ctx, users) (proto.Channel, error)
 //	History(ctx, ch, before) (more bool, err error)  // older messages into the cache
 //	Search(ctx, q, ch) ([]proto.Message, error)        // server + decrypted e2e messages in the cache
-//	Edit refuses messages of e2e channels (ErrEncryptedEdit) until encrypted edits exist
+//	In e2e channels Edit/Delete/React/Unreact send signed encs (encops.go); ErrNotEditable for
+//	messages that aren't our own verified ones (edit) or verified (react); E2ERejects() []string
+//	says why received ones were ignored
 //	CreateInvite(ctx, user) (string, error); DisableUser(ctx, user) error
 //	SetGroup(ctx, name, members) error (admin); FetchGroups(ctx) ([]proto.Group, error)
 //	Remind(ctx, at, text, ch) (id, error); Reminders(ctx) ([]proto.Reminder, error); DeleteReminder(ctx, id) error
