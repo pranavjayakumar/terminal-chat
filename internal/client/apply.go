@@ -353,7 +353,7 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 			return nil
 		}
 		sid, hasSID := qServerID(tx)
-		if row, ok := getMsgRow(tx, d.Msg); ok && (row.mid != nil || d.Enc != nil || c.chanIsE2E(tx, sid, hasSID, row.ch)) {
+		if row, ok := getMsgRow(tx, d.Msg); ok && (row.mid != nil || c.chanIsE2E(tx, sid, hasSID, row.ch)) {
 			u.msgs(row.ch)
 			return c.applyReactEvent(tx, row, ev, d, me)
 		}
