@@ -98,10 +98,11 @@ func TestE2EEditDeleteReactRender(t *testing.T) {
 	setup := func(f *fakeClient) {
 		e2eFake(f, client.E2EStatus{State: client.E2EOK, Epoch: 1})
 		removed, deleted := mk(305, 2, "", client.SecRemoved), mk(306, 2, "", client.SecE2E)
-		removed.Deleted, deleted.Deleted = true, true
+		unverified := mk(309, 2, "", client.SecWaiting)
+		removed.Deleted, deleted.Deleted, unverified.Deleted = true, true, true
 		edited := mk(307, 1, "fixed "+strings.Repeat("typo ", 20), client.SecE2E)
 		edited.Edited, edited.Reactions = 5, map[string][]uint64{"👍": {1, 2}, "🎉": {2}}
-		f.msgs[20] = append(f.msgs[20], removed, deleted, edited, mk(308, 1, "", client.SecInvalid))
+		f.msgs[20] = append(f.msgs[20], removed, deleted, edited, mk(308, 1, "", client.SecInvalid), unverified)
 	}
 	for _, sz := range [][2]int{{20, 8}, {34, 10}, {60, 16}, {80, 24}, {140, 40}} {
 		m, f := newTestModelFake(t, sz[0], sz[1])
@@ -115,7 +116,7 @@ func TestE2EEditDeleteReactRender(t *testing.T) {
 	run(m, m.applyUpdate(client.Update{Channels: true}))
 	run(m, m.openChannel(20))
 	v := ansi.Strip(checkView(t, m, "e2e ops"))
-	for _, want := range []string{"removed (not by author)", "message deleted", "(edited)", "👍 2", "🎉 1"} {
+	for _, want := range []string{"removed (not by author)", "message deleted", "deleted (unverified)", "(edited)", "👍 2", "🎉 1"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("missing %q in\n%s", want, v)
 		}
@@ -184,5 +185,21 @@ func TestE2EAlarmBlocksSend(t *testing.T) {
 	press(m, "enter")
 	if len(f.sent) != 1 || f.sent[0].Body != "psst" {
 		t.Fatalf("sent %+v", f.sent)
+	}
+}
+
+// "message deleted" only for a delete we can attribute.
+func TestDeletedText(t *testing.T) {
+	for sec, want := range map[client.Sec]string{
+		client.SecPlain: "message deleted", client.SecE2E: "message deleted",
+		client.SecWaiting: "deleted (unverified)", client.SecRemoved: "removed (not by author)",
+		client.SecLegacy: "removed (not by author)", client.SecInserted: "removed (not by author)",
+		client.SecInvalid: "removed (not by author)",
+	} {
+		m := client.Message{Sec: sec}
+		m.Deleted = true
+		if got := deletedText(m); got != want {
+			t.Errorf("%s: %q, want %q", sec, got, want)
+		}
 	}
 }
