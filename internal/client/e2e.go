@@ -301,7 +301,7 @@ func (c *Client) e2ePass(ctx context.Context, s *session, sid e2ecrypto.ServerID
 		if ctx.Err() != nil {
 			return
 		}
-		if c.syncChannel(ctx, s, sid, ch) {
+		if c.syncAndRecover(ctx, s, sid, ch) {
 			changed = true
 		}
 		if c.e2eStatus(sid, ch).State == E2EOK {
@@ -776,6 +776,78 @@ func openBox(sid e2ecrypto.ServerID, eb identity.EpochBundle, me *e2ecrypto.Devi
 	return nil
 }
 
+// badBox reports whether eb has a box for our device that doesn't yield
+// a K matching kc. The box is inside b, which its rotator signed, so this
+// proves the rotator sealed us garbage (or another K): nothing a server
+// can do.
+func badBox(sid e2ecrypto.ServerID, eb identity.EpochBundle, me *e2ecrypto.DeviceKeys) bool {
+	if me == nil {
+		return false
+	}
+	for _, bx := range eb.Boxes {
+		if bx.Dev == me.ID {
+			return openBox(sid, eb, me) == nil
+		}
+	}
+	return false
+}
+
+// poisonedLong reports whether ch's verified epoch, whose K we lack, gave
+// us a bad box (badBox) at least timing.poisonWait ago: long enough for a
+// member to have answered our key.need. A malicious member who poisons
+// every box and never shares would otherwise wedge the channel: nobody
+// could rotate (the backlink needs K) or remove them (step 12 security
+// pass). Then the next rotation links back to a random key instead.
+func (c *Client) poisonedLong(sid e2ecrypto.ServerID, ch uint64, epoch uint32, me *e2ecrypto.DeviceKeys) bool {
+	cands, err := c.cachedBundles(ch, epoch)
+	if err != nil {
+		return false
+	}
+	ep, ok, err := c.trust.Epoch(sid, ch, epoch)
+	if err != nil || !ok || ep.Key != nil {
+		return false
+	}
+	bad := false
+	for _, cb := range cands {
+		if e2ecrypto.ChainHash(cb.b.B) != ep.Hash {
+			continue
+		}
+		if eb, err := identity.PeekEpochBundle(cb.b); err == nil && badBox(sid, eb, me) {
+			bad = true
+		}
+	}
+	key := [2]uint64{ch, uint64(epoch)}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !bad {
+		delete(c.poisonSeen, key)
+		return false
+	}
+	first, ok := c.poisonSeen[key]
+	if !ok {
+		c.poisonSeen[key] = time.Now()
+		return false
+	}
+	return time.Since(first) >= c.timing.poisonWait
+}
+
+// recoverPoisoned rotates ch past a poisoned head (poisonedLong), at most
+// once per channel per timing.autoEpoch. Caller holds e2eMu.
+func (c *Client) recoverPoisoned(ctx context.Context, s *session, sid e2ecrypto.ServerID, ch uint64) {
+	head, ok, err := c.trust.ChainHead(sid, ch)
+	if err != nil || !ok || !c.poisonedLong(sid, ch, head.Epoch, s.myDevice()) {
+		return
+	}
+	c.mu.Lock()
+	if t, ok := c.autoTried[ch]; ok && time.Since(t) < c.timing.autoEpoch {
+		c.mu.Unlock()
+		return
+	}
+	c.autoTried[ch] = time.Now()
+	c.mu.Unlock()
+	_ = c.rotateLocked(ctx, s, sid, ch)
+}
+
 func (c *Client) alarm(sid e2ecrypto.ServerID, ch uint64, detail string) bool {
 	_ = c.trust.RaiseAlarm(sid, ch, detail)
 	return true
@@ -1023,6 +1095,16 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 	}
 	c.sendKeyNeed(s, sid, ch.ID)
 	c.autoEpoch1(ctx, s, sid, ch)
+	return changed
+}
+
+// syncAndRecover is syncChannel for the e2e worker's pass, which also
+// rotates past a poisoned head. Caller holds e2eMu.
+func (c *Client) syncAndRecover(ctx context.Context, s *session, sid e2ecrypto.ServerID, ch proto.Channel) bool {
+	changed := c.syncChannel(ctx, s, sid, ch)
+	if _, ok, _ := c.trust.Alarm(sid, ch.ID); !ok {
+		c.recoverPoisoned(ctx, s, sid, ch.ID)
+	}
 	return changed
 }
 
@@ -1285,10 +1367,21 @@ func (c *Client) commitBundle(ctx context.Context, s *session, sid e2ecrypto.Ser
 		if err != nil || !ok {
 			return fmt.Errorf("epoch %d isn't verified", head.Epoch)
 		}
-		if cur.Key == nil {
-			return fmt.Errorf("waiting for the key of epoch %d", head.Epoch)
+		prevK := cur.Key
+		if prevK == nil {
+			if !c.poisonedLong(sid, chID, head.Epoch, me) {
+				return fmt.Errorf("waiting for the key of epoch %d", head.Epoch)
+			}
+			// Nobody gave us K and its rotator sealed us a box that can't
+			// yield it: link back to a random key (a history gap for the
+			// poisoned epoch) rather than leave the channel wedged.
+			gap, err := e2ecrypto.NewEpochKey(rand.Reader)
+			if err != nil {
+				return err
+			}
+			prevK = &gap
 		}
-		p.Epoch, p.Prev, p.PrevK = head.Epoch+1, head.Hash, cur.Key
+		p.Epoch, p.Prev, p.PrevK = head.Epoch+1, head.Hash, prevK
 	} else if ch.Epoch > 0 || c.cachedMaxEpoch(chID) > 0 {
 		return errors.New("the channel's key chain isn't verified yet")
 	} else if ch.Kind != proto.ChanDM && ch.Creator != user {

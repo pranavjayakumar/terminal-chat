@@ -37,8 +37,17 @@ type encDM struct {
 
 func newEncDM(t *testing.T, sn proto.Snapshot) *encDM {
 	t.Helper()
+	return newEncDMWith(t, sn, nil)
+}
+
+// newEncDMWith is newEncDM with prep run on the client before it starts.
+func newEncDMWith(t *testing.T, sn proto.Snapshot, prep func(*Client)) *encDM {
+	t.Helper()
 	fs, c := e2eClient(t)
 	c.timing.devWait = 5 * time.Second
+	if prep != nil {
+		prep(c)
+	}
 	run(t, c)
 	d := &encDM{fs: fs, c: c, b1: newPeer(t, bob, nil), k1: newK(t)}
 	sn.Chans = append(sn.Chans, dmChan(0))
@@ -846,6 +855,46 @@ func TestEncRotatesAfterBoxedDeviceRevoked(t *testing.T) {
 	if s := nextSend(t, d.f); s.Body != "" || len(s.Enc) == 0 {
 		t.Fatalf("send %+v", s)
 	} else if h, _ := e2ecrypto.ParseEnc(s.Enc); h.Epoch != 2 {
+		t.Fatalf("sent under epoch %d", h.Epoch)
+	}
+}
+
+// bob's epoch 2 seals alice a box that can't open, and nobody ever shares
+// K: after poisonWait alice rotates past it (backlink to a random key), so
+// a malicious member can't wedge the channel (step 12 security pass).
+func TestEncRecoversFromPoisonedBox(t *testing.T) {
+	d := newEncDMWith(t, proto.Snapshot{}, func(c *Client) { c.timing.poisonWait = 300 * time.Millisecond })
+	k2 := newK(t)
+	e2 := mkBundle(t, d.b1.dev, dm, 2, &d.e1, dmRoster, k2, &d.k1, d.me, d.b1.dev)
+	e2 = retamper(t, e2, d.b1.dev, func(w *rawBundle) {
+		for i := range w.Boxes {
+			if bytes.Equal(w.Boxes[i].Dev, d.me.ID[:]) {
+				rand.Read(w.Boxes[i].CT)
+			}
+		}
+	})
+	d.f.keyEpoch(dm, bob, e2)
+	waitFor(t, "waiting for epoch 2's key", status(d.c, dm, E2EWaitingKey))
+	var a proto.KeyRotateArgs
+	select {
+	case a = <-d.f.rotates:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no recovery rotation")
+	}
+	eb, err := identity.PeekEpochBundle(identity.Signed(a.Bundle))
+	if err != nil || eb.Epoch != 3 || eb.Prev != e2ecrypto.ChainHash(e2.B) {
+		t.Fatalf("recovery bundle %+v %v", eb, err)
+	}
+	waitFor(t, "epoch 3 ok", func() bool { st := d.c.E2EStatus(dm); return st.State == E2EOK && st.Epoch == 3 })
+	if _, ok := d.c.Alarm(dm); ok {
+		t.Fatal("alarm")
+	}
+	if err := d.c.Send(dm, "unwedged", 0); err != nil {
+		t.Fatal(err)
+	}
+	if s := nextSend(t, d.f); len(s.Enc) == 0 {
+		t.Fatal("not encrypted")
+	} else if h, _ := e2ecrypto.ParseEnc(s.Enc); h.Epoch != 3 {
 		t.Fatalf("sent under epoch %d", h.Epoch)
 	}
 }
