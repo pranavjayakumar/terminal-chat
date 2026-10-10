@@ -88,6 +88,58 @@ func TestE2EMarkersFit(t *testing.T) {
 	}
 }
 
+// Encrypted edits, deletes and reactions (step 8): "(edited)" for a
+// verified edit, "removed (not by author)" for a delete its author didn't
+// sign, verified reactions; all fit. Only verified messages can be edited.
+func TestE2EEditDeleteReactRender(t *testing.T) {
+	mk := func(id, author uint64, body string, sec client.Sec) client.Message {
+		return client.Message{Message: proto.Message{ID: id, Chan: 20, Author: author, Body: body, Time: 1}, Sec: sec}
+	}
+	setup := func(f *fakeClient) {
+		e2eFake(f, client.E2EStatus{State: client.E2EOK, Epoch: 1})
+		removed, deleted := mk(305, 2, "", client.SecRemoved), mk(306, 2, "", client.SecE2E)
+		removed.Deleted, deleted.Deleted = true, true
+		edited := mk(307, 1, "fixed "+strings.Repeat("typo ", 20), client.SecE2E)
+		edited.Edited, edited.Reactions = 5, map[string][]uint64{"👍": {1, 2}, "🎉": {2}}
+		f.msgs[20] = append(f.msgs[20], removed, deleted, edited, mk(308, 1, "", client.SecInvalid))
+	}
+	for _, sz := range [][2]int{{20, 8}, {34, 10}, {60, 16}, {80, 24}, {140, 40}} {
+		m, f := newTestModelFake(t, sz[0], sz[1])
+		setup(f)
+		run(m, m.applyUpdate(client.Update{Channels: true, Msgs: map[uint64]bool{20: true}}))
+		run(m, m.openChannel(20))
+		checkView(t, m, "e2e ops")
+	}
+	m, f := newTestModelFake(t, 140, 60)
+	setup(f)
+	run(m, m.applyUpdate(client.Update{Channels: true}))
+	run(m, m.openChannel(20))
+	v := ansi.Strip(checkView(t, m, "e2e ops"))
+	for _, want := range []string{"removed (not by author)", "message deleted", "(edited)", "👍 2", "🎉 1"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("missing %q in\n%s", want, v)
+		}
+	}
+	sel := func(id uint64) {
+		m.enterSelect()
+		for i, x := range m.main.msgs {
+			if x.ID == id {
+				m.main.sel = i
+			}
+		}
+	}
+	sel(308)
+	run(m, m.handleKey(keyMsg("e")))
+	if m.editing != 0 {
+		t.Fatal("an invalid message went into edit")
+	}
+	sel(307)
+	run(m, m.handleKey(keyMsg("e")))
+	if m.editing != 307 {
+		t.Fatal("a verified message can't be edited")
+	}
+}
+
 // Plaintext in an encrypted channel, legacy or inserted, never notifies;
 // a verified message does.
 func TestE2EUnauthenticatedNeverNotifies(t *testing.T) {
