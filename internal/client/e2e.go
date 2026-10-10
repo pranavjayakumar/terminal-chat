@@ -1123,22 +1123,9 @@ func (c *Client) autoEpoch1(ctx context.Context, s *session, sid e2ecrypto.Serve
 // A stale_epoch (someone else rotated, or the members changed) is retried
 // once on the refreshed state. Online only.
 func (c *Client) RotateKey(ctx context.Context, ch uint64) error {
-	c.mu.Lock()
-	s := c.sess
-	c.mu.Unlock()
-	if s == nil {
-		return ErrOffline
-	}
-	sid, ok := s.serverID()
-	if !ok || !s.e2e() {
-		return errors.New("server doesn't support end-to-end encryption")
-	}
-	select {
-	case <-s.devReady:
-	case <-s.done:
-		return ErrOffline
-	case <-ctx.Done():
-		return ctx.Err()
+	s, sid, err := c.e2eSession(ctx)
+	if err != nil {
+		return err
 	}
 	c.e2eMu.Lock()
 	defer c.e2eMu.Unlock()
@@ -1159,6 +1146,23 @@ func (c *Client) rotateLocked(ctx context.Context, s *session, sid e2ecrypto.Ser
 }
 
 func (c *Client) rotateOnce(ctx context.Context, s *session, sid e2ecrypto.ServerID, chID uint64) error {
+	if ch, ok, err := getChan(c.db, chID); err != nil || !ok || !ch.E2E {
+		return errors.New("not an encrypted channel")
+	}
+	return c.commitBundle(ctx, s, sid, chID, nil, func(ch proto.Channel, b identity.Signed) error {
+		_, err := s.call(ctx, proto.OpKeyRotate, proto.KeyRotateArgs{Chan: chID, Bundle: proto.Signed(b)}, nil)
+		return err
+	})
+}
+
+// commitBundle builds channel chID's next epoch bundle and hands it to
+// send, which commits it (key.rotate, chan.add, chan.remove, chan.encrypt),
+// then verifies the resulting key.epoch like anyone's. roster maps the
+// current non-disabled members to the new epoch's roster (nil: as is).
+// A channel that isn't encrypted yet gets epoch 1 (chan.encrypt). Caller
+// holds e2eMu.
+func (c *Client) commitBundle(ctx context.Context, s *session, sid e2ecrypto.ServerID, chID uint64,
+	roster func([]uint64) []uint64, send func(proto.Channel, identity.Signed) error) error {
 	me := s.myDevice()
 	if me == nil {
 		return errors.New("this device isn't registered yet")
@@ -1167,19 +1171,21 @@ func (c *Client) rotateOnce(ctx context.Context, s *session, sid e2ecrypto.Serve
 	if err != nil {
 		return err
 	}
-	if !ok || !ch.E2E {
-		return errors.New("not an encrypted channel")
+	if !ok {
+		return errors.New("unknown channel")
 	}
 	user := c.Me().ID
 	if !slices.Contains(ch.Members, user) {
 		return errors.New("not a member")
 	}
-	c.syncChannel(ctx, s, sid, ch)
-	if ch, _, err = getChan(c.db, chID); err != nil {
-		return err
-	}
-	if st := c.e2eStatus(sid, ch); st.State == E2EAlarm || st.State == E2EUnverified {
-		return fmt.Errorf("can't rotate: %s", st.Detail)
+	if ch.E2E {
+		c.syncChannel(ctx, s, sid, ch)
+		if ch, _, err = getChan(c.db, chID); err != nil {
+			return err
+		}
+		if st := c.e2eStatus(sid, ch); st.State == E2EAlarm || st.State == E2EUnverified {
+			return fmt.Errorf("can't rotate: %s", st.Detail)
+		}
 	}
 	head, hasHead, err := c.trust.ChainHead(sid, chID)
 	if err != nil {
@@ -1201,15 +1207,12 @@ func (c *Client) rotateOnce(ctx context.Context, s *session, sid e2ecrypto.Serve
 		return errors.New("only the channel's creator can create its first key")
 	}
 
-	c.mu.Lock()
-	for _, u := range ch.Members {
-		if !c.users[u].Disabled {
-			p.Roster = append(p.Roster, u)
-		}
+	p.Roster = c.rosterNow(ch)
+	if roster != nil {
+		p.Roster = roster(p.Roster)
+		slices.Sort(p.Roster)
+		p.Roster = slices.Compact(p.Roster)
 	}
-	c.mu.Unlock()
-	slices.Sort(p.Roster)
-	p.Roster = slices.Compact(p.Roster)
 	var unverified UnverifiedMembersError
 	for _, u := range p.Roster {
 		devs, err := c.trust.Devices(sid, u)
@@ -1241,7 +1244,7 @@ func (c *Client) rotateOnce(ctx context.Context, s *session, sid e2ecrypto.Serve
 	if err != nil {
 		return fmt.Errorf("building epoch bundle: %w", err)
 	}
-	if _, err := s.call(ctx, proto.OpKeyRotate, proto.KeyRotateArgs{Chan: chID, Bundle: proto.Signed(b)}, nil); err != nil {
+	if err := send(ch, b); err != nil {
 		return err
 	}
 	// Our key.epoch event came before the RES: verify it like anyone's.

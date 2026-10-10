@@ -160,8 +160,9 @@ func (c *Client) chanIsE2E(q dbtx, sid e2ecrypto.ServerID, hasSID bool, ch uint6
 }
 
 // legacyCutoff is ch's legacy cutoff (trust store, set once: the newest
-// message id cached when we first saw ch encrypted). ok is false without a
-// server id.
+// message id cached when we first saw ch encrypted; with nothing cached,
+// the server's Channel.legacy, its claim of where chan.encrypt converted
+// it). ok is false without a server id.
 func (c *Client) legacyCutoff(q dbtx, ch uint64) (uint64, bool) {
 	sid, ok := qServerID(q)
 	if !ok {
@@ -170,6 +171,13 @@ func (c *Client) legacyCutoff(q dbtx, ch uint64) (uint64, bool) {
 	var newest uint64
 	if err := q.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM msgs WHERE chan = ?`, ch).Scan(&newest); err != nil {
 		return 0, false
+	}
+	if newest == 0 {
+		// Only a device that saw none of the plaintext takes the server's
+		// word (both kinds of plaintext are unauthenticated anyway): one that
+		// watched the conversion knows the newest message itself, because
+		// events (msg.new before chan.update) apply in order.
+		_ = q.QueryRow(`SELECT legacy FROM chans WHERE id = ?`, ch).Scan(&newest)
 	}
 	cut, err := c.trust.LegacyCutoff(sid, ch, newest)
 	return cut, err == nil
@@ -186,10 +194,24 @@ func (c *Client) noteE2EChan(q dbtx, ch proto.Channel) {
 // storeChanE2E stores a channel from the server and, the first time it is
 // seen encrypted, records its legacy cutoff.
 func (c *Client) storeChanE2E(q dbtx, ch proto.Channel) error {
+	old, had, err := getChan(q, ch.ID)
+	if err != nil {
+		return err
+	}
 	if err := storeChan(q, ch); err != nil {
 		return err
 	}
 	c.noteE2EChan(q, ch)
+	if ch.E2E && had && !old.E2E {
+		// Converted (chan.encrypt): the plaintext we cached is legacy from
+		// this event on, not only once the e2e worker reclassifies it.
+		if cut, ok := c.legacyCutoff(q, ch.ID); ok {
+			if _, err := q.Exec(`UPDATE msgs SET sec = ? WHERE chan = ? AND enc IS NULL AND deleted = 0 AND sec = ? AND id <= ?`,
+				SecLegacy, ch.ID, SecPlain, cut); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 

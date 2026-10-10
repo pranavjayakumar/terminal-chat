@@ -23,7 +23,11 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS chans (
 	id INTEGER PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, topic TEXT NOT NULL,
 	members TEXT NOT NULL, created INTEGER NOT NULL,
-	e2e INTEGER NOT NULL DEFAULT 0, epoch INTEGER NOT NULL DEFAULT 0, creator INTEGER NOT NULL DEFAULT 0);
+	e2e INTEGER NOT NULL DEFAULT 0, epoch INTEGER NOT NULL DEFAULT 0, creator INTEGER NOT NULL DEFAULT 0,
+	legacy INTEGER NOT NULL DEFAULT 0);
+-- Private channels someone else removed us from: kept (with the history we
+-- had) until we close them, so the UI can say so (membership.go).
+CREATE TABLE IF NOT EXISTS removed (chan INTEGER PRIMARY KEY, actor INTEGER NOT NULL, time INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS msgs (
 	id INTEGER PRIMARY KEY, chan INTEGER NOT NULL, author INTEGER NOT NULL, body TEXT NOT NULL,
 	thread INTEGER NOT NULL, time INTEGER NOT NULL, edited INTEGER NOT NULL,
@@ -195,7 +199,7 @@ func resetCache(q dbtx, serverID []byte) error {
 	for _, s := range []string{
 		`DELETE FROM users`, `DELETE FROM chans`, `DELETE FROM msgs`, `DELETE FROM rencs`, `DELETE FROM pins`, `DELETE FROM groups`, `DELETE FROM reads WHERE dirty = 0`,
 		`DELETE FROM devices`, `DELETE FROM device_endorse`, `DELETE FROM device_revokes`,
-		`DELETE FROM meta WHERE k = 'devices_full'`, `DELETE FROM epochs`, `DELETE FROM key_shares`,
+		`DELETE FROM meta WHERE k = 'devices_full'`, `DELETE FROM epochs`, `DELETE FROM key_shares`, `DELETE FROM removed`,
 	} {
 		if _, err := q.Exec(s); err != nil {
 			return err
@@ -239,21 +243,21 @@ func loadUsers(q dbtx) (map[uint64]proto.User, error) {
 // a reset snapshot starts from scratch, so the server's claim is kept as is.
 func upsertChan(q dbtx, c proto.Channel) error {
 	members, _ := json.Marshal(c.Members)
-	_, err := q.Exec(`INSERT INTO chans (id, name, kind, topic, members, created, e2e, epoch, creator)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	_, err := q.Exec(`INSERT INTO chans (id, name, kind, topic, members, created, e2e, epoch, creator, legacy)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET name = excluded.name, kind = excluded.kind, topic = excluded.topic,
 			members = excluded.members, created = excluded.created, e2e = excluded.e2e,
-			epoch = max(epoch, excluded.epoch), creator = excluded.creator`,
-		c.ID, c.Name, c.Kind, c.Topic, string(members), c.Created, c.E2E, c.Epoch, c.Creator)
+			epoch = max(epoch, excluded.epoch), creator = excluded.creator, legacy = excluded.legacy`,
+		c.ID, c.Name, c.Kind, c.Topic, string(members), c.Created, c.E2E, c.Epoch, c.Creator, c.Legacy)
 	return err
 }
 
-const chanCols = `id, name, kind, topic, members, created, e2e, epoch, creator`
+const chanCols = `id, name, kind, topic, members, created, e2e, epoch, creator, legacy`
 
 func scanChan(sc interface{ Scan(...any) error }) (proto.Channel, error) {
 	var c proto.Channel
 	var members string
-	if err := sc.Scan(&c.ID, &c.Name, &c.Kind, &c.Topic, &members, &c.Created, &c.E2E, &c.Epoch, &c.Creator); err != nil {
+	if err := sc.Scan(&c.ID, &c.Name, &c.Kind, &c.Topic, &members, &c.Created, &c.E2E, &c.Epoch, &c.Creator, &c.Legacy); err != nil {
 		return c, err
 	}
 	_ = json.Unmarshal([]byte(members), &c.Members)

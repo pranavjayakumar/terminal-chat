@@ -421,16 +421,6 @@ func (c *Client) Join(ctx context.Context, ch uint64) error {
 	return c.call(ctx, proto.OpChanJoin, proto.ChanArgs{Chan: ch}, nil, nil)
 }
 
-// Leave leaves a channel.
-func (c *Client) Leave(ctx context.Context, ch uint64) error {
-	return c.call(ctx, proto.OpChanLeave, proto.ChanArgs{Chan: ch}, nil, nil)
-}
-
-// AddMember adds user to ch.
-func (c *Client) AddMember(ctx context.Context, ch, user uint64) error {
-	return c.call(ctx, proto.OpChanAdd, proto.ChanAddArgs{Chan: ch, User: user}, nil, nil)
-}
-
 // SetTopic sets ch's topic.
 func (c *Client) SetTopic(ctx context.Context, ch uint64, topic string) error {
 	return c.call(ctx, proto.OpChanTopic, proto.ChanTopicArgs{Chan: ch, Topic: topic}, nil, nil)
@@ -516,11 +506,6 @@ func (c *Client) CreateInvite(ctx context.Context, user uint64) (string, error) 
 	var r proto.InviteRes
 	err := c.call(ctx, proto.OpInviteCreate, proto.InviteCreateArgs{User: user}, &r, nil)
 	return r.Code, err
-}
-
-// DisableUser (admin) disables a user and closes their sessions.
-func (c *Client) DisableUser(ctx context.Context, user uint64) error {
-	return c.call(ctx, proto.OpUserDisable, proto.UserArgs{User: user}, nil, nil)
 }
 
 // ---- ephemeral ----
