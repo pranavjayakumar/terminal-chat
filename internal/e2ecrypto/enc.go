@@ -172,15 +172,21 @@ const ReactTagPrefix = "~"
 const ReactTagLen = 1 + 16
 
 // ReactTag is what an encrypted channel's server sees instead of a reaction
-// emoji: "~" || base64url(HMAC-SHA256(mk, "tc-react" || mid || emoji)[:12]),
-// with mk the message key of the reacted message's epoch. Equal emoji on one
-// message give equal tags (set semantics keep working) without revealing it.
+// emoji: "~" || base64url(HMAC-SHA256(rk, "tc-react" || mid || emoji)[:12]),
+// rk = HKDF-SHA256(mk, info "tc-react-v1"), with mk the message key of the
+// reacted message's epoch (a subkey of its own, so mk is only ever an AEAD
+// key). Equal emoji on one message give equal tags (set semantics keep
+// working) without revealing it.
 func ReactTag(k Key, sid ServerID, ch uint64, ep uint32, mid MsgID, emoji string) (string, error) {
 	mk, err := msgKey(k, sid, ch, ep)
 	if err != nil {
 		return "", err
 	}
-	m := hmac.New(sha256.New, mk)
+	rk, err := hkdf.Key(sha256.New, mk, nil, "tc-react-v1", KeySize)
+	if err != nil {
+		return "", err
+	}
+	m := hmac.New(sha256.New, rk)
 	m.Write([]byte("tc-react"))
 	m.Write(mid[:])
 	m.Write([]byte(emoji))

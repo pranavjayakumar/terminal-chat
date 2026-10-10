@@ -202,7 +202,7 @@ and higher v; first mid wins. Decrypted text must pass §10 checks. Undecryptabl
 | `key.fetch` | `{chan, from: u32, to: u32}` (≤ 256) | `{bundles, seqs}` (seqs[i] = key.epoch seq of bundles[i]) |
 | `key.share` | `{chan, epoch, dev, eph, ct}` | `{}` |
 | `send` | `+ enc?: bin` (exactly one of body/enc) | `{msg}` |
-| `edit` / `delete` / `react` | `+ enc?` (e2e react emoji = "~"+b64url(HMAC(mk,"tc-react"‖mid‖emoji)[:12])) | |
+| `edit` / `delete` / `react` | `+ enc?` (e2e react emoji = "~"+b64url(HMAC(HKDF(mk,"tc-react-v1"),"tc-react"‖mid‖emoji)[:12])) | |
 | `chan.create` | `+ e2e?: bool` | |
 | `chan.add` | `+ bundle?` (required when e2e) | |
 | `chan.remove` | `{chan, user, bundle}` (new; private chans) | |
@@ -294,7 +294,7 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    block (397 bytes) so reactions can't bloat a message past the frame limit. Only the author can sign a delete; an
    admin's delete is unsigned and shows "removed (not by author)"; deleted messages keep `del_enc`
    (`Message.del_enc`) so a fresh device can tell, comparing `ref` with the mid only when it knows it.
-   Reaction tags are `"~" + base64url(HMAC(mk, "tc-react"‖mid‖emoji)[:12])`; `Message.renc` carries each
+   Reaction tags are `"~" + base64url(HMAC(rk, "tc-react"‖mid‖emoji)[:12])` with `rk = HKDF(mk, "tc-react-v1")`; `Message.renc` carries each
    reaction's enc; removes need no proof (a server can always withhold a reaction), and a server can
    replay a reaction its author since removed (adds carry no version; accepted for v1). The server's
    `edited` and tag map are never shown for encrypted messages. Edits of a waiting message (or whose key

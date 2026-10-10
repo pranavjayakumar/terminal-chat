@@ -787,7 +787,8 @@ Plain = {t: "msg",   ts: i64, body: str, thread_ref?: bin16}
       | {t: "edit",  ts: i64, body: str, ref: bin16, v: u32}
       | {t: "del",   ts: i64, ref: bin16}
       | {t: "react", ts: i64, ref: bin16, emoji: str, add: bool}
-tag   = "~" || base64url(HMAC-SHA256(mk, "tc-react" || mid || emoji)[:12])   // 17 chars, no padding
+rk    = HKDF-SHA256(mk, info "tc-react-v1")
+tag   = "~" || base64url(HMAC-SHA256(rk, "tc-react" || mid || emoji)[:12])   // 17 chars, no padding
 ```
 
 `eh` is the eh (§13.3) of the epoch's bundle, `dev` the sending device,
@@ -799,7 +800,7 @@ reaction is about; `v` is an edit's version (the last applied version + 1);
 `emoji` is a reaction's real emoji (§9 emoji rules) and `add` whether it adds
 or removes it. An edit is sealed like a message, with the newest verified
 epoch. A delete or reaction is sealed under the **message's own epoch**
-(the `epoch` and `eh` of its `enc`), whose `mk` also makes the reaction
+(the `epoch` and `eh` of its `enc`), whose `mk` (via `rk`) also makes the reaction
 `tag` the server stores instead of the emoji: equal emoji on one message
 give equal tags, so set semantics and the §5 caps keep working without the
 server learning the emoji.

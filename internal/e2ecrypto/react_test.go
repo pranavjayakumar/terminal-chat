@@ -18,7 +18,8 @@ func TestReactTag(t *testing.T) {
 		t.Fatal(err)
 	}
 	mk, _ := hkdf.Key(sha256.New, f.k[:], nil, "tc-msg-v1"+string(scope(f.sid, f.ch, f.ep)), KeySize)
-	m := hmac.New(sha256.New, mk)
+	rk, _ := hkdf.Key(sha256.New, mk, nil, "tc-react-v1", KeySize)
+	m := hmac.New(sha256.New, rk)
 	m.Write([]byte("tc-react"))
 	m.Write(mid[:])
 	m.Write([]byte("👍"))
