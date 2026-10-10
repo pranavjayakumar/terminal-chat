@@ -84,3 +84,31 @@ anyone holding one can join, so share it where only your team can read it.
   Clients reconnect and catch up automatically; they update themselves with `tc update`.
 - Backup: `sqlite3 /var/lib/tc/tc.db ".backup /root/tc-$(date +%F).db"` (safe while running), plus
   `server.key`/`server.crt` — **losing the key invalidates every client's pin and every invite**.
+
+## Cutting a release (maintainers)
+
+Releases are signed by a maintainer's own SSH key, never by a key in CI: the workflow only
+builds a **draft**, and nothing installs a release until its `checksums.txt` carries a valid
+`checksums.txt.sig`. Both `tc update` and `install.sh` check that signature against the
+allowed signers compiled into `internal/release/signers.go` and embedded in `install.sh`
+(`ssh-keygen -Y verify -I tc-release -n tc-release`).
+
+1. Once: put your public key, in allowed_signers format
+   (`tc-release namespaces="tc-release" ssh-ed25519 AAAA… you@host`), into both
+   `AllowedSigners` in `internal/release/signers.go` and `ALLOWED_SIGNERS='…'` in `install.sh`
+   (`go test ./internal/release` checks they match), and merge to `main`. Builds that still
+   hold `REPLACE_WITH_MAINTAINER_KEY` refuse to update, and such an `install.sh` refuses to install.
+2. Tag a commit that is on `main`: `git tag v0.2.0 && git push origin v0.2.0`. The workflow
+   rejects anything but `vX.Y.Z` and commits not on `origin/main`, runs the tests, builds, and
+   creates a draft release with the tarballs and `checksums.txt`.
+3. `make release-sign TAG=v0.2.0 KEY=~/.ssh/id_ed25519` downloads the draft's assets, checks
+   them against `checksums.txt`, signs it (`ssh-keygen -Y sign -n tc-release`), checks the
+   signature exactly as `tc update` will, uploads `checksums.txt.sig` and publishes the release
+   as latest.
+
+`TC_INSECURE_NO_SIG=1 sh install.sh` skips the signature check. Don't: anyone who can change the
+release (or what your network serves for it) can then run code as you.
+
+Repository settings that back this up: branch protection on `main`, 2FA for everyone with
+write access, a tag ruleset limiting who can push `v*` tags, and required reviewers on the
+`release` environment the publish job uses.
