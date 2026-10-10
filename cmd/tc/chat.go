@@ -12,7 +12,7 @@ import (
 func cmdChat() error {
 	c, err := client.Open(client.DefaultHome())
 	if errors.Is(err, client.ErrNotLoggedIn) {
-		fmt.Fprint(os.Stderr, "Not logged in. Ask an admin for an invite, then:\n\n  tc login <invite>\n\n")
+		fmt.Fprint(os.Stderr, "Not logged in. Ask an admin for an invite, then:\n\n  tc join <invite>\n\n")
 		return nil
 	}
 	if err != nil {
@@ -22,5 +22,5 @@ func cmdChat() error {
 	ctx, cancel := signalContext()
 	defer cancel()
 	go c.Run(ctx)
-	return tui.Run(ctx, c)
+	return tui.Run(ctx, c, version)
 }

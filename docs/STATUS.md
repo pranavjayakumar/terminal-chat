@@ -37,7 +37,7 @@ The owner should change the droplet root password (it was shared in chat; passwo
 | M1 core chat (server, client, TUI, sync, offline outbox) | ✅ done, battle-tested (chaos + adversarial + live herdr) |
 | M2 collaboration | ✅ essentially done: notifications, herdr badge, `/share-pane`, auto-away, `tc notify`, notes, `/name`, threads, webhooks + bots, privacy scrubbing, drafts, `/highlight`, activity (Alt-A), message viewer (`v`), pins (`p`, `/pins`), user groups (`@oncall`), reminders (`/remind`), diff/snippets (`tc send --file`, `/snippet`) |
 | M3 end-to-end encryption | steps 1–7 merged; step 9 (membership: chan.add+bundle, chan.remove, chan.encrypt) on branch `e2e/membership`; (#9, #10, #11, #13, #16, #25 client verification, #26 encrypted send/receive) — **encrypted DMs and private channels work end to end**; step 8 (encrypted edit/delete/react) in PR #28; step 10 (trust UX: safety numbers, `/verify`, `--github`, key-change banner, `/accept-key`, `/alarm`, audited `/alarm-clear`, `?` marks, `tc verify`) merged (#30); step 11 (malicious-server suite: `-tags tctamper` server hooks, `internal/e2e/malicious_test.go`, one client bug fixed — missed `key.epoch` now re-fetched) on branch `e2e/malicious-server` |
-| M4 zero-setup onboarding | not started |
+| M4 zero-setup onboarding | in PR: release workflow (`v*` tags), verified `install.sh`, `tc join` wizard, invite = install one-liner, multi-use team invites (`--uses/--ttl`), `tc update` + update notice. Deferred: brew tap, signed releases, any-member invites, `--key github:user` |
 | M5 voice | not started |
 
 Release tag: `v0.1.0` = M1. No newer tag yet.

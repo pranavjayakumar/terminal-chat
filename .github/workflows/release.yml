@@ -1,0 +1,111 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+# Nothing by default; each job asks for what it needs.
+permissions: {}
+
+# The workflow only builds and creates a DRAFT release. A maintainer then
+# signs checksums.txt with their own SSH key and publishes it:
+#   make release-sign TAG=vX.Y.Z KEY=~/.ssh/id_ed25519
+# so a compromised workflow or token can't ship a release tc will install.
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0 # the ancestry check needs origin/main
+          persist-credentials: false # tests and builds run without the token
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25"
+
+      - name: Check the tag
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          # Plain vX.Y.Z only: no prereleases (they'd become "latest").
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "tag $TAG is not vX.Y.Z" >&2
+            exit 1
+          fi
+          # Only commits already merged to main are released.
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "tag $TAG ($GITHUB_SHA) is not on origin/main" >&2
+            exit 1
+          fi
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Build
+        env:
+          TAG: ${{ github.ref_name }}
+          CGO_ENABLED: "0"
+        run: |
+          set -eu
+          mkdir -p dist
+          for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+            os=${target%/*}
+            arch=${target#*/}
+            name="tc_${os}_${arch}"
+            mkdir -p "build/$name"
+            GOOS=$os GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -X main.version=$TAG" \
+              -o "build/$name/tc" ./cmd/tc
+            {
+              echo "tc $TAG for $os/$arch — terminal team chat"
+              echo
+              echo "Put tc on your PATH (e.g. ~/.local/bin), then join with the invite you were sent:"
+              echo "  tc join 'tc://host:7443/…'"
+              echo
+              echo "https://github.com/pranavjayakumar/terminal-chat"
+            } > "build/$name/README.txt"
+            tar -C "build/$name" -czf "dist/$name.tar.gz" tc README.txt
+          done
+          (cd dist && sha256sum -- *.tar.gz > checksums.txt)
+          cat dist/checksums.txt
+          ls -l dist
+
+      - name: Smoke test the linux/amd64 build
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          mkdir smoke && tar -C smoke -xzf dist/tc_linux_amd64.tar.gz
+          ./smoke/tc version | grep -F "$TAG"
+          (cd dist && sha256sum -c checksums.txt)
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release # add required reviewers in the repo settings
+    permissions:
+      contents: write # create the draft release and upload assets
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          gh release create "$TAG" dist/*.tar.gz dist/checksums.txt \
+            --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "$TAG" --generate-notes

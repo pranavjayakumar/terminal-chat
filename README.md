@@ -7,21 +7,35 @@ Team chat that lives in your terminal (and your herdr panes). One small binary, 
 - Sign in with your existing SSH key — no passwords, no accounts to manage
 - Pipe anything into chat: `make test 2>&1 | tc send '#backend'`
 
-## Quickstart
+## Get started
 
-**Server** (once, on any machine teammates can reach — see [docs/DEPLOY.md](docs/DEPLOY.md)):
-
-```sh
-tc server --public YOUR_IP:7443       # prints a one-time admin invite on first run
-tc server invite                       # one invite per teammate
-```
-
-**Everyone:**
+**Admin, once** — run a server on any machine your teammates can reach ([docs/DEPLOY.md](docs/DEPLOY.md)):
 
 ```sh
-tc login 'tc://host:7443/abc…#pin…'   # uses ssh-agent or ~/.ssh/id_ed25519
-tc                                    # chat
+tc server --public YOUR_IP:7443          # first run prints your own admin invite
+tc server invite --uses 15 --ttl 24h     # one invite for the whole team
 ```
+
+It prints a one-liner. Share it in your team's usual channel:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/install.sh | sh -s -- 'tc://host:7443/abc…#pin…'
+```
+
+**Teammates** paste it. It downloads the release for their Mac or Linux box, checks its sha256,
+installs `tc` to `~/.local/bin` and runs `tc join`, which picks their SSH key (ssh-agent, then
+`~/.ssh/id_ed25519`, else it makes a tc-only key), suggests a name from `git config user.name`,
+and asks once to confirm. Then `tc`.
+
+Already have tc? `tc join 'tc://…'` (`tc login` still works; `TC_INVITE='tc://…' tc join` keeps
+the code out of `ps`). Keep invites short-lived (a day is plenty) and revoke leftovers with
+`/invite-revoke` or `tc server invite --revoke`. Admins can also mint invites inside
+tc with `/invite [uses] [ttl]`, e.g. `/invite 15 1d`, which copies the one-liner to the clipboard.
+`tc update` installs the newest signed release in place (`--check` only reports); tc shows a dim
+`update vX` in the sidebar when one is out. For that, release builds make one HTTPS `HEAD` request to
+`github.com/pranavjayakumar/terminal-chat/releases/latest` at most once a day. It sends no version,
+user, server or chat data, but GitHub sees your IP address and that it runs tc.
+`TC_NO_UPDATE_CHECK=1` turns it off, and dev builds never check.
 
 ## Using it
 
@@ -36,7 +50,7 @@ tc                                    # chat
 | `F1` or `/help` | all keys and commands |
 | `Ctrl-C` twice | quit |
 
-Commands: `/join #x` `/create #x [--private]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/pins` `/activity` `/highlight [word…]` `/unhighlight word…` `/group name @a @b` (admin) `/groups` `/remind <when> <text>` `/reminders` `/remind-delete id` `/away [status]` `/back` `/snippet file[:range]` `/share-pane [pane]` `/invite` (admin) `/webhook name` `/webhooks` `/webhook-delete id` `/verify @user` `/accept-key @user` `/members` `/alarm`.
+Commands: `/join #x` `/create #x [--private]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/pins` `/activity` `/highlight [word…]` `/unhighlight word…` `/group name @a @b` (admin) `/groups` `/remind <when> <text>` `/reminders` `/remind-delete id` `/away [status]` `/back` `/snippet file[:range]` `/share-pane [pane]` `/invite [uses] [ttl]` `/invites` `/invite-revoke id` (admin) `/webhook name` `/webhooks` `/webhook-delete id` `/verify @user` `/accept-key @user` `/members` `/alarm`.
 
 Unsent text is kept per channel and thread (a dim `✎` in the sidebar marks channels with a draft) and
 survives restarts. `/remind 10m stand up` or `/remind tomorrow 9am …` posts `⏰ …` in your private notes on time, even

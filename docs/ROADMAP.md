@@ -28,10 +28,10 @@ webhooks, bots). Design: [E2E.md](E2E.md).
 
 ## M4 — zero-setup onboarding
 
-- Invite = install command (`curl … install.sh | sh -s -- '<invite>'`), brew tap, `tc update`
-- `tc join` wizard: picks an agent key or generates one, name from git config, ≤ 2 prompts
-- Team invites (multi-use, TTL), any-member invites, `--key github:user` pre-authorized invites
-- Releases: goreleaser, checksums + signatures
+- ✓ Invite = install command (`curl … install.sh | sh -s -- '<invite>'`), ✓ `tc update`; brew tap
+- ✓ `tc join` wizard: picks an agent key or generates one, name from git config, ≤ 2 prompts
+- ✓ Team invites (multi-use, TTL); any-member invites, `--key github:user` pre-authorized invites
+- ✓ Releases: GitHub Actions + `checksums.txt` (no goreleaser: a shell loop is enough); signatures
 
 ## M5 — voice huddles
 

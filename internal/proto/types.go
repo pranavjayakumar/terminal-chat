@@ -446,12 +446,18 @@ type UsersRes struct {
 	Users []User `msgpack:"users"`
 }
 
+// InviteCreateArgs: Uses and TTLMs (cap `team_invites`) default to 1 and
+// DefaultInviteTTL when zero.
 type InviteCreateArgs struct {
-	User uint64 `msgpack:"user,omitempty"`
+	User  uint64 `msgpack:"user,omitempty"`
+	Uses  int64  `msgpack:"uses,omitempty"`
+	TTLMs int64  `msgpack:"ttl_ms,omitempty"`
 }
 
 type InviteRes struct {
-	Code string `msgpack:"code"`
+	Code    string `msgpack:"code"`
+	Uses    int64  `msgpack:"uses,omitempty"`    // redemptions allowed
+	Expires int64  `msgpack:"expires,omitempty"` // Unix ms
 }
 
 type UserArgs = UserRef

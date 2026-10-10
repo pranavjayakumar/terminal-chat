@@ -97,9 +97,30 @@ The handshake must complete within 30 s (hardware keys may wait for a touch).
 
 ### 4.1 Invites
 
-Created by an admin (`/invite`, op `invite.create`) or on the server host
-(`tc server invite [--admin]`). Single-use, expire in 7 days. Redemption marks
-the invite used and creates the user/key in one transaction.
+Created by an admin (`/invite [uses] [ttl]`, op `invite.create`) or on the server host
+(`tc server invite [--uses N] [--ttl 24h] [--admin]`). An invite allows `uses`
+redemptions (1–100, default 1) until it expires (`ttl` 1 minute–30 days, default 7 days).
+Redemption decrements the remaining uses — conditionally (`uses > 0`), in the same
+transaction that creates the user/key, so concurrent redemptions of an N-use invite
+produce exactly N users. A redemption that fails (`name_taken`, `key_exists`, reserved
+name) rolls back and spends nothing. Exhausted, expired or unknown → BYE `invite_invalid`.
+Add-key invites are always single-use. Admin invites (server host only) are single-use and
+last at most 24 hours (default 24 hours). `uses`/`ttl_ms` in `invite.create` need cap
+`team_invites` (servers without it ignore them and mint a 1-use, 7-day invite).
+
+Admins can list and revoke invites (cap `invite_manage`; `/invites`, `/invite-revoke id`,
+`tc server invite --list` / `--revoke id` on the host). An invite's `id` is the first 12 hex
+digits of the SHA-256 of its token (the server stores only that hash), so listing never
+reveals a usable token. `invite.list` returns only invites that can still be redeemed.
+`invite.revoke` deletes one at once; it is serialized with redemption, so a concurrent
+redemption either completed before it or fails with `invite_invalid`.
+
+Clients show an invite as the code and as the install command
+`curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/<ref>/install.sh | sh -s -- '<code>'`,
+where `<ref>` is the client's own version when it is a release tag `vX.Y.Z` (so the script
+can't change after the invite is made) and `main` otherwise.
+The code is single-quoted; a code containing any byte outside `[A-Za-z0-9:/#.\-_\[\]]`
+(so never a quote) is refused rather than formatted.
 
 ```
 tc://<host>:<port>/<token>#<pin>
@@ -152,7 +173,9 @@ session **before** the RES. The `seq` in a RES is informational: clients advance
 | `chan.topic` | `{chan, topic: str}` | `{seq}` |
 | `dm.open` | `{users: [u64]}` (0–7 others; 0 = your private notes) | `{chan: Channel}` |
 | `users.list` | `{}` | `{users: [User]}` |
-| `invite.create` | `{user?: u64}` (admin) | `{code: str}` |
+| `invite.create` | `{user?: u64, uses?: int, ttl_ms?: i64}` (admin; `uses` 1–100, `ttl_ms` 60 000–30 days, else `bad_request`; `uses` > 1 with `user` → `bad_request`) | `{code: str, uses?: int, expires?: i64}` (cap `team_invites` for `uses`/`ttl_ms`, §4.1) |
+| `invite.list` | `{}` (admin) | `{invites: [{id: str, kind: "user"\|"admin"\|"key", user?: u64, uses_left: int, expires: i64, created: i64, created_by: u64}]}` — live invites only, soonest to expire first; `created_by` 0 = made on the server host; never the token (cap `invite_manage`, §4.1) |
+| `invite.revoke` | `{id: str}` (admin; 12 lowercase hex, else `bad_request`) | `{}` — no live invite with that id → `not_found`; an id matching two invites → `conflict` (cap `invite_manage`) |
 | `user.disable` | `{user}` (admin) | `{}` — closes their sessions with BYE `revoked` |
 | `user.update` | `{display: str}` (self) | `{seq}` — emits `user.update`; unchanged → `{seq: 0}` |
 | `hook.create` | `{chan, name}` | `{id: u64, name: str, url: str, pin: str}` (cap `hooks`, §12) |
@@ -370,7 +393,7 @@ Group = {name: str, members: [u64]}
 ```
 
 A `Group` (cap `groups`) is a named set of users that `@name` mentions at once (§5 rules). The
-server advertises caps `groups` and `remind` in WELCOME; older servers lack the ops.
+server advertises caps `groups`, `remind`, `team_invites` and `invite_manage` (§4.1) in WELCOME; older servers lack the ops.
 
 `Message.id` is the seq of its `msg.new` event, so ids order chronologically
 and map directly onto read markers.

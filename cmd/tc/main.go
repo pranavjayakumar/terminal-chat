@@ -14,7 +14,8 @@ var version = "dev"
 const usage = `tc — terminal team chat
 
   tc                         open chat
-  tc login <invite> [--name you] [--key ~/.ssh/id_ed25519]
+  tc join <invite> [--name you] [--key ~/.ssh/id_ed25519]   (or the invite in $TC_INVITE)
+                             join a team (tc login is the same)
   tc send <#chan|@user> [message...]   (reads stdin if no message)
   tc send <#chan|@user> --file path[:start[-end]] [--context N] [message...]
   tc tail <#chan>            stream a channel
@@ -23,7 +24,8 @@ const usage = `tc — terminal team chat
   tc verify @user [--github login]
                              compare safety numbers (or GitHub keys) to verify someone
   tc server [--listen :7443] [--public host:port] [--data dir]
-  tc server invite [--admin]
+  tc server invite [--uses N] [--ttl 72h] [--admin] [--raw]
+  tc update [--check]        install the latest release (or just check)
   tc version
 `
 
@@ -38,6 +40,8 @@ func main() {
 	switch cmd {
 	case "server":
 		err = cmdServer(args)
+	case "update":
+		err = cmdUpdate(args)
 	case "version", "--version", "-v":
 		fmt.Println("tc", version)
 	case "help", "--help", "-h":

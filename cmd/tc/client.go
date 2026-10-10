@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"os/user"
 	"strings"
 	"syscall"
 	"time"
@@ -23,8 +22,8 @@ func runClient(cmd string, args []string) error {
 	switch cmd {
 	case "":
 		return cmdChat()
-	case "login":
-		return cmdLogin(args)
+	case "join", "login":
+		return cmdJoin(args)
 	case "send":
 		return cmdSend(args)
 	case "tail":
@@ -39,38 +38,6 @@ func runClient(cmd string, args []string) error {
 
 func signalContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-}
-
-func cmdLogin(args []string) error {
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return errUsage
-	}
-	invite := args[0]
-	fs := flag.NewFlagSet("login", flag.ExitOnError)
-	name := fs.String("name", defaultName(), "your user name (new accounts)")
-	key := fs.String("key", "", "SSH private key (default: ssh-agent, then ~/.ssh/id_ed25519)")
-	fs.Parse(args[1:])
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	u, err := client.Login(ctx, client.DefaultHome(), invite, *name, *key)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("Logged in as %s. Run `tc` to start chatting.\n", sanitize.Line(u.Name))
-	return nil
-}
-
-func defaultName() string {
-	u, err := user.Current()
-	if err != nil {
-		return ""
-	}
-	n := strings.ToLower(u.Username)
-	if proto.ValidName(n) {
-		return n
-	}
-	return ""
 }
 
 // connected opens the client, runs it, and waits until it's online.
