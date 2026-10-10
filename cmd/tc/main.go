@@ -14,7 +14,8 @@ var version = "dev"
 const usage = `tc — terminal team chat
 
   tc                         open chat
-  tc login <invite> [--name you] [--key ~/.ssh/id_ed25519]
+  tc join <invite> [--name you] [--key ~/.ssh/id_ed25519]
+                             join a team (tc login is the same)
   tc send <#chan|@user> [message...]   (reads stdin if no message)
   tc send <#chan|@user> --file path[:start[-end]] [--context N] [message...]
   tc tail <#chan>            stream a channel

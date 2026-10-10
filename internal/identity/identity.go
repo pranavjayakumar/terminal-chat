@@ -6,9 +6,11 @@ package identity
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
@@ -253,4 +255,54 @@ func readPrivate(path string) (ssh.Signer, error) {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 	return s, nil
+}
+
+// AgentED25519 returns the first ed25519 key in ssh-agent ($SSH_AUTH_SOCK),
+// the one Load("") picks.
+func AgentED25519() (ssh.PublicKey, bool) {
+	for _, s := range fromAgent() {
+		if s.PublicKey().Type() == ssh.KeyAlgoED25519 {
+			return s.PublicKey(), true
+		}
+	}
+	return nil, false
+}
+
+// GenerateKey writes a new unencrypted ed25519 key to path (0600, OpenSSH
+// format, comment "tc") and path.pub, creating the directory 0700. It never
+// overwrites an existing file.
+func GenerateKey(path string) (ssh.Signer, error) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	blk, err := ssh.MarshalPrivateKey(priv, "tc")
+	if err != nil {
+		return nil, err
+	}
+	sshPub, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("creating key directory: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("creating %s: %w", path, err)
+	}
+	if _, err := f.Write(pem.EncodeToMemory(blk)); err != nil {
+		f.Close()
+		os.Remove(path)
+		return nil, fmt.Errorf("writing %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return nil, fmt.Errorf("writing %s: %w", path, err)
+	}
+	line := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub))) + " tc\n"
+	if err := os.WriteFile(path+".pub", []byte(line), 0o644); err != nil {
+		return nil, fmt.Errorf("writing %s.pub: %w", path, err)
+	}
+	return ssh.NewSignerFromKey(priv)
 }

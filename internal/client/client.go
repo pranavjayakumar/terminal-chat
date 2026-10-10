@@ -114,7 +114,7 @@ var (
 	// ErrOffline means the request needs a live, synced connection.
 	ErrOffline = errors.New("offline")
 	// ErrNotLoggedIn means Home has no config.json.
-	ErrNotLoggedIn = errors.New("not logged in (run: tc login <invite>)")
+	ErrNotLoggedIn = errors.New("not logged in (run: tc join <invite>)")
 )
 
 // ByeError is a BYE received from the server.
