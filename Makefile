@@ -14,13 +14,22 @@ test: test-malicious
 test-malicious:
 	GOTOOLCHAIN=local go test -race -tags tctamper ./internal/e2e -run Malicious
 
+# Every decoder of untrusted input (docs/E2E.md step 12): FUZZTIME=60s for a
+# longer run. Crashers land in testdata/fuzz/ and then run as regression tests.
+FUZZTIME ?= 30s
+FUZZ := \
+	proto:FuzzDecode proto:FuzzDevices proto:FuzzKeyOps \
+	sanitize:FuzzSanitize \
+	e2ecrypto:FuzzParseEnc e2ecrypto:FuzzDecrypt e2ecrypto:FuzzUnpad e2ecrypto:FuzzOpenBoxes \
+	identity:FuzzDeviceCert identity:FuzzKeyEndorse identity:FuzzDeviceRevoke identity:FuzzEpochBundle \
+	client:FuzzPlain client:FuzzKeyShare
+
 fuzz:
-	GOTOOLCHAIN=local go test ./internal/proto -run '^$$' -fuzz FuzzDecode -fuzztime 30s
-	GOTOOLCHAIN=local go test ./internal/proto -run '^$$' -fuzz FuzzDevices -fuzztime 30s
-	GOTOOLCHAIN=local go test ./internal/sanitize -run '^$$' -fuzz FuzzSanitize -fuzztime 30s
-	GOTOOLCHAIN=local go test ./internal/e2ecrypto -run '^$$' -fuzz FuzzParseEnc -fuzztime 30s
-	GOTOOLCHAIN=local go test ./internal/e2ecrypto -run '^$$' -fuzz FuzzDecrypt -fuzztime 30s
-	GOTOOLCHAIN=local go test ./internal/identity -run '^$$' -fuzz FuzzDeviceCert -fuzztime 30s
+	@set -e; for t in $(FUZZ); do \
+		pkg=$${t%%:*}; name=$${t##*:}; \
+		echo "== $$pkg $$name ($(FUZZTIME))"; \
+		GOTOOLCHAIN=local go test ./internal/$$pkg -run '^$$' -fuzz "^$$name\$$" -fuzztime $(FUZZTIME); \
+	done
 
 lint:
 	GOTOOLCHAIN=local go vet ./...
