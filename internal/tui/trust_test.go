@@ -23,7 +23,8 @@ type fakeTrust struct {
 	ghErr      error
 	ghCalls    []string
 	keyChg     map[uint64][]uint64
-	accepted   []uint64
+	accepted   []string
+	pending    map[uint64][]string
 	alarms     map[uint64]client.AlarmInfo
 	cleared    []uint64
 }
@@ -61,10 +62,18 @@ func (f *fakeClient) VerifyGitHub(ctx context.Context, user uint64, login string
 	f.tr.ghCalls = append(f.tr.ghCalls, login)
 	res := f.tr.gh
 	res.User, res.Login = user, login
-	if res.Match {
-		f.tr.unverified = slices.DeleteFunc(f.tr.unverified, func(u uint64) bool { return u == user })
-	}
 	return res, f.tr.ghErr
+}
+
+func (f *fakeClient) ConfirmGitHub(res client.GitHubCheck) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !res.Match {
+		return client.ErrNotMatched
+	}
+	f.tr.verified = append(f.tr.verified, strconv.FormatUint(res.User, 10)+":github:"+res.Login)
+	f.tr.unverified = slices.DeleteFunc(f.tr.unverified, func(u uint64) bool { return u == res.User })
+	return nil
 }
 
 func (f *fakeClient) KeyChangedMembers(ch uint64) []uint64 {
@@ -73,22 +82,42 @@ func (f *fakeClient) KeyChangedMembers(ch uint64) []uint64 {
 	return slices.Clone(f.tr.keyChg[ch])
 }
 
-func (f *fakeClient) AcceptKeyChange(user uint64) error {
+func (f *fakeClient) PendingKeys(user uint64) []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	n := 0
-	for ch, us := range f.tr.keyChg {
-		if slices.Contains(us, user) {
-			n++
+	return slices.Clone(f.tr.pending[user])
+}
+
+// AcceptKeyChanges mirrors the client: exactly the pending set, or with
+// only a subset of it.
+func (f *fakeClient) AcceptKeyChanges(user uint64, fps []string, only bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	pend := f.tr.pending[user]
+	if len(pend) == 0 {
+		return errors.New("no pending key change for that user")
+	}
+	for _, fp := range fps {
+		if !slices.Contains(pend, fp) {
+			return client.ErrPendingChanged
+		}
+	}
+	if !only && len(fps) != len(pend) {
+		return client.ErrPendingChanged
+	}
+	f.tr.accepted = append(f.tr.accepted, fps...)
+	pend = slices.DeleteFunc(slices.Clone(pend), func(fp string) bool { return slices.Contains(fps, fp) })
+	f.tr.pending[user] = pend
+	if len(pend) == 0 {
+		for ch, us := range f.tr.keyChg {
 			f.tr.keyChg[ch] = slices.DeleteFunc(us, func(u uint64) bool { return u == user })
 		}
 	}
-	if n == 0 {
-		return errors.New("no pending key change for that user")
-	}
-	f.tr.accepted = append(f.tr.accepted, user)
 	return nil
 }
+
+// pastTypeAhead lets the open trust overlay take keys.
+func pastTypeAhead(m *Model) { m.verify.opened = m.verify.opened.Add(-time.Second) }
 
 func (f *fakeClient) Alarm(ch uint64) (client.AlarmInfo, bool) {
 	f.mu.Lock()
@@ -155,6 +184,7 @@ func TestVerifyOverlay(t *testing.T) {
 				}
 			}
 		}
+		pastTypeAhead(m)
 		for range 20 { // scrolling stays in bounds
 			press(m, "down")
 			checkView(t, m, "verify scrolled")
@@ -164,6 +194,11 @@ func TestVerifyOverlay(t *testing.T) {
 			t.Fatalf("Esc verified: %v", f.tr.verified)
 		}
 		runInput(t, m, "/verify @bob")
+		press(m, "v") // typed ahead, before the overlay could be read
+		if m.mode != modeVerify || len(f.tr.verified) != 0 {
+			t.Fatalf("type-ahead v verified: %v", f.tr.verified)
+		}
+		pastTypeAhead(m)
 		press(m, "v")
 		if m.mode != modeNormal || !slices.Equal(f.tr.verified, []string{"2:" + digits60}) {
 			t.Fatalf("v: mode %v verified %v", m.mode, f.tr.verified)
@@ -213,6 +248,7 @@ func TestVerifyGitHubOverlay(t *testing.T) {
 		if !strings.Contains(v, "MISMATCH") {
 			t.Errorf("%v: no mismatch in\n%s", sz, v)
 		}
+		pastTypeAhead(m)
 		press(m, "v") // nothing to confirm here
 		if m.mode != modeVerify || len(f.tr.verified) != 0 {
 			t.Fatal("v in a GitHub result did something")
@@ -224,9 +260,27 @@ func TestVerifyGitHubOverlay(t *testing.T) {
 		if !strings.Contains(v, "✓ every key") || strings.Contains(v, "MISMATCH") {
 			t.Errorf("%v: match view\n%s", sz, v)
 		}
+		if sz[0] >= 200 && !strings.Contains(v, "verify @bob because you confirmed github.com/bob-gh is theirs") {
+			t.Errorf("no confirmation text:\n%s", v)
+		}
+		// A match alone verifies nothing; Esc leaves bob unverified.
+		pastTypeAhead(m)
 		press(m, "esc")
+		if len(f.tr.verified) != 0 || !strings.Contains(ansi.Strip(m.headerLine(m.w)), "?") {
+			t.Fatalf("a match verified without v: %v", f.tr.verified)
+		}
+		runInput(t, m, "/verify @bob --github bob-gh")
+		press(m, "v") // type-ahead
+		pastTypeAhead(m)
+		if len(f.tr.verified) != 0 {
+			t.Fatal("type-ahead v confirmed")
+		}
+		press(m, "v")
+		if !slices.Equal(f.tr.verified, []string{"2:github:bob-gh"}) || m.mode != modeNormal {
+			t.Fatalf("v: %v mode %v", f.tr.verified, m.mode)
+		}
 		if h := ansi.Strip(m.headerLine(m.w)); strings.Contains(h, "?") {
-			t.Errorf("still unverified after a match: %q", h)
+			t.Errorf("still unverified after confirming: %q", h)
 		}
 	}
 	m, f := newTestModelFake(t, 80, 24)
@@ -246,17 +300,21 @@ func TestKeyChangeBanner(t *testing.T) {
 		m, f := newTestModelFake(t, sz[0], sz[1])
 		trustFake(f)
 		f.tr.keyChg = map[uint64][]uint64{20: {2}}
+		f.tr.pending = map[uint64][]string{2: {"SHA256:new1"}}
 		run(m, m.applyUpdate(client.Update{Channels: true}))
 		run(m, m.openChannel(20))
 		v := ansi.Strip(checkView(t, m, "banner"))
-		if n := strings.Count(v, "key changed"); n != 1 {
+		if !strings.Contains(strings.Split(v, "\n")[1], "/accept-key @bob") {
+			t.Errorf("%v: the command didn't survive truncation:\n%s", sz, v)
+		}
+		if n := strings.Count(v, "⚠ /accept-key"); n != 1 {
 			t.Errorf("%v: %d banner lines in\n%s", sz, n, v)
 		}
-		if sz[0] >= 200 && !strings.Contains(v, "⚠ @bob's key changed — verify with /verify @bob or accept with /accept-key @bob") {
+		if sz[0] >= 200 && !strings.Contains(v, "⚠ /accept-key @bob, then /verify @bob — @bob's key changed") {
 			t.Errorf("banner text:\n%s", v)
 		}
 		lines := strings.Split(v, "\n")
-		if !strings.Contains(lines[1], "key changed") {
+		if !strings.Contains(lines[1], "⚠ /accept-key") {
 			t.Errorf("%v: banner not under the header:\n%s", sz, v)
 		}
 		typeVia(m, "psst")
@@ -265,7 +323,7 @@ func TestKeyChangeBanner(t *testing.T) {
 			t.Fatalf("sent %v input %q notice %q", f.sent, m.input.Value(), m.notice)
 		}
 		checkView(t, m, "blocked")
-		for _, line := range []string{"/verify @bob", "/members", "/help"} {
+		for _, line := range []string{"/verify @bob", "/members", "/help", "/accept-key @bob"} {
 			m.clearInput()
 			runInput(t, m, line)
 			checkView(t, m, "banner + "+line)
@@ -279,10 +337,22 @@ func TestKeyChangeBanner(t *testing.T) {
 		run(m, m.openChannel(20))
 		m.clearInput()
 		runInput(t, m, "/accept-key @bob")
-		if !slices.Equal(f.tr.accepted, []uint64{2}) || m.noticeErr {
+		if m.mode != modeVerify || len(f.tr.accepted) != 0 {
+			t.Fatalf("accept-key didn't ask: mode %v accepted %v", m.mode, f.tr.accepted)
+		}
+		if v := plain(m); !strings.Contains(v, "SHA256:new1") {
+			t.Errorf("pending key not shown:\n%s", v)
+		}
+		press(m, "y") // type-ahead
+		if len(f.tr.accepted) != 0 {
+			t.Fatal("type-ahead y accepted")
+		}
+		pastTypeAhead(m)
+		press(m, "y")
+		if !slices.Equal(f.tr.accepted, []string{"SHA256:new1"}) || m.noticeErr || m.mode != modeNormal {
 			t.Fatalf("accept: %v notice %q", f.tr.accepted, m.notice)
 		}
-		if v := plain(m); strings.Contains(v, "key changed —") {
+		if v := plain(m); strings.Contains(v, "⚠ /accept-key") {
 			t.Errorf("banner after accept:\n%s", v)
 		}
 		typeVia(m, "psst")
@@ -298,6 +368,54 @@ func TestKeyChangeBanner(t *testing.T) {
 	run(m, m.openChannel(20))
 	if v := plain(m); !strings.Contains(v, "keys changed: @bob, @carol") {
 		t.Errorf("multi banner:\n%s", v)
+	}
+}
+
+// /accept-key acknowledges exactly what it showed: if the pending set
+// changed meanwhile it refuses and shows the new set; a named fingerprint
+// is accepted alone.
+func TestAcceptKeyExactlyShown(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	trustFake(f)
+	f.tr.keyChg = map[uint64][]uint64{20: {2}}
+	f.tr.pending = map[uint64][]string{2: {"SHA256:k1"}}
+	run(m, m.applyUpdate(client.Update{Channels: true}))
+	run(m, m.openChannel(20))
+	runInput(t, m, "/accept-key @bob")
+	f.tr.pending[2] = []string{"SHA256:k1", "SHA256:k2"} // arrives while the overlay is up
+	pastTypeAhead(m)
+	press(m, "y")
+	if len(f.tr.accepted) != 0 || m.mode != modeVerify || !m.noticeErr {
+		t.Fatalf("accepted a changed set: %v mode %v notice %q", f.tr.accepted, m.mode, m.notice)
+	}
+	if v := plain(m); !strings.Contains(v, "SHA256:k2") {
+		t.Fatalf("new set not shown:\n%s", v)
+	}
+	press(m, "esc")
+	for line, want := range map[string]string{
+		"/accept-key @bob SHA256:nope": "no pending key",
+		"/accept-key @bob a b":         "usage",
+		"/accept-key":                  "usage",
+		"/accept-key @carol":           "no pending key change",
+	} {
+		m.clearInput()
+		runInput(t, m, line)
+		if !m.noticeErr || !strings.Contains(m.notice, want) || m.mode != modeNormal {
+			t.Errorf("%q: notice %q mode %v", line, m.notice, m.mode)
+		}
+	}
+	m.clearInput()
+	runInput(t, m, "/accept-key @bob SHA256:k2")
+	if v := plain(m); strings.Contains(v, "SHA256:k1") || !strings.Contains(v, "SHA256:k2") {
+		t.Fatalf("single-key overlay:\n%s", v)
+	}
+	pastTypeAhead(m)
+	press(m, "y")
+	if !slices.Equal(f.tr.accepted, []string{"SHA256:k2"}) || !slices.Equal(f.tr.pending[2], []string{"SHA256:k1"}) {
+		t.Fatalf("accepted %v pending %v", f.tr.accepted, f.tr.pending[2])
+	}
+	if v := plain(m); !strings.Contains(v, "key changed") {
+		t.Error("banner gone while a key is still pending")
 	}
 }
 
@@ -355,6 +473,29 @@ func TestAlarmClearConfirm(t *testing.T) {
 	}
 	if !confirmMatches("bob", "@bob") || !confirmMatches("#sec", "#sec") || confirmMatches("", "#") || confirmMatches("Bob", "@bob") {
 		t.Fatal("confirmMatches")
+	}
+
+	// The server-wide alarm: /alarm, the prompt and the result all say it
+	// clears for every encrypted channel.
+	m, f = newTestModelFake(t, 200, 60)
+	trustFake(f)
+	f.e2eSt[20] = client.E2EStatus{State: client.E2EAlarm, Detail: "the server stopped offering end-to-end encryption"}
+	f.tr.alarms = map[uint64]client.AlarmInfo{20: {Detail: "the server stopped offering end-to-end encryption", Server: true, Why: "downgrade"}}
+	run(m, m.applyUpdate(client.Update{Channels: true}))
+	run(m, m.openChannel(20))
+	runInput(t, m, "/alarm")
+	if v := plain(m); !strings.Contains(v, "server-wide — clears the alarm for all encrypted channels") {
+		t.Errorf("/alarm doesn't say server-wide:\n%s", v)
+	}
+	press(m, "esc")
+	runInput(t, m, "/alarm-clear")
+	if !strings.Contains(m.notice, "server-wide — clears the alarm for all encrypted channels") || len(f.tr.cleared) != 0 {
+		t.Fatalf("prompt %q cleared %v", m.notice, f.tr.cleared)
+	}
+	m.clearInput()
+	runInput(t, m, "/alarm-clear @bob")
+	if !slices.Equal(f.tr.cleared, []uint64{20}) || !strings.Contains(m.notice, "for all encrypted channels") {
+		t.Fatalf("cleared %v notice %q", f.tr.cleared, m.notice)
 	}
 }
 

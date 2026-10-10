@@ -86,7 +86,9 @@ type Backend interface {
 	MarkVerified(user uint64, digits string) error
 	VerifyGitHub(ctx context.Context, user uint64, login string) (client.GitHubCheck, error)
 	KeyChangedMembers(ch uint64) []uint64
-	AcceptKeyChange(user uint64) error
+	PendingKeys(user uint64) []string
+	AcceptKeyChanges(user uint64, fps []string, only bool) error
+	ConfirmGitHub(res client.GitHubCheck) error
 	Alarm(ch uint64) (client.AlarmInfo, bool)
 	ClearAlarm(ch uint64) error
 }

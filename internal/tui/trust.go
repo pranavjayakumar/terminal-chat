@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -19,13 +21,28 @@ import (
 // /accept-key, /alarm and /alarm-clear, "?" for members trusted only on
 // first use, /members.
 
-// verifyState is the /verify overlay: a safety number to compare, or the
-// result of a GitHub check (gh != nil).
+// verifyState is the trust overlay: a safety number to compare (/verify),
+// the result of a GitHub check (gh != nil), or pending keys to accept
+// (/accept-key, accept != nil). Keys are ignored for typeAhead after it
+// opens, so a keystroke typed before it appeared can't confirm anything.
 type verifyState struct {
 	user   uint64
 	sn     client.SafetyNumber
 	gh     *client.GitHubCheck
+	accept []string // the fingerprints shown, exactly what y acknowledges
+	only   bool     // accept just these (one named key), not all pending
+	opened time.Time
 	scroll int
+}
+
+// typeAhead is how long the trust overlays ignore keys after opening.
+const typeAhead = 500 * time.Millisecond
+
+func (m *Model) openTrustOverlay(v verifyState) {
+	m.leaveSelect()
+	v.opened = m.now()
+	m.verify = v
+	m.mode = modeVerify
 }
 
 type verifyGHMsg struct {
@@ -65,14 +82,15 @@ func (m *Model) bannerText() string {
 	case 0:
 		return ""
 	case 1:
+		// The command first: it must survive truncation in a narrow pane.
 		n := m.atName(us[0])
-		return fmt.Sprintf("⚠ %s's key changed — verify with /verify %s or accept with /accept-key %s", n, n, n)
+		return fmt.Sprintf("⚠ /accept-key %s, then /verify %s — %s's key changed", n, n, n)
 	}
 	names := make([]string, len(us))
 	for i, u := range us {
 		names[i] = m.atName(u)
 	}
-	return "⚠ keys changed: " + strings.Join(names, ", ") + " — /verify or /accept-key each"
+	return "⚠ /accept-key, then /verify each — keys changed: " + strings.Join(names, ", ")
 }
 
 // unverifiedIn lists ch's other members trusted only on first use (e2e
@@ -118,18 +136,26 @@ func (m *Model) trustCommand(c command) (tea.Cmd, bool, error) {
 		cmd, err := m.verifyCommand(c)
 		return cmd, true, err
 	case "accept-key":
-		if len(c.args) != 1 {
-			return nil, true, errors.New("usage: /accept-key @user")
+		if len(c.args) < 1 || len(c.args) > 2 {
+			return nil, true, errors.New("usage: /accept-key @user [fingerprint]")
 		}
 		u, ok := m.findUser(c.args[0])
 		if !ok {
 			return nil, true, fmt.Errorf("unknown user %s", sanitize.Line(c.args[0]))
 		}
-		if err := m.c.AcceptKeyChange(u); err != nil {
-			return nil, true, err
+		pend := m.c.PendingKeys(u)
+		if len(pend) == 0 {
+			return nil, true, fmt.Errorf("no pending key change for %s", m.atName(u))
 		}
-		m.reloadChans()
-		m.setInfo(fmt.Sprintf("accepted %s's new key — unverified until /verify %s", m.atName(u), m.atName(u)))
+		v := verifyState{user: u, accept: pend}
+		if len(c.args) == 2 {
+			if !slices.Contains(pend, c.args[1]) {
+				return nil, true, fmt.Errorf("%s has no pending key %s (/accept-key %s lists them)",
+					m.atName(u), sanitize.Line(c.args[1]), m.atName(u))
+			}
+			v.accept, v.only = []string{c.args[1]}, true
+		}
+		m.openTrustOverlay(v)
 		return nil, true, nil
 	case "alarm":
 		ch, err := m.needActive()
@@ -205,9 +231,7 @@ func (m *Model) verifyCommand(c command) (tea.Cmd, error) {
 	if err != nil {
 		return nil, err
 	}
-	m.leaveSelect()
-	m.verify = verifyState{user: u, sn: sn}
-	m.mode = modeVerify
+	m.openTrustOverlay(verifyState{user: u, sn: sn})
 	return nil, nil
 }
 
@@ -216,29 +240,64 @@ func (m *Model) gotVerifyGH(msg verifyGHMsg) {
 		m.setErr("verify", msg.err)
 		return
 	}
-	m.leaveSelect()
 	res := msg.res
-	m.verify = verifyState{user: res.User, gh: &res}
-	m.mode = modeVerify
-	if res.Match {
-		m.reloadChans()
-	}
+	m.openTrustOverlay(verifyState{user: res.User, gh: &res})
 }
 
 func (m *Model) verifyKey(key string) {
 	v := &m.verify
+	if m.now().Sub(v.opened) < typeAhead && key != kEsc {
+		return // only cancelling is safe to act on before it could be read
+	}
 	switch key {
 	case kEsc, "q", kEnter:
 		m.mode = modeNormal
-		if v.gh == nil && key != kEnter {
+		switch {
+		case v.accept != nil:
+			m.setInfo("key change not accepted")
+		case v.gh == nil || v.gh.Match:
 			m.setInfo("not verified")
 		}
-	case "v":
-		if v.gh != nil {
+	case "y":
+		if v.accept == nil {
+			return
+		}
+		err := m.c.AcceptKeyChanges(v.user, v.accept, v.only)
+		if errors.Is(err, client.ErrPendingChanged) {
+			// Something changed while the overlay was up: show what's pending now.
+			pend := m.c.PendingKeys(v.user)
+			if len(pend) == 0 || v.only {
+				m.mode = modeNormal
+				m.setErr("accept-key", err)
+				return
+			}
+			m.openTrustOverlay(verifyState{user: v.user, accept: pend})
+			m.setErr("accept-key", err)
 			return
 		}
 		m.mode = modeNormal
-		if err := m.c.MarkVerified(v.user, v.sn.Digits); err != nil {
+		if err != nil {
+			m.setErr("accept-key", err)
+			return
+		}
+		m.reloadChans()
+		n := m.atName(v.user)
+		m.setInfo(fmt.Sprintf("accepted %s's new key — unverified until /verify %s", n, n))
+	case "v":
+		var err error
+		switch {
+		case v.accept != nil:
+			return
+		case v.gh != nil:
+			if !v.gh.Match {
+				return
+			}
+			err = m.c.ConfirmGitHub(*v.gh)
+		default:
+			err = m.c.MarkVerified(v.user, v.sn.Digits)
+		}
+		m.mode = modeNormal
+		if err != nil {
 			m.setErr("verify", err)
 			return
 		}
@@ -309,13 +368,28 @@ func (m *Model) verifyRows(w int) []string {
 	}
 	gap := func() { rows = append(rows, styledRow{}) }
 	them := m.atName(v.user)
-	if v.gh != nil {
+	switch {
+	case v.accept != nil:
+		bad := m.st.noticeErr
+		add(fmt.Sprintf("%s presented SSH keys this device hasn't pinned:", them), &bad)
+		for _, fp := range v.accept {
+			add("  "+sanitize.Line(fp), nil)
+		}
+		gap()
+		add("Accepting trusts exactly these keys on first use: "+them+" stays unverified. Then compare "+
+			"safety numbers with /verify "+them+". If you don't expect a new key (a new laptop, a new SSH key), "+
+			"ask "+them+" before accepting.", nil)
+		gap()
+		add("Press y to accept, Esc to cancel.", nil)
+	case v.gh != nil:
 		g := v.gh
 		login := sanitize.Line(g.Login)
 		ok := m.st.noticeInfo
 		bad := m.st.noticeErr
 		if g.Match {
-			add(fmt.Sprintf("✓ every key this device pinned for %s is on github.com/%s — %s is now verified", them, login, them), &ok)
+			add(fmt.Sprintf("✓ every key this device pinned for %s is on github.com/%s", them, login), &ok)
+			gap()
+			add(fmt.Sprintf("Press v to verify %s because you confirmed github.com/%s is theirs; Esc to cancel.", them, login), nil)
 		} else {
 			add(fmt.Sprintf("✗ MISMATCH: %d of %s's pinned keys aren't on github.com/%s — nothing was verified", len(g.Missing), them, login), &bad)
 		}
@@ -342,7 +416,7 @@ func (m *Model) verifyRows(w int) []string {
 			gap()
 			add("Ask "+them+" which account holds their tc key, or compare safety numbers: /verify "+them, nil)
 		}
-	} else {
+	default:
 		dim := m.st.dim
 		add("Safety number with "+them+":", nil)
 		per := 4
@@ -381,7 +455,12 @@ func (m *Model) verifyRows(w int) []string {
 func (m *Model) verifyLines(w, h int) []string {
 	v := &m.verify
 	title := fmt.Sprintf("verify %s — v: they match · Esc: cancel", m.atName(v.user))
-	if v.gh != nil {
+	switch {
+	case v.accept != nil:
+		title = fmt.Sprintf("accept %s's new key? y: accept · Esc: cancel", m.atName(v.user))
+	case v.gh != nil && v.gh.Match:
+		title = fmt.Sprintf("GitHub check for %s — v: verify · Esc: cancel", m.atName(v.user))
+	case v.gh != nil:
 		title = fmt.Sprintf("GitHub check for %s — Esc closes", m.atName(v.user))
 	}
 	out := []string{fit(m.st.overlayTitle.Render(truncate(title, w)), w)}
@@ -407,7 +486,7 @@ func (m *Model) alarmRows(ch uint64, a client.AlarmInfo) []string {
 		add("raised " + a.Since.Local().Format("2006-01-02 15:04:05"))
 	}
 	if a.Server {
-		add("(server-wide: every encrypted channel is in alarm)")
+		add("(" + serverWide + ")")
 	}
 	rows = append(rows, "")
 	add(a.Why)
@@ -415,12 +494,19 @@ func (m *Model) alarmRows(ch uint64, a client.AlarmInfo) []string {
 	if a.Computed {
 		add("It clears by itself when its cause is gone.")
 	} else {
+		scope := ""
+		if a.Server {
+			scope = " (" + serverWide + ")"
+		}
 		add("Nothing is sent here while it lasts. Clear it only once you know why it happened (e.g. a server " +
-			"restored from a backup): /alarm-clear " + m.chanConfirmName(ch) + ". It comes back if the server " +
+			"restored from a backup): /alarm-clear " + m.chanConfirmName(ch) + scope + ". It comes back if the server " +
 			"still presents what raised it. Clearing is recorded in the trust audit log.")
 	}
 	return rows
 }
+
+// serverWide says what clearing the server-wide alarm does.
+const serverWide = "server-wide — clears the alarm for all encrypted channels"
 
 // chanConfirmName is what /alarm-clear wants typed: the channel's name,
 // "#name" or "@name" for a DM.
@@ -439,16 +525,24 @@ func (m *Model) alarmClear(c command) error {
 		return errors.New("this alarm can't be cleared: it ends when its cause does (/alarm explains)")
 	}
 	want := m.chanConfirmName(ch)
+	scope := ""
+	if info.Server {
+		scope = " — " + serverWide
+	}
 	if c.rest == "" {
-		return fmt.Errorf("to confirm, type the channel's name: /alarm-clear %s (read /alarm first)", want)
+		return fmt.Errorf("to confirm, type the channel's name: /alarm-clear %s (read /alarm first)%s", want, scope)
 	}
 	if !confirmMatches(c.rest, want) {
-		return fmt.Errorf("that's not this channel's name — type /alarm-clear %s", want)
+		return fmt.Errorf("that's not this channel's name — type /alarm-clear %s%s", want, scope)
 	}
 	if err := m.c.ClearAlarm(ch); err != nil {
 		return err
 	}
 	m.reloadChans()
+	if info.Server {
+		m.setInfo("server-wide alarm cleared for all encrypted channels and recorded — it comes back if the server still presents what raised it")
+		return nil
+	}
 	m.setInfo("alarm cleared and recorded — it comes back if the server still presents what raised it")
 	return nil
 }

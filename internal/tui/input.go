@@ -174,7 +174,7 @@ func (m *Model) submit() tea.Cmd {
 	}
 	if us := m.keyChg[p.ch]; len(us) > 0 {
 		n := m.atName(us[0])
-		m.setErr("", fmt.Errorf("not sent: %s's key changed — /verify %s or /accept-key %s first", n, n, n))
+		m.setErr("", fmt.Errorf("not sent: /accept-key %s, then /verify %s — %s's key changed", n, n, n))
 		return nil
 	}
 	if err := m.c.Send(p.ch, body, p.root); err != nil {
