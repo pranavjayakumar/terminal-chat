@@ -106,6 +106,11 @@ What a malicious server can and cannot do today, and what closes each gap:
 - **Revocation timing**: a bundle is rejected if the server's seq order or its signed time (with
   5 min clock skew allowed) put it after a revoke of its signer. This defends against a server
   acting alone; a revoked device colluding with the server can backdate its bundles.
+- **Edits don't hide the original** from members holding that epoch's key: the original `enc` stays
+  (the edit refers to its mid). Delete removes the ciphertext. (Step 8.)
+- **Edits and reactions over time**: the server can withhold the newest edit from a device that never
+  saw it (it shows an older verified one), and can replay a reaction its author since removed (adds
+  carry no version). It can't forge, move or reorder edits a client has seen. (Step 8.)
 
 ## Pitfalls checklist
 
@@ -197,7 +202,7 @@ and higher v; first mid wins. Decrypted text must pass §10 checks. Undecryptabl
 | `key.fetch` | `{chan, from: u32, to: u32}` (≤ 256) | `{bundles, seqs}` (seqs[i] = key.epoch seq of bundles[i]) |
 | `key.share` | `{chan, epoch, dev, eph, ct}` | `{}` |
 | `send` | `+ enc?: bin` (exactly one of body/enc) | `{msg}` |
-| `edit` / `delete` / `react` | `+ enc?` (e2e react emoji = "~"+b64url(HMAC(mk,"tc-react"‖mid‖emoji)[:12])) | |
+| `edit` / `delete` / `react` | `+ enc?` (e2e react emoji = "~"+b64url(HMAC(HKDF(mk,"tc-react-v1"),"tc-react"‖mid‖emoji)[:12])) | |
 | `chan.create` | `+ e2e?: bool` | |
 | `chan.add` | `+ bundle?` (required when e2e) | |
 | `chan.remove` | `{chan, user, bundle}` (new; private chans) | |
@@ -274,6 +279,42 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    the head or members changed, and refuses everything in alarm; e2e-scoped search stays local; edits of
    uncached messages and reminders into e2e channels are refused; the cache uses secure_delete.
 8. Encrypted edit/delete/react, thread_ref, HMAC emoji, local FTS.
+   Decisions (step 8): Plain types `edit {t, ts, body, ref, v}`, `del {t, ts, ref}`, `react {t, ts, ref,
+   emoji, add}` (ref = the original's mid). Edits are sealed with the current epoch (stale_epoch like a
+   send; the server dedupes a retry of the stored `edit_enc` first) and keep the original `enc` next to the
+   latest `edit_enc`: the original anchors the mid, so **an edit doesn't hide the original text from
+   members holding its epoch key** (only delete removes ciphertext); superseded edit encs are scrubbed
+   from the log. `v` = last applied + 1, chosen by the editor; the server can't order edits, so clients
+   do, the same way everywhere: the higher (v, Plain ts, mid of the edit's enc) wins and an equal tuple
+   is the same edit, so two devices editing at once with the same v converge whatever the arrival
+   order (coordinator decision). A server can still serve an older edit to a fresh device (rollback of edits is not
+   detected without history). Deletes and reactions are sealed under the **message's own epoch** (the
+   tag needs that mk anyway; nothing secret in them); the server checks their epoch/eh match the
+   message's enc and the signer is the caller's active device, and caps their enc at one padding
+   block (397 bytes) so reactions can't bloat a message past the frame limit. Only the author can sign a delete; an
+   admin's delete is unsigned and shows "removed (not by author)"; deleted messages keep `del_enc`
+   (`Message.del_enc`) so a fresh device can tell, comparing `ref` with the mid only when it knows it.
+   Reaction tags are `"~" + base64url(HMAC(rk, "tc-react"‖mid‖emoji)[:12])` with `rk = HKDF(mk, "tc-react-v1")`; `Message.renc` carries each
+   reaction's enc; removes need no proof (a server can always withhold a reaction), and a server can
+   replay a reaction its author since removed (adds carry no version; accepted for v1). The server's
+   `edited` and tag map are never shown for encrypted messages. Edits of a waiting message (or whose key
+   or device is missing) and unjudgeable reactions are kept (cache `epend`, `rencs`) and retried by the
+   e2e worker. Rejections go to a bounded in-memory log (`Client.E2ERejects`). Local search stays the
+   step-7 LIKE scan over decrypted bodies (not FTS5): edits update the body, deletes clear it.
+   Coordinator decisions (step 8 review): deletes and reactions into a channel in alarm are refused
+   client-side like sends and edits (`ErrE2EAlarm`); `enc` on edit/delete/react isn't gated on `e2e1`
+   (same as `send`).
+   Security review fixes (step 8): "message deleted" only for an attributable delete (author-signed,
+   or plaintext channel); "deleted (unverified)" while judging; anything else "removed (not by
+   author)", incl. step-7 cached deletes (migration). The server keeps the original mid and sends it as
+   `Message.mid`; a device that never saw the enc checks a delete's ref against it (only if no other
+   cached message has it; never used for threads), and without a mid a delete isn't the author's.
+   Reaction tags use `rk = HKDF(mk, "tc-react-v1")` so mk is only an AEAD key. The edit time shown is
+   the signed Plain ts. A server copy without enc never replaces a cached encrypted message. React/
+   delete of uncached messages is refused. ≤ 256 reactions per message (`conflict`); history pages
+   always hold one message (trimmed `renc`). Pending work is bounded (16 reactions per message, 1000
+   reactions/edits per channel), reactions of deleted/invalid messages are dropped, and pending
+   items no longer wake the e2e worker (it runs on key/device events), so it can't spin.
 9. `chan.add{bundle}`, `chan.remove`, `chan.encrypt`, disable → rotate; history via backlinks.
 10. TUI: key-change banner + send block, fork alarm, "⚠ unencrypted", "waiting for key", `/verify`.
 11. Malicious-server suite (`Tamper` hook): injected devices/keys, fake joins, rollback, fork,

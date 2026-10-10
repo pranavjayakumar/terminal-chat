@@ -46,10 +46,14 @@ const (
 	// SecInserted: any other plaintext in an encrypted channel: only the
 	// server can have put it there. Untrusted.
 	SecInserted
+	// SecRemoved: a deleted message of an encrypted channel whose delete
+	// its author didn't sign (an admin, or the server): "removed (not by
+	// author)". A delete the author signed keeps SecE2E.
+	SecRemoved
 )
 
 func (s Sec) String() string {
-	return [...]string{"plain", "e2e", "waiting", "invalid", "legacy", "inserted"}[s]
+	return [...]string{"plain", "e2e", "waiting", "invalid", "legacy", "inserted", "removed"}[s]
 }
 
 // trustedSecs is Trusted() as an SQL list: (SecPlain, SecE2E).
@@ -239,8 +243,7 @@ func (c *Client) judge(q dbtx, m *proto.Message, memo *keyMemo) (sec Sec, mid []
 func (c *Client) judgeEnc(q dbtx, sid e2ecrypto.ServerID, hasSID bool, m *proto.Message, memo *keyMemo) (Sec, []byte) {
 	body := m.Body
 	m.Body = ""
-	e, err := e2ecrypto.ParseEnc(m.Enc)
-	if err != nil || body != "" {
+	if _, err := e2ecrypto.ParseEnc(m.Enc); err != nil || body != "" {
 		return SecInvalid, nil
 	}
 	mid := e2ecrypto.MID(m.Enc)
@@ -265,31 +268,12 @@ func (c *Client) judgeEnc(q dbtx, sid e2ecrypto.ServerID, hasSID bool, m *proto.
 	if !hasSID {
 		return SecWaiting, mid[:]
 	}
-	ep := memo.epoch(c.trust, sid, m.Chan, e.Epoch)
-	if ep == nil || ep.Key == nil {
-		return SecWaiting, mid[:]
-	}
-	if !bytes.Equal(e.EH[:], ep.Hash[:e2ecrypto.IDSize]) {
-		return SecInvalid, mid[:]
-	}
-	d := memo.device(c.trust, sid, e.Dev)
-	if d == nil {
-		return SecWaiting, mid[:]
-	}
-	if d.User != m.Author || (d.Revoked && d.RevokedSeq != 0 && m.ID > d.RevokedSeq) {
-		return SecInvalid, mid[:]
-	}
-	raw, err := e2ecrypto.Decrypt(*ep.Key, d.Ed25519[:], sid, m.Chan, m.Enc)
-	if err != nil {
-		return SecInvalid, mid[:]
+	raw, d, sec, _ := c.openEnc(sid, m.Chan, m.Author, m.ID, m.Enc, memo)
+	if sec != SecE2E {
+		return sec, mid[:]
 	}
 	var p plainMsg
-	if proto.Unmarshal(raw, &p) != nil || p.T != "msg" || !validText(p.Body) {
-		return SecInvalid, mid[:]
-	}
-	// A revoke whose seq we don't know is judged by its signed time, with
-	// the same clock skew as bundles (§13.3).
-	if d.Revoked && d.RevokedTime != 0 && p.TS > d.RevokedTime+revokeSkew.Milliseconds() {
+	if proto.Unmarshal(raw, &p) != nil || p.T != "msg" || !validText(p.Body) || revokedAt(d, p.TS) {
 		return SecInvalid, mid[:]
 	}
 	if m.Thread == 0 {
@@ -316,12 +300,32 @@ func (c *Client) judgeEnc(q dbtx, sid e2ecrypto.ServerID, hasSID bool, m *proto.
 // saveMsg stores a message from the server after judging it; m.Body is the
 // text to show (decrypted, or "" when it can't be shown).
 func (c *Client) saveMsg(q dbtx, m *proto.Message, replace bool, memo *keyMemo) (Sec, error) {
+	old, hadOld := getMsgRow(q, m.ID)
+	if sid, ok := qServerID(q); m.Deleted && ((hadOld && old.mid != nil) || c.chanIsE2E(q, sid, ok, m.Chan)) {
+		return c.saveDeleted(q, m, old, hadOld, memo)
+	}
+	if hadOld && old.enc != nil && m.Enc == nil {
+		// A copy without the enc can't replace an encrypted message (it
+		// would turn verified text into the server's): keep ours.
+		return old.sec, nil
+	}
+	editEnc, renc := m.EditEnc, m.Renc
 	sec, mid, keep := c.judge(q, m, memo)
 	if sec == SecInvalid || sec == SecWaiting {
 		m.Body = ""
 	}
 	if keep {
 		return sec, nil // the verified copy stays
+	}
+	encrypted := m.Enc != nil
+	same := encrypted && hadOld && bytes.Equal(old.enc, m.Enc)
+	if encrypted {
+		// Only verified edits and reactions show (encops.go): not the
+		// server's edited time, not its reaction tags.
+		m.Reactions, m.Edited = nil, 0
+		if same && old.ev > 0 {
+			m.Edited = old.edited
+		}
 	}
 	if err := storeMsg(q, *m, sec, mid, replace); err != nil {
 		return sec, err
@@ -332,6 +336,36 @@ func (c *Client) saveMsg(q dbtx, m *proto.Message, replace bool, memo *keyMemo) 
 		if _, err := q.Exec(`UPDATE msgs SET sec = ?, body = '' WHERE mid = ? AND id > ? AND sec != ?`,
 			SecInvalid, mid, m.ID, SecInvalid); err != nil {
 			return sec, err
+		}
+	}
+	if encrypted {
+		if same {
+			// The edit state of the stored copy survives the refetch.
+			if _, err := q.Exec(`UPDATE msgs SET ev = ?, ets = ?, eenc = ?, epend = ? WHERE id = ?`,
+				old.ev, old.ets, old.eenc, old.epend, m.ID); err != nil {
+				return sec, err
+			}
+		}
+		if row, ok := getMsgRow(q, m.ID); ok {
+			if editEnc != nil && !bytes.Equal(editEnc, row.eenc) {
+				c.applyEdit(q, row, editEnc, 0, memo)
+			}
+			// An edit that waited for this message to open.
+			if row, ok := getMsgRow(q, m.ID); ok && row.epend != nil && row.sec == SecE2E {
+				c.applyEdit(q, row, row.epend, 0, memo)
+			}
+			if replace {
+				if err := syncRencs(q, m.ID, renc); err != nil {
+					return sec, err
+				}
+			}
+			c.refreshReacts(q, m.ID, memo)
+			if sec == SecWaiting {
+				c.trimPending(q, m.Chan)
+			}
+			if row, ok := getMsgRow(q, m.ID); ok && sec == SecE2E {
+				m.Body, m.Edited = row.body, row.edited
+			}
 		}
 	}
 	if sec == SecWaiting {
@@ -361,23 +395,40 @@ func (c *Client) reopenMsgs(sid e2ecrypto.ServerID, chans []proto.Channel) {
 			u.msgs(ch.ID)
 		}
 	}
-	rows, err := c.db.Query(`SELECT `+msgCols+`, enc FROM msgs WHERE sec = ? ORDER BY id LIMIT 1000`, SecWaiting)
+	rows, err := c.db.Query(`SELECT `+msgCols+`, enc, denc, COALESCE(mid, cmid) FROM msgs WHERE sec = ? ORDER BY id LIMIT 1000`, SecWaiting)
 	if err != nil {
 		return
 	}
-	var waiting []proto.Message
+	type waitRow struct {
+		m         proto.Message
+		denc, mid []byte
+	}
+	var waiting []waitRow
 	for rows.Next() {
-		var enc []byte
-		m, err := scanMsg(rows, &enc)
+		var w waitRow
+		m, err := scanMsg(rows, &w.m.Enc, &w.denc, &w.mid)
 		if err == nil {
-			m.Enc = enc
-			waiting = append(waiting, m)
+			m.Enc = w.m.Enc
+			w.m = m
+			waiting = append(waiting, w)
 		}
 	}
 	rows.Close()
 	reads := c.uintMap(`SELECT chan, seq FROM reads`)
 	me := c.Me().ID
-	for _, m := range waiting {
+	for _, w := range waiting {
+		m := w.m
+		if m.Deleted {
+			// A delete we couldn't judge yet: by its author or not.
+			sec := c.deleteVerdict(c.db, sid, true, m.Chan, m.ID, m.Author, w.mid, w.denc, 0, memo)
+			if sec == SecWaiting {
+				continue
+			}
+			if _, err := c.db.Exec(`UPDATE msgs SET sec = ? WHERE id = ? AND sec = ?`, sec, m.ID, SecWaiting); err == nil {
+				u.msgs(m.Chan)
+			}
+			continue
+		}
 		m.Body = ""
 		sec, _ := c.prepMsg(c.db, &m, memo)
 		if sec == SecWaiting {
@@ -398,6 +449,7 @@ func (c *Client) reopenMsgs(sid e2ecrypto.ServerID, chans []proto.Channel) {
 			u.New = append(u.New, Message{Message: m, Sec: sec})
 		}
 	}
+	c.reopenOps(memo, &u)
 	c.post(u)
 }
 
@@ -544,6 +596,15 @@ func (c *Client) encCurrent(e outboxEntry) bool {
 // still calls the epoch we used stale), and encrypts with the head's key.
 // prev is the enc a stale_epoch answered (nil the first time).
 func (c *Client) sealEntry(ctx context.Context, s *session, e outboxEntry, prev []byte) ([]byte, error) {
+	return c.sealWith(ctx, s, e.chan_, prev, func(sid e2ecrypto.ServerID, dev *e2ecrypto.DeviceKeys, ep trust.Epoch) ([]byte, error) {
+		return c.seal(sid, dev, ep, e)
+	})
+}
+
+// sealWith is sealEntry for anything sealed with channel chID's current
+// key (messages, edits): seal encrypts with the verified head's epoch ep.
+func (c *Client) sealWith(ctx context.Context, s *session, chID uint64, prev []byte,
+	seal func(e2ecrypto.ServerID, *e2ecrypto.DeviceKeys, trust.Epoch) ([]byte, error)) ([]byte, error) {
 	sid, ok := s.serverID()
 	if !ok {
 		return nil, failErr{"the server has no valid id"}
@@ -593,7 +654,7 @@ func (c *Client) sealEntry(ctx context.Context, s *session, e outboxEntry, prev 
 	}
 	for attempt := 0; ; attempt++ {
 		c.verifyDevices(sid, s.sshPub, me)
-		ch, ok, err := getChan(c.db, e.chan_)
+		ch, ok, err := getChan(c.db, chID)
 		if err != nil {
 			return nil, err
 		}
@@ -601,7 +662,7 @@ func (c *Client) sealEntry(ctx context.Context, s *session, e outboxEntry, prev 
 			return nil, failErr{"you're not a member of this channel"}
 		}
 		c.syncChannel(ctx, s, sid, ch)
-		if ch, _, err = getChan(c.db, e.chan_); err != nil {
+		if ch, _, err = getChan(c.db, chID); err != nil {
 			return nil, err
 		}
 		st := c.e2eStatus(sid, ch)
@@ -662,7 +723,7 @@ func (c *Client) sealEntry(ctx context.Context, s *session, e outboxEntry, prev 
 		if err != nil || !ok {
 			return nil, failErr{noKeyReason}
 		}
-		return c.seal(sid, dev, ep, e)
+		return seal(sid, dev, ep)
 	}
 }
 

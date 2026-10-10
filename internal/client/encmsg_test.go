@@ -626,6 +626,9 @@ func TestEncNoKeyFailsThenRequeues(t *testing.T) {
 	k1 := newK(t)
 	e1 := mkBundle(t, b1.dev, dm, 1, nil, dmRoster, k1, nil, b1.dev) // no box for alice
 	f.keyEpoch(dm, bob, e1)
+	// Epoch 0 also reads as "waiting for a key": wait for bob's bundle to be
+	// the head, or the send below would make its own epoch 1 (a fork).
+	waitFor(t, "epoch 1 verified", func() bool { return headOf(t, c, dm) == 1 })
 	waitFor(t, "waiting for a key", status(c, dm, E2EWaitingKey))
 	for len(f.needs) > 0 {
 		<-f.needs
@@ -667,15 +670,15 @@ func TestEncNoKeyFailsThenRequeues(t *testing.T) {
 	flush(t, c)
 }
 
-// Editing a message of an encrypted channel would send the new text in the
-// clear: refused locally until encrypted edits exist.
+// Editing someone else's message of an encrypted channel is refused
+// locally (never a plaintext edit there).
 func TestEncEditRefused(t *testing.T) {
 	d := newEncDM(t, proto.Snapshot{})
-	id := d.f.post(proto.Message{Chan: dm, Author: alice, Enc: sealAs(t, d.me, d.k1, 1, d.e1, plainMsg{T: "msg", TS: 1, Body: "typo"})})
+	id := d.f.post(proto.Message{Chan: dm, Author: bob, Enc: sealAs(t, d.b1.dev, d.k1, 1, d.e1, plainMsg{T: "msg", TS: 1, Body: "typo"})})
 	waitFor(t, "applied", func() bool { return lastSeq(t, d.c) >= id })
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := d.c.Edit(ctx, id, "fixed"); !errors.Is(err, ErrEncryptedEdit) {
+	if err := d.c.Edit(ctx, id, "fixed"); !errors.Is(err, ErrNotEditable) {
 		t.Fatalf("edit: %v", err)
 	}
 	// Text the server can't vet is checked before it's encrypted.

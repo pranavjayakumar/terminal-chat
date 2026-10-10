@@ -53,6 +53,12 @@ func migrateE2E(db *sql.DB) error {
 		{"msgs", "enc", "BLOB"},
 		{"msgs", "sec", "INTEGER NOT NULL DEFAULT 0"},
 		{"msgs", "mid", "BLOB"},
+		{"msgs", "eenc", "BLOB"},
+		{"msgs", "epend", "BLOB"},
+		{"msgs", "ev", "INTEGER NOT NULL DEFAULT 0"},
+		{"msgs", "ets", "INTEGER NOT NULL DEFAULT 0"},
+		{"msgs", "denc", "BLOB"},
+		{"msgs", "cmid", "BLOB"},
 		{"outbox", "enc", "BLOB"},
 		{"outbox", "encnonce", "BLOB"},
 	} {
@@ -68,6 +74,13 @@ func migrateE2E(db *sql.DB) error {
 		}
 		if c[0] == "device_revokes" {
 			if _, err := db.Exec(`DELETE FROM device_revokes; DELETE FROM meta WHERE k = 'devices_full'`); err != nil {
+				return fmt.Errorf("migrating cache: %w", err)
+			}
+		}
+		if c[0] == "msgs" && c[1] == "denc" {
+			// Step-7 caches deleted encrypted messages without knowing who
+			// deleted them: none of those deletes can be shown as the author's.
+			if _, err := db.Exec(`UPDATE msgs SET sec = ? WHERE deleted = 1 AND mid IS NOT NULL`, SecRemoved); err != nil {
 				return fmt.Errorf("migrating cache: %w", err)
 			}
 		}

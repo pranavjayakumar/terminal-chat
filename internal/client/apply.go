@@ -318,23 +318,31 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		var d proto.MsgEdit
 		// An empty body marks an edit the server scrubbed because a later
 		// edit or delete superseded it (PROTOCOL.md §6).
-		if !decode(&d) || d.Body == "" {
+		if !decode(&d) || (d.Body == "" && d.Enc == nil) {
+			return nil
+		}
+		if d.Enc != nil {
+			// Encrypted edit: applied only if it verifies (encops.go).
+			if row, ok := getMsgRow(tx, d.Msg); ok {
+				c.applyEdit(tx, row, d.Enc, ev.Seq, nil)
+				u.msgs(row.ch)
+				u.Channels = true
+			}
 			return nil
 		}
 		// Plaintext edits never touch messages of encrypted channels (the
-		// server refuses them; encrypted edits are step 8).
+		// server refuses them).
 		if _, err := tx.Exec(`UPDATE msgs SET body = ?, edited = ? WHERE id = ? AND sec = ?`, d.Body, d.Edited, d.Msg, SecPlain); err != nil {
 			return err
 		}
 		u.msgs(c.msgChan(tx, d.Msg, ev.Chan))
 		u.Channels = true // a mention may appear or vanish
 	case proto.KMsgDelete:
-		var d proto.MsgRef
+		var d proto.MsgDelete
 		if !decode(&d) {
 			return nil
 		}
-		// mid stays: replies keep naming it as their thread root.
-		if _, err := tx.Exec(`UPDATE msgs SET body = '', enc = NULL, deleted = 1 WHERE id = ?`, d.Msg); err != nil {
+		if err := c.applyDelete(tx, d, ev.Seq); err != nil {
 			return err
 		}
 		u.msgs(c.msgChan(tx, d.Msg, ev.Chan))
@@ -343,6 +351,11 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		var d proto.Reaction
 		if !decode(&d) {
 			return nil
+		}
+		sid, hasSID := qServerID(tx)
+		if row, ok := getMsgRow(tx, d.Msg); ok && (row.mid != nil || c.chanIsE2E(tx, sid, hasSID, row.ch)) {
+			u.msgs(row.ch)
+			return c.applyReactEvent(tx, row, ev, d, me)
 		}
 		ch, err := react(tx, d.Msg, d.Emoji, ev.Actor, ev.Kind == proto.KReactAdd)
 		if err != nil {
@@ -480,7 +493,8 @@ func (c *Client) msgChan(tx *sql.Tx, id, fallback uint64) uint64 {
 // forgetChan drops a channel we left: its messages and read marker go; a
 // public channel stays listed (it is still visible and joinable) without us.
 func (c *Client) forgetChan(tx *sql.Tx, id, me uint64) error {
-	for _, q := range []string{`DELETE FROM reacts WHERE msg IN (SELECT id FROM msgs WHERE chan = ?)`, `DELETE FROM msgs WHERE chan = ?`, `DELETE FROM reads WHERE chan = ?`, `DELETE FROM drafts WHERE chan = ?`, `DELETE FROM epochs WHERE chan = ?`, `DELETE FROM key_shares WHERE chan = ?`, `DELETE FROM pins WHERE chan = ?`} {
+	for _, q := range []string{`DELETE FROM reacts WHERE msg IN (SELECT id FROM msgs WHERE chan = ?)`,
+		`DELETE FROM rencs WHERE msg IN (SELECT id FROM msgs WHERE chan = ?)`, `DELETE FROM msgs WHERE chan = ?`, `DELETE FROM reads WHERE chan = ?`, `DELETE FROM drafts WHERE chan = ?`, `DELETE FROM epochs WHERE chan = ?`, `DELETE FROM key_shares WHERE chan = ?`, `DELETE FROM pins WHERE chan = ?`} {
 		if _, err := tx.Exec(q, id); err != nil {
 			return err
 		}

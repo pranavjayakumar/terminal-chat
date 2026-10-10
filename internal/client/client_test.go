@@ -689,6 +689,12 @@ func TestRequestsFailOffline(t *testing.T) {
 	fc := fs.accept()
 	fc.bootstrap()
 	waitFor(t, "online", online(c))
+	// React/delete need the message cached (its channel decides how).
+	for _, id := range []uint64{10, 99} {
+		if err := upsertMsg(c.db, proto.Message{ID: id, Chan: general, Author: bob, Body: "x"}, true); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	errc := make(chan error, 1)
 	go func() { errc <- c.React(ctx, 10, "+1") }()

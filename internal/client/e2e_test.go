@@ -150,6 +150,7 @@ type e2eFake struct {
 	bundles   map[uint64]map[uint32]proto.EpochKey // key.fetch answers
 	onRotate  func(f *e2eFake, id uint32, a proto.KeyRotateArgs)
 	onSend    func(f *e2eFake, id uint32, a proto.SendArgs) // nil: store and answer (encmsg_test.go)
+	onOp      func(f *e2eFake, r proto.Req) bool            // other ops; true: answered (encops_test.go)
 	searchRes proto.MsgsRes
 	searched  atomic.Int32
 
@@ -339,7 +340,12 @@ func (f *e2eFake) serve() {
 				default:
 				}
 			default:
-				f.ok(r.ID, proto.Empty{})
+				f.mu.Lock()
+				on := f.onOp
+				f.mu.Unlock()
+				if on == nil || !on(f, r) {
+					f.ok(r.ID, proto.Empty{})
+				}
 			}
 		}
 	}
@@ -575,7 +581,8 @@ func TestE2EBundleAlarms(t *testing.T) {
 				mkBundle(t, s.b1.dev, dm, 2, &s.e1, []uint64{alice, bob}, newK(t), &s.k1, s.me),
 				mkBundle(t, s.b1.dev, dm, 2, &s.e1, []uint64{alice, bob}, newK(t), &s.k1, s.me),
 			}
-		}, 1},
+		}, 0}, // 1 or 2: the first may become the head before the second shows the fork
+
 		{"sealed to a non-member", func(t *testing.T, s setup) []proto.Signed {
 			return []proto.Signed{mkBundle(t, s.b1.dev, dm, 2, &s.e1, []uint64{alice, bob}, newK(t), &s.k1, s.me, s.c1.dev)}
 		}, 1},
@@ -599,13 +606,14 @@ func TestE2EBundleAlarms(t *testing.T) {
 				f.addBundle(dm, b, seq)
 			}
 			waitFor(t, "alarm", status(c, dm, E2EAlarm))
-			if h := headOf(t, c, dm); h != tc.wantHead {
+			h := headOf(t, c, dm)
+			if h != tc.wantHead && tc.wantHead != 0 {
 				t.Fatalf("head moved to %d", h)
 			}
 			// Sticky: a good epoch 2 afterwards doesn't clear it.
 			f.keyEpoch(dm, bob, mkBundle(t, b1.dev, dm, 2, &e1, []uint64{alice, bob}, newK(t), &k1, me))
 			time.Sleep(100 * time.Millisecond)
-			if st := c.E2EStatus(dm); st.State != E2EAlarm || headOf(t, c, dm) != tc.wantHead {
+			if st := c.E2EStatus(dm); st.State != E2EAlarm || headOf(t, c, dm) != h {
 				t.Fatalf("after a good bundle: %+v head %d", st, headOf(t, c, dm))
 			}
 		})

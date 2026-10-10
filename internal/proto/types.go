@@ -271,6 +271,26 @@ type Message struct {
 	// Enc is the encrypted payload of a message in an e2e channel
 	// (PROTOCOL.md §13.4); Body is "" then.
 	Enc []byte `msgpack:"enc,omitempty"`
+	// EditEnc is the latest encrypted edit of an e2e message (§13.4, Plain
+	// t = "edit"); Enc stays the original, which the edit refers to.
+	EditEnc []byte `msgpack:"edit_enc,omitempty"`
+	// DelEnc is the author's signed delete (Plain t = "del") of a deleted
+	// e2e message; absent when someone else (an admin) deleted it.
+	DelEnc []byte `msgpack:"del_enc,omitempty"`
+	// Renc carries each encrypted reaction's signed enc (Plain t =
+	// "react"); Reactions then maps tags, not emoji (§13.4).
+	Renc []ReactEnc `msgpack:"renc,omitempty"`
+	// Mid is the server's record of e2ecrypto.MID(Enc), kept after a
+	// delete so a device that never saw Enc can check a delete's ref. It is
+	// the server's claim, not proof (§13.4).
+	Mid []byte `msgpack:"mid,omitempty"`
+}
+
+// ReactEnc is one encrypted reaction: user reacted with tag, proven by enc.
+type ReactEnc struct {
+	User  uint64 `msgpack:"user"`
+	Emoji string `msgpack:"emoji"`
+	Enc   []byte `msgpack:"enc"`
 }
 
 // ---- event data ----
@@ -279,15 +299,26 @@ type MsgEdit struct {
 	Msg    uint64 `msgpack:"msg"`
 	Body   string `msgpack:"body"`
 	Edited int64  `msgpack:"edited"`
+	// Enc is an encrypted edit (§13.4); Body is "" then.
+	Enc []byte `msgpack:"enc,omitempty"`
 }
 
 type MsgRef struct {
 	Msg uint64 `msgpack:"msg"`
 }
 
+// MsgDelete is the delete op's args and msg.delete's data.
+type MsgDelete struct {
+	Msg uint64 `msgpack:"msg"`
+	// Enc is the author's signed delete in an e2e channel (§13.4).
+	Enc []byte `msgpack:"enc,omitempty"`
+}
+
 type Reaction struct {
 	Msg   uint64 `msgpack:"msg"`
 	Emoji string `msgpack:"emoji"`
+	// Enc proves an encrypted reaction (§13.4); Emoji is its tag then.
+	Enc []byte `msgpack:"enc,omitempty"`
 }
 
 type ChanJoin struct {
@@ -333,7 +364,11 @@ type SendRes struct {
 type EditArgs struct {
 	Msg  uint64 `msgpack:"msg"`
 	Body string `msgpack:"body"`
+	// Enc (cap e2e1) replaces Body in e2e channels (§13.4).
+	Enc []byte `msgpack:"enc,omitempty"`
 }
+
+type DeleteArgs = MsgDelete
 
 type MsgArgs = MsgRef
 

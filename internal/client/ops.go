@@ -323,33 +323,43 @@ func (c *Client) Edit(ctx context.Context, msg uint64, body string) error {
 	if !online {
 		return ErrOffline
 	}
-	var ch uint64
-	if err := c.db.QueryRow(`SELECT chan FROM msgs WHERE id = ?`, msg).Scan(&ch); err != nil {
-		return proto.Errf(proto.ErrNotFound, "message not loaded")
+	row, ok := getMsgRow(c.db, msg)
+	if !ok {
+		return errNotLoaded
 	}
-	if c.needsEnc(ch) {
-		return ErrEncryptedEdit
+	if c.needsEnc(row.ch) {
+		return c.editEnc(ctx, row, body) // encops.go
 	}
 	return c.call(ctx, proto.OpEdit, proto.EditArgs{Msg: msg, Body: body}, nil, nil)
 }
 
-// ErrEncryptedEdit: editing messages of encrypted channels comes with
-// encrypted edits (docs/E2E.md step 8).
-var ErrEncryptedEdit = errors.New("editing messages in encrypted channels isn't supported yet")
-
 // Delete deletes a message (ours, or any as admin). Deleting twice is ok.
+// Our own encrypted messages get a signed delete (encops.go).
 func (c *Client) Delete(ctx context.Context, msg uint64) error {
-	return c.call(ctx, proto.OpDelete, proto.MsgArgs{Msg: msg}, nil, nil)
+	a, err := c.deleteArgs(msg)
+	if err != nil {
+		return err
+	}
+	return c.call(ctx, proto.OpDelete, a, nil, nil)
 }
 
-// React adds our emoji reaction.
+// React adds our emoji reaction (in an encrypted channel: a tag the server
+// can't read plus a signed enc with the emoji).
 func (c *Client) React(ctx context.Context, msg uint64, emoji string) error {
-	return c.call(ctx, proto.OpReact, proto.ReactArgs{Msg: msg, Emoji: emoji}, nil, nil)
+	a, err := c.reactArgs(msg, emoji, true)
+	if err != nil {
+		return err
+	}
+	return c.call(ctx, proto.OpReact, a, nil, nil)
 }
 
 // Unreact removes our emoji reaction.
 func (c *Client) Unreact(ctx context.Context, msg uint64, emoji string) error {
-	return c.call(ctx, proto.OpUnreact, proto.ReactArgs{Msg: msg, Emoji: emoji}, nil, nil)
+	a, err := c.reactArgs(msg, emoji, false)
+	if err != nil {
+		return err
+	}
+	return c.call(ctx, proto.OpUnreact, a, nil, nil)
 }
 
 // chanHook caches a channel returned in a RES if no event delivered it

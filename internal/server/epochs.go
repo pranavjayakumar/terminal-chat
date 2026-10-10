@@ -62,6 +62,9 @@ func migrateEpochs(db *sql.DB) error {
 		{"devices", "revoked_seq", `INTEGER`},
 		{"messages", "enc", `BLOB`}, // §13.4; never in msg_fts (body is "" then)
 		{"messages", "mid", `BLOB`}, // e2ecrypto.MID(enc): one message per enc and channel
+		{"messages", "edit_enc", `BLOB`},
+		{"messages", "del_enc", `BLOB`},
+		{"reactions", "enc", `BLOB`},
 	} {
 		if err := addColumn(db, c[0], c[1], c[2]); err != nil {
 			return err
@@ -600,12 +603,12 @@ var errHookE2E = proto.Errf(proto.ErrForbidden, "webhooks can't post into end-to
 // idempotency lookup: stale_epoch if enc isn't for the channel's current
 // epoch or that epoch's bundle is stale, then enc must be signed by an
 // active device of the caller. The server can't check anything inside it.
-func checkEnc(ctx context.Context, tx *sql.Tx, sid e2ecrypto.ServerID, user uint64, a proto.SendArgs,
+func checkEnc(ctx context.Context, tx *sql.Tx, sid e2ecrypto.ServerID, user, ch uint64, enc []byte,
 	e e2ecrypto.Enc, head epochHead) error {
 	if head.epoch == 0 || e.Epoch != head.epoch {
 		return staleEpoch(fmt.Sprintf("channel is at epoch %d", head.epoch))
 	}
-	stale, err := epochStale(ctx, tx, a.Chan)
+	stale, err := epochStale(ctx, tx, ch)
 	if err != nil {
 		return err
 	}
@@ -615,9 +618,14 @@ func checkEnc(ctx context.Context, tx *sql.Tx, sid e2ecrypto.ServerID, user uint
 	if !bytes.Equal(e.EH[:], head.hash[:min(len(head.hash), e2ecrypto.IDSize)]) {
 		return badRequest("enc names another bundle of this epoch")
 	}
+	return checkEncSigner(ctx, tx, sid, user, ch, enc, e)
+}
+
+// checkEncSigner: enc must be signed by an active device of user.
+func checkEncSigner(ctx context.Context, tx *sql.Tx, sid e2ecrypto.ServerID, user, ch uint64, enc []byte, e e2ecrypto.Enc) error {
 	var owner uint64
 	var edPub, revoked []byte
-	err = tx.QueryRowContext(ctx, `SELECT user, ed25519, revoked FROM devices WHERE dev = ?`, e.Dev[:]).
+	err := tx.QueryRowContext(ctx, `SELECT user, ed25519, revoked FROM devices WHERE dev = ?`, e.Dev[:]).
 		Scan(&owner, &edPub, &revoked)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && (owner != user || revoked != nil)) {
 		return badRequest("enc is not from one of your active devices")
@@ -625,10 +633,34 @@ func checkEnc(ctx context.Context, tx *sql.Tx, sid e2ecrypto.ServerID, user uint
 	if err != nil {
 		return err
 	}
-	if _, err := e2ecrypto.VerifyEnc(ed25519.PublicKey(edPub), sid, a.Chan, a.Enc); err != nil {
+	if _, err := e2ecrypto.VerifyEnc(ed25519.PublicKey(edPub), sid, ch, enc); err != nil {
 		return badRequest("enc signature does not verify")
 	}
 	return nil
+}
+
+// checkEncOfMsg checks the enc of a delete or reaction (§13.5): it is
+// sealed under the reacted/deleted message's own epoch (the reaction tag
+// is keyed by it), so it must name the same epoch and bundle as the
+// message's enc, and be signed by an active device of user.
+func checkEncOfMsg(ctx context.Context, tx *sql.Tx, sid e2ecrypto.ServerID, user uint64, m proto.Message, enc []byte) error {
+	// Their Plain fits one padding block; bigger ones would only let a
+	// member bloat every copy of the message (one per reaction).
+	if len(enc) > e2ecrypto.MinEncSize {
+		return proto.Errf(proto.ErrTooLarge, "encrypted delete or reaction too long")
+	}
+	e, err := e2ecrypto.ParseEnc(enc)
+	if err != nil {
+		return badRequest("malformed enc")
+	}
+	orig, err := e2ecrypto.ParseEnc(m.Enc)
+	if err != nil {
+		return badRequest("this message has no encrypted payload")
+	}
+	if e.Epoch != orig.Epoch || e.EH != orig.EH {
+		return badRequest("enc must use the message's epoch")
+	}
+	return checkEncSigner(ctx, tx, sid, user, m.Chan, enc, e)
 }
 
 // revokedBoxesQuery counts the revoked devices among n bound ids: n point

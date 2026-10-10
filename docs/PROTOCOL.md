@@ -137,9 +137,9 @@ session **before** the RES. The `seq` in a RES is informational: clients advance
 |---|---|---|
 | `sync` | `{since: u64, server_id?: bin16}` | `{head: u64, reset: bool}` (see §6) |
 | `send` | `{chan, body: str, nonce: bin16, thread?: u64, enc?: bin}` | `{msg: u64}` (`enc`: e2e channels, §13.5) |
-| `edit` | `{msg, body: str}` | `{seq}` |
-| `delete` | `{msg}` | `{seq}` |
-| `react` / `unreact` | `{msg, emoji: str}` | `{seq}` |
+| `edit` | `{msg, body: str, enc?: bin}` | `{seq}` (`enc`: e2e channels, §13.5) |
+| `delete` | `{msg, enc?: bin}` | `{seq}` (`enc`: e2e channels, §13.5) |
+| `react` / `unreact` | `{msg, emoji: str, enc?: bin}` | `{seq}` (`enc`: e2e channels, §13.5) |
 | `pin` / `unpin` | `{msg}` | `{seq}` (cap `pins`) |
 | `pins.list` | `{chan}` | `{msgs: [Message]}` — current pins, newest pin first (cap `pins`) |
 | `history` | `{chan, before: u64 (0 = latest), limit ≤ 200, thread?: u64}` | `{msgs: [Message], more: bool}` — with `thread`, that thread's replies only |
@@ -172,9 +172,9 @@ Rules:
 - **thread** must be a top-level message in the same `chan`; no nested threads.
 - **edit**: author, while a member of the channel (else `not_found`). **delete**: the author (even after
   leaving) or any admin; deleted messages keep their
-  id with `body = ""`, no `enc`, `deleted = true`. Edit or react on a deleted message → `not_found`.
-  A (plaintext) `edit` in an encrypted channel, or of a message with `enc`, is `bad_request`
-  (encrypted edits: `docs/E2E.md` step 8).
+  id with `body = ""`, no `enc`/`edit_enc`, `deleted = true` (and `del_enc`, §13.5). Edit or react on a deleted message → `not_found`.
+  A plaintext `edit` in an encrypted channel, or of a message with `enc`, is `bad_request`;
+  encrypted channels use `edit`/`delete`/`react` with `enc` (§13.5).
 - **react/unreact/delete** are set-semantics: a no-op returns ok `{seq: 0}` and emits nothing.
 - **read** only moves forward (server keeps the max) and is clamped to the channel's newest message id.
 - **pin/unpin** are set-semantics like react: a no-op returns ok `{seq: 0}` and emits nothing. The caller
@@ -184,10 +184,10 @@ Rules:
   transaction, right after `msg.delete`. `pin` and `unpin` count as write ops for rate limits.
   **pins.list** works for public channels and channels where the caller is a member (like `history`;
   others → `forbidden`) and omits deleted messages.
-- **react**: at most 32 distinct emoji per message and 10 reactions per user per message (`bad_request`).
+- **react**: at most 32 distinct emoji per message and 10 reactions per user per message (`bad_request`), and 256 reactions per message in all (`conflict`; a repeat of an existing one is still a no-op).
 - **history/search** cover public channels and channels where the caller is
   currently a member; `history` on others → `forbidden`, `search` filters silently.
-  Responses stop at `limit` or ~768 KiB of encoded messages, whichever comes first.
+  Responses stop at `limit` or ~768 KiB of encoded messages, whichever comes first, but always hold at least one message: one too big on its own loses `renc` entries (from the end) until it fits.
 - **chan.join** works on public channels only (private → `forbidden`).
   **chan.add**: any member of a public channel; members of a private channel.
   DMs can't be joined, added to, or left.
@@ -249,9 +249,9 @@ Event = {seq: u64, kind: str, chan?: u64, time: i64, actor: u64, data: map}
 | kind | data |
 |---|---|
 | `msg.new` | `Message` |
-| `msg.edit` | `{msg, body, edited: i64}` |
-| `msg.delete` | `{msg}` |
-| `react.add` / `react.remove` | `{msg, emoji}` |
+| `msg.edit` | `{msg, body, edited: i64, enc?: bin}` |
+| `msg.delete` | `{msg, enc?: bin}` |
+| `react.add` / `react.remove` | `{msg, emoji, enc?: bin}` |
 | `pin.add` / `pin.remove` | `{msg}` (cap `pins`; visible like reactions: members at that seq) |
 | `chan.new` / `chan.update` | `Channel` |
 | `chan.join` | `{user, chan: Channel}` |
@@ -276,10 +276,12 @@ Seq values a client sees are therefore **not contiguous**; gaps are normal.
 Edits and deletes rewrite the log so replay never resurrects replaced text
 (events keep their seq and kind; only `data` changes):
 - the message's `msg.new` (seq = message id) always carries its **current**
-  state — latest `body` and `edited`, or `body = ""`, `deleted = true`;
+  state — latest `body` (or original `enc` and latest `edit_enc`) and
+  `edited`, or `body = ""`, `deleted = true` (no `enc`/`edit_enc`; `del_enc`
+  if the author signed the delete), without reactions;
 - every superseded `msg.edit` of it (all of them once it is deleted) carries
-  `body = ""`. A real edit never has an empty body, so clients ignore a
-  `msg.edit` whose `body` is empty.
+  `body = ""` and no `enc`. A real edit never has an empty body without
+  `enc`, so clients ignore such a `msg.edit`.
 
 ### Sync algorithm
 
@@ -337,12 +339,15 @@ User    = {id, name, display, admin: bool, disabled: bool, created: i64, bot?: b
 Channel = {id, name, kind: "public"|"private"|"dm", topic, members: [u64], created,
            e2e?: bool, epoch?: u32, creator?: u64, pins?: [u64]}   (e2e/epoch/creator: §13.3)
 Message = {id, chan, author, body, thread: u64 (0 = top level), time,
-           edited: i64 (0 = never), deleted: bool, reactions: {emoji: [u64]}, enc?: bin}
+           edited: i64 (0 = never), deleted: bool, reactions: {emoji: [u64]}, enc?: bin,
+           edit_enc?: bin, del_enc?: bin, renc?: [{user: u64, emoji: str, enc: bin}], mid?: bin16}
 ```
 
 `Message.enc` (omitted when absent) is the encrypted payload of a message in an
 encrypted channel (§13.4); `body` is `""` then. Clients without `e2e1` see an
-empty body.
+empty body. `edit_enc` (latest encrypted edit), `del_enc` (the author's
+signed delete) and `renc` (one signed enc per encrypted reaction; `reactions`
+then maps tags, not emoji) are §13.4's, as is `mid` (the server's record of the `enc`'s mid, kept after a delete; a claim, not proof); all omitted when absent.
 
 `Channel.pins` (cap `pins`; omitted when empty) lists the ids of the channel's pinned messages, newest pin
 first; snapshots and `chan.*` events carry it, and `pin.add`/`pin.remove` keep it current. The server
@@ -767,7 +772,7 @@ Epoch 1 must be created by the channel's creator (any member of a DM).
 Clients rotate epoch 1 right after `chan.create`; an e2e channel whose
 creator leaves before that can't be keyed.
 
-### 13.4 Encrypted payload *(messages: implemented; edit/delete/react: step 8)*
+### 13.4 Encrypted payload *(implemented)*
 
 Messages in an encrypted channel carry `enc` instead of `body`:
 
@@ -778,15 +783,27 @@ ct    = XChaCha20-Poly1305(mk, nonce, pad256(msgpack Plain), AD = "tc-msg-v1" ||
 sig   = Ed25519(dev, "tc-sig-v1\x00" || server_id || chan || enc[0:61] || ct)
 mid   = H(enc)[:16]
 pad256(p) = p || 0x80 || 0x00* up to a multiple of 256
-Plain = {t: "msg", ts: i64, body: str, thread_ref?: bin16}
+Plain = {t: "msg",   ts: i64, body: str, thread_ref?: bin16}
+      | {t: "edit",  ts: i64, body: str, ref: bin16, v: u32}
+      | {t: "del",   ts: i64, ref: bin16}
+      | {t: "react", ts: i64, ref: bin16, emoji: str, add: bool}
+rk    = HKDF-SHA256(mk, info "tc-react-v1")
+tag   = "~" || base64url(HMAC-SHA256(rk, "tc-react" || mid || emoji)[:12])   // 17 chars, no padding
 ```
 
 `eh` is the eh (§13.3) of the epoch's bundle, `dev` the sending device,
 `nonce` 24 random bytes, `ts` the sender's clock (Unix ms). `thread_ref` is
 present exactly when the message is a thread reply: the `mid` of the thread
 root's `enc`, or 16 zero bytes if the root has no `enc` (a legacy plaintext
-root, below). Later step-8 types (`edit`, `del`, `react`) extend Plain with
-`ref`, `v`, `emoji`, `add`.
+root, below). `ref` is the `mid` of the message an edit, delete or
+reaction is about; `v` is an edit's version (the last applied version + 1);
+`emoji` is a reaction's real emoji (§9 emoji rules) and `add` whether it adds
+or removes it. An edit is sealed like a message, with the newest verified
+epoch. A delete or reaction is sealed under the **message's own epoch**
+(the `epoch` and `eh` of its `enc`), whose `mk` (via `rk`) also makes the reaction
+`tag` the server stores instead of the emoji: equal emoji on one message
+give equal tags, so set semantics and the §5 caps keep working without the
+server learning the emoji.
 
 **Sending.** A client encrypts a message once, with the K of the newest
 epoch it verified, and keeps the resulting `enc` (with the plaintext) in its
@@ -811,7 +828,7 @@ message the user retries is encrypted afresh. It never
 sends plaintext into a channel that is, or that it once saw as, encrypted
 (also not after a downgrade alarm, §13), refuses to send into (or flush
 queued messages into) a channel with an alarm, never sends a plaintext
-`edit` there (nor of a message it hasn't cached), and refuses reminders
+`edit` there (nor any edit of a message it hasn't cached), and refuses reminders
 (`remind.create` `chan`) that point into one.
 
 **Receiving.** A client accepts a message with `enc` only if: the enc
@@ -830,7 +847,58 @@ K for the epoch, the sending device or the thread root not known yet) is
 stored as ciphertext, still advances `last_seq`, shows as "waiting for
 key", and is decrypted when what it lacked arrives. Once verified, a
 message's channel, author, thread and bytes are fixed: a refetched copy
-(history, snapshot) that differs is invalid and the stored one stays.
+(history, snapshot) that differs is invalid and the stored one stays; so
+does a copy without `enc` (it never replaces a cached encrypted message).
+Only a verified edit (below) changes its shown text and edited time; the
+server's `edited` and `reactions` are not shown for encrypted messages.
+
+**Edits, deletes, reactions.** Each `enc` below is checked like a message's
+(parses, K of its epoch and its `eh`, signature by a device the client
+verified that wasn't revoked before the event's seq or — seq unknown, as in
+a refetched copy — by the Plain `ts` rule, AEAD) and then:
+
+- **edit** (`msg.edit.enc`, `Message.edit_enc`): signed by a device of the
+  **original** message's author; `t = "edit"`; `ref` = the original's `mid`;
+  `body` passes §10; `v ≥ 1`; and the edit is **newer** than the applied
+  one: the higher `(v, ts, mid of the edit's enc)` wins, compared in that
+  order (mid as bytes), and an equal tuple is the same edit. Every client
+  thus ends on the same edit whatever order concurrent edits (e.g. two
+  devices both sending `v = 2`) arrive in. Then the text changes and the
+  edited time shown is the edit's signed `ts` (never the server's
+  `edited`); otherwise nothing changes. The original must be
+  verified; an edit of a message still waiting is kept and judged once it
+  opens (same for an edit whose own key or device is missing).
+- **delete** (`msg.delete.enc`, `Message.del_enc`): the text goes in any
+  case (the server can always delete). Signed by a device of the author,
+  `t = "del"` and `ref` = the message's `mid` → "message deleted". The
+  `mid` is the one the client computed from the `enc`; a message first seen
+  deleted has only the server's claim `Message.mid`, used for this check
+  alone (never for threads) and only if no other cached message has that
+  mid; with no mid at all the delete can't be the author's. No `enc`, or
+  one that fails → **"removed (not by author)"** (an admin or the server
+  deleted it); so does an unauthenticated (legacy or inserted) plaintext
+  message, whose delete no one can sign. A delete not judged yet (no key or
+  device) shows "deleted (unverified)". A deleted message keeps its `mid`
+  locally (replies name it).
+- **react** (`react.add.enc`, `Message.renc`): signed by a device of the
+  **reacting** user (the event's actor / `renc.user`); sealed under the
+  message's epoch and `eh`; `t = "react"`, `add`; `ref` = the message's
+  `mid`; `emoji` passes §9; and `tag(emoji)` equals the tag the server
+  stored. Only such reactions show, by their emoji; tags without a verified
+  `enc` are ignored. A `react.remove` (or a refetch without the reaction)
+  removes it without proof: the server can always withhold a reaction.
+
+Anything rejected changes nothing and is logged locally (`E2ERejects`).
+A client sends an encrypted edit only of its own verified message, signs
+its own deletes (an admin's delete of someone else's message has no `enc`),
+and reacts only to verified messages. Like sends and edits, it refuses
+deletes and reactions in a channel with an alarm, and refuses them for a
+message it hasn't cached (its channel is unknown). Local search follows edits and
+deletes (it searches the current decrypted text of undeleted messages).
+What waits for a key or device is bounded: at most 16 pending reactions
+per message and 1000 per channel (pending edits: one per message, 1000 per
+channel), the newest dropped beyond that; reactions of deleted or invalid
+messages aren't kept; a message keeps at most 256 reactions.
 
 **Plaintext in encrypted channels.** DMs created as encrypted before
 encrypted sends existed may hold plaintext messages. When a client first
@@ -850,12 +918,20 @@ server result from an encrypted channel (the server never returns them).
 Implemented: `device.register`, `device.revoke`, `devices.list` (§13.2),
 `key.rotate`, `key.fetch` (§13.3), `key.share` (§13.7), `chan.create + e2e?`,
 `dm.open` (e2e DMs; a DM with no other members — private notes — is never e2e, because the server
-posts reminders into it), `send + enc`. Not yet: `edit/delete/react + enc`, `chan.add +
+posts reminders into it), `send + enc`, `edit/delete/react/unreact + enc`. Not yet: `chan.add +
 bundle`, `chan.remove`, `chan.encrypt` (`docs/E2E.md` §13.5).
+
+The `enc` fields of `send`, `edit`, `delete` and `react`/`unreact` are
+**not** gated on `e2e1` (the ops exist for every session): a session
+without the cap that sends one gets the same checks as below. Only the
+e2e-specific ops and events of this section are cap-gated.
 
 | op | args | data |
 |---|---|---|
 | `send` | `{chan, nonce, thread?, enc: bin, body: ""}` (exactly one of `body`/`enc`) | `{msg}` |
+| `edit` | `{msg, enc: bin, body: ""}` (exactly one of `body`/`enc`) | `{seq}` |
+| `delete` | `{msg, enc?: bin}` (`enc`: the author's signed delete) | `{seq}` |
+| `react` / `unreact` | `{msg, emoji: tag, enc: bin}` | `{seq}` |
 | `key.rotate` | `{chan, bundle: Signed}` | `{seq}` |
 | `key.fetch` | `{chan, from: u32, to: u32}` | `{bundles: [Signed], seqs: [u64]}` |
 | `key.share` | `{chan, epoch: u32, dev: bin16, eph: bin32, ct: bin48}` | `{}` |
@@ -888,6 +964,36 @@ as is. `enc` is never indexed for search, and `search` skips encrypted
 channels altogether. `delete` clears `enc` with the body (and in the
 `msg.new` event, §6).
 
+Server rules (honest case) for **edit** with `enc`, in this order: `body`
+empty (`bad_request`), `len(enc)` ≤ 64 KiB + 1 KiB (`too_large`), framing
+parses (`bad_request`); the message exists, isn't deleted and the caller is
+a member (`not_found`); the caller is its author (`forbidden`); the channel
+is encrypted and the message has `enc` (`bad_request`; a plaintext edit
+there is `bad_request` "upgrade tc"); `enc` equal to the stored `edit_enc`
+→ ok `{seq: 0}` (a retry, found before any epoch check); then the send
+rules from `enc.epoch` on (`stale_epoch` for another epoch or a stale
+bundle, `eh`, signer = an active device of the caller, signature). The
+server stores it as `Message.edit_enc` next to the original `enc`, sets
+`edited`, emits `msg.edit {msg, body: "", edited, enc}` and scrubs the
+previous edit's `enc` from the log (§6). It stores the latest edit it
+received; it can't read `v`, so clients order
+edits.
+
+**delete** with `enc`: only the author may sign (`forbidden` for anyone
+else, e.g. an admin, who deletes without `enc`); then `len(enc)` ≤ 397 bytes, one padding block (`too_large`),
+framing (`bad_request`), the message has `enc` and `enc` names its `epoch`
+and `eh` (`bad_request`), signer = an active device of the caller with a
+valid signature (`bad_request`). Stored as `Message.del_enc`; `msg.delete`
+carries it; `enc` and `edit_enc` are cleared.
+
+**react/unreact** in an encrypted channel: `emoji` must be a tag (`~` and 16
+base64url characters) and `enc` present (else `bad_request` "upgrade tc");
+`enc` in a plaintext channel is `bad_request`; then the delete's `enc` checks
+(message's epoch and `eh`, caller's active device, signature). Set semantics
+and the caps (32 distinct tags per message, 10 per user) apply to tags. A
+reaction's `enc` is stored with it (`Message.renc`) and carried by
+`react.add`/`react.remove`. The server can check none of the contents.
+
 ### 13.6 Events
 
 Implemented: `device.new`, `device.revoke` (§13.2), and:
@@ -900,8 +1006,9 @@ Implemented: `device.new`, `device.revoke` (§13.2), and:
 Snapshot (§6) adds `keys: [{bundle: Signed, seq: u64}]` for `e2e1` sessions: the current
 bundle of every encrypted channel the user is a member of, with the seq of its
 `key.epoch` event (channels at epoch 0 have none), possibly over several parts.
-`msg.new` (and snapshot messages) carry `Message.enc` in encrypted channels
-(§13.4). Not yet: `enc` in `msg.edit`/`msg.delete`/`react.*` (step 8).
+`msg.new` (and snapshot messages) carry `Message.enc` (and `edit_enc`,
+`del_enc`, `renc`) in encrypted channels (§13.4); `msg.edit`, `msg.delete`
+and `react.*` carry the op's `enc` (§13.5).
 
 ### 13.7 Key requests
 
@@ -955,7 +1062,7 @@ registered device (`not_found`), not revoked, of a current member
   channel's current epoch or that epoch's bundle is stale (§13.5). Nothing
   was stored. Retryable after catching up: a sender re-encrypts with the
   same nonces (§13.4).
-- Limits: `enc` ≤ 64 KiB + 1 KiB (Plain ≤ the padded capacity); EpochBundle `len(b) + len(sig)` ≤ 16 KiB and ≤ 128 boxes;
+- Limits: `enc` ≤ 64 KiB + 1 KiB (Plain ≤ the padded capacity), a delete's or reaction's `enc` ≤ 397 bytes (one padding block); EpochBundle `len(b) + len(sig)` ≤ 16 KiB and ≤ 128 boxes;
   `key.fetch` ≤ 256 epochs per call; ≤ 1 `key.rotate` per channel per user
   per 10 s and ≤ 1 per channel per 2 s, both waived when the roster or its
   active devices changed since the current epoch (§13.3; plus the §9 write bucket).

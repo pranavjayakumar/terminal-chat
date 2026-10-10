@@ -114,6 +114,10 @@ func generateVectors(t *testing.T) map[string]string {
 		put("mid."+name, mid[:])
 	}
 	put("pad.hello", pad256(katPlains["hello"]))
+	helloEnc, _ := hex.DecodeString(v["enc.hello"])
+	tag, err := ReactTag(k, sid, ch, ep, MID(helloEnc), "👍")
+	must(err)
+	put("react_tag.hello", []byte(tag))
 	return v
 }
 

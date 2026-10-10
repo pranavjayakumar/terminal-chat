@@ -202,10 +202,10 @@ func patchEventData(ctx context.Context, tx *sql.Tx, ev *proto.Event, data any) 
 // scrubMessageEvents rewrites the event log after an edit or delete so a
 // replay can't resurrect text the author replaced or removed: the message's
 // msg.new event (seq == message id) gets its current state, and every
-// msg.edit for it with seq < before keeps its place but loses its body.
-// before == 0 means all of them (delete).
+// msg.edit for it with seq < before keeps its place but loses its body (and
+// its enc). before == 0 means all of them (delete).
 func scrubMessageEvents(ctx context.Context, tx *sql.Tx, m proto.Message, before uint64) error {
-	m.Reactions = nil // replayed through react.* events
+	m.Reactions, m.Renc = nil, nil // replayed through react.* events
 	if err := patchEventData(ctx, tx, &proto.Event{Seq: m.ID}, m); err != nil {
 		return fmt.Errorf("scrubbing msg.new %d: %w", m.ID, err)
 	}
@@ -228,8 +228,8 @@ func scrubMessageEvents(ctx context.Context, tx *sql.Tx, m proto.Message, before
 			return err
 		}
 		var d proto.MsgEdit
-		if proto.Unmarshal(data, &d) == nil && d.Msg == m.ID && d.Body != "" {
-			d.Body = ""
+		if proto.Unmarshal(data, &d) == nil && d.Msg == m.ID && (d.Body != "" || d.Enc != nil) {
+			d.Body, d.Enc = "", nil
 			raw, err := proto.Marshal(d)
 			if err != nil {
 				rows.Close()
@@ -361,7 +361,7 @@ func visibleChannels(ctx context.Context, q querier, u uint64) ([]proto.Channel,
 	return out, nil
 }
 
-const msgCols = `id, chan, author, body, thread, time, edited, deleted, enc`
+const msgCols = `id, chan, author, body, thread, time, edited, deleted, enc, edit_enc, del_enc, mid`
 
 func scanMessages(ctx context.Context, q querier, query string, args ...any) ([]proto.Message, error) {
 	rows, err := q.QueryContext(ctx, query, args...)
@@ -371,7 +371,7 @@ func scanMessages(ctx context.Context, q querier, query string, args ...any) ([]
 	var out []proto.Message
 	for rows.Next() {
 		var m proto.Message
-		if err := rows.Scan(&m.ID, &m.Chan, &m.Author, &m.Body, &m.Thread, &m.Time, &m.Edited, &m.Deleted, &m.Enc); err != nil {
+		if err := rows.Scan(&m.ID, &m.Chan, &m.Author, &m.Body, &m.Thread, &m.Time, &m.Edited, &m.Deleted, &m.Enc, &m.EditEnc, &m.DelEnc, &m.Mid); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -390,7 +390,7 @@ func scanMessages(ctx context.Context, q querier, query string, args ...any) ([]
 }
 
 func loadReactions(ctx context.Context, q querier, m *proto.Message) error {
-	rows, err := q.QueryContext(ctx, `SELECT emoji, user FROM reactions WHERE msg = ? ORDER BY rowid`, m.ID)
+	rows, err := q.QueryContext(ctx, `SELECT emoji, user, enc FROM reactions WHERE msg = ? ORDER BY rowid`, m.ID)
 	if err != nil {
 		return err
 	}
@@ -398,13 +398,17 @@ func loadReactions(ctx context.Context, q querier, m *proto.Message) error {
 	for rows.Next() {
 		var e string
 		var u uint64
-		if err := rows.Scan(&e, &u); err != nil {
+		var enc []byte
+		if err := rows.Scan(&e, &u, &enc); err != nil {
 			return err
 		}
 		if m.Reactions == nil {
 			m.Reactions = map[string][]uint64{}
 		}
 		m.Reactions[e] = append(m.Reactions[e], u)
+		if enc != nil {
+			m.Renc = append(m.Renc, proto.ReactEnc{User: u, Emoji: e, Enc: enc})
+		}
 	}
 	return rows.Err()
 }
