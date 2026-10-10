@@ -442,3 +442,38 @@ func TestEncLocalSearchFollowsEdits(t *testing.T) {
 		t.Fatal("deleted message still found")
 	}
 }
+
+// An edit, a reaction and a delete of messages still waiting for their
+// key are kept and judged once the key arrives.
+func TestEncOpsWaitForKey(t *testing.T) {
+	d := newOpsDM(t)
+	k2 := newK(t)
+	e2 := mkBundle(t, d.b1.dev, dm, 2, &d.e1, dmRoster, k2, &d.k1, d.b1.dev) // no box for us
+	d.f.keyEpoch(dm, bob, e2)
+	waitFor(t, "waiting for epoch 2", func() bool { st := d.c.E2EStatus(dm); return st.State == E2EWaitingKey && st.Epoch == 2 })
+	seal := func(p any) []byte { return sealP(t, d.b1.dev, k2, 2, e2, p) }
+	encA, encB := seal(plainMsg{T: "msg", TS: 1, Body: "draft"}), seal(plainMsg{T: "msg", TS: 1, Body: "doomed"})
+	a := d.f.post(proto.Message{Chan: dm, Author: bob, Enc: encA})
+	b := d.f.post(proto.Message{Chan: dm, Author: bob, Enc: encB})
+	midA, midB := e2ecrypto.MID(encA), e2ecrypto.MID(encB)
+	d.event(t, proto.KMsgEdit, bob, proto.MsgEdit{Msg: a, Edited: 9, Enc: seal(plainEdit{T: "edit", TS: 2, Body: "final", Ref: midA[:], V: 1})})
+	tag, _ := e2ecrypto.ReactTag(k2, testSID(), dm, 2, midA, "🎉")
+	d.event(t, proto.KReactAdd, bob, proto.Reaction{Msg: a, Emoji: tag, Enc: seal(plainReact{T: "react", TS: 2, Ref: midA[:], Emoji: "🎉", Add: true})})
+	d.event(t, proto.KMsgDelete, bob, proto.MsgDelete{Msg: b, Enc: seal(plainDel{T: "del", TS: 2, Ref: midB[:]})})
+	if m := d.msg(t, a); m.Sec != SecWaiting || m.Body != "" || len(m.Reactions) != 0 {
+		t.Fatalf("before the key: %+v", m)
+	}
+	if m := d.msg(t, b); !m.Deleted || m.Sec != SecWaiting {
+		t.Fatalf("delete before the key: %+v", m)
+	}
+	eph, ct, err := e2ecrypto.SealShare(rand.Reader, d.me.X25519Pub, e2ecrypto.ShareAD{ServerID: testSID(), Chan: dm, Epoch: 2, Recipient: d.me.ID}, k2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.f.event(proto.KKeyShare, dm, bob, proto.KeyShareArgs{Chan: dm, Epoch: 2, Dev: d.me.ID[:], Eph: eph[:], CT: ct[:]})
+	waitFor(t, "edit and reaction applied", func() bool {
+		m := d.msg(t, a)
+		return m.Sec == SecE2E && m.Body == "final" && m.Edited == 2 && len(m.Reactions["🎉"]) == 1
+	})
+	waitFor(t, "signed delete judged", func() bool { m := d.msg(t, b); return m.Deleted && m.Sec == SecE2E })
+}

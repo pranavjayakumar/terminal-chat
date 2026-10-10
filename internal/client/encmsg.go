@@ -345,6 +345,10 @@ func (c *Client) saveMsg(q dbtx, m *proto.Message, replace bool, memo *keyMemo) 
 			if editEnc != nil && !bytes.Equal(editEnc, row.eenc) {
 				c.applyEdit(q, row, editEnc, srvEdited, 0, memo)
 			}
+			// An edit that waited for this message to open.
+			if row, ok := getMsgRow(q, m.ID); ok && row.epend != nil && row.sec == SecE2E {
+				c.applyEdit(q, row, row.epend, 0, 0, memo)
+			}
 			if replace {
 				if err := syncRencs(q, m.ID, renc); err != nil {
 					return sec, err
