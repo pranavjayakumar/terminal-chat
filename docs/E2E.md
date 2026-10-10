@@ -327,7 +327,10 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    optional at epoch 0 (no key yet; the creator's epoch 1 includes everyone) and for removing a disabled
    user (in no roster). `chan.remove`: the creator (while a member) or an admin may remove others,
    anyone may remove themselves (= leave); private channels only (public: bad_request, DMs: forbidden);
-   in an encrypted channel only a roster member can make the bundle, so an admin must be a member.
+   only a roster member can make the bundle, so a member remover must send it, while an admin who isn't
+   a member removes without one (coordinator decision): the bundle goes stale and the next sender
+   rotates, as after a leave. `chan.encrypt` deletes the channel's webhooks in the same write and
+   retires orphaned bots (coordinator decision).
    Leaving can't carry a bundle (the leaver would know K): the bundle goes stale and the next sender
    rotates (unchanged step-7 path). `chan.encrypt` is cap-gated; only the creator of a private channel
    (any member of a DM with others) may convert, because epoch 1 must be signed by the creator / a DM
@@ -340,6 +343,11 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    channel and its history (`ChannelView.Removed`, "you were removed") until `/leave` closes it; it
    keeps its old epoch keys (trust store) and gets nothing newer. `/add` refuses with the names of
    members who have devices but none verified.
+   Known limits (step 9): a removed member keeps the channel's history only until their next snapshot
+   reset (it wipes the cache; their trust store keeps the old keys, but the server no longer serves
+   them the messages). `Channel.legacy` is server-asserted and used only when a device cached none of
+   the channel's plaintext; carrying a signed cutoff in the epoch-1 bundle (bundle `v: 2`) is a future
+   improvement.
 10. TUI: key-change banner + send block, fork alarm, "⚠ unencrypted", "waiting for key", `/verify`.
 11. Malicious-server suite (`Tamper` hook): injected devices/keys, fake joins, rollback, fork,
     forged bundles, swapped/withheld boxes, hidden leave, stripped cap/flag, plaintext injection,

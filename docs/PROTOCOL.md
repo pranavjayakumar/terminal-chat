@@ -982,17 +982,17 @@ is then not applied either):
 |---|---|
 | `len(b) + len(sig)` > 16 KiB | `too_large` |
 | `bundle` given for a plaintext channel | `bad_request` |
-| encrypted channel with an epoch, no `bundle` ("needs a key bundle — upgrade tc") | `bad_request` |
+| encrypted channel with an epoch, no `bundle`, caller a member ("needs a key bundle — upgrade tc") | `bad_request` |
 | `chan.remove` with `bundle` by a non-member (e.g. an admin outside the channel) | `forbidden` |
 | removing yourself with `bundle` (leaving needs none) | `bad_request` |
 
 `bundle` is optional at epoch 0 (no key exists; the creator's epoch 1 will
-have the new roster) and for removing a disabled user (in no roster
-already; the channel's bundle is stale if it still boxes their devices,
-and the next sender rotates). A no-op (adding a member, removing a
-non-member) ignores `bundle`. Only a member of the current roster can make
-the bundle, so in an encrypted channel an admin must be a member to remove
-someone. **Leaving** (`chan.leave`, or `chan.remove` of yourself) carries
+have the new roster), for removing a disabled user (in no roster already;
+the channel's bundle is stale if it still boxes their devices, and the
+next sender rotates), and for an admin who isn't a member: only a member
+of the current roster can make the bundle, so an outside admin's
+`chan.remove` goes without one and is handled like a leave (below). A
+no-op (adding a member, removing a non-member) ignores `bundle`. **Leaving** (`chan.leave`, or `chan.remove` of yourself) carries
 no bundle: the leaver would know the next key. The channel's bundle is
 then stale (§13.3), the server refuses sends under it (`stale_epoch`), and
 the next sender rotates first (§13.4), so nothing sent after the leave is
@@ -1010,8 +1010,11 @@ channel becomes encrypted with `legacy` = its newest message id (0 if
 none), a `chan.update` (the new Channel) is emitted, and `bundle` must pass
 the `key.rotate` checks as epoch 1 (creator, or any DM member; roster = all
 current non-disabled members), emitting `key.epoch`; any failure leaves the
-channel plaintext. Existing messages stay as they are (plaintext,
-"legacy", §13.4); from then on plaintext sends and webhooks are refused.
+channel plaintext. The same write deletes the channel's webhooks (§12) and
+retires bots left without one, as `hook.delete` does (the bots stay
+members; they can't post or register devices). Existing messages stay as
+they are (plaintext, "legacy", §13.4); from then on plaintext sends are
+refused.
 
 Server rules (honest case) for **send**, in this order:
 
