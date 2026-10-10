@@ -265,22 +265,23 @@ func (c *Client) plainSec(q dbtx, ch, id uint64) Sec {
 // decrypts m.Enc into m.Body and returns the verdict and the enc's mid (nil
 // without enc). It only reads q (and sets a channel's legacy cutoff).
 func (c *Client) prepMsg(q dbtx, m *proto.Message, memo *keyMemo) (Sec, []byte) {
-	sec, mid, _ := c.judge(q, m, memo)
+	sec, mid, _, _ := c.judge(q, m, memo)
 	return sec, mid
 }
 
 // judge is prepMsg; keep reports that the cached row must stay as it is: a
 // copy that tries to change a verified message's channel, author, thread or
-// bytes is invalid, not an update.
-func (c *Client) judge(q dbtx, m *proto.Message, memo *keyMemo) (sec Sec, mid []byte, keep bool) {
+// bytes is invalid, not an update. sts is the verified message's signed
+// Plain ts (0 otherwise).
+func (c *Client) judge(q dbtx, m *proto.Message, memo *keyMemo) (sec Sec, mid []byte, sts int64, keep bool) {
 	sid, hasSID := qServerID(q)
 	if m.Enc == nil {
 		if m.Deleted || !c.chanIsE2E(q, sid, hasSID, m.Chan) {
-			return SecPlain, nil, false
+			return SecPlain, nil, 0, false
 		}
-		return c.plainSec(q, m.Chan, m.ID), nil, false
+		return c.plainSec(q, m.Chan, m.ID), nil, 0, false
 	}
-	sec, mid = c.judgeEnc(q, sid, hasSID, m, memo)
+	sec, mid, sts = c.judgeEnc(q, sid, hasSID, m, memo)
 	if sec == SecInvalid {
 		m.Body = ""
 	}
@@ -293,16 +294,16 @@ func (c *Client) judge(q dbtx, m *proto.Message, memo *keyMemo) (sec Sec, mid []
 		Scan(&old.enc, &old.sec, &old.ch, &old.author, &old.thrd) == nil && old.sec == SecE2E &&
 		(old.ch != m.Chan || old.author != m.Author || old.thrd != m.Thread || !bytes.Equal(old.enc, m.Enc)) {
 		m.Body = ""
-		return SecInvalid, mid, true
+		return SecInvalid, mid, 0, true
 	}
-	return sec, mid, false
+	return sec, mid, sts, false
 }
 
-func (c *Client) judgeEnc(q dbtx, sid e2ecrypto.ServerID, hasSID bool, m *proto.Message, memo *keyMemo) (Sec, []byte) {
+func (c *Client) judgeEnc(q dbtx, sid e2ecrypto.ServerID, hasSID bool, m *proto.Message, memo *keyMemo) (Sec, []byte, int64) {
 	body := m.Body
 	m.Body = ""
 	if _, err := e2ecrypto.ParseEnc(m.Enc); err != nil || body != "" {
-		return SecInvalid, nil
+		return SecInvalid, nil, 0
 	}
 	mid := e2ecrypto.MID(m.Enc)
 	// The same bytes judged before, for the same message, keep their
@@ -311,51 +312,52 @@ func (c *Client) judgeEnc(q dbtx, sid e2ecrypto.ServerID, hasSID bool, m *proto.
 	var oldSec Sec
 	var oldBody string
 	var oldCh, oldAuthor, oldThread uint64
-	if q.QueryRow(`SELECT enc, sec, body, chan, author, thread FROM msgs WHERE id = ?`, m.ID).
-		Scan(&oldEnc, &oldSec, &oldBody, &oldCh, &oldAuthor, &oldThread) == nil &&
+	var oldSTS int64
+	if q.QueryRow(`SELECT enc, sec, body, chan, author, thread, sts FROM msgs WHERE id = ?`, m.ID).
+		Scan(&oldEnc, &oldSec, &oldBody, &oldCh, &oldAuthor, &oldThread, &oldSTS) == nil &&
 		bytes.Equal(oldEnc, m.Enc) && oldSec != SecWaiting &&
 		oldCh == m.Chan && oldAuthor == m.Author && oldThread == m.Thread {
 		m.Body = oldBody
-		return oldSec, mid[:]
+		return oldSec, mid[:], oldSTS
 	}
 	// First mid wins: the server can't replay an enc as a second message.
 	var other uint64
 	if q.QueryRow(`SELECT id FROM msgs WHERE mid = ? AND id < ? LIMIT 1`, mid[:], m.ID).Scan(&other) == nil {
-		return SecInvalid, mid[:]
+		return SecInvalid, mid[:], 0
 	}
 	if !hasSID {
-		return SecWaiting, mid[:]
+		return SecWaiting, mid[:], 0
 	}
 	raw, d, sec, _ := c.openEnc(sid, m.Chan, m.Author, m.ID, m.Enc, memo)
 	if sec != SecE2E {
-		return sec, mid[:]
+		return sec, mid[:], 0
 	}
 	if sec, _ = c.checkSealer(sid, m.Chan, m.Author, m.ID, m.Enc, memo); sec != SecE2E {
-		return sec, mid[:]
+		return sec, mid[:], 0
 	}
 	var p plainMsg
 	if proto.Unmarshal(raw, &p) != nil || p.T != "msg" || !validText(p.Body) || revokedAt(d, p.TS) {
-		return SecInvalid, mid[:]
+		return SecInvalid, mid[:], 0
 	}
 	if m.Thread == 0 {
 		if p.ThreadRef != nil {
-			return SecInvalid, mid[:]
+			return SecInvalid, mid[:], 0
 		}
 	} else {
 		var rootMid []byte
 		err := q.QueryRow(`SELECT mid FROM msgs WHERE id = ? AND chan = ?`, m.Thread, m.Chan).Scan(&rootMid)
 		if errors.Is(err, sql.ErrNoRows) {
-			return SecWaiting, mid[:] // judged once the root is cached
+			return SecWaiting, mid[:], 0 // judged once the root is cached
 		}
 		if rootMid == nil {
 			rootMid = zeroRef
 		}
 		if err != nil || !bytes.Equal(p.ThreadRef, rootMid) {
-			return SecInvalid, mid[:]
+			return SecInvalid, mid[:], 0
 		}
 	}
 	m.Body = p.Body
-	return SecE2E, mid[:]
+	return SecE2E, mid[:], p.TS
 }
 
 // saveMsg stores a message from the server after judging it; m.Body is the
@@ -371,7 +373,7 @@ func (c *Client) saveMsg(q dbtx, m *proto.Message, replace bool, memo *keyMemo) 
 		return old.sec, nil
 	}
 	editEnc, renc := m.EditEnc, m.Renc
-	sec, mid, keep := c.judge(q, m, memo)
+	sec, mid, sts, keep := c.judge(q, m, memo)
 	if sec == SecInvalid || sec == SecWaiting {
 		m.Body = ""
 	}
@@ -390,6 +392,11 @@ func (c *Client) saveMsg(q dbtx, m *proto.Message, replace bool, memo *keyMemo) 
 	}
 	if err := storeMsg(q, *m, sec, mid, replace); err != nil {
 		return sec, err
+	}
+	if sts != 0 {
+		if _, err := q.Exec(`UPDATE msgs SET sts = ? WHERE id = ?`, sts, m.ID); err != nil {
+			return sec, err
+		}
 	}
 	if mid != nil {
 		// Lowest id wins whatever the arrival order: a copy of this enc
@@ -504,18 +511,18 @@ func (c *Client) reopenMsgs(sid e2ecrypto.ServerID, chans []proto.Channel) {
 			continue
 		}
 		m.Body = ""
-		sec, _ := c.prepMsg(c.db, &m, memo)
+		sec, _, sts, _ := c.judge(c.db, &m, memo)
 		if sec == SecWaiting {
 			continue
 		}
 		body := m.Body
 		if sec != SecE2E {
-			body = ""
+			body, sts = "", 0
 		}
 		// Only the row we judged: an event applied meanwhile (a delete, a
 		// refetch with other bytes or metadata) wins.
-		res, err := c.db.Exec(`UPDATE msgs SET body = ?, sec = ? WHERE id = ? AND sec = ? AND deleted = 0
-			AND enc = ? AND chan = ? AND author = ? AND thread = ?`, body, sec, m.ID, SecWaiting, m.Enc, m.Chan, m.Author, m.Thread)
+		res, err := c.db.Exec(`UPDATE msgs SET body = ?, sec = ?, sts = ? WHERE id = ? AND sec = ? AND deleted = 0
+			AND enc = ? AND chan = ? AND author = ? AND thread = ?`, body, sec, sts, m.ID, SecWaiting, m.Enc, m.Chan, m.Author, m.Thread)
 		if n, _ := rowsAffected(res); err != nil || n == 0 {
 			continue
 		}

@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS msgs (
 	thread INTEGER NOT NULL, time INTEGER NOT NULL, edited INTEGER NOT NULL,
 	deleted INTEGER NOT NULL, reactions TEXT NOT NULL,
 	enc BLOB, sec INTEGER NOT NULL DEFAULT 0, mid BLOB,
-	eenc BLOB, epend BLOB, ev INTEGER NOT NULL DEFAULT 0, ets INTEGER NOT NULL DEFAULT 0, denc BLOB, cmid BLOB);
+	eenc BLOB, epend BLOB, ev INTEGER NOT NULL DEFAULT 0, ets INTEGER NOT NULL DEFAULT 0, denc BLOB, cmid BLOB,
+	sts INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS msgs_chan ON msgs (chan, thread, id);
 CREATE INDEX IF NOT EXISTS msgs_thread ON msgs (thread, id);
 -- Encrypted reactions (encops.go): the server's (msg, user, tag, enc) and

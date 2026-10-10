@@ -916,3 +916,39 @@ func TestEncReopenQueueNoStarvation(t *testing.T) {
 	d.f.event(proto.KDeviceNew, 0, bob, proto.Device{Cert: b2.cert})
 	waitFor(t, "b2's message opens", func() bool { m, _ := findMsg(d.c, id); return m.Sec == SecE2E && m.Body == "from b2" })
 }
+
+// A verified message keeps its signed time; one whose server time differs
+// by more than MaxTimeDrift shows the signed time and says so (step 12:
+// closes step 11's "rewritten time" limit). Plaintext never drifts.
+func TestEncSignedTimeDrift(t *testing.T) {
+	d := newEncDM(t, proto.Snapshot{})
+	now := time.Now()
+	signed := now.Add(-time.Hour).UnixMilli()
+	far := d.f.post(proto.Message{Chan: dm, Author: bob, Time: now.UnixMilli(),
+		Enc: sealAs(t, d.b1.dev, d.k1, 1, d.e1, plainMsg{T: "msg", TS: signed, Body: "an hour ago"})})
+	near := d.f.post(proto.Message{Chan: dm, Author: bob, Time: now.UnixMilli(),
+		Enc: sealAs(t, d.b1.dev, d.k1, 1, d.e1, plainMsg{T: "msg", TS: now.Add(-4 * time.Minute).UnixMilli(), Body: "skewed clock"})})
+	waitFor(t, "applied", func() bool { m, _ := findMsg(d.c, near); return m.Sec == SecE2E })
+	m, _ := findMsg(d.c, far)
+	if m.SignedTime != signed || !m.TimeDrift() || m.ShownTime() != signed {
+		t.Fatalf("far: signed %d drift %v shown %d", m.SignedTime, m.TimeDrift(), m.ShownTime())
+	}
+	if m, _ := findMsg(d.c, near); m.SignedTime == 0 || m.TimeDrift() || m.ShownTime() != m.Time {
+		t.Fatalf("near: signed %d drift %v", m.SignedTime, m.TimeDrift())
+	}
+	// Another process on this TC_HOME sees it too (cache column).
+	c2 := open(t, d.c.Home())
+	defer c2.Close()
+	var got Message
+	for _, x := range c2.Messages(dm, 10) {
+		if x.ID == far {
+			got = x
+		}
+	}
+	if got.SignedTime != signed || !got.TimeDrift() {
+		t.Fatalf("after reopen: %+v", got)
+	}
+	if (Message{Message: proto.Message{Time: 1}}).TimeDrift() {
+		t.Fatal("a message without a signed time drifts")
+	}
+}

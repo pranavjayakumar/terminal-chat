@@ -380,7 +380,9 @@ func (r *renderer) message(m client.Message, w int, header bool) []string {
 	out := make([]string, 0, len(body)+1)
 	ind := spaces(lay.indent)
 	if header {
-		ts := r.st.time.Render(time.UnixMilli(m.Time).Local().Format("15:04"))
+		// A verified message whose server time is far from its signed
+		// time shows the signed one (footer says so: driftMark).
+		ts := r.st.time.Render(time.UnixMilli(m.ShownTime()).Local().Format("15:04"))
 		name := r.userName(m.Author)
 		as := r.st.author(m.Author)
 		isBot := r.bot != nil && r.bot(m.Author)
@@ -533,6 +535,9 @@ func (r *renderer) footer(m client.Message, bw int) string {
 	if m.Pinned && !m.Deleted {
 		parts = append(parts, r.st.dim.Render("📌"))
 	}
+	if m.TimeDrift() && !m.Deleted {
+		parts = append(parts, r.st.dim.Render(driftMark))
+	}
 	if len(parts) == 0 {
 		return ""
 	}
@@ -556,13 +561,17 @@ func sameDay(a, b int64) bool {
 
 const groupWindow = 5 * 60 * 1000 // ms
 
+// driftMark follows a verified message whose signed time (shown) differs
+// from the server's by more than client.MaxTimeDrift.
+const driftMark = "⚠ server time differs"
+
 // grouped reports whether cur continues prev's group (same author, same
 // day, within five minutes) and so omits its time/author.
 // A message with replies or reactions ends its group so its footer clearly
 // belongs to it.
 func grouped(prev, cur client.Message) bool {
-	if prev.Replies > 0 || prev.Pinned || hasReactions(prev) {
-		return false
+	if prev.Replies > 0 || prev.Pinned || hasReactions(prev) || prev.TimeDrift() || cur.TimeDrift() {
+		return false // a drifting message always shows its (signed) time
 	}
 	return prev.Author == cur.Author && cur.Time-prev.Time < groupWindow && cur.Time >= prev.Time &&
 		sameDay(prev.Time, cur.Time) && prev.Failed == ""

@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
 
@@ -202,5 +203,52 @@ func TestDeletedText(t *testing.T) {
 		if got := deletedText(m); got != want {
 			t.Errorf("%s: %q, want %q", sec, got, want)
 		}
+	}
+}
+
+// A verified message whose signed time is more than client.MaxTimeDrift
+// from the server's shows the signed time and a dim "⚠ server time
+// differs"; it never groups under the previous message (its time would be
+// hidden); one within the skew shows the server's time, unmarked. All fit.
+func TestE2ETimeDriftMarker(t *testing.T) {
+	server := time.Date(2026, 10, 10, 14, 0, 0, 0, time.Local).UnixMilli()
+	signed := time.Date(2026, 10, 10, 9, 30, 0, 0, time.Local).UnixMilli()
+	mk := func(id uint64, body string, sts int64) client.Message {
+		return client.Message{Message: proto.Message{ID: id, Chan: 20, Author: 2, Body: body, Time: server},
+			Sec: client.SecE2E, SignedTime: sts}
+	}
+	first, drift, near := mk(500, "first", server), mk(501, "rewritten", signed), mk(502, "skewed", server-4*60*1000)
+	if !drift.TimeDrift() || near.TimeDrift() {
+		t.Fatal("TimeDrift")
+	}
+	r := testRenderer(false)
+	lines := ansi.Strip(strings.Join(r.message(drift, 80, true), "\n"))
+	if !strings.Contains(lines, "09:30") || strings.Contains(lines, "14:00") || !strings.Contains(lines, driftMark) {
+		t.Fatalf("drifting message:\n%s", lines)
+	}
+	if l := ansi.Strip(strings.Join(r.message(near, 80, true), "\n")); !strings.Contains(l, "14:00") || strings.Contains(l, driftMark) {
+		t.Fatalf("message within the skew:\n%s", l)
+	}
+	if grouped(first, drift) || grouped(drift, near) {
+		t.Fatal("a drifting message was grouped")
+	}
+	if !grouped(first, near) {
+		t.Fatal("ordinary follow-up not grouped")
+	}
+	for _, sz := range [][2]int{{20, 8}, {34, 10}, {80, 24}} {
+		m, f := newTestModelFake(t, sz[0], sz[1])
+		e2eFake(f, client.E2EStatus{State: client.E2EOK, Epoch: 1})
+		f.msgs[20] = []client.Message{first, drift, near}
+		run(m, m.applyUpdate(client.Update{Channels: true, Msgs: map[uint64]bool{20: true}}))
+		run(m, m.openChannel(20))
+		v := ansi.Strip(checkView(t, m, "drift"))
+		if sz[0] == 80 && (!strings.Contains(v, driftMark) || !strings.Contains(v, "09:30")) {
+			t.Fatalf("view:\n%s", v)
+		}
+	}
+	m, _ := newTestModelFake(t, 80, 24)
+	m.openViewer(drift)
+	if !strings.Contains(m.view.title, "09:30") || !strings.Contains(m.view.title, driftMark) {
+		t.Fatalf("viewer title %q", m.view.title)
 	}
 }

@@ -766,10 +766,10 @@ func TestMaliciousRewrittenMessage(t *testing.T) {
 	}
 }
 
-// The server rewrites a message's time: the shown time is the server's
-// (Plain.ts is signed but not compared with it). Accepted: timestamps are
-// metadata the server controls (docs/E2E.md "What the server still sees").
-func TestMaliciousRewrittenTime_AcceptedLimit(t *testing.T) {
+// The server rewrites a message's time: the client keeps the signed
+// Plain.ts, shows it instead and flags the message (TimeDrift → the TUI's
+// "⚠ server time differs"). Closed in step 12; was an accepted limit.
+func TestMaliciousRewrittenTime(t *testing.T) {
 	env := malTeam(t, "alice", "bob")
 	alice, bob := env.us[0], env.us[1]
 	ctx := ctxT(t)
@@ -788,11 +788,15 @@ func TestMaliciousRewrittenTime_AcceptedLimit(t *testing.T) {
 		}
 		return []frame{evFrame(ev)}
 	})
+	before := time.Now().UnixMilli()
 	alice.send(t, ctx, dm, "when?")
 	eventually(t, "bob reads", bob.reads(dm, "when?"))
 	m, _ := bob.msgAny(dm, alice.msgID(dm, "when?"))
-	if m.Time != fake {
-		t.Fatalf("time %d", m.Time)
+	if m.Time != fake || !m.TimeDrift() || m.ShownTime() < before-60_000 || m.ShownTime() > time.Now().UnixMilli()+60_000 {
+		t.Fatalf("time %d signed %d drift %v", m.Time, m.SignedTime, m.TimeDrift())
+	}
+	if am, _ := alice.msgAny(dm, alice.msgID(dm, "when?")); am.TimeDrift() {
+		t.Fatal("alice's untampered copy drifts")
 	}
 }
 

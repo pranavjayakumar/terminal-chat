@@ -25,7 +25,10 @@ func (m *Model) openViewer(msg client.Message) {
 	if msg.Deleted {
 		body = deletedText(msg)
 	}
-	when := time.UnixMilli(msg.Time).Format("Mon 2 Jan 15:04")
+	when := time.UnixMilli(msg.ShownTime()).Format("Mon 2 Jan 15:04")
+	if msg.TimeDrift() {
+		when += " (" + driftMark + ")"
+	}
 	m.view = viewer{
 		title: sanitize.Line(m.r.userName(msg.Author)) + " · " + when,
 		lines: m.viewerBody(body),
