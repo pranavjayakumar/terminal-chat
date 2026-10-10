@@ -104,7 +104,8 @@ Redemption decrements the remaining uses — conditionally (`uses > 0`), in the 
 transaction that creates the user/key, so concurrent redemptions of an N-use invite
 produce exactly N users. A redemption that fails (`name_taken`, `key_exists`, reserved
 name) rolls back and spends nothing. Exhausted, expired or unknown → BYE `invite_invalid`.
-Add-key invites are always single-use. `uses`/`ttl_ms` in `invite.create` need cap
+Add-key invites are always single-use. Admin invites (server host only) are single-use and
+last at most 24 hours (default 24 hours). `uses`/`ttl_ms` in `invite.create` need cap
 `team_invites` (servers without it ignore them and mint a 1-use, 7-day invite).
 
 Clients show an invite as the code and as the install command

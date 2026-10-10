@@ -29,3 +29,31 @@ func TestPrintInvite(t *testing.T) {
 		t.Fatalf("single use: %s", b.String())
 	}
 }
+
+func TestParseServerInviteAdmin(t *testing.T) {
+	c, err := parseServerInvite([]string{"--admin"})
+	if err != nil || !c.opts.Admin || c.opts.Uses != 1 || c.opts.TTL != proto.MaxAdminInviteTTL {
+		t.Fatalf("--admin: %+v %v", c.opts, err)
+	}
+	if c, err := parseServerInvite([]string{"--admin", "--ttl", "2h"}); err != nil || c.opts.TTL != 2*time.Hour {
+		t.Fatalf("--admin --ttl 2h: %+v %v", c.opts, err)
+	}
+	for _, args := range [][]string{
+		{"--admin", "--uses", "2"},
+		{"--admin", "--uses", "100", "--ttl", "720h"},
+		{"--admin", "--ttl", "25h"},
+		{"--admin", "--ttl", "168h"},
+	} {
+		if _, err := parseServerInvite(args); err == nil {
+			t.Errorf("%v accepted", args)
+		}
+	}
+	// Team invites keep their limits and defaults.
+	c, err = parseServerInvite([]string{"--uses", "15", "--ttl", "72h"})
+	if err != nil || c.opts.Admin || c.opts.Uses != 15 || c.opts.TTL != 72*time.Hour {
+		t.Fatalf("team: %+v %v", c.opts, err)
+	}
+	if c, _ := parseServerInvite(nil); c.opts.TTL != proto.DefaultInviteTTL || c.opts.Uses != 1 {
+		t.Fatalf("defaults: %+v", c.opts)
+	}
+}

@@ -73,7 +73,7 @@ func cmdServer(args []string) error {
 	if first, _ := firstRun(srv); first {
 		inv, err := srv.CreateInviteOpts(ctx, server.InviteOpts{Admin: true})
 		if err == nil {
-			fmt.Println("\nNo users yet. Admin invite for you (single use, 7 days):")
+			fmt.Println("\nNo users yet. Admin invite for you (single use, 24 hours):")
 			printInvite(os.Stdout, inv, version)
 			fmt.Println("Then invite your team with: tc server invite --uses 15 --ttl 72h")
 		}
@@ -81,28 +81,58 @@ func cmdServer(args []string) error {
 	return srv.Serve(ctx, ln)
 }
 
-func cmdServerInvite(args []string) error {
-	fs := flag.NewFlagSet("server invite", flag.ExitOnError)
-	data := fs.String("data", defaultDataDir(), "data directory")
-	admin := fs.Bool("admin", false, "invite grants admin")
-	uses := fs.Int("uses", 1, fmt.Sprintf("how many people can join with it (1-%d)", proto.MaxInviteUses))
-	ttl := fs.Duration("ttl", proto.DefaultInviteTTL, "how long it stays valid (at most 720h)")
-	raw := fs.Bool("raw", false, "print only the tc:// code")
-	fs.Parse(args)
-	if fs.NArg() > 0 {
-		return errUsage
+// serverInviteCmd is a parsed `tc server invite`.
+type serverInviteCmd struct {
+	data string
+	opts server.InviteOpts
+	raw  bool
+}
+
+func parseServerInvite(args []string) (serverInviteCmd, error) {
+	var c serverInviteCmd
+	fs := flag.NewFlagSet("server invite", flag.ContinueOnError)
+	fs.StringVar(&c.data, "data", defaultDataDir(), "data directory")
+	fs.BoolVar(&c.opts.Admin, "admin", false, "invite grants admin (single use, at most 24h)")
+	fs.IntVar(&c.opts.Uses, "uses", 1, fmt.Sprintf("how many people can join with it (1-%d)", proto.MaxInviteUses))
+	fs.DurationVar(&c.opts.TTL, "ttl", proto.DefaultInviteTTL, "how long it stays valid (at most 720h; admin: 24h)")
+	fs.BoolVar(&c.raw, "raw", false, "print only the tc:// code")
+	if err := fs.Parse(args); err != nil {
+		return c, errUsage
 	}
-	srv, err := server.New(server.Config{DataDir: *data, PublicAddr: readPublic(*data, ":7443"),
+	if fs.NArg() > 0 {
+		return c, errUsage
+	}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if c.opts.Admin {
+		if c.opts.Uses != 1 {
+			return c, errors.New("--admin invites are single-use: drop --uses")
+		}
+		if !set["ttl"] {
+			c.opts.TTL = proto.MaxAdminInviteTTL
+		} else if c.opts.TTL > proto.MaxAdminInviteTTL {
+			return c, errors.New("--admin invites last at most 24h")
+		}
+	}
+	return c, nil
+}
+
+func cmdServerInvite(args []string) error {
+	c, err := parseServerInvite(args)
+	if err != nil {
+		return err
+	}
+	srv, err := server.New(server.Config{DataDir: c.data, PublicAddr: readPublic(c.data, ":7443"),
 		Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		return err
 	}
 	defer srv.Close()
-	inv, err := srv.CreateInviteOpts(context.Background(), server.InviteOpts{Admin: *admin, Uses: *uses, TTL: *ttl})
+	inv, err := srv.CreateInviteOpts(context.Background(), c.opts)
 	if err != nil {
 		return err
 	}
-	if *raw {
+	if c.raw {
 		fmt.Println(inv.Code)
 		return nil
 	}

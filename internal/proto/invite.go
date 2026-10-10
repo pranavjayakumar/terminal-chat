@@ -18,6 +18,9 @@ const (
 	DefaultInviteTTL = 7 * 24 * time.Hour
 	MaxInviteTTL     = 30 * 24 * time.Hour
 	MaxInviteUses    = 100
+	// MaxAdminInviteTTL caps admin invites, which are always single-use: a
+	// leaked one makes its holder an admin.
+	MaxAdminInviteTTL = 24 * time.Hour
 )
 
 // InstallScriptURL is where the one-line install command fetches install.sh:

@@ -376,9 +376,9 @@ func (s *Server) CreateInvite(ctx context.Context, admin bool, user uint64) (str
 }
 
 // InviteOpts configures CreateInviteOpts. Zero Uses means 1, zero TTL means
-// proto.DefaultInviteTTL.
+// proto.DefaultInviteTTL (proto.MaxAdminInviteTTL for admin invites).
 type InviteOpts struct {
-	Admin bool
+	Admin bool   // single-use, at most proto.MaxAdminInviteTTL
 	User  uint64 // add-key invite for this user (always single-use)
 	Uses  int
 	TTL   time.Duration
@@ -392,6 +392,9 @@ func (s *Server) CreateInviteOpts(ctx context.Context, o InviteOpts) (proto.Invi
 	}
 	if o.TTL == 0 {
 		o.TTL = proto.DefaultInviteTTL
+		if o.Admin {
+			o.TTL = proto.MaxAdminInviteTTL
+		}
 	}
 	if o.Uses < 1 || o.Uses > proto.MaxInviteUses {
 		return proto.InviteRes{}, fmt.Errorf("uses must be 1..%d", proto.MaxInviteUses)
@@ -401,6 +404,15 @@ func (s *Server) CreateInviteOpts(ctx context.Context, o InviteOpts) (proto.Invi
 	}
 	if o.User != 0 && o.Uses != 1 {
 		return proto.InviteRes{}, errors.New("add-key invites are single-use")
+	}
+	if o.Admin && o.Uses != 1 {
+		return proto.InviteRes{}, errors.New("admin invites are single-use")
+	}
+	if o.Admin && o.TTL > proto.MaxAdminInviteTTL {
+		return proto.InviteRes{}, errors.New("admin invites last at most 24 hours")
+	}
+	if o.Admin && o.User != 0 {
+		return proto.InviteRes{}, errors.New("an invite is either admin or add-key")
 	}
 	raw := make([]byte, 16)
 	rand.Read(raw)

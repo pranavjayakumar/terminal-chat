@@ -127,6 +127,8 @@ func TestCreateInviteOptsLimits(t *testing.T) {
 	for _, o := range []InviteOpts{
 		{Uses: -1}, {Uses: proto.MaxInviteUses + 1}, {TTL: -time.Hour}, {TTL: time.Second},
 		{TTL: proto.MaxInviteTTL + time.Millisecond}, {User: 1, Uses: 2},
+		{Admin: true, Uses: 2}, {Admin: true, Uses: proto.MaxInviteUses},
+		{Admin: true, TTL: proto.MaxAdminInviteTTL + time.Millisecond}, {Admin: true, TTL: proto.MaxInviteTTL},
 	} {
 		if _, err := ts.CreateInviteOpts(ctx, o); err == nil {
 			t.Errorf("%+v accepted", o)
@@ -142,6 +144,31 @@ func TestCreateInviteOptsLimits(t *testing.T) {
 	}
 	if _, err := ts.CreateInviteOpts(ctx, InviteOpts{Uses: proto.MaxInviteUses, TTL: proto.MaxInviteTTL}); err != nil {
 		t.Fatalf("max: %v", err)
+	}
+}
+
+// A leaked admin invite must not mint many admins or live for weeks: single
+// use, at most 24 h, and 24 h by default.
+func TestAdminInviteSingleUseShortLived(t *testing.T) {
+	ts := startServer(t, "tcp")
+	ctx := context.Background()
+	res, err := ts.CreateInviteOpts(ctx, InviteOpts{Admin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left := res.Expires - ts.now(); res.Uses != 1 || left > proto.MaxAdminInviteTTL.Milliseconds() || left < proto.MaxAdminInviteTTL.Milliseconds()-60_000 {
+		t.Fatalf("admin defaults: %+v (expires in %v)", res, time.Duration(left)*time.Millisecond)
+	}
+	if _, err := ts.CreateInviteOpts(ctx, InviteOpts{Admin: true, Uses: 1, TTL: proto.MaxAdminInviteTTL}); err != nil {
+		t.Fatalf("24h admin invite: %v", err)
+	}
+	inv, _ := proto.ParseInvite(res.Code)
+	c, bye := ts.connect(t, newKey(t), inv.Token, "boss")
+	if bye != "" || !c.user.Admin {
+		t.Fatalf("admin redemption: %q %+v", bye, c.user)
+	}
+	if _, bye := ts.connect(t, newKey(t), inv.Token, "boss2"); bye != proto.ByeInviteInvalid {
+		t.Fatalf("second redemption: %q", bye)
 	}
 }
 
