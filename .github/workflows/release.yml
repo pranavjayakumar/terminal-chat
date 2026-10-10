@@ -1,0 +1,67 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the release and upload assets
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Build
+        env:
+          TAG: ${{ github.ref_name }}
+          CGO_ENABLED: "0"
+        run: |
+          set -eu
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "tag $TAG is not vX.Y.Z" >&2; exit 1 ;;
+          esac
+          mkdir -p dist
+          for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+            os=${target%/*}
+            arch=${target#*/}
+            name="tc_${os}_${arch}"
+            mkdir -p "build/$name"
+            GOOS=$os GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -X main.version=$TAG" \
+              -o "build/$name/tc" ./cmd/tc
+            {
+              echo "tc $TAG for $os/$arch — terminal team chat"
+              echo
+              echo "Put tc on your PATH (e.g. ~/.local/bin), then join with the invite you were sent:"
+              echo "  tc join 'tc://host:7443/…'"
+              echo
+              echo "https://github.com/pranavjayakumar/terminal-chat"
+            } > "build/$name/README.txt"
+            tar -C "build/$name" -czf "dist/$name.tar.gz" tc README.txt
+          done
+          (cd dist && sha256sum -- *.tar.gz > checksums.txt)
+          cat dist/checksums.txt
+          ls -l dist
+
+      - name: Smoke test the linux/amd64 build
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          mkdir smoke && tar -C smoke -xzf dist/tc_linux_amd64.tar.gz
+          ./smoke/tc version | grep -F "$TAG"
+          (cd dist && sha256sum -c checksums.txt)
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" dist/*.tar.gz dist/checksums.txt --title "$TAG" --generate-notes --verify-tag
