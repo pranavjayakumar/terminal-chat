@@ -99,3 +99,26 @@ func TestPrintInvites(t *testing.T) {
 		t.Fatal(b.String())
 	}
 }
+
+// A code with shell or terminal metacharacters (a bad --public) is never
+// printed as a command, and its escapes never reach the terminal.
+func TestPrintInviteUnsafeCode(t *testing.T) {
+	for _, code := range []string{
+		"tc://h:7443/tok#pin'; touch /tmp/x; '",
+		"tc://h\x1b]52;c;eA==\a:7443/tok#pin",
+		"tc://h:7443/tok#pin$(id)",
+	} {
+		var b bytes.Buffer
+		printInvite(&b, proto.InviteRes{Code: code, Uses: 1}, "dev")
+		out := b.String()
+		if strings.Contains(out, "tc join '") || strings.Contains(out, "| sh") {
+			t.Errorf("%q printed as a command:\n%s", code, out)
+		}
+		if strings.ContainsAny(out, "\x1b\a") {
+			t.Errorf("%q: raw control bytes in output %q", code, out)
+		}
+		if !strings.Contains(out, "unsafe characters") {
+			t.Errorf("%q: no warning:\n%s", code, out)
+		}
+	}
+}

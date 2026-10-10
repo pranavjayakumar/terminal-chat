@@ -118,6 +118,10 @@ func ParseInvite(code string) (Invite, error) {
 	return inv, nil
 }
 
+// ShellSafe reports whether code can be printed inside single quotes in a
+// shell command (see shellSafe).
+func ShellSafe(code string) bool { return shellSafe(code) }
+
 // shellSafe reports whether every byte of an invite code is one that can sit
 // inside a single-quoted sh word and is plain on a terminal: letters, digits
 // and the punctuation hosts, base32 tokens and base64url pins use.

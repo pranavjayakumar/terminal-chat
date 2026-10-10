@@ -73,13 +73,19 @@ check_base() {
 	esac
 }
 
+# printable drops control bytes (escape sequences) from server-supplied text
+# before it reaches the terminal.
+printable() {
+	printf '%s' "$1" | LC_ALL=C tr -cd '[:print:]'
+}
+
 latest_tag() {
 	# /releases/latest redirects to /releases/tag/<tag>; no API, no rate limit.
 	url=$(fetch -fsSLI -o /dev/null -w '%{url_effective}' "$1/latest") ||
 		die "can't reach $1 (offline, or no releases yet?)"
 	case "$url" in
 	*/tag/*) ;;
-	*) die "unexpected answer from $1/latest: $url" ;;
+	*) die "unexpected answer from $1/latest: $(printable "$url")" ;;
 	esac
 	printf '%s\n' "${url##*/}"
 }

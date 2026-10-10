@@ -476,3 +476,18 @@ func TestInstallRejectsSymlinkMember(t *testing.T) {
 		t.Fatal("installed or ran the symlink target")
 	}
 }
+
+// A redirect URL from the release host is shown without its escape bytes.
+// (Recent curl refuses raw control bytes in a Location, so a stub curl
+// reports one as url_effective, as a laxer curl or proxy could.)
+func TestInstallSanitizesRedirectURL(t *testing.T) {
+	srv := releasetest.New(t, "v0.4.0")
+	curl := "#!/bin/sh\nprintf 'https://evil.example/elsewhere/\\033]0;pwned\\007\\033[2Jx'\n"
+	r := runInstall(t, srv, installOpts{unameS: "Linux", unameM: "x86_64", stubs: map[string]string{"curl": curl}})
+	if r.err == nil || !strings.Contains(r.stderr, "unexpected answer") {
+		t.Fatalf("%v\n%q", r.err, r.stderr)
+	}
+	if strings.ContainsAny(r.stderr, "\x1b\x07") {
+		t.Fatalf("control bytes reached the terminal: %q", r.stderr)
+	}
+}

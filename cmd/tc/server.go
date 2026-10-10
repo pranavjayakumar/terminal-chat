@@ -186,11 +186,18 @@ func printInvite(w io.Writer, inv proto.InviteRes, version string) {
 	if inv.Expires > 0 {
 		what += ", expires " + time.UnixMilli(inv.Expires).Format("Mon Jan 2 15:04 MST")
 	}
+	// The code embeds --public; refuse to print anything that isn't plain
+	// and shell-safe rather than a line that would do something else.
+	if !proto.ShellSafe(inv.Code) {
+		fmt.Fprintf(w, "\nInvite (%s) has unsafe characters, so it isn't shown as a command: %s\n"+
+			"Check --public (letters, digits, '.', '-', ':' and [] only).\n\n", what, sanitize.Line(inv.Code))
+		return
+	}
 	fmt.Fprintf(w, "\nInvite (%s). Share this line; it installs tc and joins:\n\n", what)
 	if cmd, err := proto.InstallCommand(inv.Code, version); err == nil {
-		fmt.Fprintf(w, "  %s\n\n", cmd)
+		fmt.Fprintf(w, "  %s\n\n", sanitize.Line(cmd))
 	}
-	fmt.Fprintf(w, "Already have tc? Run:\n\n  tc join '%s'\n\n", inv.Code)
+	fmt.Fprintf(w, "Already have tc? Run:\n\n  tc join '%s'\n\n", sanitize.Line(inv.Code))
 }
 
 // printInvites is the --list table. Names come from the server's own
