@@ -22,3 +22,7 @@ The current resume point always lives in [STATUS.md](STATUS.md) → "Handoff".
 - 13:20 · Waiting for E2E step 12 before tagging v0.2.0 (release must include M3 final pass)
 - 13:50 · Repo cleanup: 37 merged remote branches deleted, local merged branches + obsolete stash removed, GitHub 'delete branch on merge' enabled · only main + e2e/final-pass (step 12, in flight) remain
 - 14:00 · E2E step 12 final pass (security pass: 1 high + 6 medium fixed, 3 low fixed, rest documented; chaos during rotations 5/5; signed-time drift warning; 14 fuzz targets 60 s, no crashers) · kiro, worktree kiro-step12, branch e2e/final-pass · done, not pushed; M3 done
+- 14:20 · M3 step 12 merged (PR #40) · M3 + M4 complete
+- 14:30 · Owner kept the name tc; released v0.2.0 (workflow draft → make release-sign with the owner's key → published) · clean-HOME one-line install verified (signature OK)
+- 14:35 · Droplet redeployed from the signed release (same pin) · owner admin invite + 15-use team invite generated
+- 14:40 · ONBOARDING.md written · PAUSED per owner

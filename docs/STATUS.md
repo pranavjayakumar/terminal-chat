@@ -4,31 +4,22 @@ Last updated: 2026-10-10 (end of session 1; branch `m2-activity` adds drafts, hi
 
 ## Handoff (always current — read this first when switching accounts)
 
-**Goal of the current push (owner, 2026-10-10):** finish M3 (E2E steps 11–12) and M4 (onboarding) end to end,
-cut release v0.2.0, redeploy the droplet, hand the owner the one-line install/invite command, then PAUSE.
+**PAUSED (2026-10-10, owner's request)** after completing M3 and M4 and shipping the first release.
 
-**In flight**
-- E2E step 12 (final pass) — kiro; worktree `.claude/worktrees/kiro-step12`, branch `e2e/final-pass`: chaos during
-  rotations, signed-time drift marker, security pass (findings → docs/E2E.md), fuzzing, docs; closes M3.
-- M4 onboarding — DONE (PR #34). Signing key (owner's ~/.ssh/id_ed25519 public half) embedded.
-- Step 11 is DONE (PR #32).
+- **Released:** v0.2.0 (signed with the owner's SSH key; https://github.com/pranavjayakumar/terminal-chat/releases/tag/v0.2.0).
+  Install: `curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/v0.2.0/install.sh | sh -s -- '<invite>'`.
+- **Production:** root@159.65.152.35 (key-only SSH), systemd `tc` running v0.2.0 on :7443 (UDP+TCP), data
+  `/var/lib/tc`, pin `kizIIb-LUvMblyz18Ovf52VftSZnISNdJAEUz56LoU4`. Owner got an admin invite and a 15-use team
+  invite (24 h). Owner should change the droplet root password (it was shared in chat; password SSH is off).
+- **Repo:** only `main`; GitHub deletes merged branches automatically; CI green.
+- **Name:** stays `tc` for now (owner). A rename later should happen before many installs; note `tc` clashes with
+  iproute2's `tc` on Linux.
+- **Next session:** owner onboarding using `ONBOARDING.md`. Then candidates: M5 voice huddles; deferred M4 items
+  (brew tap, any-member invites, `--key github:user`, device revoke command); polish from real team use.
 
-**Next (in order):** review + merge step 12 (run a security review on it) → `git tag v0.2.0 && git push origin v0.2.0`
-→ `gh run watch` (draft release) → `make release-sign TAG=v0.2.0 KEY=~/.ssh/id_ed25519` → tag v0.2.0 done (release workflow builds binaries) → redeploy droplet with the release binary
-(`docs/DEPLOY.md`) → test the one-liner from a clean HOME → give the owner the command → update this file → pause.
-
-**Repo hygiene:** GitHub deletes PR branches on merge; after merging, remove the worktree and local branch so
-only `main` (plus in-flight work) exists. Owner wants an onboarding session after the pause — prepare a clear
-walkthrough of the product workflow (install → join → chat → herdr → encryption/verify → admin/invites → deploy).
-
-**Rules:** kiro hard cap 55–60% of monthly credits; once reached, run workers as Claude subagents (owner) (check `kiro-cli chat --no-interactive "/usage"`; stop at 55%).
-Claude only orchestrates (review/merge/log); workers on kiro, launched with herdr env vars unset. Merge only with
-`gh pr checks <n> --watch` exit 0 (CI works again since the repo is public). Log every event in `docs/WORKLOG.md`.
-
-**Production server:** root@159.65.152.35 (key-only SSH from the owner's Mac key), systemd unit `tc`,
-data `/var/lib/tc`, public addr 159.65.152.35:7443, pin `kizIIb-LUvMblyz18Ovf52VftSZnISNdJAEUz56LoU4`.
-The owner's one-time admin invite was printed in `journalctl -u tc` on first start (don't consume it).
-The owner should change the droplet root password (it was shared in chat; password SSH is disabled).
+**Rules:** kiro hard cap 55–60% of monthly credits (check `kiro-cli chat --no-interactive "/usage"`); once reached,
+run workers as Claude subagents. Claude orchestrates (review/merge/log). Merge only with `gh pr checks <n> --watch`
+exit 0. Log every event in `docs/WORKLOG.md`. Delete worktrees/local branches after merge.
 
 ## Where we are
 
