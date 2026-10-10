@@ -20,3 +20,4 @@ The current resume point always lives in [STATUS.md](STATUS.md) → "Handoff".
 - 12:30 · Owner: if kiro reaches the cap, run workers as Claude subagents · kiro 50.3%
 - 13:20 · M4 security fixes done (kiro) + owner's signing key embedded · PR #34 merged (CI green) · M4 on main
 - 13:20 · Waiting for E2E step 12 before tagging v0.2.0 (release must include M3 final pass)
+- 13:50 · Repo cleanup: 37 merged remote branches deleted, local merged branches + obsolete stash removed, GitHub 'delete branch on merge' enabled · only main + e2e/final-pass (step 12, in flight) remain
