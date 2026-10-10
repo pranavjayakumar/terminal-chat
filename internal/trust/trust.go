@@ -40,8 +40,9 @@ const FileName = "e2e.db"
 // key_changes.last_seen (pending key changes are an LRU of maxKeyChanges);
 // v7 adds archived_device_keys; v8 adds epochs.seq (the key.epoch seq of a
 // verified bundle; NULL = unknown) and legacy_cutoffs; v9 adds
-// legacy_cutoffs.claimed (the cutoff is the server's Channel.legacy).
-const schemaVersion = 9
+// legacy_cutoffs.claimed (the cutoff is the server's Channel.legacy); v10
+// adds trust_audit (deliberate alarm clears and out-of-band verifications).
+const schemaVersion = 10
 
 // maxKeyChanges bounds the pending key changes kept per user and server; the
 // least recently seen is dropped (it is re-recorded if seen again).
@@ -92,6 +93,13 @@ CREATE TABLE IF NOT EXISTS legacy_cutoffs (
 	claimed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (server_id, chan));
 CREATE TABLE IF NOT EXISTS server_alarms (
 	server_id BLOB PRIMARY KEY, detail TEXT NOT NULL, time INTEGER NOT NULL);
+-- What the user did on purpose to the trust state: clearing an alarm
+-- (the alarm's detail and raise time are kept here) or verifying a user's
+-- keys out of band. Append-only.
+CREATE TABLE IF NOT EXISTS trust_audit (
+	server_id BLOB NOT NULL, time INTEGER NOT NULL, by INTEGER NOT NULL, action TEXT NOT NULL,
+	chan INTEGER NOT NULL DEFAULT 0, user INTEGER NOT NULL DEFAULT 0, detail TEXT NOT NULL,
+	raised INTEGER NOT NULL DEFAULT 0);
 `
 
 // migrateV1 adds the v2 columns to a v1 file (the v2 tables come from schema).
@@ -141,6 +149,11 @@ var (
 	ErrUnknownEpoch = errors.New("trust: epoch not verified")
 	// ErrKeyMismatch means a key doesn't match the epoch's key commitment.
 	ErrKeyMismatch = errors.New("trust: key does not match the epoch's kc")
+	// ErrNoAlarm means there is no alarm to clear.
+	ErrNoAlarm = errors.New("trust: no alarm")
+	// ErrPinsChanged means the keys offered for verification aren't exactly
+	// the user's pinned keys (they changed since they were compared).
+	ErrPinsChanged = errors.New("trust: pinned keys changed since they were compared")
 	// ErrServerChanged means the server at a pinned address and TLS pin
 	// presented another server_id than the one first seen there.
 	ErrServerChanged = errors.New("server identity changed — log in again to trust it")
@@ -616,6 +629,59 @@ func (s *Store) AcknowledgeKeyChange(sid e2ecrypto.ServerID, user uint64, fp str
 	return nil
 }
 
+// VerifyKeys records that user `by` confirmed user's SSH keys out of band
+// (method says how, e.g. "safety number"): fps must be exactly user's
+// pinned keys right now (ErrPinsChanged otherwise: what was compared is no
+// longer what is pinned), and all become Verified. The devices they signed
+// are thereby verified out of band. The verification is audited.
+func (s *Store) VerifyKeys(sid e2ecrypto.ServerID, user uint64, fps []string, method string, by uint64) error {
+	if len(fps) == 0 {
+		return fmt.Errorf("verifying keys of user %d: %w: no keys", user, ErrInvalid)
+	}
+	err := s.tx(func(tx *sql.Tx) error {
+		rows, err := tx.Query(`SELECT fp FROM pinned_keys WHERE server_id = ? AND user = ?`, sid[:], i64(user))
+		if err != nil {
+			return err
+		}
+		var cur []string
+		for rows.Next() {
+			var fp string
+			if err := rows.Scan(&fp); err != nil {
+				rows.Close()
+				return err
+			}
+			cur = append(cur, fp)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		want := map[string]bool{}
+		for _, fp := range fps {
+			want[fp] = true
+		}
+		if len(want) != len(cur) {
+			return ErrPinsChanged
+		}
+		for _, fp := range cur {
+			if !want[fp] {
+				return ErrPinsChanged
+			}
+		}
+		if _, err := tx.Exec(`UPDATE pinned_keys SET how = ? WHERE server_id = ? AND user = ?`,
+			Verified, sid[:], i64(user)); err != nil {
+			return err
+		}
+		_, err = tx.Exec(`INSERT INTO trust_audit (server_id, time, by, action, user, detail) VALUES (?, ?, ?, ?, ?, ?)`,
+			sid[:], time.Now().UnixNano(), i64(by), "verify", i64(user), method)
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("verifying keys of user %d: %w", user, err)
+	}
+	return nil
+}
+
 func scanKeys(rows *sql.Rows, err error) ([]SSHKey, error) {
 	if err != nil {
 		return nil, err
@@ -1001,9 +1067,8 @@ func (s *Store) MissingKeys(sid e2ecrypto.ServerID, ch uint64) ([]uint32, error)
 
 // RaiseAlarm records that the server presented something about the channel's
 // chain that an honest server can't (a fork, rollback, forged bundle). The
-// first detail is kept. There is deliberately no way to clear an alarm
-// yet: like the sticky flags, nothing the sync code calls may undo it (the
-// TUI's acknowledge flow, step 10, will add one).
+// first detail is kept. Only ClearChannelAlarm, a deliberate user action
+// that is audited, removes it; nothing the sync code calls may.
 func (s *Store) RaiseAlarm(sid e2ecrypto.ServerID, ch uint64, detail string) error {
 	err := s.tx(func(tx *sql.Tx) error {
 		_, err := tx.Exec(`INSERT OR IGNORE INTO chan_alarms (server_id, chan, detail, time) VALUES (?, ?, ?, ?)`,
@@ -1018,14 +1083,104 @@ func (s *Store) RaiseAlarm(sid e2ecrypto.ServerID, ch uint64, detail string) err
 
 // Alarm returns the channel's alarm detail; ok is false if there is none.
 func (s *Store) Alarm(sid e2ecrypto.ServerID, ch uint64) (detail string, ok bool, err error) {
-	err = s.db.QueryRow(`SELECT detail FROM chan_alarms WHERE server_id = ? AND chan = ?`, sid[:], i64(ch)).Scan(&detail)
+	detail, _, ok, err = s.AlarmSince(sid, ch)
+	return detail, ok, err
+}
+
+// AlarmSince is Alarm with the time the alarm was raised.
+func (s *Store) AlarmSince(sid e2ecrypto.ServerID, ch uint64) (detail string, at time.Time, ok bool, err error) {
+	var ns int64
+	err = s.db.QueryRow(`SELECT detail, time FROM chan_alarms WHERE server_id = ? AND chan = ?`, sid[:], i64(ch)).Scan(&detail, &ns)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
+		return "", time.Time{}, false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("loading alarm: %w", err)
+		return "", time.Time{}, false, fmt.Errorf("loading alarm: %w", err)
 	}
-	return detail, true, nil
+	return detail, time.Unix(0, ns), true, nil
+}
+
+// ClearChannelAlarm removes the channel's alarm because user `by` chose to
+// (after reading why it was raised). The alarm's detail and raise time move
+// to the audit log with who cleared it and when; ErrNoAlarm if there is
+// none. If the server still presents what raised it, the client raises it
+// again.
+func (s *Store) ClearChannelAlarm(sid e2ecrypto.ServerID, ch, by uint64) error {
+	err := s.tx(func(tx *sql.Tx) error {
+		return clearAlarm(tx, sid, "clear_alarm", ch, by,
+			`SELECT detail, time FROM chan_alarms WHERE server_id = ? AND chan = ?`,
+			`DELETE FROM chan_alarms WHERE server_id = ? AND chan = ?`, sid[:], i64(ch))
+	})
+	if err != nil {
+		return fmt.Errorf("clearing alarm of channel %d: %w", ch, err)
+	}
+	return nil
+}
+
+// ClearTrustAlarm is ClearChannelAlarm for the server-wide alarm.
+func (s *Store) ClearTrustAlarm(sid e2ecrypto.ServerID, by uint64) error {
+	err := s.tx(func(tx *sql.Tx) error {
+		return clearAlarm(tx, sid, "clear_server_alarm", 0, by,
+			`SELECT detail, time FROM server_alarms WHERE server_id = ?`,
+			`DELETE FROM server_alarms WHERE server_id = ?`, sid[:])
+	})
+	if err != nil {
+		return fmt.Errorf("clearing server alarm: %w", err)
+	}
+	return nil
+}
+
+func clearAlarm(tx *sql.Tx, sid e2ecrypto.ServerID, action string, ch, by uint64, sel, del string, args ...any) error {
+	var detail string
+	var raised int64
+	err := tx.QueryRow(sel, args...).Scan(&detail, &raised)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNoAlarm
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO trust_audit (server_id, time, by, action, chan, detail, raised)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, sid[:], time.Now().UnixNano(), i64(by), action, i64(ch), detail, raised); err != nil {
+		return err
+	}
+	_, err = tx.Exec(del, args...)
+	return err
+}
+
+// AuditEntry is a row of the trust audit log.
+type AuditEntry struct {
+	Time   time.Time
+	By     uint64 // the local user who did it
+	Action string // "clear_alarm", "clear_server_alarm" or "verify"
+	Chan   uint64 // the cleared channel alarm's channel
+	User   uint64 // the verified user
+	Detail string // the cleared alarm's detail, or how the user was verified
+	Raised time.Time
+}
+
+// Audit returns the server's trust audit log, oldest first.
+func (s *Store) Audit(sid e2ecrypto.ServerID) ([]AuditEntry, error) {
+	rows, err := s.db.Query(`SELECT time, by, action, chan, user, detail, raised FROM trust_audit
+		WHERE server_id = ? ORDER BY time, rowid`, sid[:])
+	if err != nil {
+		return nil, fmt.Errorf("loading trust audit: %w", err)
+	}
+	defer rows.Close()
+	var out []AuditEntry
+	for rows.Next() {
+		var e AuditEntry
+		var at, by, ch, user, raised int64
+		if err := rows.Scan(&at, &by, &e.Action, &ch, &user, &e.Detail, &raised); err != nil {
+			return nil, err
+		}
+		e.Time, e.By, e.Chan, e.User = time.Unix(0, at), uint64(by), uint64(ch), uint64(user)
+		if raised != 0 {
+			e.Raised = time.Unix(0, raised)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 // ---- sticky flags ----
@@ -1175,7 +1330,7 @@ func (s *Store) RepinServer(addr, pin string, sid e2ecrypto.ServerID) error {
 
 // RaiseServerAlarm records that the server did something an honest one
 // can't (e.g. dropped e2e1 after speaking it). The first detail is kept;
-// like channel alarms it can't be cleared yet (step 10).
+// only ClearTrustAlarm (audited) removes it.
 func (s *Store) RaiseServerAlarm(sid e2ecrypto.ServerID, detail string) error {
 	err := s.tx(func(tx *sql.Tx) error {
 		_, err := tx.Exec(`INSERT OR IGNORE INTO server_alarms (server_id, detail, time) VALUES (?, ?, ?)`,
@@ -1190,12 +1345,19 @@ func (s *Store) RaiseServerAlarm(sid e2ecrypto.ServerID, detail string) error {
 
 // ServerAlarm returns the server's alarm detail; ok is false if there is none.
 func (s *Store) ServerAlarm(sid e2ecrypto.ServerID) (detail string, ok bool, err error) {
-	err = s.db.QueryRow(`SELECT detail FROM server_alarms WHERE server_id = ?`, sid[:]).Scan(&detail)
+	detail, _, ok, err = s.ServerAlarmSince(sid)
+	return detail, ok, err
+}
+
+// ServerAlarmSince is ServerAlarm with the time the alarm was raised.
+func (s *Store) ServerAlarmSince(sid e2ecrypto.ServerID) (detail string, at time.Time, ok bool, err error) {
+	var ns int64
+	err = s.db.QueryRow(`SELECT detail, time FROM server_alarms WHERE server_id = ?`, sid[:]).Scan(&detail, &ns)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
+		return "", time.Time{}, false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("loading server alarm: %w", err)
+		return "", time.Time{}, false, fmt.Errorf("loading server alarm: %w", err)
 	}
-	return detail, true, nil
+	return detail, time.Unix(0, ns), true, nil
 }
