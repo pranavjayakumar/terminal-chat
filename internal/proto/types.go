@@ -280,6 +280,10 @@ type Message struct {
 	// Renc carries each encrypted reaction's signed enc (Plain t =
 	// "react"); Reactions then maps tags, not emoji (§13.4).
 	Renc []ReactEnc `msgpack:"renc,omitempty"`
+	// Mid is the server's record of e2ecrypto.MID(Enc), kept after a
+	// delete so a device that never saw Enc can check a delete's ref. It is
+	// the server's claim, not proof (§13.4).
+	Mid []byte `msgpack:"mid,omitempty"`
 }
 
 // ReactEnc is one encrypted reaction: user reacted with tag, proven by enc.

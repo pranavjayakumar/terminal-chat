@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/proto"
 )
 
@@ -33,7 +34,9 @@ func TestEncryptedEditDeleteReact(t *testing.T) {
 	e1 := bundle(t, a1, sid, ch.ID, 1, nil, roster, a1, b1)
 	alice.rotate(ch.ID, e1)
 	var sent proto.SendRes
-	alice.ok(proto.OpSend, proto.SendArgs{Chan: ch.ID, Nonce: newNonce(), Enc: encFor(t, sid, a1, ch.ID, 1, e1, "orig")}, &sent)
+	origEnc := encFor(t, sid, a1, ch.ID, 1, e1, "orig")
+	origMid := e2ecrypto.MID(origEnc)
+	alice.ok(proto.OpSend, proto.SendArgs{Chan: ch.ID, Nonce: newNonce(), Enc: origEnc}, &sent)
 	id := sent.Msg
 	plainMsg := alice.send(gen, "plain").Msg
 	edit := func(c *tclient, a proto.EditArgs) *proto.Error { return c.errOf(proto.OpEdit, a) }
@@ -143,7 +146,7 @@ func TestEncryptedEditDeleteReact(t *testing.T) {
 	if proto.Unmarshal(ev.Data, &md) != nil || md.Msg != id || !bytes.Equal(md.Enc, denc) {
 		t.Fatalf("bob got delete %+v", md)
 	}
-	if h := history(bob); !h.Deleted || h.Enc != nil || h.EditEnc != nil || !bytes.Equal(h.DelEnc, denc) || len(h.Renc) != 0 {
+	if h := history(bob); !h.Deleted || h.Enc != nil || h.EditEnc != nil || !bytes.Equal(h.DelEnc, denc) || len(h.Renc) != 0 || !bytes.Equal(h.Mid, origMid[:]) {
 		t.Fatalf("deleted message %+v", h)
 	}
 	ts.st.db.QueryRow(`SELECT data FROM events WHERE seq = ?`, id).Scan(&data)

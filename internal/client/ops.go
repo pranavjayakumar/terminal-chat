@@ -325,7 +325,7 @@ func (c *Client) Edit(ctx context.Context, msg uint64, body string) error {
 	}
 	row, ok := getMsgRow(c.db, msg)
 	if !ok {
-		return proto.Errf(proto.ErrNotFound, "message not loaded")
+		return errNotLoaded
 	}
 	if c.needsEnc(row.ch) {
 		return c.editEnc(ctx, row, body) // encops.go

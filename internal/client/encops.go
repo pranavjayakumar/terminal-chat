@@ -137,11 +137,11 @@ func (c *Client) E2ERejects() []string {
 
 // applyEdit applies an encrypted edit of row if it verifies: signed by a
 // verified device of the original author, t = "edit", ref = the
-// original's mid, valid text and a version above the applied one.
+// original's mid, valid text and newer than the applied one (newerEdit).
 // Otherwise nothing changes. One it can't judge yet is kept (epend) and
-// tried again by the e2e worker. edited is the server's time of the edit
-// (0: unknown; the Plain's ts is used).
-func (c *Client) applyEdit(q dbtx, row msgRow, enc []byte, edited int64, seq uint64, memo *keyMemo) bool {
+// tried again by the e2e worker. Its edited time is the signed Plain ts,
+// not the server's claim.
+func (c *Client) applyEdit(q dbtx, row msgRow, enc []byte, seq uint64, memo *keyMemo) bool {
 	if row.deleted || row.mid == nil || row.sec == SecInvalid {
 		c.reject(row.id, "edit of a message that can't be edited")
 		return false
@@ -152,6 +152,7 @@ func (c *Client) applyEdit(q dbtx, row msgRow, enc []byte, edited int64, seq uin
 	sid, ok := qServerID(q)
 	if row.sec == SecWaiting || !ok {
 		q.Exec(`UPDATE msgs SET epend = ? WHERE id = ?`, enc, row.id)
+		c.trimPending(q, row.ch)
 		return false
 	}
 	if row.sec != SecE2E {
@@ -161,7 +162,7 @@ func (c *Client) applyEdit(q dbtx, row msgRow, enc []byte, edited int64, seq uin
 	raw, d, sec, why := c.openEnc(sid, row.ch, row.author, seq, enc, memo)
 	if sec == SecWaiting {
 		q.Exec(`UPDATE msgs SET epend = ? WHERE id = ?`, enc, row.id)
-		c.kickE2E()
+		c.trimPending(q, row.ch)
 		return false
 	}
 	// Judged: whatever was pending for this message is settled.
@@ -183,11 +184,8 @@ func (c *Client) applyEdit(q dbtx, row msgRow, enc []byte, edited int64, seq uin
 	case !newerEdit(p.V, p.TS, enc, row):
 		c.reject(row.id, "edit: (v %d, ts %d) is not newer than the applied (v %d, ts %d)", p.V, p.TS, row.ev, row.ets)
 	default:
-		if edited == 0 {
-			edited = p.TS
-		}
 		_, err := q.Exec(`UPDATE msgs SET body = ?, edited = ?, ev = ?, ets = ?, eenc = ?, epend = NULL WHERE id = ?`,
-			p.Body, max(edited, 1), p.V, p.TS, enc, row.id)
+			p.Body, max(p.TS, 1), p.V, p.TS, enc, row.id)
 		return err == nil
 	}
 	return false
@@ -237,7 +235,7 @@ func (c *Client) deleteVerdict(q dbtx, sid e2ecrypto.ServerID, hasSID bool, ch, 
 	switch {
 	case proto.Unmarshal(raw, &p) != nil || p.T != "del":
 		c.reject(id, "delete: not a delete")
-	case mid != nil && !bytes.Equal(p.Ref, mid):
+	case mid == nil || !bytes.Equal(p.Ref, mid):
 		c.reject(id, "delete: made for another message")
 	case revokedAt(d, p.TS):
 		c.reject(id, "delete: signed after its device was revoked")
@@ -258,19 +256,27 @@ func (c *Client) saveDeleted(q dbtx, m *proto.Message, old msgRow, hadOld bool, 
 		return old.sec, nil
 	}
 	sid, hasSID := qServerID(q)
-	sec := c.deleteVerdict(q, sid, hasSID, m.Chan, m.ID, m.Author, old.mid, m.DelEnc, 0, memo)
+	// A delete's ref is checked against the mid we computed from the enc;
+	// a device that never saw the enc has only the server's claim (cmid),
+	// which must not be another message's. With neither the delete can't be
+	// shown as the author's. The claim is never used for threads.
+	ref, cmid := old.mid, []byte(nil)
+	if ref == nil && len(m.Mid) == e2ecrypto.IDSize {
+		var other uint64
+		if q.QueryRow(`SELECT id FROM msgs WHERE mid = ? AND id != ? LIMIT 1`, m.Mid, m.ID).Scan(&other) != nil {
+			ref, cmid = m.Mid, m.Mid
+		}
+	}
+	sec := c.deleteVerdict(q, sid, hasSID, m.Chan, m.ID, m.Author, ref, m.DelEnc, 0, memo)
 	m.Body, m.Enc, m.Reactions, m.Edited = "", nil, nil, 0
 	if err := storeMsg(q, *m, sec, old.mid, true); err != nil {
 		return sec, err
 	}
-	if _, err := q.Exec(`UPDATE msgs SET denc = ? WHERE id = ?`, m.DelEnc, m.ID); err != nil {
+	if _, err := q.Exec(`UPDATE msgs SET denc = ?, cmid = ? WHERE id = ?`, m.DelEnc, cmid, m.ID); err != nil {
 		return sec, err
 	}
 	if _, err := q.Exec(`DELETE FROM rencs WHERE msg = ?`, m.ID); err != nil {
 		return sec, err
-	}
-	if sec == SecWaiting {
-		c.kickE2E()
 	}
 	return sec, nil
 }
@@ -294,9 +300,6 @@ func (c *Client) applyDelete(q dbtx, d proto.MsgDelete, seq uint64) error {
 	}
 	if _, err := q.Exec(`DELETE FROM rencs WHERE msg = ?`, d.Msg); err != nil {
 		return err
-	}
-	if sec == SecWaiting {
-		c.kickE2E()
 	}
 	return nil
 }
@@ -379,6 +382,9 @@ func (c *Client) judgeReact(q dbtx, row msgRow, user uint64, tag string, enc []b
 // (snapshot, history), keeping verdicts of unchanged ones.
 func syncRencs(q dbtx, msg uint64, renc []proto.ReactEnc) error {
 	keep := map[[2]string]bool{}
+	if len(renc) > maxReactsPerMsg {
+		renc = renc[:maxReactsPerMsg] // the server caps them too
+	}
 	for _, r := range renc {
 		if r.Enc == nil {
 			continue
@@ -419,6 +425,11 @@ func (c *Client) refreshReacts(q dbtx, msg uint64, memo *keyMemo) bool {
 	if !ok {
 		return false
 	}
+	if row.deleted || row.sec == SecInvalid {
+		// Nothing to show on them: don't keep (or retry) their reactions.
+		q.Exec(`DELETE FROM rencs WHERE msg = ?`, msg)
+		return c.rebuildReacts(q, row)
+	}
 	type pend struct {
 		user uint64
 		tag  string
@@ -440,6 +451,31 @@ func (c *Client) refreshReacts(q dbtx, msg uint64, memo *keyMemo) bool {
 		}
 	}
 	return c.rebuildReacts(q, row)
+}
+
+// Bounds on what waits for a key or device (a server can send any amount
+// of it): pending reactions per message and per channel, pending edits per
+// channel (one per message by construction), and reactions kept per
+// message. Variables so tests can lower them.
+var (
+	maxPendingPerMsg  = 16
+	maxPendingPerChan = 1000
+	maxReactsPerMsg   = 256
+)
+
+// trimPending drops the newest pending reactions beyond the per-message
+// and per-channel caps in ch, and the newest pending edits beyond the
+// per-channel cap. Dropped ones are as if never received.
+func (c *Client) trimPending(q dbtx, ch uint64) {
+	q.Exec(`DELETE FROM rencs WHERE st = ?1 AND rowid IN (
+		SELECT r.rowid FROM rencs r JOIN msgs m ON m.id = r.msg WHERE r.st = ?1 AND m.chan = ?2
+		AND (SELECT COUNT(*) FROM rencs o WHERE o.msg = r.msg AND o.st = ?1 AND o.rowid < r.rowid) >= ?3)`,
+		reactPending, ch, maxPendingPerMsg)
+	q.Exec(`DELETE FROM rencs WHERE rowid IN (
+		SELECT r.rowid FROM rencs r JOIN msgs m ON m.id = r.msg WHERE r.st = ? AND m.chan = ?
+		ORDER BY r.rowid LIMIT -1 OFFSET ?)`, reactPending, ch, maxPendingPerChan)
+	q.Exec(`UPDATE msgs SET epend = NULL WHERE id IN (
+		SELECT id FROM msgs WHERE chan = ? AND epend IS NOT NULL ORDER BY id LIMIT -1 OFFSET ?)`, ch, maxPendingPerChan)
 }
 
 // rebuildReacts sets row's shown reactions to its verified ones.
@@ -488,10 +524,10 @@ func (c *Client) applyReactEvent(q dbtx, row msgRow, ev proto.Event, d proto.Rea
 		row.id, ev.Actor, d.Emoji, d.Enc, emoji, st); err != nil {
 		return err
 	}
-	c.rebuildReacts(q, row)
 	if st == reactPending {
-		c.kickE2E()
+		c.trimPending(q, row.ch)
 	}
+	c.rebuildReacts(q, row)
 	if st == reactOK {
 		return noteReaction(q, proto.Reaction{Msg: row.id, Emoji: emoji}, ev, me)
 	}
@@ -502,7 +538,7 @@ func (c *Client) applyReactEvent(q dbtx, row msgRow, ev proto.Event, d proto.Rea
 // reactions of messages that are verified now. Caller holds e2eMu.
 func (c *Client) reopenOps(memo *keyMemo, u *Update) {
 	var ids []uint64
-	if rows, err := c.db.Query(`SELECT id FROM msgs WHERE epend IS NOT NULL AND sec = ? LIMIT 1000`, SecE2E); err == nil {
+	if rows, err := c.db.Query(`SELECT id FROM msgs WHERE epend IS NOT NULL AND sec = ? ORDER BY id LIMIT 1000`, SecE2E); err == nil {
 		for rows.Next() {
 			var id uint64
 			if rows.Scan(&id) == nil {
@@ -512,14 +548,14 @@ func (c *Client) reopenOps(memo *keyMemo, u *Update) {
 		rows.Close()
 	}
 	for _, id := range ids {
-		if row, ok := getMsgRow(c.db, id); ok && c.applyEdit(c.db, row, row.epend, 0, 0, memo) {
+		if row, ok := getMsgRow(c.db, id); ok && c.applyEdit(c.db, row, row.epend, 0, memo) {
 			u.msgs(row.ch)
 			u.Channels = true
 		}
 	}
 	ids = ids[:0]
 	if rows, err := c.db.Query(`SELECT DISTINCT r.msg FROM rencs r JOIN msgs m ON m.id = r.msg
-		WHERE r.st = ? AND m.sec != ? LIMIT 1000`, reactPending, SecWaiting); err == nil {
+		WHERE r.st = ? AND m.sec != ? ORDER BY r.msg LIMIT 1000`, reactPending, SecWaiting); err == nil {
 		for rows.Next() {
 			var id uint64
 			if rows.Scan(&id) == nil {
@@ -543,6 +579,10 @@ func (c *Client) reopenOps(memo *keyMemo, u *Update) {
 // encrypted edit, delete or reaction (the rest have no mid to refer to, or
 // we can't vouch for them).
 var ErrNotEditable = errors.New("this encrypted message can't be changed from here")
+
+// errNotLoaded: the message isn't in the cache, so neither is what we must
+// know about its channel (encrypted? in alarm?) before acting on it.
+var errNotLoaded = proto.Errf(proto.ErrNotFound, "message not loaded")
 
 // editEnc edits our message row with an encrypted edit (§13.4): sealed
 // with the channel's current key like a send, retried after a stale_epoch.
@@ -624,12 +664,15 @@ func (c *Client) sealForMsg(row msgRow, p any) ([]byte, e2ecrypto.Key, error) {
 func (c *Client) deleteArgs(msg uint64) (proto.DeleteArgs, error) {
 	a := proto.DeleteArgs{Msg: msg}
 	row, ok := getMsgRow(c.db, msg)
-	if ok && c.needsEnc(row.ch) {
+	if !ok {
+		return a, errNotLoaded // its channel (alarm, encryption) is unknown
+	}
+	if c.needsEnc(row.ch) {
 		if err := c.sendAllowed(row.ch); err != nil {
 			return a, err // no deletes in alarm, like sends
 		}
 	}
-	if !ok || row.deleted || row.author != c.Me().ID || row.mid == nil || !c.needsEnc(row.ch) {
+	if row.deleted || row.author != c.Me().ID || row.mid == nil || !c.needsEnc(row.ch) {
 		return a, nil // someone else's (admin), or plaintext: unsigned
 	}
 	if row.sec != SecE2E {
@@ -645,7 +688,12 @@ func (c *Client) deleteArgs(msg uint64) (proto.DeleteArgs, error) {
 func (c *Client) reactArgs(msg uint64, emoji string, add bool) (proto.ReactArgs, error) {
 	a := proto.ReactArgs{Msg: msg, Emoji: emoji}
 	row, ok := getMsgRow(c.db, msg)
-	if !ok || !c.needsEnc(row.ch) {
+	if !ok {
+		// We can't tell which channel it is in, so whether the emoji may go
+		// in the clear: refuse, like edits of uncached messages.
+		return a, errNotLoaded
+	}
+	if !c.needsEnc(row.ch) {
 		return a, nil
 	}
 	if err := c.sendAllowed(row.ch); err != nil {

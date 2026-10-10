@@ -304,7 +304,12 @@ func (c *Client) saveMsg(q dbtx, m *proto.Message, replace bool, memo *keyMemo) 
 	if sid, ok := qServerID(q); m.Deleted && ((hadOld && old.mid != nil) || c.chanIsE2E(q, sid, ok, m.Chan)) {
 		return c.saveDeleted(q, m, old, hadOld, memo)
 	}
-	editEnc, renc, srvEdited := m.EditEnc, m.Renc, m.Edited
+	if hadOld && old.enc != nil && m.Enc == nil {
+		// A copy without the enc can't replace an encrypted message (it
+		// would turn verified text into the server's): keep ours.
+		return old.sec, nil
+	}
+	editEnc, renc := m.EditEnc, m.Renc
 	sec, mid, keep := c.judge(q, m, memo)
 	if sec == SecInvalid || sec == SecWaiting {
 		m.Body = ""
@@ -343,11 +348,11 @@ func (c *Client) saveMsg(q dbtx, m *proto.Message, replace bool, memo *keyMemo) 
 		}
 		if row, ok := getMsgRow(q, m.ID); ok {
 			if editEnc != nil && !bytes.Equal(editEnc, row.eenc) {
-				c.applyEdit(q, row, editEnc, srvEdited, 0, memo)
+				c.applyEdit(q, row, editEnc, 0, memo)
 			}
 			// An edit that waited for this message to open.
 			if row, ok := getMsgRow(q, m.ID); ok && row.epend != nil && row.sec == SecE2E {
-				c.applyEdit(q, row, row.epend, 0, 0, memo)
+				c.applyEdit(q, row, row.epend, 0, memo)
 			}
 			if replace {
 				if err := syncRencs(q, m.ID, renc); err != nil {
@@ -355,6 +360,9 @@ func (c *Client) saveMsg(q dbtx, m *proto.Message, replace bool, memo *keyMemo) 
 				}
 			}
 			c.refreshReacts(q, m.ID, memo)
+			if sec == SecWaiting {
+				c.trimPending(q, m.Chan)
+			}
 			if row, ok := getMsgRow(q, m.ID); ok && sec == SecE2E {
 				m.Body, m.Edited = row.body, row.edited
 			}
@@ -387,7 +395,7 @@ func (c *Client) reopenMsgs(sid e2ecrypto.ServerID, chans []proto.Channel) {
 			u.msgs(ch.ID)
 		}
 	}
-	rows, err := c.db.Query(`SELECT `+msgCols+`, enc, denc, mid FROM msgs WHERE sec = ? ORDER BY id LIMIT 1000`, SecWaiting)
+	rows, err := c.db.Query(`SELECT `+msgCols+`, enc, denc, COALESCE(mid, cmid) FROM msgs WHERE sec = ? ORDER BY id LIMIT 1000`, SecWaiting)
 	if err != nil {
 		return
 	}

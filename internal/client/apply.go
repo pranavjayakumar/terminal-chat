@@ -324,7 +324,7 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		if d.Enc != nil {
 			// Encrypted edit: applied only if it verifies (encops.go).
 			if row, ok := getMsgRow(tx, d.Msg); ok {
-				c.applyEdit(tx, row, d.Enc, d.Edited, ev.Seq, nil)
+				c.applyEdit(tx, row, d.Enc, ev.Seq, nil)
 				u.msgs(row.ch)
 				u.Channels = true
 			}

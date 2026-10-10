@@ -303,7 +303,7 @@ func (s *Server) send(ctx context.Context, u proto.User, a proto.SendArgs, hook 
 			return nil, proto.Errf(proto.ErrRateLimited, "slow down")
 		}
 		now := s.now()
-		m := proto.Message{Chan: a.Chan, Author: u.ID, Body: a.Body, Thread: a.Thread, Time: now, Enc: a.Enc}
+		m := proto.Message{Chan: a.Chan, Author: u.ID, Body: a.Body, Thread: a.Thread, Time: now, Enc: a.Enc, Mid: mid}
 		ev, err := appendEvent(ctx, tx, proto.KMsgNew, a.Chan, u.ID, 0, now, m)
 		if err != nil {
 			return nil, err

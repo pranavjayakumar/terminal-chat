@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -83,7 +85,7 @@ func (d *opsDM) event(t *testing.T, kind string, actor uint64, data any) {
 
 func (d *opsDM) edit(t *testing.T, signer *e2ecrypto.DeviceKeys, v uint32, body string, ref []byte) []byte {
 	t.Helper()
-	return sealP(t, signer, d.k1, 1, d.e1, plainEdit{T: "edit", TS: 2, Body: body, Ref: ref, V: v})
+	return sealP(t, signer, d.k1, 1, d.e1, plainEdit{T: "edit", TS: 100 + int64(v), Body: body, Ref: ref, V: v})
 }
 
 func (d *opsDM) msg(t *testing.T, id uint64) Message {
@@ -110,7 +112,7 @@ func TestEncEditApplies(t *testing.T) {
 	d := newOpsDM(t)
 	id, mid := d.post(t, bob, d.b1.dev, "helo")
 	d.event(t, proto.KMsgEdit, bob, proto.MsgEdit{Msg: id, Edited: 77, Enc: d.edit(t, d.b1.dev, 1, "hello", mid)})
-	if m := d.msg(t, id); m.Body != "hello" || m.Edited != 77 || m.Sec != SecE2E {
+	if m := d.msg(t, id); m.Body != "hello" || m.Edited != 101 || m.Sec != SecE2E {
 		t.Fatalf("after edit %+v", m)
 	}
 	v2 := d.edit(t, d.b1.dev, 2, "hello v2", mid)
@@ -121,7 +123,7 @@ func TestEncEditApplies(t *testing.T) {
 		"same bytes":             v2,
 	} {
 		d.event(t, proto.KMsgEdit, bob, proto.MsgEdit{Msg: id, Edited: 79, Enc: enc})
-		if m := d.msg(t, id); m.Body != "hello v2" || m.Edited != 78 {
+		if m := d.msg(t, id); m.Body != "hello v2" || m.Edited != 102 {
 			t.Fatalf("%s applied: %+v", name, m)
 		}
 	}
@@ -162,6 +164,8 @@ func TestEncEditForgedOrMoved(t *testing.T) {
 	for name, m := range map[string]proto.Message{
 		"moved edit":    {ID: a, Chan: dm, Author: bob, Enc: origA, Edited: 9, EditEnc: d.edit(t, d.b1.dev, 1, "moved", midB)},
 		"edited claim":  {ID: a, Chan: dm, Author: bob, Enc: origA, Edited: 9},
+		"no enc":        {ID: a, Chan: dm, Author: bob, Body: "server text"},
+		"no enc, moved": {ID: a, Chan: general, Author: carol, Body: "server text"},
 		"swapped bytes": {ID: a, Chan: dm, Author: bob, Enc: other, Edited: 9, EditEnc: d.edit(t, d.b1.dev, 1, "x", midOther[:])},
 	} {
 		if err := d.c.saveMsgs([]proto.Message{m}); err != nil {
@@ -178,14 +182,14 @@ func TestEncEditForgedOrMoved(t *testing.T) {
 		EditEnc: d.edit(t, d.b1.dev, 1, "second, edited", midB)}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := d.msg(t, b); got.Body != "second, edited" || got.Edited != 9 {
+	if got := d.msg(t, b); got.Body != "second, edited" || got.Edited != 101 {
 		t.Fatalf("refetched edit %+v", got)
 	}
 	// And a later refetch without it (or with an older one) keeps it.
 	if err := d.c.saveMsgs([]proto.Message{{ID: b, Chan: dm, Author: bob, Enc: origB}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := d.msg(t, b); got.Body != "second, edited" || got.Edited != 9 {
+	if got := d.msg(t, b); got.Body != "second, edited" || got.Edited != 101 {
 		t.Fatalf("refetch dropped the edit: %+v", got)
 	}
 }
@@ -264,7 +268,7 @@ func TestEncEditOwn(t *testing.T) {
 		if a.Body != "" || a.Msg != id || p.T != "edit" || p.Body != body || string(p.Ref) != string(mid) || p.V != uint32(i+1) || p.TS == 0 {
 			t.Fatalf("edit %d: %+v %+v", i, a, p)
 		}
-		if m := d.msg(t, id); m.Body != body || m.Edited != 1234 {
+		if m := d.msg(t, id); m.Body != body || m.Edited == 1234 || m.Edited < 1000000 {
 			t.Fatalf("after edit %d: %+v", i, m)
 		}
 	}
@@ -312,15 +316,22 @@ func TestEncDeleteSignedVsUnsigned(t *testing.T) {
 	if got, _ := d.c.Search(ctx5(t), "secret", dm); len(got) != 0 {
 		t.Fatalf("deleted text still searchable: %+v", got)
 	}
-	// Deleted messages first seen in a refetch (no mid known).
+	// Deleted messages first seen in a refetch: only the server's claimed
+	// mid (Message.mid) can be checked against the delete's ref; without one,
+	// or with one that's another message's, it isn't the author's delete.
+	midZ := e2ecrypto.MID(sealAs(t, d.b1.dev, d.k1, 1, d.e1, plainMsg{T: "msg", TS: 1, Body: "never seen"}))
+	midY := e2ecrypto.MID(sealAs(t, d.b1.dev, d.k1, 1, d.e1, plainMsg{T: "msg", TS: 1, Body: "never seen either"}))
 	if err := d.c.saveMsgs([]proto.Message{
-		{ID: 900, Chan: dm, Author: bob, Deleted: true, DelEnc: del(d.b1.dev, midA)},
-		{ID: 901, Chan: dm, Author: bob, Deleted: true},
-		{ID: 902, Chan: dm, Author: bob, Deleted: true, DelEnc: del(d.carol.dev, midA)},
+		{ID: 900, Chan: dm, Author: bob, Deleted: true, DelEnc: del(d.b1.dev, midZ[:]), Mid: midZ[:]},
+		{ID: 901, Chan: dm, Author: bob, Deleted: true, Mid: midY[:]},
+		{ID: 902, Chan: dm, Author: bob, Deleted: true, DelEnc: del(d.carol.dev, midY[:]), Mid: midY[:]},
+		{ID: 903, Chan: dm, Author: bob, Deleted: true, DelEnc: del(d.b1.dev, midY[:])},
+		{ID: 904, Chan: dm, Author: bob, Deleted: true, DelEnc: del(d.b1.dev, midA), Mid: midA},
+		{ID: 905, Chan: dm, Author: bob, Deleted: true, DelEnc: del(d.b1.dev, midY[:]), Mid: midZ[:]},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for id, sec := range map[uint64]Sec{900: SecE2E, 901: SecRemoved, 902: SecRemoved} {
+	for id, sec := range map[uint64]Sec{900: SecE2E, 901: SecRemoved, 902: SecRemoved, 903: SecRemoved, 904: SecRemoved, 905: SecRemoved} {
 		if m := d.msg(t, id); !m.Deleted || m.Sec != sec {
 			t.Errorf("refetched %d: %+v, want %s", id, m, sec)
 		}
@@ -552,5 +563,103 @@ func TestEncOpsBlockedInAlarm(t *testing.T) {
 	defer l.mu.Unlock()
 	if len(l.dels)+len(l.reqs)+len(l.edits) != 0 {
 		t.Fatal("something was sent")
+	}
+}
+
+// Reacting to or deleting a message that isn't cached is refused: its
+// channel (encrypted? in alarm?) is unknown, so a plaintext emoji could
+// land in an encrypted channel.
+func TestEncUncachedOpsRefused(t *testing.T) {
+	d := newOpsDM(t)
+	l := serveOps(d)
+	ctx := ctx5(t)
+	for name, err := range map[string]error{
+		"react":   d.c.React(ctx, 4242, "👍"),
+		"unreact": d.c.Unreact(ctx, 4242, "👍"),
+		"delete":  d.c.Delete(ctx, 4242),
+	} {
+		var pe *proto.Error
+		if !errors.As(err, &pe) || pe.Code != proto.ErrNotFound {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.dels)+len(l.reqs) != 0 {
+		t.Fatal("something was sent")
+	}
+}
+
+// What waits for a key is bounded per message and per channel, and the
+// reactions of deleted messages aren't kept.
+func TestEncPendingBounded(t *testing.T) {
+	defer func(m, c int) { maxPendingPerMsg, maxPendingPerChan = m, c }(maxPendingPerMsg, maxPendingPerChan)
+	maxPendingPerMsg, maxPendingPerChan = 3, 5
+	d := newOpsDM(t)
+	k2 := newK(t)
+	e2 := mkBundle(t, d.b1.dev, dm, 2, &d.e1, dmRoster, k2, &d.k1, d.b1.dev) // no box for us
+	d.f.keyEpoch(dm, bob, e2)
+	waitFor(t, "waiting for epoch 2", func() bool { st := d.c.E2EStatus(dm); return st.State == E2EWaitingKey && st.Epoch == 2 })
+	seal := func(p any) []byte { return sealP(t, d.b1.dev, k2, 2, e2, p) }
+	var ids []uint64
+	for i := range 3 {
+		enc := seal(plainMsg{T: "msg", TS: 1, Body: fmt.Sprint("waiting ", i)})
+		id := d.f.post(proto.Message{Chan: dm, Author: bob, Enc: enc})
+		ids = append(ids, id)
+		mid := e2ecrypto.MID(enc)
+		for j := range 4 {
+			emoji := fmt.Sprint(j)
+			tag, _ := e2ecrypto.ReactTag(k2, testSID(), dm, 2, mid, emoji)
+			d.event(t, proto.KReactAdd, bob, proto.Reaction{Msg: id, Emoji: tag, Enc: seal(plainReact{T: "react", TS: 2, Ref: mid[:], Emoji: emoji, Add: true})})
+		}
+	}
+	count := func(q string, args ...any) int {
+		var n int
+		d.c.db.QueryRow(q, args...).Scan(&n)
+		return n
+	}
+	for _, id := range ids {
+		if n := count(`SELECT COUNT(*) FROM rencs WHERE msg = ? AND st = 0`, id); n > maxPendingPerMsg {
+			t.Fatalf("message %d keeps %d pending reactions", id, n)
+		}
+	}
+	if n := count(`SELECT COUNT(*) FROM rencs WHERE st = 0`); n != maxPendingPerChan {
+		t.Fatalf("channel keeps %d pending reactions, want %d", n, maxPendingPerChan)
+	}
+	// Deleting a message drops its reactions.
+	d.event(t, proto.KMsgDelete, carol, proto.MsgDelete{Msg: ids[0]})
+	if n := count(`SELECT COUNT(*) FROM rencs WHERE msg = ?`, ids[0]); n != 0 {
+		t.Fatalf("deleted message keeps %d reactions", n)
+	}
+}
+
+// Step-7 caches don't know who deleted an encrypted message: migrating
+// shows those as not by the author.
+func TestEncMigrateStep7Deletes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cache.db")
+	db, err := openCache(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{
+		`INSERT INTO msgs (id, chan, author, body, thread, time, edited, deleted, reactions, sec, mid) VALUES (1, 5, 2, '', 0, 1, 0, 1, '{}', 1, x'01')`,
+		`INSERT INTO msgs (id, chan, author, body, thread, time, edited, deleted, reactions, sec, mid) VALUES (2, 5, 2, 'live', 0, 1, 0, 0, '{}', 1, x'02')`,
+		`INSERT INTO msgs (id, chan, author, body, thread, time, edited, deleted, reactions, sec) VALUES (3, 5, 2, '', 0, 1, 0, 1, '{}', 0)`,
+		`ALTER TABLE msgs DROP COLUMN denc`,
+	} {
+		if _, err := db.Exec(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	if db, err = openCache(path); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for id, want := range map[int]Sec{1: SecRemoved, 2: SecE2E, 3: SecPlain} {
+		var sec Sec
+		if err := db.QueryRow(`SELECT sec FROM msgs WHERE id = ?`, id).Scan(&sec); err != nil || sec != want {
+			t.Errorf("message %d: %s (%v), want %s", id, sec, err, want)
+		}
 	}
 }
