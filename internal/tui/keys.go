@@ -72,7 +72,7 @@ var helpLines = [][2]string{
 	{"/encrypt", "end-to-end encrypt this private channel or DM"},
 	{"/verify @user", "compare safety numbers; v marks them verified"},
 	{"/verify @user --github login", "check their key against github.com/login.keys"},
-	{"/accept-key @user", "accept a changed key (unblocks sending)"},
+	{"/accept-key @user [fp]", "review and accept a changed key (unblocks sending)"},
 	{"/members", "who's here; ? = not verified, ! = key changed"},
 	{"/alarm", "why this channel's encryption is in alarm"},
 	{"/alarm-clear #name", "clear it (type the name to confirm; audited)"},

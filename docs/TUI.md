@@ -90,19 +90,25 @@ Unknown command → inline error, input kept.
   columns), then both users' SSH key fingerprints and the instructions. The title always says `v: they
   match · Esc: cancel`; ↑/↓/PgUp/PgDn scroll when it doesn't fit. `v` marks bob's pinned keys verified
   (notice `✓ @bob verified`; if his keys changed meanwhile the client refuses and says to compare again).
+  All trust overlays ignore keys except Esc for 500 ms after opening, so type-ahead can't confirm.
 - **`/verify @bob --github login`** fetches `github.com/login.keys` (only on this command) and shows a
-  green `✓ every key … is now verified` or a red `✗ MISMATCH` with each pinned key marked `✓`/`✗` and the
-  account's keys listed. Nothing changes on a mismatch.
+  green `✓ every key … is on github.com/login` plus "Press v to verify @bob because you confirmed
+  github.com/login is theirs" (title `v: verify · Esc: cancel`), or a red `✗ MISMATCH` with each pinned key
+  marked `✓`/`✗` and the account's keys listed. Nothing changes without `v`, or on a mismatch.
 - **Key-change banner**: when a member of the active encrypted channel presents a new SSH key that no
-  pinned key endorsed, one red line under the header reads `⚠ @bob's key changed — verify with /verify
-  @bob or accept with /accept-key @bob` (several: `⚠ keys changed: @bob, @carol — …`). Enter is refused
-  (input kept, red notice) until `/accept-key @bob`; receiving goes on. Accepting pins the new key
-  unverified, so bob gets his `?` back.
+  pinned key endorsed, one red line under the header reads `⚠ /accept-key @bob, then /verify @bob —
+  @bob's key changed` (the command first, so it survives truncation; several: `⚠ /accept-key, then
+  /verify each — keys changed: @bob, @carol`). Enter, edits and reactions are refused (input kept, red
+  notice); deletes and receiving go on. `/accept-key @bob [fingerprint]` opens an overlay listing the
+  pending fingerprints; `y` accepts exactly those (if the pending set changed meanwhile it refuses and
+  shows the new set), Esc cancels. Accepting pins the new key unverified, so bob gets his `?` back.
 - **Alarms**: the header shows `⚠ alarm: <detail>` in red (fork, rollback, plaintext downgrade, server
   dropped e2e, unconfirmed member) and sending is blocked. `/alarm` opens a list with the detail, when it
   was raised, what it means and how it can happen, and how to clear it. `/alarm-clear` alone or with a
   wrong name only says what to type; `/alarm-clear #name` (`@bob` in a DM) clears it, recorded in the
-  trust store's audit log. Alarms derived from current state (unconfirmed member) can't be cleared.
+  trust store's audit log. For the server-wide alarm the list, prompt and result say "server-wide —
+  clears the alarm for all encrypted channels". Alarms derived from current state (unconfirmed member)
+  can't be cleared.
 
 ## Behavior
 

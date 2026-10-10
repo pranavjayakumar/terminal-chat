@@ -62,9 +62,9 @@ sees it and marks them with a dim `?` until you verify them:
 - `/verify @bob` shows a 60-digit safety number. Read it to bob over another channel (in person, a
   call); if every digit matches on his screen, press `v`. From the shell: `tc verify @bob`.
 - `/verify @bob --github bobs-login` (or `tc verify @bob --github bobs-login`) checks his key against
-  `https://github.com/bobs-login.keys` instead.
+  `https://github.com/bobs-login.keys` instead; if they match, confirm the account is really his (`v` / `y`).
 - If bob's key changes, a red banner says so and sending to channels with him waits until you
-  `/verify @bob` or `/accept-key @bob`.
+  `/accept-key @bob` (it shows the new key; `y` accepts), then `/verify @bob` again.
 - If a channel shows `⚠ alarm`, `/alarm` explains what the server did; `/alarm-clear #name` clears it
   once you know why.
 

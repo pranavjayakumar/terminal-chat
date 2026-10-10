@@ -76,19 +76,29 @@ the local cache is therefore sensitive — rely on disk encryption, documented.
   — `ErrPinsChanged`), audited in `trust_audit`. Devices whose certs those keys signed are thereby
   verified out of band.
 - `/verify @bob --github bob` (and `tc verify @bob --github bob`) fetches `https://github.com/bob.keys`
-  (net/http, 15 s timeout, 256 KiB cap, only on that explicit command) and verifies bob only if **every**
-  pinned key is listed; otherwise it shows the mismatch and changes nothing.
+  (net/http, 15 s timeout, 256 KiB cap, redirects only within the same origin — no http downgrade, no
+  other host — only on that explicit command) and compares. A match is only shown: the user must still
+  confirm (`v` / `y`: "verify @bob because you confirmed github.com/bob is theirs") before
+  `ConfirmGitHub` marks the keys Verified ("github:bob" in the audit log). A mismatch changes nothing.
 - A user counts as verified when some pinned key is `Verified` and none is only `TOFU`: accepting a key
   change pins the new key as TOFU, so the user is unverified again until re-verified.
 - Invite carries the inviter's SSH fingerprint (TOFU anchored in the invite, like the TLS pin) — M4.
 - **Key change** → one sticky red banner line in the encrypted channels shared with that user; sending
-  there (send/edit/delete/react, TUI and `tc send`) fails with `ErrKeyChange` until `/accept-key @bob`
-  (`trust.AcknowledgeKeyChange`); receiving is unaffected. Plaintext channels aren't gated (nothing is
-  sealed there).
+  there (send/edit/react, TUI and `tc send`) fails with `ErrKeyChange` until `/accept-key @bob`;
+  receiving is unaffected. Queued outbox entries are re-checked when sent and held (failed with the
+  key-change reason) until the change is accepted, which requeues them. **Deletes stay allowed**: they
+  only remove, sealed under the message's own epoch, and never seal to the new key. The gate fails
+  closed: if it can't look up an encrypted channel (no server id, channel not cached, trust store
+  error) the send is refused. `/accept-key @bob [fingerprint]` shows the pending fingerprints and needs
+  `y`; `AcceptKeyChanges` acknowledges exactly the shown ones (`trust.AcknowledgeKeyChange` each) and
+  refuses with `ErrPendingChanged` (the TUI re-shows) if what's pending changed meanwhile. Trust
+  overlays ignore keys other than Esc for 500 ms after opening (type-ahead). Plaintext channels aren't
+  gated (nothing is sealed there).
 - **Alarms** stay sticky; `/alarm` explains one and `/alarm-clear #name` (the channel's name typed to
   confirm) clears it through `trust.ClearChannelAlarm` / `ClearTrustAlarm`, which move the alarm (detail,
   raise time) to the `trust_audit` table with who cleared it and when — never a silent delete. Nothing
   in the sync code calls them (a test checks). Computed alarms (unconfirmed member) can't be cleared.
+  Clearing the server-wide alarm says so ("server-wide — clears the alarm for all encrypted channels").
 
 ## Rollout
 
