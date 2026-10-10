@@ -24,6 +24,7 @@ const usage = `tc — terminal team chat
                              compare safety numbers (or GitHub keys) to verify someone
   tc server [--listen :7443] [--public host:port] [--data dir]
   tc server invite [--uses N] [--ttl 72h] [--admin] [--raw]
+  tc update [--check]        install the latest release (or just check)
   tc version
 `
 
@@ -38,6 +39,8 @@ func main() {
 	switch cmd {
 	case "server":
 		err = cmdServer(args)
+	case "update":
+		err = cmdUpdate(args)
 	case "version", "--version", "-v":
 		fmt.Println("tc", version)
 	case "help", "--help", "-h":
