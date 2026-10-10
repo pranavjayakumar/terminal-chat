@@ -87,7 +87,7 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 	}
 	defer s.unregister(sess)
 	if err := sess.codec.Write(proto.TWelcome, proto.Welcome{
-		Server: Version, Caps: []string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind}, ServerID: s.st.serverID, User: user, Time: s.now(),
+		Server: Version, Caps: []string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapTeamInvites}, ServerID: s.st.serverID, User: user, Time: s.now(),
 	}); err != nil {
 		return
 	}
@@ -143,18 +143,26 @@ func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp str
 		now := s.now()
 		var admin bool
 		var target sql.NullInt64
-		var expires int64
+		var expires, uses int64
 		var used bool
-		err := tx.QueryRowContext(ctx, `SELECT admin, user, expires, used FROM invites WHERE token = ?`,
-			tokenHash(a.Invite)).Scan(&admin, &target, &expires, &used)
-		if err != nil || used || expires < now {
+		err := tx.QueryRowContext(ctx, `SELECT admin, user, expires, used, uses FROM invites WHERE token = ?`,
+			tokenHash(a.Invite)).Scan(&admin, &target, &expires, &used, &uses)
+		if err != nil || used || uses < 1 || expires < now {
 			return nil, fail(proto.ByeInviteInvalid, "invite is invalid, used or expired")
 		}
 		if _, err := userByKey(ctx, tx, fp); err == nil {
 			return nil, fail(proto.ByeKeyExists, "this key is already registered; log in without an invite")
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE invites SET used = 1 WHERE token = ?`, tokenHash(a.Invite)); err != nil {
+		// Conditional so a use can never be spent twice, whatever serializes
+		// the callers; the rest of the transaction rolls back with it.
+		res, err := tx.ExecContext(ctx,
+			`UPDATE invites SET uses = uses - 1, used = (uses - 1 <= 0) WHERE token = ? AND uses > 0 AND used = 0`,
+			tokenHash(a.Invite))
+		if err != nil {
 			return nil, err
+		}
+		if n, err := res.RowsAffected(); err != nil || n != 1 {
+			return nil, fail(proto.ByeInviteInvalid, "invite is invalid, used or expired")
 		}
 
 		var evs []proto.Event

@@ -5,10 +5,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"math"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/skailama/tc/internal/e2ecrypto"
@@ -820,8 +822,17 @@ func (s *Server) opInviteCreate(ctx context.Context, u proto.User, a proto.Invit
 			return nil, badRequest("bots can't log in")
 		}
 	}
-	code, err := s.CreateInvite(ctx, false, a.User)
-	return proto.InviteRes{Code: code}, err
+	if a.Uses < 0 || a.Uses > proto.MaxInviteUses {
+		return nil, badRequest(fmt.Sprintf("uses must be 1..%d", proto.MaxInviteUses))
+	}
+	if a.User != 0 && a.Uses > 1 {
+		return nil, badRequest("add-key invites are single-use")
+	}
+	if a.TTLMs < 0 || a.TTLMs > proto.MaxInviteTTL.Milliseconds() ||
+		(a.TTLMs != 0 && a.TTLMs < time.Minute.Milliseconds()) {
+		return nil, badRequest("ttl must be between 1 minute and 30 days")
+	}
+	return s.CreateInviteOpts(ctx, InviteOpts{User: a.User, Uses: int(a.Uses), TTL: time.Duration(a.TTLMs) * time.Millisecond})
 }
 
 func (s *Server) opUserDisable(ctx context.Context, u proto.User, a proto.UserArgs) (any, error) {

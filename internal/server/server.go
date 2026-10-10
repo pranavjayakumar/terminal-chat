@@ -366,18 +366,51 @@ func (s *Server) Serve(ctx context.Context, ln transport.Listener) error {
 
 // CreateInvite mints an invite code. admin makes a new-user invite that
 // grants admin; user != 0 makes an add-key invite for that user.
+// It is single-use and lasts proto.DefaultInviteTTL.
 func (s *Server) CreateInvite(ctx context.Context, admin bool, user uint64) (string, error) {
+	inv, err := s.CreateInviteOpts(ctx, InviteOpts{Admin: admin, User: user})
+	return inv.Code, err
+}
+
+// InviteOpts configures CreateInviteOpts. Zero Uses means 1, zero TTL means
+// proto.DefaultInviteTTL.
+type InviteOpts struct {
+	Admin bool
+	User  uint64 // add-key invite for this user (always single-use)
+	Uses  int
+	TTL   time.Duration
+}
+
+// CreateInviteOpts mints an invite that Uses people can redeem before TTL
+// passes (PROTOCOL.md §4.1).
+func (s *Server) CreateInviteOpts(ctx context.Context, o InviteOpts) (proto.InviteRes, error) {
+	if o.Uses == 0 {
+		o.Uses = 1
+	}
+	if o.TTL == 0 {
+		o.TTL = proto.DefaultInviteTTL
+	}
+	if o.Uses < 1 || o.Uses > proto.MaxInviteUses {
+		return proto.InviteRes{}, fmt.Errorf("uses must be 1..%d", proto.MaxInviteUses)
+	}
+	if o.TTL < time.Minute || o.TTL > proto.MaxInviteTTL {
+		return proto.InviteRes{}, errors.New("ttl must be between 1 minute and 30 days")
+	}
+	if o.User != 0 && o.Uses != 1 {
+		return proto.InviteRes{}, errors.New("add-key invites are single-use")
+	}
 	raw := make([]byte, 16)
 	rand.Read(raw)
 	token := strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw))
 	now := s.now()
+	expires := now + o.TTL.Milliseconds()
 	_, err := s.st.db.ExecContext(ctx,
-		`INSERT INTO invites (token, admin, user, created, expires) VALUES (?, ?, ?, ?, ?)`,
-		tokenHash(token), admin, nullable(user), now, now+7*24*3600*1000)
+		`INSERT INTO invites (token, admin, user, created, expires, uses) VALUES (?, ?, ?, ?, ?, ?)`,
+		tokenHash(token), o.Admin, nullable(o.User), now, expires, o.Uses)
 	if err != nil {
-		return "", fmt.Errorf("creating invite: %w", err)
+		return proto.InviteRes{}, fmt.Errorf("creating invite: %w", err)
 	}
-	return proto.FormatInvite(s.cfg.PublicAddr, token, s.pin), nil
+	return proto.InviteRes{Code: proto.FormatInvite(s.cfg.PublicAddr, token, s.pin), Uses: int64(o.Uses), Expires: expires}, nil
 }
 
 // tokenHash is what the database stores, so lookups don't compare secrets
