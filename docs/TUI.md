@@ -27,7 +27,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 - Messages: `HH:MM author  body`. Consecutive messages from the same author within 5 min omit the
   time/author. Day separators (`── Tue 9 Oct ──`). Wrapped bodies align under the body column.
 - Pending (outbox) messages render dim; failed ones show `! failed — r to retry, d to discard`.
-- Edited: dim ` (edited)`. Deleted: dim italic `message deleted`. In encrypted channels `(edited)` shows
+- Edited: dim ` (edited)`. Deleted: dim italic `message deleted` (encrypted channels: `deleted (unverified)` until judged). In encrypted channels `(edited)` shows
   only for an edit the author signed, reactions only when signed by the reactor, and a delete the author
   didn't sign (an admin, the server) reads `removed (not by author)`. `e` refuses messages that aren't
   verified (waiting, invalid, legacy or inserted plaintext).

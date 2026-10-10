@@ -304,6 +304,17 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    Coordinator decisions (step 8 review): deletes and reactions into a channel in alarm are refused
    client-side like sends and edits (`ErrE2EAlarm`); `enc` on edit/delete/react isn't gated on `e2e1`
    (same as `send`).
+   Security review fixes (step 8): "message deleted" only for an attributable delete (author-signed,
+   or plaintext channel); "deleted (unverified)" while judging; anything else "removed (not by
+   author)", incl. step-7 cached deletes (migration). The server keeps the original mid and sends it as
+   `Message.mid`; a device that never saw the enc checks a delete's ref against it (only if no other
+   cached message has it; never used for threads), and without a mid a delete isn't the author's.
+   Reaction tags use `rk = HKDF(mk, "tc-react-v1")` so mk is only an AEAD key. The edit time shown is
+   the signed Plain ts. A server copy without enc never replaces a cached encrypted message. React/
+   delete of uncached messages is refused. ≤ 256 reactions per message (`conflict`); history pages
+   always hold one message (trimmed `renc`). Pending work is bounded (16 reactions per message, 1000
+   reactions/edits per channel), reactions of deleted/invalid messages are dropped, and pending
+   items no longer wake the e2e worker (it runs on key/device events), so it can't spin.
 9. `chan.add{bundle}`, `chan.remove`, `chan.encrypt`, disable → rotate; history via backlinks.
 10. TUI: key-change banner + send block, fork alarm, "⚠ unencrypted", "waiting for key", `/verify`.
 11. Malicious-server suite (`Tamper` hook): injected devices/keys, fake joins, rollback, fork,

@@ -184,10 +184,10 @@ Rules:
   transaction, right after `msg.delete`. `pin` and `unpin` count as write ops for rate limits.
   **pins.list** works for public channels and channels where the caller is a member (like `history`;
   others → `forbidden`) and omits deleted messages.
-- **react**: at most 32 distinct emoji per message and 10 reactions per user per message (`bad_request`).
+- **react**: at most 32 distinct emoji per message and 10 reactions per user per message (`bad_request`), and 256 reactions per message in all (`conflict`; a repeat of an existing one is still a no-op).
 - **history/search** cover public channels and channels where the caller is
   currently a member; `history` on others → `forbidden`, `search` filters silently.
-  Responses stop at `limit` or ~768 KiB of encoded messages, whichever comes first.
+  Responses stop at `limit` or ~768 KiB of encoded messages, whichever comes first, but always hold at least one message: one too big on its own loses `renc` entries (from the end) until it fits.
 - **chan.join** works on public channels only (private → `forbidden`).
   **chan.add**: any member of a public channel; members of a private channel.
   DMs can't be joined, added to, or left.
@@ -340,14 +340,14 @@ Channel = {id, name, kind: "public"|"private"|"dm", topic, members: [u64], creat
            e2e?: bool, epoch?: u32, creator?: u64, pins?: [u64]}   (e2e/epoch/creator: §13.3)
 Message = {id, chan, author, body, thread: u64 (0 = top level), time,
            edited: i64 (0 = never), deleted: bool, reactions: {emoji: [u64]}, enc?: bin,
-           edit_enc?: bin, del_enc?: bin, renc?: [{user: u64, emoji: str, enc: bin}]}
+           edit_enc?: bin, del_enc?: bin, renc?: [{user: u64, emoji: str, enc: bin}], mid?: bin16}
 ```
 
 `Message.enc` (omitted when absent) is the encrypted payload of a message in an
 encrypted channel (§13.4); `body` is `""` then. Clients without `e2e1` see an
 empty body. `edit_enc` (latest encrypted edit), `del_enc` (the author's
 signed delete) and `renc` (one signed enc per encrypted reaction; `reactions`
-then maps tags, not emoji) are §13.4's; all omitted when absent.
+then maps tags, not emoji) are §13.4's, as is `mid` (the server's record of the `enc`'s mid, kept after a delete; a claim, not proof); all omitted when absent.
 
 `Channel.pins` (cap `pins`; omitted when empty) lists the ids of the channel's pinned messages, newest pin
 first; snapshots and `chan.*` events carry it, and `pin.add`/`pin.remove` keep it current. The server
@@ -847,8 +847,9 @@ K for the epoch, the sending device or the thread root not known yet) is
 stored as ciphertext, still advances `last_seq`, shows as "waiting for
 key", and is decrypted when what it lacked arrives. Once verified, a
 message's channel, author, thread and bytes are fixed: a refetched copy
-(history, snapshot) that differs is invalid and the stored one stays. Only
-a verified edit (below) changes its shown text and edited time; the
+(history, snapshot) that differs is invalid and the stored one stays; so
+does a copy without `enc` (it never replaces a cached encrypted message).
+Only a verified edit (below) changes its shown text and edited time; the
 server's `edited` and `reactions` are not shown for encrypted messages.
 
 **Edits, deletes, reactions.** Each `enc` below is checked like a message's
@@ -862,17 +863,23 @@ a refetched copy — by the Plain `ts` rule, AEAD) and then:
   one: the higher `(v, ts, mid of the edit's enc)` wins, compared in that
   order (mid as bytes), and an equal tuple is the same edit. Every client
   thus ends on the same edit whatever order concurrent edits (e.g. two
-  devices both sending `v = 2`) arrive in. Then the
-  text and edited time change; otherwise nothing does. The original must be
+  devices both sending `v = 2`) arrive in. Then the text changes and the
+  edited time shown is the edit's signed `ts` (never the server's
+  `edited`); otherwise nothing changes. The original must be
   verified; an edit of a message still waiting is kept and judged once it
   opens (same for an edit whose own key or device is missing).
 - **delete** (`msg.delete.enc`, `Message.del_enc`): the text goes in any
   case (the server can always delete). Signed by a device of the author,
-  `t = "del"` and `ref` = the message's `mid` (when the client knows it; a
-  message first seen deleted has no `mid` to compare) → "message deleted";
-  no `enc`, or one that fails → **"removed (not by author)"** (an admin or
-  the server deleted it). Plaintext at or below the legacy cutoff stays
-  "message deleted". A deleted message keeps its `mid` locally (replies name it).
+  `t = "del"` and `ref` = the message's `mid` → "message deleted". The
+  `mid` is the one the client computed from the `enc`; a message first seen
+  deleted has only the server's claim `Message.mid`, used for this check
+  alone (never for threads) and only if no other cached message has that
+  mid; with no mid at all the delete can't be the author's. No `enc`, or
+  one that fails → **"removed (not by author)"** (an admin or the server
+  deleted it); so does an unauthenticated (legacy or inserted) plaintext
+  message, whose delete no one can sign. A delete not judged yet (no key or
+  device) shows "deleted (unverified)". A deleted message keeps its `mid`
+  locally (replies name it).
 - **react** (`react.add.enc`, `Message.renc`): signed by a device of the
   **reacting** user (the event's actor / `renc.user`); sealed under the
   message's epoch and `eh`; `t = "react"`, `add`; `ref` = the message's
@@ -885,8 +892,13 @@ Anything rejected changes nothing and is logged locally (`E2ERejects`).
 A client sends an encrypted edit only of its own verified message, signs
 its own deletes (an admin's delete of someone else's message has no `enc`),
 and reacts only to verified messages. Like sends and edits, it refuses
-deletes and reactions in a channel with an alarm. Local search follows edits and
+deletes and reactions in a channel with an alarm, and refuses them for a
+message it hasn't cached (its channel is unknown). Local search follows edits and
 deletes (it searches the current decrypted text of undeleted messages).
+What waits for a key or device is bounded: at most 16 pending reactions
+per message and 1000 per channel (pending edits: one per message, 1000 per
+channel), the newest dropped beyond that; reactions of deleted or invalid
+messages aren't kept; a message keeps at most 256 reactions.
 
 **Plaintext in encrypted channels.** DMs created as encrypted before
 encrypted sends existed may hold plaintext messages. When a client first
