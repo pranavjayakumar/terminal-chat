@@ -330,6 +330,9 @@ func (c *Client) judgeEnc(q dbtx, sid e2ecrypto.ServerID, hasSID bool, m *proto.
 	if sec != SecE2E {
 		return sec, mid[:]
 	}
+	if sec, _ = c.checkSealer(sid, m.Chan, m.Author, m.ID, m.Enc, memo); sec != SecE2E {
+		return sec, mid[:]
+	}
 	var p plainMsg
 	if proto.Unmarshal(raw, &p) != nil || p.T != "msg" || !validText(p.Body) || revokedAt(d, p.TS) {
 		return SecInvalid, mid[:]

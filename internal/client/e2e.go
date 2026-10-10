@@ -992,6 +992,7 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 			break // another process advanced meanwhile; the next pass catches up
 		}
 		changed = true
+		c.invalidateSuperseded(ch.ID, next, e.Seq)
 		// Only a verified bundle moves the cached channel epoch (the server
 		// sends no chan.update for rotations); unverified ones never do.
 		c.db.Exec(`UPDATE chans SET epoch = max(epoch, ?) WHERE id = ?`, next, ch.ID)
