@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -103,6 +104,8 @@ func TestEncryptedEditDeleteReact(t *testing.T) {
 	wantErr(t, "enc in plaintext channel", react(bob, proto.OpReact, proto.ReactArgs{Msg: plainMsg, Emoji: "👍", Enc: renc}), proto.ErrBadRequest, "not encrypted")
 	wantErr(t, "other epoch", react(bob, proto.OpReact, proto.ReactArgs{Msg: id, Emoji: tag(0), Enc: encFor(t, sid, b1, ch.ID, 2, e2, "r")}), proto.ErrBadRequest, "epoch")
 	wantErr(t, "other's device", react(alice, proto.OpReact, proto.ReactArgs{Msg: id, Emoji: tag(0), Enc: renc}), proto.ErrBadRequest, "devices")
+	wantErr(t, "two blocks", react(bob, proto.OpReact, proto.ReactArgs{Msg: id, Emoji: tag(0),
+		Enc: encFor(t, sid, b1, ch.ID, 1, e1, strings.Repeat("x", 300))}), proto.ErrTooLarge, "")
 	bob.ok(proto.OpReact, proto.ReactArgs{Msg: id, Emoji: tag(0), Enc: renc}, nil)
 	ev = alice.event(proto.KReactAdd)
 	var ra proto.Reaction

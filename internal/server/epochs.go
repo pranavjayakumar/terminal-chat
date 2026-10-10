@@ -644,8 +644,10 @@ func checkEncSigner(ctx context.Context, tx *sql.Tx, sid e2ecrypto.ServerID, use
 // is keyed by it), so it must name the same epoch and bundle as the
 // message's enc, and be signed by an active device of user.
 func checkEncOfMsg(ctx context.Context, tx *sql.Tx, sid e2ecrypto.ServerID, user uint64, m proto.Message, enc []byte) error {
-	if len(enc) > proto.MaxEnc {
-		return proto.Errf(proto.ErrTooLarge, "encrypted payload too long")
+	// Their Plain fits one padding block; bigger ones would only let a
+	// member bloat every copy of the message (one per reaction).
+	if len(enc) > e2ecrypto.MinEncSize {
+		return proto.Errf(proto.ErrTooLarge, "encrypted delete or reaction too long")
 	}
 	e, err := e2ecrypto.ParseEnc(enc)
 	if err != nil {

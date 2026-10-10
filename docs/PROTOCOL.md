@@ -956,7 +956,7 @@ previous edit's `enc` from the log (§6). It can't read `v`; clients order
 edits.
 
 **delete** with `enc`: only the author may sign (`forbidden` for anyone
-else, e.g. an admin, who deletes without `enc`); then `len(enc)` (`too_large`),
+else, e.g. an admin, who deletes without `enc`); then `len(enc)` ≤ 397 bytes, one padding block (`too_large`),
 framing (`bad_request`), the message has `enc` and `enc` names its `epoch`
 and `eh` (`bad_request`), signer = an active device of the caller with a
 valid signature (`bad_request`). Stored as `Message.del_enc`; `msg.delete`
@@ -1038,7 +1038,7 @@ registered device (`not_found`), not revoked, of a current member
   channel's current epoch or that epoch's bundle is stale (§13.5). Nothing
   was stored. Retryable after catching up: a sender re-encrypts with the
   same nonces (§13.4).
-- Limits: `enc` ≤ 64 KiB + 1 KiB (Plain ≤ the padded capacity); EpochBundle `len(b) + len(sig)` ≤ 16 KiB and ≤ 128 boxes;
+- Limits: `enc` ≤ 64 KiB + 1 KiB (Plain ≤ the padded capacity), a delete's or reaction's `enc` ≤ 397 bytes (one padding block); EpochBundle `len(b) + len(sig)` ≤ 16 KiB and ≤ 128 boxes;
   `key.fetch` ≤ 256 epochs per call; ≤ 1 `key.rotate` per channel per user
   per 10 s and ≤ 1 per channel per 2 s, both waived when the roster or its
   active devices changed since the current epoch (§13.3; plus the §9 write bucket).

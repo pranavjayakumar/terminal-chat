@@ -284,7 +284,8 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    server's latest) and a server can serve an older edit to a fresh device (rollback of edits is not
    detected without history). Deletes and reactions are sealed under the **message's own epoch** (the
    tag needs that mk anyway; nothing secret in them); the server checks their epoch/eh match the
-   message's enc and the signer is the caller's active device. Only the author can sign a delete; an
+   message's enc and the signer is the caller's active device, and caps their enc at one padding
+   block (397 bytes) so reactions can't bloat a message past the frame limit. Only the author can sign a delete; an
    admin's delete is unsigned and shows "removed (not by author)"; deleted messages keep `del_enc`
    (`Message.del_enc`) so a fresh device can tell, comparing `ref` with the mid only when it knows it.
    Reaction tags are `"~" + base64url(HMAC(mk, "tc-react"‖mid‖emoji)[:12])`; `Message.renc` carries each
