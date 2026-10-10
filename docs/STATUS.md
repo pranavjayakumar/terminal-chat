@@ -9,7 +9,7 @@ Last updated: 2026-10-10 (end of session 1; branch `m2-activity` adds drafts, hi
 | M0 scaffold, spec, agents, CI | ✅ done |
 | M1 core chat (server, client, TUI, sync, offline outbox) | ✅ done, battle-tested (chaos + adversarial + live herdr) |
 | M2 collaboration | ✅ essentially done: notifications, herdr badge, `/share-pane`, auto-away, `tc notify`, notes, `/name`, threads, webhooks + bots, privacy scrubbing, drafts, `/highlight`, activity (Alt-A), message viewer (`v`), pins (`p`, `/pins`), user groups (`@oncall`), reminders (`/remind`), diff/snippets (`tc send --file`, `/snippet`) |
-| M3 end-to-end encryption | steps 1–7 merged (#9 crypto, #10 certs, #11 trust store, #13 server devices, #16 server epochs, #25 client bundles, #26 encrypted send); **step 8 (encrypted edit/delete/react) on branch `e2e/encrypted-edits`** |
+| M3 end-to-end encryption | steps 1–7 merged (#9, #10, #11, #13, #16, #25 client verification, #26 encrypted send/receive) — **encrypted DMs and private channels work end to end**; step 8 (encrypted edit/delete/react) in PR #28 |
 | M4 zero-setup onboarding | not started |
 | M5 voice | not started |
 
@@ -17,12 +17,15 @@ Release tag: `v0.1.0` = M1. No newer tag yet.
 
 ## Resume checklist (do in order)
 
-1. **E2E step 8** (branch `e2e/encrypted-edits`): `edit/delete/react + enc` (Plain edit/del/react with
-   `ref` = mid, edit version `v`, HMAC reaction tags), `Message.edit_enc/del_enc/renc`; client applies only
-   what verifies (author's device for edits/deletes, reactor's for reactions), "removed (not by author)"
-   for unsigned deletes, `E2ERejects` log, local search follows edits/deletes. Decisions in `docs/E2E.md`
-   step 8. Review with protocol-guardian + security-reviewer + tui-reviewer + breaker, then merge.
-2. **E2E steps 9–12** per `docs/E2E.md`: 9 membership changes +
+1. **E2E step 7** (branch `e2e/encrypted-send`): `send`/`Message` + `enc`; server refuses plaintext
+   send/edit in e2e channels, dedupes before `stale_epoch`, checks enc signer = caller's active device;
+   search skips e2e; webhooks forbidden (403). Client encrypts once into the outbox, stale_epoch → re-encrypt
+   with the same nonces, rotates when stale, "no key yet" failure + key.need + requeue; decrypts/verifies
+   incoming (lazy queue for missing keys/devices/roots), legacy vs server-inserted plaintext (trust schema
+   v8: epochs.seq), local search, `Update.New` is `[]client.Message` with `Sec`. TUI: 🔒 header + key
+   state, per-message markers, no sends in alarm. `tc send/notify/tail` covered. Decisions in `docs/E2E.md`
+   step 7. Review with protocol-guardian + security-reviewer + tui-reviewer + breaker, then merge.
+2. **E2E steps 8–12** per `docs/E2E.md`: 8 edit/delete/react + local FTS, 9 membership changes +
    `chan.remove` + `chan.encrypt` (legacy DMs), 10 TUI warnings + `/verify`, 11 malicious-server suite,
    12 security pass + chaos.
 3. **Finish M2**: diff and `file:line` snippets. (Long-line viewer, `/pins`, `/remind` and user groups
@@ -31,7 +34,8 @@ Release tag: `v0.1.0` = M1. No newer tag yet.
 5. **M4 onboarding** — see `docs/ROADMAP.md`. Note: the repo is private, so install-from-GitHub-releases needs
    auth; consider serving install.sh + binaries from the tc server itself (pinned TLS).
 
-**Budget rule (owner):** kiro-cli may use at most 45–50% of its monthly credits (check with
+**Budget rule (owner):** kiro-cli may use at most 45–50% of its monthly credits (it reached 46.6% on 2026-10-10,
+so remaining work that day ran on Claude subagents) (check with
 `kiro-cli chat --no-interactive "/usage"`); it was 44.3% before step 6 started. Above ~47% use Claude only.
 
 ## How we work (keep doing this)
