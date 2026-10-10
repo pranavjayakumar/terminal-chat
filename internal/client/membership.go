@@ -71,8 +71,10 @@ func (c *Client) AddMember(ctx context.Context, ch, user uint64) error {
 }
 
 // RemoveMember removes user from private channel ch (its creator or an
-// admin may; removing yourself is Leave). In an encrypted channel the
-// removal carries the next epoch without them, so only a member can do it.
+// admin may; removing yourself is Leave). In an encrypted channel a
+// member's removal carries the next epoch without them; an admin outside
+// the channel can't make one, so theirs goes without and the next sender
+// rotates.
 func (c *Client) RemoveMember(ctx context.Context, ch, user uint64) error {
 	me := c.Me().ID
 	if user == me {
@@ -87,7 +89,7 @@ func (c *Client) RemoveMember(ctx context.Context, ch, user uint64) error {
 		return err
 	}
 	if !ok || !slices.Contains(cv.Members, me) {
-		return ErrNotMember
+		return c.call(ctx, proto.OpChanRemove, args, nil, nil)
 	}
 	if !slices.Contains(cv.Members, user) {
 		return nil

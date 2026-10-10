@@ -105,9 +105,10 @@ func (s *Server) opChanLeave(ctx context.Context, u proto.User, a proto.ChanArgs
 
 // opChanRemove removes someone else from a private channel: its creator
 // (while a member) or an admin may. Removing yourself is chan.leave. In an
-// encrypted channel with an epoch, the bundle without the removed user is
-// required (so only a member of the current roster can remove there),
-// unless the target is disabled and so in no roster already.
+// encrypted channel with an epoch, a member must send the bundle without
+// the removed user, unless the target is disabled and so in no roster
+// already. An admin who isn't a member can't make one: their removal goes
+// without, like a leave, and the next sender rotates.
 func (s *Server) opChanRemove(ctx context.Context, u proto.User, a proto.ChanAddArgs) (any, error) {
 	if err := checkBundleSize(a.Bundle); err != nil {
 		return nil, err
@@ -150,7 +151,7 @@ func (s *Server) opChanRemove(ctx context.Context, u proto.User, a proto.ChanAdd
 			return nil, err
 		}
 		switch {
-		case head.e2e && head.epoch > 0 && a.Bundle == nil && !target.Disabled:
+		case head.e2e && head.epoch > 0 && a.Bundle == nil && !target.Disabled && s.members[a.Chan][u.ID]:
 			return nil, errNeedBundle
 		case a.Bundle != nil && !s.members[a.Chan][u.ID]:
 			return nil, proto.Errf(proto.ErrForbidden, "only members can rotate the channel's key")
@@ -178,7 +179,9 @@ func (s *Server) opChanEncrypt(ctx context.Context, u proto.User, a proto.KeyRot
 		return nil, err
 	}
 	var res proto.SeqRes
+	var hooks []uint64
 	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
+		hooks = nil
 		kind, ok := s.kinds[a.Chan]
 		switch {
 		case !ok:
@@ -201,6 +204,27 @@ func (s *Server) opChanEncrypt(ctx context.Context, u proto.User, a proto.KeyRot
 		case kind != proto.ChanDM && c.Creator != u.ID:
 			return nil, proto.Errf(proto.ErrForbidden, "only the channel's creator can encrypt it")
 		}
+		// Webhooks can't post into an encrypted channel: they go with the
+		// conversion, and bots left without a hook retire (as hook.delete).
+		hrows, err := tx.QueryContext(ctx, `SELECT id FROM hooks WHERE chan = ?`, a.Chan)
+		if err != nil {
+			return nil, err
+		}
+		for hrows.Next() {
+			var id uint64
+			if err := hrows.Scan(&id); err != nil {
+				hrows.Close()
+				return nil, err
+			}
+			hooks = append(hooks, id)
+		}
+		hrows.Close()
+		if _, err := tx.ExecContext(ctx, `DELETE FROM hooks WHERE chan = ?`, a.Chan); err != nil {
+			return nil, err
+		}
+		if err := retireOrphanBots(tx); err != nil {
+			return nil, err
+		}
 		var legacy uint64
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM messages WHERE chan = ?`, a.Chan).Scan(&legacy); err != nil {
 			return nil, err
@@ -222,5 +246,13 @@ func (s *Server) opChanEncrypt(ctx context.Context, u proto.User, a proto.KeyRot
 		res.Seq = kev.Seq
 		return []proto.Event{ev, kev}, nil
 	})
-	return res, err
+	if err != nil {
+		return nil, err
+	}
+	s.hk.mu.Lock()
+	for _, id := range hooks {
+		delete(s.hk.limits, id)
+	}
+	s.hk.mu.Unlock()
+	return res, nil
 }

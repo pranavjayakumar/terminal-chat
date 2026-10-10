@@ -360,3 +360,45 @@ func TestMembershipAddSendRace(t *testing.T) {
 		t.Fatalf("sent after the add under epoch %d", h.Epoch)
 	}
 }
+
+// An admin outside an encrypted channel removes bob without a bundle: bob
+// sees his removal, alice's next send rotates first, and bob can't open it
+// even from the server's raw rows.
+func TestMembershipAdminRemovesWithoutBundle(t *testing.T) {
+	dir, sid, us := team(t, "admin", "alice", "bob")
+	admin, alice, bob := us[0], us[1], us[2]
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ch, err := alice.CreateEncryptedChannel(ctx, "sec", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "epoch 1", alice.e2eAt(ch.ID, 1))
+	if err := alice.AddMember(ctx, ch.ID, bob.Me().ID); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "bob at epoch 2", bob.e2eAt(ch.ID, 2))
+	// The admin isn't a member: the private channel isn't even in their cache.
+	if err := admin.RemoveMember(ctx, ch.ID, bob.Me().ID); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "bob sees his removal", func() bool { v, ok := bob.Channel(ch.ID); return ok && v.Removed })
+	eventually(t, "alice applied it", func() bool {
+		v, _ := alice.Channel(ch.ID)
+		return !slices.Contains(v.Members, bob.Me().ID)
+	})
+	if st := alice.status(ch.ID); st.Epoch != 2 {
+		t.Fatalf("someone rotated already: %+v", st)
+	}
+	alice.send(t, ctx, ch.ID, "after the admin removed bob")
+	if st := alice.status(ch.ID); st.Epoch != 3 {
+		t.Fatalf("alice didn't rotate before sending: %+v", st)
+	}
+	enc := rawEncs(t, dir, ch.ID)[alice.msgID(ch.ID, "after the admin removed bob")]
+	if h, err := e2ecrypto.ParseEnc(enc); err != nil || h.Epoch != 3 {
+		t.Fatalf("sent under epoch %d (%v)", h.Epoch, err)
+	}
+	if bob.epochKey(sid, ch.ID, 3) != nil || bob.canDecrypt(t, sid, ch.ID, enc) {
+		t.Fatal("bob can read what was sent after his removal")
+	}
+}

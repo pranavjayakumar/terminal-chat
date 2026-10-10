@@ -279,8 +279,6 @@ func TestChanRemoveE2E(t *testing.T) {
 		wantErr(t, "roster with carol", rm(alice, &still), proto.ErrStaleEpoch, "roster")
 		toCarol := bundle(t, a1, sid, ch.ID, 2, &e1, without, a1, b1, c1)
 		wantErr(t, "box for carol", rm(alice, &toCarol), proto.ErrBadRequest, "non-member")
-		// An admin who isn't a member can't make the bundle, so can't remove here.
-		wantErr(t, "admin non-member", rm(admin, nil), proto.ErrBadRequest, "key bundle")
 		adm1, _ := admin.registerDevice(ts)
 		byAdmin := bundle(t, adm1, sid, ch.ID, 2, &e1, without, a1, b1)
 		wantErr(t, "admin non-member with bundle", rm(admin, &byAdmin), proto.ErrForbidden, "")
@@ -402,4 +400,87 @@ func TestChanEncrypt(t *testing.T) {
 	var notes proto.ChanRes
 	bob.ok(proto.OpDMOpen, proto.DMOpenArgs{Users: []uint64{bob.user.ID}}, &notes)
 	wantErr(t, "notes", enc(bob, notes.Chan.ID, bundle(t, b1, sid, notes.Chan.ID, 1, nil, []uint64{bob.user.ID}, b1)), proto.ErrBadRequest, "notes")
+}
+
+// An admin outside an encrypted channel can't make the next bundle, so
+// their removal goes without: it commits, the bundle goes stale (sends
+// under it are refused) and the next sender rotates.
+func TestChanRemoveE2EAdminNonMember(t *testing.T) {
+	ts := startServer(t, "tcp")
+	fastClock(ts)
+	alice := ts.registerCaps(t, "alice", false, e2eCaps)
+	bob := ts.registerCaps(t, "bob", false, e2eCaps)
+	admin := ts.registerCaps(t, "admin", true, e2eCaps)
+	for _, c := range []*tclient{alice, bob, admin} {
+		c.syncFresh()
+	}
+	sid := ts.sid()
+	a1, _ := alice.registerDevice(ts)
+	b1, _ := bob.registerDevice(ts)
+	ch := alice.createE2E("sec")
+	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: bob.user.ID}, nil)
+	e1 := bundle(t, a1, sid, ch.ID, 1, nil, []uint64{alice.user.ID, bob.user.ID}, a1, b1)
+	alice.rotate(ch.ID, e1)
+	bob.keyEpoch()
+
+	// A member remover still needs the bundle.
+	alice.fail(proto.OpChanRemove, proto.ChanAddArgs{Chan: ch.ID, User: bob.user.ID}, proto.ErrBadRequest)
+	admin.ok(proto.OpChanRemove, proto.ChanAddArgs{Chan: ch.ID, User: bob.user.ID}, nil)
+	bob.event(proto.KChanLeave)
+	if alice.member(ts, ch.ID, bob.user.ID) {
+		t.Fatal("bob still a member")
+	}
+	if stale, _ := ts.EpochStale(t.Context(), ch.ID); !stale {
+		t.Fatal("epoch 1 isn't stale after the removal")
+	}
+	wantErr(t, "send under the old epoch", alice.errOf(proto.OpSend, proto.SendArgs{Chan: ch.ID, Nonce: newNonce(), Enc: encFor(t, sid, a1, ch.ID, 1, e1, "x")}),
+		proto.ErrStaleEpoch, "rotated")
+	e2 := bundle(t, a1, sid, ch.ID, 2, &e1, []uint64{alice.user.ID}, a1)
+	alice.rotate(ch.ID, e2)
+	bob.noKind(proto.KKeyEpoch, 100*time.Millisecond)
+	alice.ok(proto.OpSend, proto.SendArgs{Chan: ch.ID, Nonce: newNonce(), Enc: encFor(t, sid, a1, ch.ID, 2, e2, "after")}, nil)
+}
+
+// chan.encrypt deletes the channel's webhooks in the same write and
+// retires bots left without one, like hook.delete.
+func TestChanEncryptDeletesHooks(t *testing.T) {
+	ts := startHookServer(t)
+	caps := []string{proto.CapE2E, proto.CapHooks}
+	bob := ts.registerCaps(t, "bob", false, caps)
+	bob.syncFresh()
+	sid := ts.sid()
+	b1, _ := bob.registerDevice(ts)
+	var priv proto.ChanRes
+	bob.ok(proto.OpChanCreate, proto.ChanCreateArgs{Name: "team", Private: true}, &priv)
+	ch := priv.Chan.ID
+	var other proto.ChanRes
+	bob.ok(proto.OpChanCreate, proto.ChanCreateArgs{Name: "other", Private: true}, &other)
+	h := bob.createHook(ch, "ci")
+	keep := bob.createHook(other.Chan.ID, "cd")
+	if r := ts.post(t, "POST", h.URL, "text/plain", "before"); r.status != 200 {
+		t.Fatalf("hook post before: %d %s", r.status, r.raw)
+	}
+	// The bot stays a member (retired, it can't post or have devices), so
+	// it is on the roster.
+	var botID uint64
+	ts.st.db.QueryRow(`SELECT id FROM users WHERE name = ?`, h.Name).Scan(&botID)
+	roster := []uint64{bob.user.ID, botID}
+	slices.Sort(roster)
+	bob.ok(proto.OpChanEncrypt, proto.KeyRotateArgs{Chan: ch, Bundle: bundle(t, b1, sid, ch, 1, nil, roster, b1)}, nil)
+	var n int
+	ts.st.db.QueryRow(`SELECT COUNT(*) FROM hooks WHERE chan = ?`, ch).Scan(&n)
+	if n != 0 {
+		t.Fatalf("%d hooks left on the encrypted channel", n)
+	}
+	var retired bool
+	ts.st.db.QueryRow(`SELECT bot_retired FROM users WHERE name = ?`, h.Name).Scan(&retired)
+	if !retired {
+		t.Fatal("orphaned bot not retired")
+	}
+	if r := ts.post(t, "POST", h.URL, "text/plain", "after"); r.status == 200 {
+		t.Fatal("deleted hook still posts")
+	}
+	if r := ts.post(t, "POST", keep.URL, "text/plain", "elsewhere"); r.status != 200 {
+		t.Fatalf("another channel's hook broke: %d", r.status)
+	}
 }
