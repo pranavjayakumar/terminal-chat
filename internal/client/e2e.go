@@ -306,6 +306,7 @@ func (c *Client) e2ePass(ctx context.Context, s *session, sid e2ecrypto.ServerID
 		}
 	}
 	c.reopenMsgs(sid, chans)
+	c.requeueKeyChange() // a change accepted elsewhere (another process)
 	if changed {
 		c.post(Update{Channels: true})
 	}

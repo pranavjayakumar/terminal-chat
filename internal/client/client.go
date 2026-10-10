@@ -84,9 +84,9 @@
 //
 //	func (c *Client) SafetyNumber(user uint64) (SafetyNumber, error)   // 60 digits over both users' pinned keys
 //	func (c *Client) MarkVerified(user uint64, digits string) error    // numbers matched: their pins become Verified
-//	func (c *Client) VerifyGitHub(ctx, user, login) (GitHubCheck, error) // compare pins with github.com/<login>.keys
+//	func (c *Client) VerifyGitHub(ctx, user, login) (GitHubCheck, error); ConfirmGitHub(res) error // compare, then confirm
 //	func (c *Client) KeyChanges() []KeyChange; KeyChangedMembers(ch) []uint64 // sends blocked there (ErrKeyChange)
-//	func (c *Client) AcceptKeyChange(user uint64) error
+//	func (c *Client) PendingKeys(user) []string; AcceptKeyChanges(user, fps, only) error // exactly the shown keys
 //	func (c *Client) Alarm(ch uint64) (AlarmInfo, bool); ClearAlarm(ch) error // clearing is audited
 //
 // Server-side refusals are returned as *proto.Error (check Code).

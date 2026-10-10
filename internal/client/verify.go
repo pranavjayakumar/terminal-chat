@@ -38,7 +38,19 @@ var (
 	ErrKeyChange = errors.New("sending is blocked: a member's key changed")
 	// ErrNoAlarm means there is no alarm to show or clear.
 	ErrNoAlarm = errors.New("no alarm here")
+	// ErrOwnKeyNotPinned means this device hasn't pinned my own SSH key yet
+	// (it does on its first connection).
+	ErrOwnKeyNotPinned = errors.New("your own key isn't pinned yet — connect once")
+	// ErrPendingChanged means the pending key changes aren't the ones shown
+	// for acceptance any more: review them again.
+	ErrPendingChanged = errors.New("the pending key changes changed — review them again")
+	// ErrNotMatched means a GitHub check didn't match, so there's nothing to confirm.
+	ErrNotMatched = errors.New("the GitHub keys don't match — nothing to confirm")
 )
+
+// keyChangeReason is the failure an outbox entry is held with while a
+// member's key change is pending; accepting the change requeues it.
+const keyChangeReason = "not sent: a member's key changed — /accept-key, then /verify"
 
 // safetyDomain and safetyIterations define safety numbers (like Signal's:
 // iterated SHA-512, 5-byte chunks mod 100000, 5200 rounds).
@@ -147,7 +159,7 @@ func (c *Client) SafetyNumber(user uint64) (SafetyNumber, error) {
 		return SafetyNumber{}, ErrNoKeys
 	}
 	if len(mine.Fingerprints) == 0 {
-		return SafetyNumber{}, errors.New("your own key isn't pinned yet — connect once")
+		return SafetyNumber{}, ErrOwnKeyNotPinned
 	}
 	return SafetyNumber{Digits: safetyDigits(sid, mine, theirs), Me: mine, Them: theirs}, nil
 }
@@ -203,13 +215,13 @@ type GitHubCheck struct {
 	Pinned  []string // fingerprints of user's pinned keys
 	GitHub  []string // fingerprints of the account's keys
 	Missing []string // pinned keys that aren't on the account
-	Match   bool     // every pinned key is on the account: now Verified
+	Match   bool     // every pinned key is on the account (ConfirmGitHub may verify)
 }
 
 // VerifyGitHub fetches https://github.com/<login>.keys (only ever on this
-// explicit request) and compares it with user's pinned keys. If every
-// pinned key is listed, they become Verified ("github:<login>" in the
-// audit log); otherwise nothing changes and Missing says which aren't.
+// explicit request) and compares it with user's pinned keys; Missing says
+// which aren't listed. It changes nothing: once the user confirms the
+// account is theirs, ConfirmGitHub marks a match Verified.
 func (c *Client) VerifyGitHub(ctx context.Context, user uint64, login string) (GitHubCheck, error) {
 	if !githubLogin.MatchString(login) {
 		return GitHubCheck{}, errors.New("not a GitHub user name")
@@ -240,12 +252,17 @@ func (c *Client) VerifyGitHub(ctx context.Context, user uint64, login string) (G
 		}
 	}
 	res.Match = len(res.Missing) == 0
-	if res.Match {
-		if err := c.verifyKeys(user, p.Fingerprints, "github:"+login); err != nil {
-			return res, err
-		}
-	}
 	return res, nil
+}
+
+// ConfirmGitHub marks the keys of a matching GitHub check Verified
+// ("github:<login>" in the audit log) because the user confirmed that the
+// account is the user's. ErrSafetyChanged if the pinned keys changed since.
+func (c *Client) ConfirmGitHub(res GitHubCheck) error {
+	if !res.Match || len(res.Pinned) == 0 {
+		return ErrNotMatched
+	}
+	return c.verifyKeys(res.User, res.Pinned, "github:"+res.Login)
 }
 
 func fetchGitHubKeys(ctx context.Context, base, login string) ([]string, error) {
@@ -255,7 +272,17 @@ func fetchGitHubKeys(ctx context.Context, base, login string) ([]string, error) 
 	if err != nil {
 		return nil, err
 	}
-	hc := &http.Client{Timeout: 15 * time.Second}
+	origin, err := url.Parse(base)
+	if err != nil {
+		return nil, err
+	}
+	hc := &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(r *http.Request, via []*http.Request) error {
+		// Same origin only: no downgrade to http, no other host.
+		if r.URL.Scheme != origin.Scheme || r.URL.Host != origin.Host || len(via) >= 5 {
+			return fmt.Errorf("refusing redirect to %s", sanitize.Line(r.URL.Redacted()))
+		}
+		return nil
+	}}
 	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching GitHub keys: %w", err)
@@ -290,7 +317,7 @@ func fetchGitHubKeys(ctx context.Context, base, login string) ([]string, error) 
 // ---- key changes ----
 
 // KeyChange is a user's SSH key that verifies but isn't pinned or endorsed:
-// nothing is sealed to it until AcceptKeyChange.
+// nothing is sealed to it until AcceptKeyChanges.
 type KeyChange struct {
 	User        uint64
 	Fingerprint string
@@ -319,19 +346,39 @@ func (c *Client) KeyChanges() []KeyChange {
 
 // KeyChangedMembers lists the members of encrypted channel ch (not me)
 // with an unacknowledged key change; sending there is blocked until each
-// is accepted or verified. Sorted; nil for plaintext channels.
+// is accepted. Sorted; nil for plaintext channels, and nil on errors (it's
+// for display: the send gate, keyChangeAllowed, fails closed instead).
 func (c *Client) KeyChangedMembers(ch uint64) []uint64 {
+	us, _ := c.keyChangedMembers(ch)
+	return us
+}
+
+// keyChangedMembers is KeyChangedMembers that says when it can't tell.
+func (c *Client) keyChangedMembers(ch uint64) ([]uint64, error) {
 	sid, ok := c.cacheServerID()
-	if !ok || !c.chanIsE2E(c.db, sid, ok, ch) {
-		return nil
+	if !c.chanIsE2E(c.db, sid, ok, ch) {
+		return nil, nil
+	}
+	if !ok {
+		return nil, errors.New("not synced with the server yet")
 	}
 	cv, ok, err := getChan(c.db, ch)
-	if err != nil || !ok {
-		return nil
+	if err != nil {
+		return nil, err
 	}
+	if !ok {
+		return nil, errors.New("channel not loaded")
+	}
+	ks, err := c.trust.PendingKeyChanges(sid)
+	if err != nil {
+		return nil, err
+	}
+	me := c.Me().ID
 	changed := map[uint64]bool{}
-	for _, k := range c.KeyChanges() {
-		changed[k.User] = true
+	for _, k := range ks {
+		if k.User != me {
+			changed[k.User] = true
+		}
 	}
 	var out []uint64
 	for _, u := range cv.Members {
@@ -340,13 +387,16 @@ func (c *Client) KeyChangedMembers(ch uint64) []uint64 {
 		}
 	}
 	slices.Sort(out)
-	return out
+	return out, nil
 }
 
 // keyChangeAllowed refuses sends into an encrypted channel with a member
-// whose key change isn't acknowledged.
+// whose key change isn't acknowledged, and fails closed when it can't tell.
 func (c *Client) keyChangeAllowed(ch uint64) error {
-	us := c.KeyChangedMembers(ch)
+	us, err := c.keyChangedMembers(ch)
+	if err != nil {
+		return fmt.Errorf("%w: can't check the members' keys (%s)", ErrKeyChange, sanitize.Line(err.Error()))
+	}
 	if len(us) == 0 {
 		return nil
 	}
@@ -354,31 +404,86 @@ func (c *Client) keyChangeAllowed(ch uint64) error {
 	for i, u := range us {
 		names[i] = "@" + sanitize.Line(c.User(u).Name)
 	}
-	return fmt.Errorf("%w: %s — /verify or /accept-key in tc", ErrKeyChange, strings.Join(names, ", "))
+	return fmt.Errorf("%w: %s — /accept-key, then /verify in tc", ErrKeyChange, strings.Join(names, ", "))
 }
 
-// AcceptKeyChange acknowledges every pending key change of user (the user
-// read the banner and accepts the new key): the keys are pinned (trusted
-// on first use again, so the user shows as unverified) and their devices
-// verify on the next pass.
-func (c *Client) AcceptKeyChange(user uint64) error {
+// requeueKeyChange requeues outbox entries held for a key change in the
+// channels where none is pending any more.
+func (c *Client) requeueKeyChange() {
+	rows, err := c.db.Query(`SELECT DISTINCT chan FROM outbox WHERE failed = ?`, keyChangeReason)
+	if err != nil {
+		return
+	}
+	var chans []uint64
+	for rows.Next() {
+		var ch uint64
+		if rows.Scan(&ch) == nil {
+			chans = append(chans, ch)
+		}
+	}
+	rows.Close()
+	for _, ch := range chans {
+		if c.keyChangeAllowed(ch) != nil {
+			continue
+		}
+		res, err := c.db.Exec(`UPDATE outbox SET failed = '' WHERE chan = ? AND failed = ?`, ch, keyChangeReason)
+		if n, _ := rowsAffected(res); err == nil && n > 0 {
+			c.outboxChanged(ch, nil)
+		}
+	}
+}
+
+// PendingKeys lists the fingerprints of user's pending key changes, sorted.
+func (c *Client) PendingKeys(user uint64) []string {
+	var out []string
+	for _, k := range c.KeyChanges() {
+		if k.User == user {
+			out = append(out, k.Fingerprint)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// AcceptKeyChanges acknowledges exactly the pending key changes fps of user
+// that were shown to and confirmed by the user: those keys are pinned
+// (trusted on first use again, so the user shows as unverified), their
+// devices verify on the next pass, and sends held for the change are
+// requeued. With only, fps may be some of the pending ones; otherwise it
+// must be all of them. ErrPendingChanged if they aren't what is pending.
+func (c *Client) AcceptKeyChanges(user uint64, fps []string, only bool) error {
 	sid, ok := c.cacheServerID()
 	if !ok {
 		return errors.New("not synced with the server yet")
 	}
-	n := 0
-	for _, k := range c.KeyChanges() {
-		if k.User != user {
-			continue
-		}
-		if err := c.trust.AcknowledgeKeyChange(sid, user, k.Fingerprint); err != nil && !errors.Is(err, trust.ErrNoKeyChange) {
-			return err
-		}
-		n++
-	}
-	if n == 0 {
+	pend := c.PendingKeys(user)
+	if len(pend) == 0 {
 		return errors.New("no pending key change for that user")
 	}
+	want := slices.Clone(fps)
+	slices.Sort(want)
+	want = slices.Compact(want)
+	switch {
+	case len(want) == 0:
+		return ErrPendingChanged
+	case only:
+		for _, fp := range want {
+			if !slices.Contains(pend, fp) {
+				return ErrPendingChanged
+			}
+		}
+	case !slices.Equal(want, pend):
+		return ErrPendingChanged
+	}
+	for _, fp := range want {
+		if err := c.trust.AcknowledgeKeyChange(sid, user, fp); err != nil {
+			if errors.Is(err, trust.ErrNoKeyChange) {
+				return ErrPendingChanged
+			}
+			return err
+		}
+	}
+	c.requeueKeyChange()
 	c.kickE2E()
 	c.post(Update{Channels: true})
 	return nil

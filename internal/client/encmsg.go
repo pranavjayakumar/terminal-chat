@@ -528,10 +528,19 @@ func (c *Client) sendAllowed(ch uint64) error {
 	if !c.needsEnc(ch) {
 		return nil
 	}
+	if err := c.alarmAllowed(ch); err != nil {
+		return err
+	}
+	return c.keyChangeAllowed(ch)
+}
+
+// alarmAllowed refuses anything into an encrypted channel in alarm. Deletes
+// check only this: they never seal to a changed key (docs/E2E.md step 10).
+func (c *Client) alarmAllowed(ch uint64) error {
 	if st := c.E2EStatus(ch); st.State == E2EAlarm && !unconfirmedAlarm(st) {
 		return fmt.Errorf("%w (%s)", ErrE2EAlarm, sanitize.Line(st.Detail))
 	}
-	return c.keyChangeAllowed(ch)
+	return nil
 }
 
 // failErr marks an outbox entry failed with reason (no server involved).

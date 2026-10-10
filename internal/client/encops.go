@@ -668,8 +668,10 @@ func (c *Client) deleteArgs(msg uint64) (proto.DeleteArgs, error) {
 		return a, errNotLoaded // its channel (alarm, encryption) is unknown
 	}
 	if c.needsEnc(row.ch) {
-		if err := c.sendAllowed(row.ch); err != nil {
-			return a, err // no deletes in alarm, like sends
+		// No deletes in alarm, like sends; but allowed during a pending key
+		// change: a delete only removes, and seals to nobody new.
+		if err := c.alarmAllowed(row.ch); err != nil {
+			return a, err
 		}
 	}
 	if row.deleted || row.author != c.Me().ID || row.mid == nil || !c.needsEnc(row.ch) {
