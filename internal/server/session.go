@@ -86,9 +86,13 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 		return
 	}
 	defer s.unregister(sess)
-	if err := sess.codec.Write(proto.TWelcome, proto.Welcome{
+	w := proto.Welcome{
 		Server: Version, Caps: []string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind}, ServerID: s.st.serverID, User: user, Time: s.now(),
-	}); err != nil {
+	}
+	if tamperEnabled {
+		s.tamper.welcome(user.ID, &w)
+	}
+	if err := sess.codec.Write(proto.TWelcome, w); err != nil {
 		return
 	}
 	go sess.writer()
@@ -367,6 +371,15 @@ func (sess *session) writer() {
 		sess.queue, sess.queued = nil, 0
 		sess.mu.Unlock()
 		for _, f := range batch {
+			if tamperEnabled {
+				for _, g := range sess.srv.tamper.out(sess.user.ID, f) {
+					if err := sess.codec.WriteRaw(g.t, g.payload); err != nil {
+						sess.conn.Close()
+						return
+					}
+				}
+				continue
+			}
 			if err := sess.codec.WriteRaw(f.t, f.payload); err != nil {
 				sess.conn.Close()
 				return
