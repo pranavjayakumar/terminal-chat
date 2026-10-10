@@ -62,12 +62,33 @@ the local cache is therefore sensitive — rely on disk encryption, documented.
 - Optional server-stored backup encrypted with an age passphrase recipient.
 - Losing every device without a backup loses encrypted history — said plainly in the docs.
 
-## Verification
+## Verification (implemented in step 10)
 
-- Safety number = hash of both users' SSH key fingerprints; `/verify @bob` shows 6 emoji or 30 digits.
-- `/verify @bob --github bob` compares against `https://github.com/bob.keys`.
-- Invite carries the inviter's SSH fingerprint (TOFU anchored in the invite, like the TLS pin).
-- Key change → sticky banner, sending blocked until acknowledged.
+- **Safety number** (Signal-compatible-ish): 60 digits shown as 12 groups of 5. Input =
+  `"tc-safety-v1" || server_id || (u64 user, u16 n, n × (u16 len, fingerprint))` for both users ordered
+  by user id, fingerprints = `ssh.FingerprintSHA256` of every SSH key this device pinned for that user,
+  sorted. `h = SHA-512(input)`, then 5200 rounds of `h = SHA-512(h || input)`; group i is bytes
+  `h[5i:5i+5]` big-endian mod 100000. Like Signal it is iterated SHA-512 with 5-byte chunks mod 100000;
+  unlike Signal it is one number over both parties (not two 30-digit halves). Both sides compute it from
+  their own trust store, so it matches only if each pinned the same keys for both users. `/verify @bob`
+  (TUI) and `tc verify @bob` (CLI) show it with both users' fingerprints; confirming re-computes it and
+  marks exactly those pinned keys `Verified` (`trust.VerifyKeys`, refused if the pinned set changed since
+  — `ErrPinsChanged`), audited in `trust_audit`. Devices whose certs those keys signed are thereby
+  verified out of band.
+- `/verify @bob --github bob` (and `tc verify @bob --github bob`) fetches `https://github.com/bob.keys`
+  (net/http, 15 s timeout, 256 KiB cap, only on that explicit command) and verifies bob only if **every**
+  pinned key is listed; otherwise it shows the mismatch and changes nothing.
+- A user counts as verified when some pinned key is `Verified` and none is only `TOFU`: accepting a key
+  change pins the new key as TOFU, so the user is unverified again until re-verified.
+- Invite carries the inviter's SSH fingerprint (TOFU anchored in the invite, like the TLS pin) — M4.
+- **Key change** → one sticky red banner line in the encrypted channels shared with that user; sending
+  there (send/edit/delete/react, TUI and `tc send`) fails with `ErrKeyChange` until `/accept-key @bob`
+  (`trust.AcknowledgeKeyChange`); receiving is unaffected. Plaintext channels aren't gated (nothing is
+  sealed there).
+- **Alarms** stay sticky; `/alarm` explains one and `/alarm-clear #name` (the channel's name typed to
+  confirm) clears it through `trust.ClearChannelAlarm` / `ClearTrustAlarm`, which move the alarm (detail,
+  raise time) to the `trust_audit` table with who cleared it and when — never a silent delete. Nothing
+  in the sync code calls them (a test checks). Computed alarms (unconfirmed member) can't be cleared.
 
 ## Rollout
 
@@ -83,8 +104,8 @@ What a malicious server can and cannot do today, and what closes each gap:
   substitute its own key and read what is sealed to it. Later key changes are caught (pending key
   change, nothing sealed until acknowledged). Clients therefore report every user whose pins are
   only TOFU (or endorsed by a TOFU key) as **unverified** (`Client.UnverifiedUsers`; the TUI marks
-  them). Invite-anchored pins (the invite carries the inviter's SSH fingerprint) arrive in M4;
-  `/verify` (safety numbers, step 10) upgrades a pin to verified.
+  them with `?`). Invite-anchored pins (the invite carries the inviter's SSH fingerprint) arrive in M4;
+  `/verify` (safety numbers or GitHub keys, step 10) upgrades the pins to verified.
 - **Server-asserted membership, creator and roster are trusted** until signed membership exists:
   the server says who is in a channel, who created it (who may sign epoch 1) and so who belongs in
   an epoch's roster. A server can add a member it controls (who then gets keys sealed to their
@@ -152,7 +173,8 @@ Libraries (all pure Go, keeps `CGO_ENABLED=0`): `crypto/ecdh`, `crypto/ed25519`,
 - Device private keys are never deleted from the trust store: keys replaced because TC_HOME is re-used
   for another user, or retired after a revoke, move to an archive table; `TC_HOME/device.key`
   (pre-trust-store) is removed only once the trust store holds exactly its keys.
-- Cut from v1: age passphrase backup, `--github` verify, emoji SAS, per-epoch history boxes, SSHSIG.
+- Cut from v1: age passphrase backup, emoji SAS, per-epoch history boxes, SSHSIG. (`--github` verify
+  was cut here but landed in step 10.)
 - Webhooks into e2e channels → `forbidden`. Server search excludes e2e; client FTS instead.
 - **M1 bug found:** delete/edit never scrub `events.data`, so old bodies replay on sync (PR 0).
 
@@ -363,6 +385,12 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    with the server (or reading its database) can still see later deletes of, and reactions (real emoji)
    to, those old messages — never new bodies.
 10. TUI: key-change banner + send block, fork alarm, "⚠ unencrypted", "waiting for key", `/verify`.
+   Done (step 10): see "Verification" above. Decisions: the safety number covers only *pinned* keys
+   (pending key changes are excluded until accepted, which changes the number); a teammate whose own
+   device views differ (e.g. one side pinned another of their keys) gets a mismatch, which is the point;
+   the key-change gate covers only encrypted channels and excludes my own pending keys; alarm clears are
+   audited (trust schema v10, `trust_audit`) and re-raised if the server still presents the cause;
+   the one-time `?` hint is per channel per run (not persisted).
 11. Malicious-server suite (`Tamper` hook): injected devices/keys, fake joins, rollback, fork,
     forged bundles, swapped/withheld boxes, hidden leave, stripped cap/flag, plaintext injection,
     cross-channel/thread replay, author/thread/time rewrite, forged delete, reorder, forced reset,
