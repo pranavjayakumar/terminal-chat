@@ -258,6 +258,9 @@ func (c *Client) e2eLoop(ctx context.Context, s *session, signer ssh.Signer) {
 	if !ok {
 		return
 	}
+	c.mu.Lock()
+	clear(c.probed) // a fetch that failed on the last connection is tried again
+	c.mu.Unlock()
 	// Best effort: a failure is retried on the next connection.
 	_ = c.ensureDevice(ctx, s, signer)
 	t := time.NewTicker(c.timing.keyNeed)
@@ -779,6 +782,48 @@ func (c *Client) fetchBundles(ctx context.Context, s *session, ch uint64, from, 
 	return err == nil && len(res.Bundles) > 0
 }
 
+// fetchAhead asks the server for every epoch of ch above our verified
+// head, into the cache: the events may never have reached us (a server
+// that drops or reorders key.epoch). It reports whether it got any.
+func (c *Client) fetchAhead(ctx context.Context, s *session, sid e2ecrypto.ServerID, ch uint64) bool {
+	head, _, err := c.trust.ChainHead(sid, ch)
+	if err != nil {
+		return false
+	}
+	return c.fetchBundles(ctx, s, ch, head.Epoch+1, head.Epoch+maxEpochAhead)
+}
+
+// waitingEpoch is the highest epoch among ch's messages waiting for a key.
+func (c *Client) waitingEpoch(ch uint64) (top uint32) {
+	rows, err := c.db.Query(`SELECT enc FROM msgs WHERE chan = ? AND sec = ? AND enc IS NOT NULL ORDER BY id DESC LIMIT 1000`, ch, SecWaiting)
+	if err != nil {
+		return 0
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var enc []byte
+		if rows.Scan(&enc) != nil {
+			continue
+		}
+		if h, err := e2ecrypto.ParseEnc(enc); err == nil {
+			top = max(top, h.Epoch)
+		}
+	}
+	return top
+}
+
+// firstProbe reports (and records) whether fetching ahead for waiting
+// epoch w of ch is new on this connection.
+func (c *Client) firstProbe(ch uint64, w uint32) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.probed[ch] >= w {
+		return false
+	}
+	c.probed[ch] = w
+	return true
+}
+
 // syncChannel brings ch's verified chain up to the newest epoch the server
 // shows, picks up keys (our boxes, backlinks, shares), asks for a missing
 // one, and creates epoch 1 if it's ours to create. Caller holds e2eMu.
@@ -798,6 +843,14 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 	latest := max(c.cachedMaxEpoch(ch.ID), ch.Epoch)
 	if hasHead && latest < head.Epoch {
 		return c.alarm(sid, ch.ID, fmt.Sprintf("rollback: the server shows epoch %d, this device verified %d", latest, head.Epoch))
+	}
+	// A message waits for an epoch no bundle we hold reaches: its key.epoch
+	// event was dropped or came out of order (a skipped seq is never
+	// replayed). Ask for it, once per epoch per connection.
+	if w := c.waitingEpoch(ch.ID); w > max(latest, head.Epoch) && w <= head.Epoch+maxEpochAhead && c.firstProbe(ch.ID, w) {
+		if c.fetchAhead(ctx, s, sid, ch.ID) {
+			latest = max(latest, c.cachedMaxEpoch(ch.ID))
+		}
 	}
 
 	// Bundles for epochs we already verified must be the ones we verified.
@@ -1139,7 +1192,9 @@ func (c *Client) rotateLocked(ctx context.Context, s *session, sid e2ecrypto.Ser
 		var pe *proto.Error
 		if attempt == 0 && errors.As(err, &pe) && pe.Code == proto.ErrStaleEpoch {
 			// The winning key.epoch (or the membership change) was applied
-			// before our RES: rebuild on it.
+			// before our RES: rebuild on it. Fetch too, in case its event
+			// never reached us.
+			c.fetchAhead(ctx, s, sid, chID)
 			continue
 		}
 		return err
