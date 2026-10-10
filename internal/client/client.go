@@ -210,6 +210,7 @@ type Client struct {
 	needSent     map[uint64]time.Time
 	shared       map[shareKey]time.Time
 	autoTried    map[uint64]time.Time
+	reopenAfter  uint64                  // reopenMsgs' cursor (under e2eMu)
 	poisonSeen   map[[2]uint64]time.Time // (chan, epoch) → when our box there first proved unusable
 	probed       map[uint64]uint32       // channel → highest waiting-message epoch fetched ahead for, this session
 	badCerts     map[[32]byte]struct{}   // hashes of certs that failed verification

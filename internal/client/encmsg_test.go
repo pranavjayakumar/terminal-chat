@@ -898,3 +898,21 @@ func TestEncRecoversFromPoisonedBox(t *testing.T) {
 		t.Fatalf("sent under epoch %d", h.Epoch)
 	}
 }
+
+// More than a pass's worth of messages that never open (replies to a root
+// we don't have) can't keep a later one from being re-checked: the queue
+// walks them batch by batch (step 12 security pass).
+func TestEncReopenQueueNoStarvation(t *testing.T) {
+	d := newEncDM(t, proto.Snapshot{})
+	var last uint64
+	for i := 0; i < reopenBatch+5; i++ {
+		enc := sealAs(t, d.b1.dev, d.k1, 1, d.e1, plainMsg{T: "msg", TS: 1, Body: "junk", ThreadRef: make([]byte, 16)})
+		last = d.f.post(proto.Message{Chan: dm, Author: bob, Thread: 5, Enc: enc})
+	}
+	waitFor(t, "junk applied", func() bool { return lastSeq(t, d.c) >= last })
+	b2 := newPeer(t, bob, d.b1.ssh)
+	id := d.f.post(proto.Message{Chan: dm, Author: bob, Enc: sealAs(t, b2.dev, d.k1, 1, d.e1, plainMsg{T: "msg", TS: 1, Body: "from b2"})})
+	waitFor(t, "waiting for b2", func() bool { m, ok := findMsg(d.c, id); return ok && m.Sec == SecWaiting })
+	d.f.event(proto.KDeviceNew, 0, bob, proto.Device{Cert: b2.cert})
+	waitFor(t, "b2's message opens", func() bool { m, _ := findMsg(d.c, id); return m.Sec == SecE2E && m.Body == "from b2" })
+}

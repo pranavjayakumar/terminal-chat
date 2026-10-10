@@ -390,6 +390,19 @@ func TestDevices(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+	// A new device id with an existing device's key (step 12 security pass).
+	for name, twin := range map[string]func(*Device){
+		"twin x25519": func(x *Device) { x.Ed25519[0] ^= 1 },
+		"twin ed":     func(x *Device) { x.X25519[0] ^= 1 },
+	} {
+		x := d
+		x.ID[0] ^= 1
+		x.User = 3
+		twin(&x)
+		if err := s.PutDevice(sidA, x); !errors.Is(err, ErrDeviceConflict) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
 	if err := s.PutDevice(sidA, Device{ID: e2ecrypto.DevID{9}, User: bob}); !errors.Is(err, ErrInvalid) {
 		t.Errorf("no cert: %v", err)
 	}

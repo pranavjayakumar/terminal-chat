@@ -435,6 +435,9 @@ func (c *Client) saveMsg(q dbtx, m *proto.Message, replace bool, memo *keyMemo) 
 	return sec, nil
 }
 
+// reopenBatch is how many waiting messages one reopenMsgs pass re-judges.
+const reopenBatch = 1000
+
 // reopenMsgs is the lazy decrypt queue: it re-judges cached messages that
 // were waiting (for a key, a device or a thread root) and reclassifies
 // plaintext in encrypted channels. Messages that became readable go to
@@ -456,7 +459,11 @@ func (c *Client) reopenMsgs(sid e2ecrypto.ServerID, chans []proto.Channel) {
 			u.msgs(ch.ID)
 		}
 	}
-	rows, err := c.db.Query(`SELECT `+msgCols+`, enc, denc, COALESCE(mid, cmid) FROM msgs WHERE sec = ? ORDER BY id LIMIT 1000`, SecWaiting)
+	// Batches of reopenBatch walk all waiting messages pass by pass, so
+	// many that never open (a member's replies to a root we don't have)
+	// can't keep newer ones from being re-checked.
+	rows, err := c.db.Query(`SELECT `+msgCols+`, enc, denc, COALESCE(mid, cmid) FROM msgs WHERE sec = ? AND id > ? ORDER BY id LIMIT ?`,
+		SecWaiting, c.reopenAfter, reopenBatch)
 	if err != nil {
 		return
 	}
@@ -475,6 +482,11 @@ func (c *Client) reopenMsgs(sid e2ecrypto.ServerID, chans []proto.Channel) {
 		}
 	}
 	rows.Close()
+	if len(waiting) < reopenBatch {
+		c.reopenAfter = 0
+	} else {
+		c.reopenAfter = waiting[len(waiting)-1].m.ID
+	}
 	reads := c.uintMap(`SELECT chan, seq FROM reads`)
 	me := c.Me().ID
 	for _, w := range waiting {

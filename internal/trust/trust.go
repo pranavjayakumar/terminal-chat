@@ -727,7 +727,8 @@ func (s *Store) PendingKeyChanges(sid e2ecrypto.ServerID) ([]SSHKey, error) {
 
 // PutDevice stores a device whose cert the caller verified. Storing the same
 // device again is a no-op (the first cert is kept); the same id with a
-// different owner or keys is ErrDeviceConflict. Revocation is permanent:
+// different owner or keys, or a new id with another device's X25519 or
+// Ed25519 key, is ErrDeviceConflict. Revocation is permanent:
 // d.Revoked == true revokes, false never un-revokes.
 func (s *Store) PutDevice(sid e2ecrypto.ServerID, d Device) error {
 	if d.User == 0 || len(d.Cert) == 0 {
@@ -740,6 +741,18 @@ func (s *Store) PutDevice(sid e2ecrypto.ServerID, d Device) error {
 			sid[:], d.ID[:]).Scan(&user, &x, &ed)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
+			// No two devices share a key (PROTOCOL §13.2): a twin of another
+			// device's X25519 key would make every bundle sealing to both
+			// reuse key and nonce (building one refuses, wedging rotations);
+			// a twin Ed25519 key would sign as the other device.
+			var n int
+			if err := tx.QueryRow(`SELECT COUNT(*) FROM devices WHERE server_id = ? AND (x25519 = ? OR ed25519 = ?)`,
+				sid[:], d.X25519[:], d.Ed25519[:]).Scan(&n); err != nil {
+				return err
+			}
+			if n > 0 {
+				return ErrDeviceConflict
+			}
 			if _, err := tx.Exec(`INSERT INTO devices (server_id, dev, user, x25519, ed25519, cert)
 				VALUES (?, ?, ?, ?, ?, ?)`, sid[:], d.ID[:], i64(d.User), d.X25519[:], d.Ed25519[:], d.Cert); err != nil {
 				return err
