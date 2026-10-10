@@ -522,7 +522,8 @@ func (c *Client) needsEnc(ch uint64) bool {
 	return c.chanIsE2E(c.db, sid, ok, ch)
 }
 
-// sendAllowed refuses sends into an encrypted channel in alarm.
+// sendAllowed refuses sends into an encrypted channel in alarm or with a
+// member's unacknowledged key change.
 func (c *Client) sendAllowed(ch uint64) error {
 	if !c.needsEnc(ch) {
 		return nil
@@ -530,7 +531,7 @@ func (c *Client) sendAllowed(ch uint64) error {
 	if st := c.E2EStatus(ch); st.State == E2EAlarm && !unconfirmedAlarm(st) {
 		return fmt.Errorf("%w (%s)", ErrE2EAlarm, sanitize.Line(st.Detail))
 	}
-	return nil
+	return c.keyChangeAllowed(ch)
 }
 
 // failErr marks an outbox entry failed with reason (no server involved).
