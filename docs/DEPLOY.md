@@ -110,6 +110,9 @@ allowed signers compiled into `internal/release/signers.go` and embedded in `ins
    signature exactly as `tc update` will, uploads `checksums.txt.sig` and publishes the release
    as latest.
 
+Downloads are https-only, redirects included (`install.sh` runs curl with `--proto '=https'
+--proto-redir '=https' --tlsv1.2` and ignores `~/.curlrc`; `tc update` refuses non-https redirects).
+`TC_RELEASE_BASE` may point at a mirror, but only over https (plain http only to localhost, for tests).
 `TC_INSECURE_NO_SIG=1 sh install.sh` skips the signature check. Don't: anyone who can change the
 release (or what your network serves for it) can then run code as you.
 

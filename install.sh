@@ -8,7 +8,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/install.sh | sh -s -- 'tc://…'
 #
 # Environment: TC_VERSION (e.g. v0.2.0), TC_INSTALL_DIR, TC_RELEASE_BASE
-# (default https://github.com/pranavjayakumar/terminal-chat/releases).
+# (default https://github.com/pranavjayakumar/terminal-chat/releases; must be
+# https, or http only to localhost/127.0.0.1/[::1]).
 # TC_INSECURE_NO_SIG=1 skips the signature check. That is dangerous: anyone
 # who can change the release (or its download) can then run code as you.
 set -eu
@@ -52,9 +53,29 @@ valid_tag() {
 	return 0
 }
 
+# fetch is curl restricted to https, for redirects too, with TLS 1.2 or
+# newer; -q (first) ignores ~/.curlrc, which could otherwise add -k or a proxy.
+# PROTO is =http,https only for a loopback TC_RELEASE_BASE (tests).
+PROTO='=https'
+fetch() {
+	curl -q --proto "$PROTO" --proto-redir "$PROTO" --tlsv1.2 "$@"
+}
+
+# check_base accepts https bases, and http only to a loopback host. No
+# user info: "http://localhost:1@evil/" is a request to evil.
+check_base() {
+	case "$1" in
+	*@*) die "TC_RELEASE_BASE must not contain '@'" ;;
+	https://?*) ;;
+	http://localhost | http://localhost[:/]* | http://127.0.0.1 | http://127.0.0.1[:/]* | "http://[::1]" | "http://[::1]"[:/]*)
+		PROTO='=http,https' ;;
+	*) die "TC_RELEASE_BASE must be an https:// URL" ;;
+	esac
+}
+
 latest_tag() {
 	# /releases/latest redirects to /releases/tag/<tag>; no API, no rate limit.
-	url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$1/latest") ||
+	url=$(fetch -fsSLI -o /dev/null -w '%{url_effective}' "$1/latest") ||
 		die "can't reach $1 (offline, or no releases yet?)"
 	case "$url" in
 	*/tag/*) ;;
@@ -88,7 +109,7 @@ verify_sig() {
 	esac
 	command -v ssh-keygen >/dev/null 2>&1 ||
 		die "need ssh-keygen (OpenSSH 8.1 or newer) to verify the release signature"
-	curl -fsSL -o "$1/checksums.txt.sig" "$base/download/$tag/checksums.txt.sig" ||
+	fetch -fsSL -o "$1/checksums.txt.sig" "$base/download/$tag/checksums.txt.sig" ||
 		die "can't download checksums.txt.sig for $tag (an unsigned release?); not installing"
 	printf '%s\n' "$ALLOWED_SIGNERS" >"$1/allowed_signers"
 	ssh-keygen -Y verify -f "$1/allowed_signers" -I tc-release -n tc-release \
@@ -117,6 +138,7 @@ main() {
 
 	base=${TC_RELEASE_BASE:-https://github.com/pranavjayakumar/terminal-chat/releases}
 	base=${base%/}
+	check_base "$base"
 	dir=${TC_INSTALL_DIR:-${HOME:?HOME is not set}/.local/bin}
 	os=$(detect_os)
 	arch=$(detect_arch)
@@ -137,10 +159,10 @@ main() {
 	trap 'exit 130' INT TERM
 
 	say "downloading tc $tag for $os/$arch"
-	curl -fsSL -o "$tmp/checksums.txt" "$base/download/$tag/checksums.txt" ||
+	fetch -fsSL -o "$tmp/checksums.txt" "$base/download/$tag/checksums.txt" ||
 		die "can't download checksums.txt for $tag"
 	verify_sig "$tmp"
-	curl -fsSL -o "$tmp/$asset" "$base/download/$tag/$asset" ||
+	fetch -fsSL -o "$tmp/$asset" "$base/download/$tag/$asset" ||
 		die "can't download $asset for $tag"
 
 	want=$(awk -v f="$asset" '$2 == f || $2 == "*" f {print $1; exit}' "$tmp/checksums.txt")

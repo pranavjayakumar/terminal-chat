@@ -6,7 +6,9 @@
 //	<base>/download/<tag>/checksums.txt  sha256sum format
 //	<base>/download/<tag>/tc_<os>_<arch>.tar.gz  holds the tc binary
 //
-// <base> is $TC_RELEASE_BASE (tests point it at a local server).
+// <base> is $TC_RELEASE_BASE (tests point it at a local server). Every URL,
+// the base and each redirect, must be https; plain http is allowed only to
+// loopback hosts (CheckURL).
 package release
 
 import (
@@ -21,7 +23,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -69,11 +73,58 @@ func (s *Source) signers() string {
 // NewSource uses Base().
 func NewSource() *Source { return &Source{Base: Base()} }
 
+// client is s.HTTP (or a 60 s-timeout client) that refuses redirects to
+// anything CheckURL rejects, so a hop can't downgrade to plain http.
 func (s *Source) client() *http.Client {
+	c := http.Client{Timeout: 60 * time.Second}
 	if s.HTTP != nil {
-		return s.HTTP
+		c = *s.HTTP
 	}
-	return &http.Client{Timeout: 60 * time.Second}
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("too many redirects")
+		}
+		return CheckURL(req.URL)
+	}
+	return &c
+}
+
+// ErrInsecureURL means a release URL wasn't https (or loopback http).
+var ErrInsecureURL = errors.New("release downloads must use https")
+
+// CheckURL accepts https URLs, and http ones only for loopback hosts
+// (localhost, 127.0.0.0/8, ::1), which tests and local mirrors use.
+func CheckURL(u *url.URL) error {
+	switch {
+	case u.Scheme == "https" && u.Host != "":
+		return nil
+	case u.Scheme == "http" && isLoopback(u.Hostname()):
+		return nil
+	}
+	return fmt.Errorf("%w: refusing %s://%s", ErrInsecureURL, u.Scheme, u.Host)
+}
+
+func isLoopback(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// checkBase validates s.Base before any request is made.
+func (s *Source) checkBase() error {
+	u, err := url.Parse(s.Base)
+	if err != nil {
+		return fmt.Errorf("release base: %w", err)
+	}
+	if u.User != nil {
+		return fmt.Errorf("%w: release base must not hold user info", ErrInsecureURL)
+	}
+	if err := CheckURL(u); err != nil {
+		return fmt.Errorf("TC_RELEASE_BASE: %w", err)
+	}
+	return nil
 }
 
 // tagRE is the tags we accept: v1.2.3 with an optional suffix. Anything else
@@ -86,6 +137,9 @@ func ValidTag(tag string) bool { return tagRE.MatchString(tag) }
 // Latest returns the newest release's tag, read from where <base>/latest
 // redirects (no API call, so no API rate limit).
 func (s *Source) Latest(ctx context.Context) (string, error) {
+	if err := s.checkBase(); err != nil {
+		return "", err
+	}
 	c := *s.client()
 	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, s.Base+"/latest", nil)
@@ -112,8 +166,10 @@ func (s *Source) get(ctx context.Context, tag, name string, limit int64) ([]byte
 	if !ValidTag(tag) {
 		return nil, fmt.Errorf("bad release tag %q", tag)
 	}
-	url := s.Base + "/download/" + tag + "/" + name
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err := s.checkBase(); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.Base+"/download/"+tag+"/"+name, nil)
 	if err != nil {
 		return nil, err
 	}

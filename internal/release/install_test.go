@@ -334,3 +334,91 @@ func TestInstallRequiresSignature(t *testing.T) {
 		t.Fatalf("opt-out: %v\n%s", r.err, r.stderr)
 	}
 }
+
+// TC_RELEASE_BASE must be https; http only to loopback; no user info.
+func TestInstallRefusesInsecureBase(t *testing.T) {
+	srv := releasetest.New(t, "v0.4.0")
+	for _, c := range []struct{ base, want string }{
+		{"http://example.invalid/releases", "must be an https:// URL"},
+		{"http://127.0.0.1.example.invalid/releases", "must be an https:// URL"},
+		{"http://localhost.example.invalid/releases", "must be an https:// URL"},
+		{"ftp://127.0.0.1/releases", "must be an https:// URL"},
+		{"http://localhost:80@example.invalid/releases", "must not contain '@'"},
+	} {
+		r := runInstall(t, srv, installOpts{unameS: "Linux", unameM: "x86_64", env: []string{"TC_RELEASE_BASE=" + c.base}})
+		if r.err == nil || !strings.Contains(r.stderr, c.want) {
+			t.Errorf("%s: err %v\n%s", c.base, r.err, r.stderr)
+		}
+	}
+}
+
+// Over https, curl must not follow a redirect down to plain http, and must
+// ignore a ~/.curlrc (here one that turns certificate checks off).
+func TestInstallHTTPSOnly(t *testing.T) {
+	srv := releasetest.NewTLS(t, "v0.4.0")
+	publishAll(t, srv, "v0.4.0")
+	ca := "CURL_CA_BUNDLE=" + srv.CertFile(t)
+	opts := func(env ...string) installOpts {
+		return installOpts{unameS: "Linux", unameM: "x86_64", env: append([]string{"TC_RELEASE_BASE=" + srv.Base}, env...)}
+	}
+	if r := runInstall(t, srv, opts(ca)); r.err != nil {
+		t.Skipf("this curl can't use CURL_CA_BUNDLE for the test server: %v\n%s", r.err, r.stderr)
+	}
+
+	// The same tarball, but served over plain http (loopback, so only the
+	// redirect rule can stop it).
+	plain := releasetest.New(t, "v0.4.0")
+	arc := releasetest.Tarball(stubTC("linux_amd64@v0.4.0"))
+	srv.Put("v0.4.0", "tc_linux_amd64.tar.gz", arc)
+	plain.Put("v0.4.0", "tc_linux_amd64.tar.gz", arc)
+	srv.PutChecksums(t, "v0.4.0", []byte(fmt.Sprintf("%x  tc_linux_amd64.tar.gz\n", sha256.Sum256(arc))))
+	if r := runInstall(t, srv, opts(ca)); r.err != nil {
+		t.Fatalf("https: %v\n%s", r.err, r.stderr)
+	}
+	srv.Redirect("v0.4.0", "tc_linux_amd64.tar.gz", plain.Base+"/download/v0.4.0/tc_linux_amd64.tar.gz")
+	r := runInstall(t, srv, opts(ca))
+	if r.err == nil || !strings.Contains(r.stderr, "can't download tc_linux_amd64.tar.gz") {
+		t.Fatalf("followed an https → http redirect: %v\n%s", r.err, r.stderr)
+	}
+	for _, h := range plain.Hits() {
+		t.Fatalf("plain-http server was contacted: %s", h)
+	}
+
+	// A ~/.curlrc with "insecure" must not make an untrusted certificate OK.
+	srv.Redirect("v0.4.0", "tc_linux_amd64.tar.gz", "")
+	if r := runInstall(t, srv, opts(ca)); r.err != nil {
+		t.Fatalf("https again: %v\n%s", r.err, r.stderr)
+	}
+	r = runInstall(t, srv, installOpts{unameS: "Linux", unameM: "x86_64", env: []string{"TC_RELEASE_BASE=" + srv.Base, "CURL_HOME=" + writeCurlrc(t, "insecure\n")}})
+	if r.err == nil {
+		t.Fatalf("~/.curlrc insecure was honored:\n%s", r.stderr)
+	}
+}
+
+func writeCurlrc(t *testing.T, body string) string {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".curlrc"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// Every curl call goes through fetch, which pins the protocol (for
+// redirects too), TLS ≥ 1.2 and ignores ~/.curlrc.
+func TestInstallCurlFlags(t *testing.T) {
+	b, _ := scriptSigners(t)
+	var calls []string
+	for _, line := range strings.Split(string(b), "\n") {
+		l := strings.TrimSpace(line)
+		if strings.HasPrefix(l, "#") || !regexp.MustCompile(`(^|[\s(])curl\s`).MatchString(l) {
+			continue
+		}
+		calls = append(calls, l)
+	}
+	if len(calls) != 1 || calls[0] != `curl -q --proto "$PROTO" --proto-redir "$PROTO" --tlsv1.2 "$@"` {
+		t.Fatalf("curl calls outside fetch, or fetch flags changed: %q", calls)
+	}
+	if !strings.Contains(string(b), "\nPROTO='=https'\n") {
+		t.Fatal("PROTO must default to =https")
+	}
+}

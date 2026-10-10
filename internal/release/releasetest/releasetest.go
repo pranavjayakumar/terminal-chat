@@ -11,9 +11,12 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/base64"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -32,15 +35,23 @@ type Server struct {
 	Signers string
 	Key     ssh.Signer
 
-	mu     sync.Mutex
-	latest string
-	files  map[string][]byte // "<tag>/<name>"
-	hits   []string
+	mu        sync.Mutex
+	latest    string
+	files     map[string][]byte // "<tag>/<name>"
+	redirects map[string]string // "<tag>/<name>" → absolute URL
+	hits      []string
 }
 
-// New starts a server whose latest release is tag, with no assets yet.
-func New(t testing.TB, tag string) *Server {
-	s := &Server{latest: tag, files: map[string][]byte{}}
+// New starts a plain-http (loopback) server whose latest release is tag,
+// with no assets yet.
+func New(t testing.TB, tag string) *Server { return start(t, tag, false) }
+
+// NewTLS is New over https with httptest's self-signed certificate: use
+// s.Source() (it trusts it) or CertFile for curl.
+func NewTLS(t testing.TB, tag string) *Server { return start(t, tag, true) }
+
+func start(t testing.TB, tag string, tls bool) *Server {
+	s := &Server{latest: tag, files: map[string][]byte{}, redirects: map[string]string{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/releases/latest", func(w http.ResponseWriter, r *http.Request) {
 		s.hit(r.URL.Path)
@@ -62,14 +73,23 @@ func New(t testing.TB, tag string) *Server {
 		key := strings.TrimPrefix(r.URL.Path, "/releases/download/")
 		s.mu.Lock()
 		b, ok := s.files[key]
+		to, redirect := s.redirects[key]
 		s.mu.Unlock()
+		if redirect {
+			http.Redirect(w, r, to, http.StatusFound)
+			return
+		}
 		if !ok {
 			http.NotFound(w, r)
 			return
 		}
 		w.Write(b)
 	})
-	s.Server = httptest.NewServer(mux)
+	if tls {
+		s.Server = httptest.NewTLSServer(mux)
+	} else {
+		s.Server = httptest.NewServer(mux)
+	}
 	s.Base = s.URL + "/releases"
 	t.Cleanup(s.Close)
 	s.Key = NewKey(t)
@@ -183,9 +203,35 @@ func Tarball(bin []byte) []byte {
 	return buf.Bytes()
 }
 
-// Source is a release.Source for this server that trusts its key.
+// Source is a release.Source for this server that trusts its release key
+// (and, for NewTLS, its certificate).
 func (s *Server) Source() *release.Source {
-	return &release.Source{Base: s.Base, Signers: s.Signers}
+	src := &release.Source{Base: s.Base, Signers: s.Signers}
+	if s.TLS != nil {
+		src.HTTP = s.Client()
+	}
+	return src
+}
+
+// Redirect makes <tag>/<name> redirect to url ("" stops redirecting).
+func (s *Server) Redirect(tag, name, url string) {
+	s.mu.Lock()
+	if url == "" {
+		delete(s.redirects, tag+"/"+name)
+	} else {
+		s.redirects[tag+"/"+name] = url
+	}
+	s.mu.Unlock()
+}
+
+// CertFile writes a NewTLS server's certificate as PEM (for CURL_CA_BUNDLE).
+func (s *Server) CertFile(t testing.TB) string {
+	f := filepath.Join(t.TempDir(), "ca.pem")
+	b := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: s.Certificate().Raw})
+	if err := os.WriteFile(f, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return f
 }
 
 // Remove stops serving <tag>/<name>.
