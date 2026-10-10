@@ -1,6 +1,7 @@
 #!/bin/sh
 # tc installer: downloads the latest release (or $TC_VERSION) for this
-# machine from GitHub Releases, checks its sha256 against checksums.txt,
+# machine from GitHub Releases, checks the maintainer's signature on
+# checksums.txt (ssh-keygen -Y verify) and the download's sha256 against it,
 # installs it to ~/.local/bin (or $TC_INSTALL_DIR) and, given an invite,
 # runs `tc join '<invite>'`.
 #
@@ -8,7 +9,13 @@
 #
 # Environment: TC_VERSION (e.g. v0.2.0), TC_INSTALL_DIR, TC_RELEASE_BASE
 # (default https://github.com/pranavjayakumar/terminal-chat/releases).
+# TC_INSECURE_NO_SIG=1 skips the signature check. That is dangerous: anyone
+# who can change the release (or its download) can then run code as you.
 set -eu
+
+# Keys allowed to sign releases, in ssh-keygen allowed_signers format. Must
+# equal AllowedSigners in internal/release/signers.go (a test checks).
+ALLOWED_SIGNERS='REPLACE_WITH_MAINTAINER_KEY'
 
 say() { printf 'tc-install: %s\n' "$*" >&2; }
 die() { say "error: $*"; exit 1; }
@@ -66,6 +73,30 @@ sha256_of() {
 	fi
 }
 
+# verify_sig checks $1/checksums.txt against the release signature, or
+# dies. Without it, checksums.txt only proves the download matches whatever
+# the release host serves.
+verify_sig() {
+	if [ "${TC_INSECURE_NO_SIG:-}" = 1 ]; then
+		say "WARNING: TC_INSECURE_NO_SIG=1, so the release signature is NOT checked."
+		say "WARNING: anyone who can change the release can run code on this machine."
+		return 0
+	fi
+	case "$ALLOWED_SIGNERS" in
+	*REPLACE_WITH_MAINTAINER_KEY*)
+		die "this install.sh has no release signing key, so it can't verify the download; use the install command from a tc release" ;;
+	esac
+	command -v ssh-keygen >/dev/null 2>&1 ||
+		die "need ssh-keygen (OpenSSH 8.1 or newer) to verify the release signature"
+	curl -fsSL -o "$1/checksums.txt.sig" "$base/download/$tag/checksums.txt.sig" ||
+		die "can't download checksums.txt.sig for $tag (an unsigned release?); not installing"
+	printf '%s\n' "$ALLOWED_SIGNERS" >"$1/allowed_signers"
+	ssh-keygen -Y verify -f "$1/allowed_signers" -I tc-release -n tc-release \
+		-s "$1/checksums.txt.sig" <"$1/checksums.txt" >/dev/null 2>&1 ||
+		die "checksums.txt for $tag is not signed by the tc release key; not installing"
+	say "release signature OK"
+}
+
 main() {
 	need curl
 	need tar
@@ -108,6 +139,7 @@ main() {
 	say "downloading tc $tag for $os/$arch"
 	curl -fsSL -o "$tmp/checksums.txt" "$base/download/$tag/checksums.txt" ||
 		die "can't download checksums.txt for $tag"
+	verify_sig "$tmp"
 	curl -fsSL -o "$tmp/$asset" "$base/download/$tag/$asset" ||
 		die "can't download $asset for $tag"
 

@@ -2,12 +2,16 @@ package release_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/skailama/tc/internal/release"
 	"github.com/skailama/tc/internal/release/releasetest"
 )
 
@@ -41,15 +45,41 @@ type installOpts struct {
 	piped          bool // cat install.sh | sh -s -- args, like the one-liner
 	installDir     string
 	onPath         bool
+	signers        string // ALLOWED_SIGNERS in the script; "": the server's key
 }
 
-func runInstall(t *testing.T, base string, o installOpts) installRun {
+var allowedSignersRE = regexp.MustCompile(`(?m)^ALLOWED_SIGNERS='([^']*)'$`)
+
+// scriptSigners returns install.sh and its embedded ALLOWED_SIGNERS.
+func scriptSigners(t *testing.T) (script []byte, signers string) {
 	t.Helper()
-	if _, err := exec.LookPath("curl"); err != nil {
-		t.Skip("curl not installed")
-	}
-	script, err := filepath.Abs("../../install.sh")
+	b, err := os.ReadFile("../../install.sh")
 	if err != nil {
+		t.Fatal(err)
+	}
+	m := allowedSignersRE.FindAllSubmatch(b, -1)
+	if len(m) != 1 {
+		t.Fatalf("install.sh has %d ALLOWED_SIGNERS lines, want 1", len(m))
+	}
+	return b, string(m[0][1])
+}
+
+func runInstall(t *testing.T, srv *releasetest.Server, o installOpts) installRun {
+	t.Helper()
+	for _, tool := range []string{"curl", "ssh-keygen"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skip(tool + " not installed")
+		}
+	}
+	base := srv.Base
+	b, _ := scriptSigners(t)
+	signers := o.signers
+	if signers == "" {
+		signers = srv.Signers
+	}
+	b = allowedSignersRE.ReplaceAllLiteral(b, []byte("ALLOWED_SIGNERS='"+signers+"'"))
+	script := filepath.Join(t.TempDir(), "install.sh")
+	if err := os.WriteFile(script, b, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	home := t.TempDir()
@@ -70,7 +100,6 @@ func runInstall(t *testing.T, base string, o installOpts) installRun {
 	var cmd *exec.Cmd
 	if o.piped {
 		cmd = exec.Command("sh", append([]string{"-s", "--"}, o.args...)...)
-		b, _ := os.ReadFile(script)
 		cmd.Stdin = bytes.NewReader(b)
 	} else {
 		cmd = exec.Command("sh", append([]string{script}, o.args...)...)
@@ -109,7 +138,7 @@ func TestInstallPicksArchAndJoins(t *testing.T) {
 		{"Darwin", "arm64", "darwin_arm64"},
 		{"Linux", "amd64", "linux_amd64"},
 	} {
-		r := runInstall(t, srv.Base, installOpts{unameS: c.s, unameM: c.m, args: []string{installInvite}})
+		r := runInstall(t, srv, installOpts{unameS: c.s, unameM: c.m, args: []string{installInvite}})
 		if r.err != nil {
 			t.Fatalf("%s/%s: %v\n%s", c.s, c.m, r.err, r.stderr)
 		}
@@ -139,7 +168,7 @@ func TestInstallPicksArchAndJoins(t *testing.T) {
 func TestInstallPiped(t *testing.T) {
 	srv := releasetest.New(t, "v0.4.0")
 	publishAll(t, srv, "v0.4.0")
-	r := runInstall(t, srv.Base, installOpts{unameS: "Linux", unameM: "x86_64", args: []string{installInvite}, piped: true})
+	r := runInstall(t, srv, installOpts{unameS: "Linux", unameM: "x86_64", args: []string{installInvite}, piped: true})
 	if r.err != nil {
 		t.Fatalf("%v\n%s", r.err, r.stderr)
 	}
@@ -155,7 +184,7 @@ func TestInstallChecksumMismatchAborts(t *testing.T) {
 	srv := releasetest.New(t, "v0.4.0")
 	publishAll(t, srv, "v0.4.0")
 	srv.Put("v0.4.0", "tc_linux_amd64.tar.gz", releasetest.Tarball(stubTC("evil")))
-	r := runInstall(t, srv.Base, installOpts{unameS: "Linux", unameM: "x86_64", args: []string{installInvite}})
+	r := runInstall(t, srv, installOpts{unameS: "Linux", unameM: "x86_64", args: []string{installInvite}})
 	if r.err == nil || !strings.Contains(r.stderr, "checksum mismatch") {
 		t.Fatalf("err %v\n%s", r.err, r.stderr)
 	}
@@ -166,8 +195,8 @@ func TestInstallChecksumMismatchAborts(t *testing.T) {
 		t.Fatal("ran tc despite checksum mismatch")
 	}
 	// No entry at all for the asset is also fatal.
-	srv.Put("v0.4.0", "checksums.txt", []byte(strings.Repeat("0", 64)+"  tc_darwin_arm64.tar.gz\n"))
-	r = runInstall(t, srv.Base, installOpts{unameS: "Linux", unameM: "x86_64"})
+	srv.PutChecksums(t, "v0.4.0", []byte(strings.Repeat("0", 64)+"  tc_darwin_arm64.tar.gz\n"))
+	r = runInstall(t, srv, installOpts{unameS: "Linux", unameM: "x86_64"})
 	if r.err == nil || !strings.Contains(r.stderr, "no entry for tc_linux_amd64.tar.gz") {
 		t.Fatalf("err %v\n%s", r.err, r.stderr)
 	}
@@ -178,7 +207,7 @@ func TestInstallVersionDirAndNoInvite(t *testing.T) {
 	publishAll(t, srv, "v0.4.0")
 	publishAll(t, srv, "v0.3.0")
 	dir := filepath.Join(t.TempDir(), "my bin") // a space: everything is quoted
-	r := runInstall(t, srv.Base, installOpts{unameS: "Darwin", unameM: "arm64", installDir: dir, onPath: true,
+	r := runInstall(t, srv, installOpts{unameS: "Darwin", unameM: "arm64", installDir: dir, onPath: true,
 		env: []string{"TC_VERSION=0.3.0"}})
 	if r.err != nil {
 		t.Fatalf("%v\n%s", r.err, r.stderr)
@@ -205,7 +234,7 @@ func TestInstallInviteIsNotEvaluated(t *testing.T) {
 	srv := releasetest.New(t, "v0.4.0")
 	publishAll(t, srv, "v0.4.0")
 	nasty := "tc://h:7443/x$(touch PWNED)`touch PWNED2`;touch PWNED3 #p'\""
-	r := runInstall(t, srv.Base, installOpts{unameS: "Linux", unameM: "x86_64", args: []string{nasty}})
+	r := runInstall(t, srv, installOpts{unameS: "Linux", unameM: "x86_64", args: []string{nasty}})
 	if r.err != nil {
 		t.Fatalf("%v\n%s", r.err, r.stderr)
 	}
@@ -234,7 +263,7 @@ func TestInstallFailsClearly(t *testing.T) {
 		{"version", installOpts{unameS: "Linux", unameM: "x86_64", env: []string{"TC_VERSION=v1.0.0;id"}}, "bad version"},
 		{"missing", installOpts{unameS: "Linux", unameM: "x86_64", env: []string{"TC_VERSION=v9.9.9"}}, "can't download"},
 	} {
-		r := runInstall(t, srv.Base, c.o)
+		r := runInstall(t, srv, c.o)
 		if r.err == nil || !strings.Contains(r.stderr, c.want) {
 			t.Errorf("%s: err %v, stderr:\n%s", c.name, r.err, r.stderr)
 		}
@@ -243,11 +272,65 @@ func TestInstallFailsClearly(t *testing.T) {
 		}
 	}
 	srv.SetLatest("v1.0.0/../../x")
-	if r := runInstall(t, srv.Base, installOpts{unameS: "Linux", unameM: "x86_64"}); r.err == nil {
+	if r := runInstall(t, srv, installOpts{unameS: "Linux", unameM: "x86_64"}); r.err == nil {
 		t.Errorf("bad latest tag accepted:\n%s", r.stderr)
 	}
 	srv.SetLatest("")
-	if r := runInstall(t, srv.Base, installOpts{unameS: "Linux", unameM: "x86_64"}); r.err == nil || !strings.Contains(r.stderr, "no releases yet") {
+	if r := runInstall(t, srv, installOpts{unameS: "Linux", unameM: "x86_64"}); r.err == nil || !strings.Contains(r.stderr, "no releases yet") {
 		t.Errorf("no releases: %v\n%s", r.err, r.stderr)
+	}
+}
+
+// install.sh and tc update trust the same release keys.
+func TestInstallSignersMatch(t *testing.T) {
+	_, signers := scriptSigners(t)
+	if signers != release.AllowedSigners {
+		t.Fatalf("install.sh ALLOWED_SIGNERS\n  %q\ndiffers from release.AllowedSigners\n  %q", signers, release.AllowedSigners)
+	}
+}
+
+func TestInstallRequiresSignature(t *testing.T) {
+	srv := releasetest.New(t, "v0.4.0")
+	publishAll(t, srv, "v0.4.0")
+	if r := runInstall(t, srv, installOpts{unameS: "Linux", unameM: "x86_64"}); r.err != nil || !strings.Contains(r.stderr, "signature OK") {
+		t.Fatalf("signed release: %v\n%s", r.err, r.stderr)
+	}
+	// Release-write access: swap the tarball and checksums.txt together.
+	evil := releasetest.Tarball(stubTC("evil"))
+	srv.Put("v0.4.0", "tc_linux_amd64.tar.gz", evil)
+	sums := []byte(fmt.Sprintf("%x  tc_linux_amd64.tar.gz\n", sha256.Sum256(evil)))
+	srv.Put("v0.4.0", "checksums.txt", sums)
+	other := releasetest.NewKey(t)
+	for _, c := range []struct {
+		name string
+		sig  []byte // nil: no .sig served
+		o    installOpts
+		want string
+	}{
+		{"stale signature", releasetest.Sign(t, srv.Key, release.SigNamespace, []byte("old")), installOpts{}, "not signed by the tc release key"},
+		{"attacker key", releasetest.Sign(t, other, release.SigNamespace, sums), installOpts{}, "not signed by the tc release key"},
+		{"wrong namespace", releasetest.Sign(t, srv.Key, "git", sums), installOpts{}, "not signed by the tc release key"},
+		{"no signature", nil, installOpts{}, "can't download checksums.txt.sig"},
+		{"placeholder key", releasetest.Sign(t, srv.Key, release.SigNamespace, sums), installOpts{signers: release.Placeholder}, "no release signing key"},
+	} {
+		if c.sig == nil {
+			srv.Remove("v0.4.0", release.SigFile)
+		} else {
+			srv.Put("v0.4.0", release.SigFile, c.sig)
+		}
+		c.o.unameS, c.o.unameM, c.o.args = "Linux", "x86_64", []string{installInvite}
+		r := runInstall(t, srv, c.o)
+		if r.err == nil || !strings.Contains(r.stderr, c.want) {
+			t.Errorf("%s: err %v\n%s", c.name, r.err, r.stderr)
+		}
+		if _, err := os.Stat(filepath.Join(r.dir, "tc")); !os.IsNotExist(err) || r.stubLog(t) != nil {
+			t.Errorf("%s: installed or ran tc", c.name)
+		}
+	}
+	// The explicit, loud opt-out.
+	srv.Remove("v0.4.0", release.SigFile)
+	r := runInstall(t, srv, installOpts{unameS: "Linux", unameM: "x86_64", env: []string{"TC_INSECURE_NO_SIG=1"}})
+	if r.err != nil || !strings.Contains(r.stderr, "WARNING: TC_INSECURE_NO_SIG=1") {
+		t.Fatalf("opt-out: %v\n%s", r.err, r.stderr)
 	}
 }

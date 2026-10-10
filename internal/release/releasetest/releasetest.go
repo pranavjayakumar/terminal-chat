@@ -187,3 +187,10 @@ func Tarball(bin []byte) []byte {
 func (s *Server) Source() *release.Source {
 	return &release.Source{Base: s.Base, Signers: s.Signers}
 }
+
+// Remove stops serving <tag>/<name>.
+func (s *Server) Remove(tag, name string) {
+	s.mu.Lock()
+	delete(s.files, tag+"/"+name)
+	s.mu.Unlock()
+}
