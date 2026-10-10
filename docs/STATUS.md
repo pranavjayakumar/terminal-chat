@@ -2,6 +2,31 @@
 
 Last updated: 2026-10-10 (end of session 1; branch `m2-activity` adds drafts, highlights, activity view). Read this first when resuming.
 
+## Handoff (always current — read this first when switching accounts)
+
+**Goal of the current push (owner, 2026-10-10):** finish M3 (E2E steps 11–12) and M4 (onboarding) end to end,
+cut release v0.2.0, redeploy the droplet, hand the owner the one-line install/invite command, then PAUSE.
+
+**In flight**
+- E2E step 11 malicious-server suite — Claude subagent; worktree `.claude/worktrees/agent-ab2d5e801827b592f`,
+  branch `e2e/malicious-server` (not pushed yet). If that worktree is gone/unfinished: re-run step 11 per
+  `docs/E2E.md` PR plan on a fresh branch.
+- M4 onboarding — kiro; worktree `.claude/worktrees/kiro-onboard`, branch `m4-onboarding`; prompt covers release
+  workflow, install.sh, `tc join`, invite one-liner, multi-use invites, `tc update`.
+
+**Next (in order):** review + merge step 11 → review + merge M4 → E2E step 12 (security pass + chaos during
+rotations) on kiro → tag v0.2.0 (release workflow builds binaries) → redeploy droplet with the release binary
+(`docs/DEPLOY.md`) → test the one-liner from a clean HOME → give the owner the command → update this file → pause.
+
+**Rules:** kiro hard cap 55–60% of monthly credits (check `kiro-cli chat --no-interactive "/usage"`; stop at 55%).
+Claude only orchestrates (review/merge/log); workers on kiro, launched with herdr env vars unset. Merge only with
+`gh pr checks <n> --watch` exit 0 (CI works again since the repo is public). Log every event in `docs/WORKLOG.md`.
+
+**Production server:** root@159.65.152.35 (key-only SSH from the owner's Mac key), systemd unit `tc`,
+data `/var/lib/tc`, public addr 159.65.152.35:7443, pin `kizIIb-LUvMblyz18Ovf52VftSZnISNdJAEUz56LoU4`.
+The owner's one-time admin invite was printed in `journalctl -u tc` on first start (don't consume it).
+The owner should change the droplet root password (it was shared in chat; password SSH is disabled).
+
 ## Where we are
 
 | Milestone | State |
