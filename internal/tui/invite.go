@@ -61,13 +61,13 @@ func (m *Model) inviteCommand(args []string) (tea.Cmd, error) {
 	if err != nil {
 		return nil, err
 	}
-	be, out := m.c, m.opt.Out
+	be, out, version := m.c, m.opt.Out, m.opt.Version
 	return m.callThen("invite", func(ctx context.Context) (tea.Msg, error) {
 		inv, err := be.CreateTeamInvite(ctx, uses, ttl)
 		if err != nil {
 			return nil, err
 		}
-		line, err := proto.InstallCommand(inv.Code)
+		line, err := proto.InstallCommand(inv.Code, version)
 		if err != nil {
 			return nil, err
 		}

@@ -27,7 +27,7 @@ func TestTeamInviteViaClient(t *testing.T) {
 	if res.Uses != 3 || time.Until(time.UnixMilli(res.Expires)) > time.Hour {
 		t.Fatalf("res %+v", res)
 	}
-	if _, err := proto.InstallCommand(res.Code); err != nil {
+	if _, err := proto.InstallCommand(res.Code, "dev"); err != nil {
 		t.Fatalf("server's code isn't shell-safe: %v", err)
 	}
 	for i := range 4 {

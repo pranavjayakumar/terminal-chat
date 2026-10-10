@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -19,8 +20,19 @@ const (
 	MaxInviteUses    = 100
 )
 
-// InstallScriptURL is where the one-line install command fetches install.sh.
-const InstallScriptURL = "https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/install.sh"
+// InstallScriptURL is where the one-line install command fetches install.sh:
+// the script at the release tag version (vX.Y.Z) when the running binary is
+// a release, so a later push to main can't change what an invite runs, else
+// main.
+func InstallScriptURL(version string) string {
+	ref := "main"
+	if releaseTagRE.MatchString(version) {
+		ref = version
+	}
+	return "https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/" + ref + "/install.sh"
+}
+
+var releaseTagRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
 
 // Invite is a parsed invite code (PROTOCOL.md §4.1).
 type Invite struct {
@@ -70,15 +82,16 @@ func shellSafe(code string) bool {
 }
 
 // InstallCommand is the one-liner that installs tc and joins with code:
-// curl … install.sh | sh -s -- '<code>'. It refuses codes that aren't a
-// valid invite or hold anything but the shell-safe charset, so the single
-// quotes can never be closed early.
-func InstallCommand(code string) (string, error) {
+// curl … install.sh | sh -s -- '<code>', with install.sh pinned as in
+// InstallScriptURL(version). It refuses codes that aren't a valid invite or
+// hold anything but the shell-safe charset, so the single quotes can never
+// be closed early.
+func InstallCommand(code, version string) (string, error) {
 	if _, err := ParseInvite(code); err != nil {
 		return "", err
 	}
 	if !shellSafe(code) {
 		return "", errors.New("invite code has characters that aren't safe in a shell command")
 	}
-	return "curl -fsSL " + InstallScriptURL + " | sh -s -- '" + code + "'", nil
+	return "curl -fsSL " + InstallScriptURL(version) + " | sh -s -- '" + code + "'", nil
 }

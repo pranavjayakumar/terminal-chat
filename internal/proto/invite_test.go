@@ -7,7 +7,7 @@ import (
 
 func TestInstallCommand(t *testing.T) {
 	code := FormatInvite("chat.example.com:7443", "abcdefghijklmnopqrstuvwxyz", "AbC-_09xyz")
-	got, err := InstallCommand(code)
+	got, err := InstallCommand(code, "dev")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -18,8 +18,18 @@ func TestInstallCommand(t *testing.T) {
 	if strings.Count(got, "'") != 2 {
 		t.Fatalf("quotes: %s", got)
 	}
+	// A release build pins install.sh to its own tag; anything else uses main.
+	got, _ = InstallCommand(code, "v0.2.0")
+	if want := "curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/v0.2.0/install.sh | sh -s -- '" + code + "'"; got != want {
+		t.Fatalf("release build:\ngot  %s\nwant %s", got, want)
+	}
+	for _, v := range []string{"", "dev", "v0.2.0-3-gabcdef", "v0.2.0-dirty", "v0.2.0-rc1", "v0.2", "v0.2.0/../../evil", "v0.2.0' x"} {
+		if u := InstallScriptURL(v); !strings.Contains(u, "/terminal-chat/main/install.sh") {
+			t.Errorf("version %q: %s", v, u)
+		}
+	}
 	// IPv6 hosts keep their brackets.
-	if _, err := InstallCommand(FormatInvite("[2001:db8::1]:7443", "tok", "pin")); err != nil {
+	if _, err := InstallCommand(FormatInvite("[2001:db8::1]:7443", "tok", "pin"), "dev"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -40,7 +50,7 @@ func TestInstallCommandRejectsUnsafe(t *testing.T) {
 		"tc://host:7443/tok#pin&x",
 		"tc://host:7443/tok#pïn",
 	} {
-		if cmd, err := InstallCommand(code); err == nil {
+		if cmd, err := InstallCommand(code, "v1.0.0"); err == nil {
 			t.Errorf("%q accepted: %s", code, cmd)
 		}
 	}

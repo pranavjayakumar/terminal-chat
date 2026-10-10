@@ -43,13 +43,17 @@ func TestInviteArgs(t *testing.T) {
 
 func TestInviteCommandCopiesOneLiner(t *testing.T) {
 	m, f := newTestModelFake(t, 100, 30)
+	m.opt.Version = "v0.2.0"
 	m.input.SetValue("/invite 15 3d")
 	run(m, m.submit())
 	if !f.called("invite 15 72h0m0s") {
 		t.Fatalf("calls %v", f.calls)
 	}
 	code := "tc://chat.example.com:7443/abcdefghijklmnopqrstuvwxyz#Pin-_x"
-	line := "curl -fsSL " + proto.InstallScriptURL + " | sh -s -- '" + code + "'"
+	line := "curl -fsSL " + proto.InstallScriptURL("v0.2.0") + " | sh -s -- '" + code + "'"
+	if !strings.Contains(line, "/v0.2.0/install.sh") {
+		t.Fatal(line)
+	}
 	out := m.opt.Out.(*syncBuf).String()
 	if !strings.Contains(out, "\x1b]52;c;"+base64.StdEncoding.EncodeToString([]byte(line))+"\a") {
 		t.Fatalf("one-liner not copied via OSC 52: %q", out)

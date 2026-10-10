@@ -108,7 +108,9 @@ Add-key invites are always single-use. `uses`/`ttl_ms` in `invite.create` need c
 `team_invites` (servers without it ignore them and mint a 1-use, 7-day invite).
 
 Clients show an invite as the code and as the install command
-`curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/install.sh | sh -s -- '<code>'`.
+`curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/<ref>/install.sh | sh -s -- '<code>'`,
+where `<ref>` is the client's own version when it is a release tag `vX.Y.Z` (so the script
+can't change after the invite is made) and `main` otherwise.
 The code is single-quoted; a code containing any byte outside `[A-Za-z0-9:/#.\-_\[\]]`
 (so never a quote) is refused rather than formatted.
 

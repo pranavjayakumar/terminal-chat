@@ -102,7 +102,7 @@ var _ Backend = (*client.Client)(nil)
 // version is this build's release tag, for the update notice.
 func Run(ctx context.Context, c *client.Client, version string) error {
 	env := notify.OSEnv()
-	o := Options{Out: os.Stdout, Notifier: notify.New(env, os.Stdout), AwayAfter: awayAfter(os.Getenv("TC_AWAY_MIN"))}
+	o := Options{Out: os.Stdout, Notifier: notify.New(env, os.Stdout), AwayAfter: awayAfter(os.Getenv("TC_AWAY_MIN")), Version: version}
 	o.UpdateCheck = func() string {
 		return release.Check(ctx, c.Home(), version, release.NewSource(), time.Now())
 	}
@@ -133,6 +133,10 @@ type Options struct {
 	Herdr Herdr
 	// AwayAfter sets presence to away after this long without a key; 0: never.
 	AwayAfter time.Duration
+
+	// Version is this build's version; a release tag pins the install.sh
+	// URL in /invite's one-liner (proto.InstallScriptURL).
+	Version string
 
 	// UpdateCheck returns a newer release tag or "". It runs once, in the
 	// background, after startup; nil: no check.

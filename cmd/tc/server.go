@@ -74,7 +74,7 @@ func cmdServer(args []string) error {
 		inv, err := srv.CreateInviteOpts(ctx, server.InviteOpts{Admin: true})
 		if err == nil {
 			fmt.Println("\nNo users yet. Admin invite for you (single use, 7 days):")
-			printInvite(os.Stdout, inv)
+			printInvite(os.Stdout, inv, version)
 			fmt.Println("Then invite your team with: tc server invite --uses 15 --ttl 72h")
 		}
 	}
@@ -106,13 +106,13 @@ func cmdServerInvite(args []string) error {
 		fmt.Println(inv.Code)
 		return nil
 	}
-	printInvite(os.Stdout, inv)
+	printInvite(os.Stdout, inv, version)
 	return nil
 }
 
 // printInvite shows an invite as the install one-liner (for people without
-// tc) and as the raw code (for `tc join`).
-func printInvite(w io.Writer, inv proto.InviteRes) {
+// tc, pinned to version's install.sh) and as the raw code (for `tc join`).
+func printInvite(w io.Writer, inv proto.InviteRes, version string) {
 	what := "single use"
 	if inv.Uses > 1 {
 		what = fmt.Sprintf("%d uses", inv.Uses)
@@ -121,7 +121,7 @@ func printInvite(w io.Writer, inv proto.InviteRes) {
 		what += ", expires " + time.UnixMilli(inv.Expires).Format("Mon Jan 2 15:04 MST")
 	}
 	fmt.Fprintf(w, "\nInvite (%s). Share this line; it installs tc and joins:\n\n", what)
-	if cmd, err := proto.InstallCommand(inv.Code); err == nil {
+	if cmd, err := proto.InstallCommand(inv.Code, version); err == nil {
 		fmt.Fprintf(w, "  %s\n\n", cmd)
 	}
 	fmt.Fprintf(w, "Already have tc? Run:\n\n  tc join '%s'\n\n", inv.Code)
