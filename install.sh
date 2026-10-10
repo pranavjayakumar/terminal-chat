@@ -177,11 +177,12 @@ main() {
 	[ -f "$tmp/x/tc" ] || die "$asset has no tc binary"
 
 	mkdir -p "$dir" || die "can't create $dir"
-	# Copy next to the target, then rename: atomic, and a running tc keeps working.
-	cp "$tmp/x/tc" "$dir/.tc.new.$$" || die "can't write to $dir"
-	chmod 755 "$dir/.tc.new.$$"
-	mv -f "$dir/.tc.new.$$" "$dir/tc" || {
-		rm -f "$dir/.tc.new.$$"
+	# Copy next to the target, then rename: atomic, and a running tc keeps
+	# working. mktemp makes a new, unpredictable 0600 file (never a symlink
+	# someone planted in a shared dir), which cp then writes into.
+	new=$(mktemp "$dir/.tc.new.XXXXXX") || die "can't write to $dir"
+	cp "$tmp/x/tc" "$new" && chmod 755 "$new" && mv -f "$new" "$dir/tc" || {
+		rm -f "$new"
 		die "can't install to $dir/tc"
 	}
 	say "installed $dir/tc ($tag)"

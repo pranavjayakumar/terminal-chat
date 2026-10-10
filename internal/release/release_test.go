@@ -198,3 +198,33 @@ func TestCheckCachedDaily(t *testing.T) {
 		t.Fatal("disabled check wrote a cache file")
 	}
 }
+
+// The new binary's mode is set on the open file before it's closed. Set by
+// path after Close, another user of a shared install dir could swap the temp
+// file for a symlink and have their target made executable (or chmodded).
+func TestReplaceChmodsBeforeClose(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "tc")
+	os.WriteFile(exe, []byte("old"), 0o755)
+	victim := filepath.Join(t.TempDir(), "victim")
+	os.WriteFile(victim, []byte("secret"), 0o600)
+	var mode os.FileMode
+	err := release.ReplaceHook(exe, []byte("new"), func(tmp string) {
+		st, err := os.Stat(tmp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mode = st.Mode().Perm()
+		os.Remove(tmp)
+		os.Symlink(victim, tmp)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != 0o755 {
+		t.Fatalf("temp file mode at close: %v, want 0755", mode)
+	}
+	if st, _ := os.Stat(victim); st.Mode().Perm() != 0o600 {
+		t.Fatalf("chmod followed a swapped-in symlink: victim is now %v", st.Mode().Perm())
+	}
+}

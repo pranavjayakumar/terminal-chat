@@ -46,7 +46,8 @@ type installOpts struct {
 	piped          bool // cat install.sh | sh -s -- args, like the one-liner
 	installDir     string
 	onPath         bool
-	signers        string // ALLOWED_SIGNERS in the script; "": the server's key
+	signers        string            // ALLOWED_SIGNERS in the script; "": the server's key
+	stubs          map[string]string // extra commands on PATH: name → script
 }
 
 var allowedSignersRE = regexp.MustCompile(`(?m)^ALLOWED_SIGNERS='([^']*)'$`)
@@ -88,6 +89,11 @@ func runInstall(t *testing.T, srv *releasetest.Server, o installOpts) installRun
 	uname := "#!/bin/sh\ncase \"$1\" in -s) echo '" + o.unameS + "' ;; -m) echo '" + o.unameM + "' ;; *) echo '" + o.unameS + "' ;; esac\n"
 	if err := os.WriteFile(filepath.Join(stubs, "uname"), []byte(uname), 0o755); err != nil {
 		t.Fatal(err)
+	}
+	for name, body := range o.stubs {
+		if err := os.WriteFile(filepath.Join(stubs, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	dir := filepath.Join(home, ".local", "bin")
 	if o.installDir != "" {
@@ -422,5 +428,33 @@ func TestInstallCurlFlags(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "\nPROTO='=https'\n") {
 		t.Fatal("PROTO must default to =https")
+	}
+}
+
+// The binary is copied into a file mktemp already created (O_EXCL, so not
+// a symlink someone planted in a shared dir), never to a predictable
+// .tc.new.$$ path that cp would create or follow. A stub cp checks.
+func TestInstallCopiesIntoMktempFile(t *testing.T) {
+	srv := releasetest.New(t, "v0.4.0")
+	publishAll(t, srv, "v0.4.0")
+	dir := filepath.Join(t.TempDir(), "shared")
+	cpLog := filepath.Join(t.TempDir(), "cp.log")
+	cp := "#!/bin/sh\n" +
+		"if [ -f \"$2\" ] && [ ! -L \"$2\" ] && [ ! -s \"$2\" ]; then echo \"precreated $2\" >> '" + cpLog + "'; else echo \"fresh $2\" >> '" + cpLog + "'; fi\n" +
+		"exec /bin/cp \"$@\"\n"
+	r := runInstall(t, srv, installOpts{unameS: "Linux", unameM: "x86_64", installDir: dir, stubs: map[string]string{"cp": cp}})
+	if r.err != nil {
+		t.Fatalf("%v\n%s", r.err, r.stderr)
+	}
+	b, _ := os.ReadFile(cpLog)
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "precreated "+filepath.Join(dir, ".tc.new.")) {
+		t.Fatalf("cp calls: %q", lines)
+	}
+	if suffix := strings.TrimPrefix(lines[0], "precreated "+filepath.Join(dir, ".tc.new.")); regexp.MustCompile(`^[0-9]+$`).MatchString(suffix) {
+		t.Fatalf("temp name is a pid: %q", lines[0])
+	}
+	if ents, _ := os.ReadDir(dir); len(ents) != 1 {
+		t.Fatalf("leftovers: %v", ents)
 	}
 }

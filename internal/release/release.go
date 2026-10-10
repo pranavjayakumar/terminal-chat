@@ -329,9 +329,13 @@ func Newer(latest, current string) bool {
 }
 
 // Replace atomically replaces the file at exe with bin: a temp file in the
-// same directory, chmod, fsync, rename. It fails without touching exe if the
+// same directory, fchmod, fsync, rename. It fails without touching exe if the
 // directory isn't writable.
-func Replace(exe string, bin []byte) error {
+func Replace(exe string, bin []byte) error { return replace(exe, bin, nil) }
+
+// replace is Replace; afterClose (tests) runs between closing the temp file
+// and renaming it, where another user of a shared directory could act.
+func replace(exe string, bin []byte, afterClose func(tmp string)) error {
 	if real, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = real
 	}
@@ -351,19 +355,23 @@ func Replace(exe string, bin []byte) error {
 			os.Remove(name)
 		}
 	}()
-	if _, err := tmp.Write(bin); err != nil {
-		tmp.Close()
-		return fmt.Errorf("writing update: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return fmt.Errorf("writing update: %w", err)
+	// chmod the open file, not the path: in a shared directory the path
+	// could be swapped between Close and a chmod by name.
+	for _, step := range []func() error{
+		func() error { _, err := tmp.Write(bin); return err },
+		func() error { return tmp.Chmod(mode) },
+		tmp.Sync,
+	} {
+		if err := step(); err != nil {
+			tmp.Close()
+			return fmt.Errorf("writing update: %w", err)
+		}
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("writing update: %w", err)
 	}
-	if err := os.Chmod(name, mode); err != nil {
-		return fmt.Errorf("writing update: %w", err)
+	if afterClose != nil {
+		afterClose(name)
 	}
 	if err := os.Rename(name, exe); err != nil {
 		return fmt.Errorf("replacing %s: %w", exe, err)
