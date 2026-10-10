@@ -10,8 +10,10 @@ cut release v0.2.0, redeploy the droplet, hand the owner the one-line install/in
 **In flight**
 - E2E step 12 (final pass) — kiro; worktree `.claude/worktrees/kiro-step12`, branch `e2e/final-pass`: chaos during
   rotations, signed-time drift marker, security pass (findings → docs/E2E.md), fuzzing, docs; closes M3.
-- M4 onboarding — kiro; worktree `.claude/worktrees/kiro-onboard`, branch `m4-onboarding`; release workflow,
-  install.sh, `tc join`, invite one-liner, multi-use invites, `tc update`.
+- M4 onboarding — PR #34 (branch `m4-onboarding`, worktree `.claude/worktrees/kiro-onboard`); kiro is applying the
+  security review fixes: SSH-signed releases (owner signs `checksums.txt` locally via `make release-sign`), pinned
+  install URL, least-privilege release workflow, admin invites single-use, `invite.list/revoke`, https-only.
+  Release v0.2.0 requires: embed the owner's signing public key constant, tag, wait for the draft, `make release-sign`.
 - Step 11 is DONE (PR #32).
 
 **Next (in order):** review + merge M4 and step 12 (whichever lands first; run protocol/security review on each)
