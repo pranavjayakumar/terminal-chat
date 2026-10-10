@@ -10,7 +10,7 @@ Last updated: 2026-10-10 (end of session 1; branch `m2-activity` adds drafts, hi
 | M1 core chat (server, client, TUI, sync, offline outbox) | ✅ done, battle-tested (chaos + adversarial + live herdr) |
 | M2 collaboration | ✅ essentially done: notifications, herdr badge, `/share-pane`, auto-away, `tc notify`, notes, `/name`, threads, webhooks + bots, privacy scrubbing, drafts, `/highlight`, activity (Alt-A), message viewer (`v`), pins (`p`, `/pins`), user groups (`@oncall`), reminders (`/remind`), diff/snippets (`tc send --file`, `/snippet`) |
 | M3 end-to-end encryption | steps 1–7 merged; step 9 (membership: chan.add+bundle, chan.remove, chan.encrypt) on branch `e2e/membership`; (#9, #10, #11, #13, #16, #25 client verification, #26 encrypted send/receive) — **encrypted DMs and private channels work end to end**; step 8 (encrypted edit/delete/react) in PR #28; step 10 (trust UX: safety numbers, `/verify`, `--github`, key-change banner, `/accept-key`, `/alarm`, audited `/alarm-clear`, `?` marks, `tc verify`) on branch `e2e/trust-ux` |
-| M4 zero-setup onboarding | not started |
+| M4 zero-setup onboarding | on branch `m4-onboarding`: release workflow (`v*` tags → 4 static builds + `checksums.txt`), `install.sh` (verified install + `tc join`), `tc join` wizard (`tc login` alias), team invites (`--uses`/`--ttl`, `/invite [uses] [ttl]`, cap `team_invites`), invites print as the install one-liner, `tc update [--check]` + sidebar update notice. Left: brew tap, release signatures, any-member invites, `--key github:user` invites |
 | M5 voice | not started |
 
 Release tag: `v0.1.0` = M1. No newer tag yet.
@@ -31,8 +31,11 @@ Release tag: `v0.1.0` = M1. No newer tag yet.
 3. **Finish M2**: diff and `file:line` snippets. (Long-line viewer, `/pins`, `/remind` and user groups
    `@team` are done.)
 4. **Deploy**: waiting on the droplet IP → `docs/DEPLOY.md`, then real-network tests.
-5. **M4 onboarding** — see `docs/ROADMAP.md`. Note: the repo is private, so install-from-GitHub-releases needs
-   auth; consider serving install.sh + binaries from the tc server itself (pinned TLS).
+5. **M4 onboarding** — branch `m4-onboarding` (review with security-reviewer + protocol-guardian +
+   tui-reviewer, then merge). The repo is public now, so installs come from GitHub Releases. After merge,
+   push a `v0.2.0` tag: `install.sh` and `tc update` need a published release (until then `/releases/latest`
+   404s and they say "no releases yet"). Remaining M4: brew tap, signed releases, any-member invites,
+   `--key github:user` invites.
 
 **Budget rule (owner):** kiro-cli may use at most 45–50% of its monthly credits (it reached 46.6% on 2026-10-10,
 so remaining work that day ran on Claude subagents) (check with
@@ -62,7 +65,7 @@ so remaining work that day ran on Claude subagents) (check with
   `ctrl+n`, `alt+a`, `esc`, `enter`): pane `tc server` runs
   `./bin/tc server --data <scratch>/live/srv --listen 127.0.0.1:17450`, panes `alice`/`bob` run `tc` with
   `TC_HOME=<scratch>/live/{a,b}` and `SSH_AUTH_SOCK=` (test keys). The scratch dir is session-specific; if
-  it's gone, recreate: start a server with a temp `--data`, `tc login` two users with throwaway
+  it's gone, recreate: start a server with a temp `--data`, `tc join` two users with throwaway
   `ssh-keygen -t ed25519` keys and `--key`. Drive panes with `herdr pane send-text/send-keys`, read with
   `herdr pane read <id> --source recent`.
 
