@@ -201,6 +201,9 @@ func (c *Client) verifyKeys(user uint64, fps []string, method string) error {
 // githubBase is where VerifyGitHub fetches <login>.keys (tests replace it).
 const githubBase = "https://github.com"
 
+// SetGitHubBase replaces https://github.com for VerifyGitHub (tests only).
+func (c *Client) SetGitHubBase(base string) { c.githubBase = base }
+
 // maxGitHubKeys bounds the response read from GitHub.
 const maxGitHubKeys = 256 << 10
 

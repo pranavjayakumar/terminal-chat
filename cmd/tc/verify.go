@@ -14,6 +14,9 @@ import (
 	"github.com/skailama/tc/internal/sanitize"
 )
 
+// testGitHubBase replaces https://github.com in tests.
+var testGitHubBase string
+
 // tc verify @user [--github login]: the CLI side of /verify.
 func cmdVerify(args []string) error {
 	ctx, cancel := signalContext()
@@ -54,20 +57,25 @@ func verify(ctx context.Context, args []string, in io.Reader, out io.Writer) err
 		return fmt.Errorf("no user @%s", who)
 	}
 	at := "@" + sanitize.Line(who)
-	// Keys are verified in the background right after connecting.
-	var sn client.SafetyNumber
-	for deadline := time.Now().Add(10 * time.Second); ; {
-		sn, err = c.SafetyNumber(user)
-		if !errors.Is(err, client.ErrNoKeys) || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	// Keys (theirs and our own) are pinned in the background right after
+	// connecting.
+	sn, err := pollSafety(ctx, func() (client.SafetyNumber, error) { return c.SafetyNumber(user) },
+		10*time.Second, 100*time.Millisecond)
 	if err != nil {
 		return err
 	}
+	in2 := bufio.NewReader(in)
+	ask := func(q string) bool {
+		fmt.Fprint(out, q)
+		line, _ := in2.ReadString('\n')
+		a := strings.ToLower(strings.TrimSpace(line))
+		return a == "y" || a == "yes"
+	}
 
 	if login != "" {
+		if testGitHubBase != "" {
+			c.SetGitHubBase(testGitHubBase)
+		}
 		res, err := c.VerifyGitHub(ctx, user, login)
 		if err != nil {
 			return err
@@ -93,7 +101,15 @@ func verify(ctx context.Context, args []string, in io.Reader, out io.Writer) err
 		if !res.Match {
 			return fmt.Errorf("MISMATCH: %d of %s's pinned keys aren't on %s — nothing was verified", len(res.Missing), at, gh)
 		}
-		fmt.Fprintf(out, "✓ every pinned key of %s is on %s — %s is now verified\n", at, gh, at)
+		fmt.Fprintf(out, "✓ every pinned key of %s is on %s\n", at, gh)
+		if !ask(fmt.Sprintf("Verify %s because you confirmed %s is theirs? [y/N] ", at, gh)) {
+			fmt.Fprintln(out, "not verified")
+			return nil
+		}
+		if err := c.ConfirmGitHub(res); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "✓ %s verified\n", at)
 		return nil
 	}
 
@@ -113,9 +129,9 @@ func verify(ctx context.Context, args []string, in io.Reader, out io.Writer) err
 			fmt.Fprintf(out, "  %s\n", sanitize.Line(fp))
 		}
 	}
-	fmt.Fprintf(out, "\nCompare it with %s over another channel (in person or a call).\nDo all 60 digits match? [y/N] ", at)
-	line, _ := bufio.NewReader(in).ReadString('\n')
-	if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
+	fmt.Fprintf(out, "\nCompare it with %s over another channel (in person or a call).\n", at)
+	fmt.Fprintf(out, "If the numbers differ, compare the key lists above too: a mismatch can also mean your devices pinned different key sets.\n")
+	if !ask("Do all 60 digits match? [y/N] ") {
 		fmt.Fprintln(out, "not verified")
 		return nil
 	}
@@ -124,4 +140,21 @@ func verify(ctx context.Context, args []string, in io.Reader, out io.Writer) err
 	}
 	fmt.Fprintf(out, "✓ %s verified\n", at)
 	return nil
+}
+
+// pollSafety calls get until it stops failing because a key isn't pinned
+// yet (theirs: ErrNoKeys, ours: ErrOwnKeyNotPinned), for at most timeout.
+func pollSafety(ctx context.Context, get func() (client.SafetyNumber, error), timeout, every time.Duration) (client.SafetyNumber, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		sn, err := get()
+		if (!errors.Is(err, client.ErrNoKeys) && !errors.Is(err, client.ErrOwnKeyNotPinned)) || time.Now().After(deadline) {
+			return sn, err
+		}
+		select {
+		case <-ctx.Done():
+			return sn, err
+		case <-time.After(every):
+		}
+	}
 }

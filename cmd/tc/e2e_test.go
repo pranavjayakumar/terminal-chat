@@ -9,6 +9,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -238,6 +240,54 @@ func TestVerifySafetyNumberSymmetric(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "✓ @bob verified") || !verified() {
 		t.Fatalf("not verified; output:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "pinned different key sets") {
+		t.Errorf("no key-set hint:\n%s", out.String())
+	}
+
+	// --github: the comparison, then y to verify because the account is bob's.
+	ks, _ := clients["alice"].Trust().PinnedKeys(sid, bobID)
+	pk, err := ssh.ParsePublicKey(ks[0].Wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/bob-gh.keys" {
+			w.Write(ssh.MarshalAuthorizedKey(pk))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer gh.Close()
+	testGitHubBase = gh.URL
+	defer func() { testGitHubBase = "" }()
+	ghAudits := func() int {
+		n := 0
+		a, _ := clients["alice"].Trust().Audit(sid)
+		for _, e := range a {
+			if e.Detail == "github:bob-gh" {
+				n++
+			}
+		}
+		return n
+	}
+	out.Reset()
+	if err := verify(ctx, []string{"@bob", "--github", "bob-gh"}, strings.NewReader("n\n"), &out); err != nil {
+		t.Fatal(err)
+	}
+	if ghAudits() != 0 || !strings.Contains(out.String(), "Verify @bob because you confirmed github.com/bob-gh is theirs?") {
+		t.Fatalf("declined GitHub verified, or no question:\n%s", out.String())
+	}
+	out.Reset()
+	if err := verify(ctx, []string{"@bob", "--github", "bob-gh"}, strings.NewReader("y\n"), &out); err != nil {
+		t.Fatal(err)
+	}
+	if ghAudits() != 1 {
+		t.Fatalf("GitHub confirmation not recorded:\n%s", out.String())
+	}
+	out.Reset()
+	if err := verify(ctx, []string{"@bob", "--github", "nobody"}, strings.NewReader("y\n"), &out); err == nil {
+		t.Fatal("404 account verified")
 	}
 	for _, bad := range [][]string{{}, {"bob"}, {"@bob", "--github"}, {"@bob", "@carol"}} {
 		if err := verify(ctx, bad, strings.NewReader(""), &out); !errors.Is(err, errUsage) {
