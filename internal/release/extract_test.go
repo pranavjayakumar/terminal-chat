@@ -18,7 +18,7 @@ import (
 func bomb(t *testing.T, size int64) []byte {
 	t.Helper()
 	var buf bytes.Buffer
-	zw, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+	zw, _ := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
 	tw := tar.NewWriter(zw)
 	if err := tw.WriteHeader(&tar.Header{Name: "README.md", Mode: 0o644, Size: size, Typeflag: tar.TypeReg}); err != nil {
 		t.Fatal(err)
@@ -55,10 +55,11 @@ func TestExtractBoundsDecompression(t *testing.T) {
 
 // A cancelled context stops the unpacking.
 func TestExtractHonorsContext(t *testing.T) {
+	arc := bomb(t, 8<<20) // built first: compressing it is the slow part
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	start := time.Now()
-	_, err := release.Extract(ctx, bomb(t, 64<<20))
+	_, err := release.Extract(ctx, arc)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
