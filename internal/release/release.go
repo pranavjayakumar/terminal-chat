@@ -54,6 +54,16 @@ func Base() string {
 type Source struct {
 	Base string
 	HTTP *http.Client // nil: a client with a 60 s timeout
+	// Signers is the allowed_signers text release signatures are checked
+	// against; "" means the embedded AllowedSigners.
+	Signers string
+}
+
+func (s *Source) signers() string {
+	if s.Signers != "" {
+		return s.Signers
+	}
+	return AllowedSigners
 }
 
 // NewSource uses Base().
@@ -153,16 +163,27 @@ func ParseChecksums(b []byte) map[string]string {
 // ErrChecksum means a download didn't match checksums.txt.
 var ErrChecksum = errors.New("checksum mismatch")
 
-// Fetch downloads tag's binary for goos/goarch, checks the archive against
-// checksums.txt and returns the tc binary from it.
+// Fetch downloads tag's binary for goos/goarch, checks checksums.txt's
+// signature (SigFile) against the allowed signers, checks the archive
+// against checksums.txt and returns the tc binary from it.
 func (s *Source) Fetch(ctx context.Context, tag, goos, goarch string) ([]byte, error) {
 	if !Supported(goos, goarch) {
 		return nil, fmt.Errorf("no release builds for %s/%s", goos, goarch)
+	}
+	if _, err := parseAllowedSigners(s.signers()); err != nil {
+		return nil, err
 	}
 	asset := AssetName(goos, goarch)
 	sums, err := s.get(ctx, tag, "checksums.txt", maxSmallDoc)
 	if err != nil {
 		return nil, err
+	}
+	sig, err := s.get(ctx, tag, SigFile, maxSmallDoc)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v (unsigned release?); not installing", ErrSignature, err)
+	}
+	if err := VerifySignature(s.signers(), sums, sig); err != nil {
+		return nil, fmt.Errorf("checksums.txt for %s: %w; not installing", tag, err)
 	}
 	want, ok := ParseChecksums(sums)[asset]
 	if !ok {

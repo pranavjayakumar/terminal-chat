@@ -20,12 +20,12 @@ func stubTC(osArch string) []byte {
 	return []byte("#!/bin/sh\nprintf '%s\\n' " + osArch + " \"$@\" > \"$TC_STUB_LOG\"\ncat > \"$TC_STUB_LOG.stdin\"\n")
 }
 
-func publishAll(srv *releasetest.Server, tag string) {
+func publishAll(t *testing.T, srv *releasetest.Server, tag string) {
 	bins := map[string][]byte{}
 	for _, oa := range []string{"linux_amd64", "linux_arm64", "darwin_amd64", "darwin_arm64"} {
 		bins[oa] = stubTC(oa + "@" + tag)
 	}
-	srv.Publish(tag, bins)
+	srv.Publish(t, tag, bins)
 }
 
 type installRun struct {
@@ -101,7 +101,7 @@ func (r installRun) stubLog(t *testing.T) []string {
 
 func TestInstallPicksArchAndJoins(t *testing.T) {
 	srv := releasetest.New(t, "v0.4.0")
-	publishAll(srv, "v0.4.0")
+	publishAll(t, srv, "v0.4.0")
 	for _, c := range []struct{ s, m, want string }{
 		{"Linux", "x86_64", "linux_amd64"},
 		{"Linux", "aarch64", "linux_arm64"},
@@ -138,7 +138,7 @@ func TestInstallPicksArchAndJoins(t *testing.T) {
 // runs, so join sees no script bytes on stdin.
 func TestInstallPiped(t *testing.T) {
 	srv := releasetest.New(t, "v0.4.0")
-	publishAll(srv, "v0.4.0")
+	publishAll(t, srv, "v0.4.0")
 	r := runInstall(t, srv.Base, installOpts{unameS: "Linux", unameM: "x86_64", args: []string{installInvite}, piped: true})
 	if r.err != nil {
 		t.Fatalf("%v\n%s", r.err, r.stderr)
@@ -153,7 +153,7 @@ func TestInstallPiped(t *testing.T) {
 
 func TestInstallChecksumMismatchAborts(t *testing.T) {
 	srv := releasetest.New(t, "v0.4.0")
-	publishAll(srv, "v0.4.0")
+	publishAll(t, srv, "v0.4.0")
 	srv.Put("v0.4.0", "tc_linux_amd64.tar.gz", releasetest.Tarball(stubTC("evil")))
 	r := runInstall(t, srv.Base, installOpts{unameS: "Linux", unameM: "x86_64", args: []string{installInvite}})
 	if r.err == nil || !strings.Contains(r.stderr, "checksum mismatch") {
@@ -175,8 +175,8 @@ func TestInstallChecksumMismatchAborts(t *testing.T) {
 
 func TestInstallVersionDirAndNoInvite(t *testing.T) {
 	srv := releasetest.New(t, "v0.4.0")
-	publishAll(srv, "v0.4.0")
-	publishAll(srv, "v0.3.0")
+	publishAll(t, srv, "v0.4.0")
+	publishAll(t, srv, "v0.3.0")
 	dir := filepath.Join(t.TempDir(), "my bin") // a space: everything is quoted
 	r := runInstall(t, srv.Base, installOpts{unameS: "Darwin", unameM: "arm64", installDir: dir, onPath: true,
 		env: []string{"TC_VERSION=0.3.0"}})
@@ -203,7 +203,7 @@ func TestInstallVersionDirAndNoInvite(t *testing.T) {
 // The invite reaches tc join as one literal argument: nothing in it is run.
 func TestInstallInviteIsNotEvaluated(t *testing.T) {
 	srv := releasetest.New(t, "v0.4.0")
-	publishAll(srv, "v0.4.0")
+	publishAll(t, srv, "v0.4.0")
 	nasty := "tc://h:7443/x$(touch PWNED)`touch PWNED2`;touch PWNED3 #p'\""
 	r := runInstall(t, srv.Base, installOpts{unameS: "Linux", unameM: "x86_64", args: []string{nasty}})
 	if r.err != nil {
@@ -221,7 +221,7 @@ func TestInstallInviteIsNotEvaluated(t *testing.T) {
 
 func TestInstallFailsClearly(t *testing.T) {
 	srv := releasetest.New(t, "v0.4.0")
-	publishAll(srv, "v0.4.0")
+	publishAll(t, srv, "v0.4.0")
 	for _, c := range []struct {
 		name string
 		o    installOpts

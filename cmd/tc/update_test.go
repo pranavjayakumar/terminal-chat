@@ -24,10 +24,10 @@ func fakeInstall(t *testing.T) string {
 
 func TestUpdateReplacesAtomically(t *testing.T) {
 	srv := releasetest.New(t, "v0.3.0")
-	srv.Publish("v0.3.0", map[string][]byte{"linux_arm64": []byte("NEW-ARM"), "linux_amd64": []byte("NEW-AMD")})
+	srv.Publish(t, "v0.3.0", map[string][]byte{"linux_arm64": []byte("NEW-ARM"), "linux_amd64": []byte("NEW-AMD")})
 	exe := fakeInstall(t)
 	var out bytes.Buffer
-	err := runUpdate(context.Background(), &out, &release.Source{Base: srv.Base}, exe, "v0.2.0", "linux", "arm64", false)
+	err := runUpdate(context.Background(), &out, srv.Source(), exe, "v0.2.0", "linux", "arm64", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestUpdateReplacesAtomically(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := runUpdate(context.Background(), &out, &release.Source{Base: srv.Base}, exe, "v0.3.0", "linux", "arm64", false); err != nil {
+	if err := runUpdate(context.Background(), &out, srv.Source(), exe, "v0.3.0", "linux", "arm64", false); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "up to date") {
@@ -55,11 +55,11 @@ func TestUpdateReplacesAtomically(t *testing.T) {
 
 func TestUpdateChecksumMismatchRefuses(t *testing.T) {
 	srv := releasetest.New(t, "v0.3.0")
-	srv.Publish("v0.3.0", map[string][]byte{"darwin_arm64": []byte("GOOD")})
+	srv.Publish(t, "v0.3.0", map[string][]byte{"darwin_arm64": []byte("GOOD")})
 	srv.Put("v0.3.0", "tc_darwin_arm64.tar.gz", releasetest.Tarball([]byte("TAMPERED")))
 	exe := fakeInstall(t)
 	var out bytes.Buffer
-	err := runUpdate(context.Background(), &out, &release.Source{Base: srv.Base}, exe, "v0.2.0", "darwin", "arm64", false)
+	err := runUpdate(context.Background(), &out, srv.Source(), exe, "v0.2.0", "darwin", "arm64", false)
 	if !errors.Is(err, release.ErrChecksum) {
 		t.Fatalf("err = %v", err)
 	}
@@ -74,7 +74,7 @@ func TestUpdateChecksumMismatchRefuses(t *testing.T) {
 func TestUpdateCheckOnly(t *testing.T) {
 	srv := releasetest.New(t, "v0.3.0")
 	exe := fakeInstall(t)
-	src := &release.Source{Base: srv.Base}
+	src := srv.Source()
 	for _, c := range []struct{ current, want string }{
 		{"v0.2.0", "Update available: v0.2.0 → v0.3.0. Run: tc update\n"},
 		{"v0.3.0", "tc v0.3.0 is up to date.\n"},
@@ -103,12 +103,12 @@ func TestUpdateRefusesUnwritable(t *testing.T) {
 		t.Skip("root can write anywhere")
 	}
 	srv := releasetest.New(t, "v0.3.0")
-	srv.Publish("v0.3.0", map[string][]byte{"linux_amd64": []byte("NEW")})
+	srv.Publish(t, "v0.3.0", map[string][]byte{"linux_amd64": []byte("NEW")})
 	exe := fakeInstall(t)
 	dir := filepath.Dir(exe)
 	os.Chmod(dir, 0o555)
 	t.Cleanup(func() { os.Chmod(dir, 0o755) })
-	err := runUpdate(context.Background(), &bytes.Buffer{}, &release.Source{Base: srv.Base}, exe, "v0.2.0", "linux", "amd64", false)
+	err := runUpdate(context.Background(), &bytes.Buffer{}, srv.Source(), exe, "v0.2.0", "linux", "amd64", false)
 	if err == nil || !strings.Contains(err.Error(), "isn't writable") {
 		t.Fatalf("err = %v", err)
 	}
@@ -116,5 +116,36 @@ func TestUpdateRefusesUnwritable(t *testing.T) {
 		if strings.Contains(h, "/download/") {
 			t.Fatalf("downloaded before checking permissions: %s", h)
 		}
+	}
+}
+
+// A build without an embedded release key never replaces itself.
+func TestUpdatePlaceholderKeyRefuses(t *testing.T) {
+	srv := releasetest.New(t, "v0.3.0")
+	srv.Publish(t, "v0.3.0", map[string][]byte{"linux_amd64": []byte("NEW")})
+	exe := fakeInstall(t)
+	src := &release.Source{Base: srv.Base, Signers: release.Placeholder}
+	err := runUpdate(context.Background(), &bytes.Buffer{}, src, exe, "v0.2.0", "linux", "amd64", false)
+	if !errors.Is(err, release.ErrNoSigningKey) || !strings.Contains(err.Error(), "no release signing key") {
+		t.Fatalf("err = %v", err)
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "OLD" {
+		t.Fatalf("binary replaced: %q", b)
+	}
+}
+
+// Signed by a key this build doesn't trust: refused, binary untouched.
+func TestUpdateUntrustedSignatureRefuses(t *testing.T) {
+	srv := releasetest.New(t, "v0.3.0")
+	srv.Publish(t, "v0.3.0", map[string][]byte{"linux_amd64": []byte("NEW")})
+	exe := fakeInstall(t)
+	src := srv.Source()
+	src.Signers = releasetest.AllowedSigners(releasetest.NewKey(t).PublicKey())
+	err := runUpdate(context.Background(), &bytes.Buffer{}, src, exe, "v0.2.0", "linux", "amd64", false)
+	if !errors.Is(err, release.ErrSignature) {
+		t.Fatalf("err = %v", err)
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "OLD" {
+		t.Fatalf("binary replaced: %q", b)
 	}
 }

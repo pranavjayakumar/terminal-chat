@@ -60,8 +60,8 @@ func TestParseChecksums(t *testing.T) {
 
 func TestLatestAndFetch(t *testing.T) {
 	srv := releasetest.New(t, "v1.2.3")
-	srv.Publish("v1.2.3", map[string][]byte{"linux_amd64": []byte("LINUX"), "darwin_arm64": []byte("DARWIN")})
-	src := &release.Source{Base: srv.Base}
+	srv.Publish(t, "v1.2.3", map[string][]byte{"linux_amd64": []byte("LINUX"), "darwin_arm64": []byte("DARWIN")})
+	src := srv.Source()
 	ctx := context.Background()
 	tag, err := src.Latest(ctx)
 	if err != nil || tag != "v1.2.3" {
@@ -89,16 +89,16 @@ func TestLatestAndFetch(t *testing.T) {
 
 func TestLatestRejectsBadRedirect(t *testing.T) {
 	srv := releasetest.New(t, "v1.2.3/../../evil")
-	if tag, err := (&release.Source{Base: srv.Base}).Latest(context.Background()); err == nil {
+	if tag, err := srv.Source().Latest(context.Background()); err == nil {
 		t.Fatalf("accepted %q", tag)
 	}
 }
 
 func TestFetchChecksumMismatch(t *testing.T) {
 	srv := releasetest.New(t, "v1.2.3")
-	srv.Publish("v1.2.3", map[string][]byte{"linux_amd64": []byte("GOOD")})
+	srv.Publish(t, "v1.2.3", map[string][]byte{"linux_amd64": []byte("GOOD")})
 	srv.Put("v1.2.3", "tc_linux_amd64.tar.gz", releasetest.Tarball([]byte("EVIL")))
-	_, err := (&release.Source{Base: srv.Base}).Fetch(context.Background(), "v1.2.3", "linux", "amd64")
+	_, err := srv.Source().Fetch(context.Background(), "v1.2.3", "linux", "amd64")
 	if !errors.Is(err, release.ErrChecksum) {
 		t.Fatalf("err = %v, want checksum mismatch", err)
 	}
@@ -150,7 +150,7 @@ func TestReplaceUnwritableDir(t *testing.T) {
 func TestCheckCachedDaily(t *testing.T) {
 	t.Setenv("TC_NO_UPDATE_CHECK", "")
 	srv := releasetest.New(t, "v0.3.0")
-	src := &release.Source{Base: srv.Base}
+	src := srv.Source()
 	home := t.TempDir()
 	ctx := context.Background()
 	now := time.Now()
