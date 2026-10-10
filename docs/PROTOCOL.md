@@ -493,7 +493,7 @@ token lookup. The HTTP server sets header (10 s), read/write (30 s) and idle (10
 timeouts, caps headers at 16 KiB, and closes connections beyond 256 open ones, or beyond 16 open ones from one source (same
 grouping as the bucket above), unserved.
 
-## 13. End-to-end encryption (cap `e2e1`)
+## 13. End-to-end encryption (cap `e2e1`) *(implemented: steps 1–12 of docs/E2E.md)*
 
 Design and threat model: `docs/E2E.md` ("Review r1 → r2" is authoritative).
 Everything in this section exists only in sessions whose effective caps
@@ -677,6 +677,7 @@ so non-members can't make the server parse 16 KiB):
 | CAS: `epoch == current + 1` and `prev == ChainHash(current b)` | `stale_epoch` |
 | epoch > 1: the caller (`by`'s user) is in the current bundle's roster; epoch 1: the caller is `Channel.creator` (DMs: any member) | `forbidden` |
 | `roster` == current members that aren't disabled | `stale_epoch` |
+| the caller is in `roster` (re-checked under the write lock: a user disabled while their rotation was in flight is refused) | `forbidden` (disabled: `unauthorized`) |
 | every box goes to a registered device of a roster user, each at most once | `bad_request` |
 | no box goes to a device revoked after the current epoch's `key.epoch` seq (any revoked device at epoch 0): the rotator couldn't have seen that revoke | `stale_epoch` |
 | no box goes to any other revoked device (its revoke came before the head the rotator built on) | `bad_request` |
@@ -763,8 +764,8 @@ rotation comes back `stale_epoch`. Each must:
 decode (canonical, `server_id` and `chan` match, the epoch is the next one);
 be signed by `by`, a device the client verified (§13.2) whose revoke, if
 any, has a seq not before the bundle's seq; have `by`'s user in the previous
-bundle's roster (epoch 1: `Channel.creator`, or for a DM any member, and in
-the roster); have `prev` = ChainHash of the previous bundle; box no device
+bundle's roster (epoch 1: `Channel.creator`, or for a DM any member) and in
+its own roster (the rotator holds K); have `prev` = ChainHash of the previous bundle; box no device
 the client knows to belong to a non-roster user or revoked before the
 bundle's seq, and no two boxes to one X25519 key among devices it knows.
 Boxes to devices the client hasn't verified are allowed (the rotator may
@@ -781,7 +782,18 @@ fails `kc`. The client then has no K for that epoch and recovers it via
 it has K the client keeps the bundle (e.g. its device keys weren't loaded
 yet) and retries its box on later passes. Only a
 second, different bundle for the same epoch (or one that doesn't chain to
-the pinned head) is a fork.
+the pinned head) is a fork. If the client's own box is in the bundle but
+doesn't yield a K matching `kc` (provably the rotator's fault: the box is
+inside the signed `b`) and no `key.share` arrives within 2 minutes, a
+member may rotate past that epoch with `back` sealing a random key instead
+of K_prev: that epoch's history is lost to it, but a rotator who poisoned
+every box can't wedge the channel. (The backlink check fails for whoever
+walks back through it; clients treat that as a missing key, not a fork.)
+
+Clients verify devices as §13.2 and also refuse a device whose X25519 or
+Ed25519 key another device already has. A device-signed `DeviceRevoke`
+from a device that is itself revoked counts only if both revokes' seqs are
+known and both the seq order and the signed times (±5 min) put it first.
 
 Epoch 1 must be created by the channel's creator (any member of a DM).
 Clients rotate epoch 1 right after `chan.create`; an e2e channel whose
@@ -826,8 +838,9 @@ outbox; every retry sends the identical bytes, so `(author, nonce)`
 idempotency (§5) holds across reconnects and rotations. Before encrypting it
 catches up on the channel's chain, and rotates first (§13.3) when the
 current bundle is stale as far as it can tell: there is none yet (epoch 1:
-only the creator, or any DM member), or its roster isn't the current
-non-disabled members. Once the channel has a verified epoch, the roster of
+only the creator, or any DM member), its roster isn't the current
+non-disabled members, or it boxed a device the client now knows to be
+revoked (clients don't rely on the server's `stale_epoch` for that). Once the channel has a verified epoch, the roster of
 a new bundle (and who a sender seals to) is only the members the verified
 head's roster includes: a verified epoch is signed by a previous-roster
 member, while the member list is the server's word, so a user who appears
@@ -861,6 +874,9 @@ eh; `enc.dev` is a device it verified that belongs to `Message.author` (and
 wasn't revoked before the message's id, nor — for a revoke whose seq it
 doesn't know — signed with a Plain `ts` more than 5 minutes after the
 revoke's signed time); the signature and AEAD check out;
+`Message.author` is in the roster of `enc.epoch` and (when the message's
+id is known) the id is not after the `key.epoch` seq of the next verified
+epoch (a removed member can't keep posting under the last key it holds);
 Plain decodes with `t = "msg"`; `body` passes §10 (valid UTF-8, no control
 characters but `\n`/`\t`, not blank, ≤ 64 KiB); `thread_ref` matches
 `Message.thread` as above; and no message with a lower id carries the same
@@ -875,6 +891,9 @@ message's channel, author, thread and bytes are fixed: a refetched copy
 does a copy without `enc` (it never replaces a cached encrypted message).
 Only a verified edit (below) changes its shown text and edited time; the
 server's `edited` and `reactions` are not shown for encrypted messages.
+`Message.time` stays the server's claim; when it differs from the verified
+Plain `ts` by more than 5 minutes the client shows `ts` and marks the
+message ("⚠ server time differs").
 
 **Edits, deletes, reactions.** Each `enc` below is checked like a message's
 (parses, K of its epoch and its `eh`, signature by a device the client
@@ -882,7 +901,8 @@ verified that wasn't revoked before the event's seq or — seq unknown, as in
 a refetched copy — by the Plain `ts` rule, AEAD) and then:
 
 - **edit** (`msg.edit.enc`, `Message.edit_enc`): signed by a device of the
-  **original** message's author; `t = "edit"`; `ref` = the original's `mid`;
+  **original** message's author, who is in the roster of the edit's epoch
+  (and, seq known, not after the next epoch's `key.epoch`, as for messages); `t = "edit"`; `ref` = the original's `mid`;
   `body` passes §10; `v ≥ 1`; and the edit is **newer** than the applied
   one: the higher `(v, ts, mid of the edit's enc)` wins, compared in that
   order (mid as bytes), and an equal tuple is the same edit. Every client

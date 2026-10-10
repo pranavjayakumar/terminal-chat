@@ -12,3 +12,4 @@ The current resume point always lives in [STATUS.md](STATUS.md) → "Handoff".
 - 08:50 · E2E step 11 (malicious-server suite) · Claude Opus subagent, worktree agent-ab2d5e801827b592f, branch e2e/malicious-server · running
 - 08:55 · M4 onboarding · kiro Opus, worktree .claude/worktrees/kiro-onboard, branch m4-onboarding · running
 - 09:00 · Owner: finish M3 + M4 end to end, then pause; kiro cap 55–60% (now 46.8%); Claude orchestrates only
+- 09:30 · E2E step 12 final pass (security pass: 1 high + 6 medium fixed, 3 low fixed, rest documented; chaos during rotations 5/5; signed-time drift warning; 14 fuzz targets 60 s, no crashers) · kiro, worktree kiro-step12, branch e2e/final-pass · done, not pushed; M3 done

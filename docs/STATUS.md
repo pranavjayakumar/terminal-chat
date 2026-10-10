@@ -14,8 +14,10 @@ cut release v0.2.0, redeploy the droplet, hand the owner the one-line install/in
 - M4 onboarding — kiro; worktree `.claude/worktrees/kiro-onboard`, branch `m4-onboarding`; prompt covers release
   workflow, install.sh, `tc join`, invite one-liner, multi-use invites, `tc update`.
 
-**Next (in order):** review + merge step 11 → review + merge M4 → E2E step 12 (security pass + chaos during
-rotations) on kiro → tag v0.2.0 (release workflow builds binaries) → redeploy droplet with the release binary
+**Step 12 (E2E final pass)** is done on branch `e2e/final-pass` (kiro worktree `.claude/worktrees/kiro-step12`,
+not pushed): findings table, fuzz and chaos results in `docs/E2E.md` "Step 12 security pass".
+
+**Next (in order):** review + merge step 11 → review + merge M4 → review + merge step 12 (`e2e/final-pass`) → tag v0.2.0 (release workflow builds binaries) → redeploy droplet with the release binary
 (`docs/DEPLOY.md`) → test the one-liner from a clean HOME → give the owner the command → update this file → pause.
 
 **Rules:** kiro hard cap 55–60% of monthly credits (check `kiro-cli chat --no-interactive "/usage"`; stop at 55%).
@@ -34,7 +36,7 @@ The owner should change the droplet root password (it was shared in chat; passwo
 | M0 scaffold, spec, agents, CI | ✅ done |
 | M1 core chat (server, client, TUI, sync, offline outbox) | ✅ done, battle-tested (chaos + adversarial + live herdr) |
 | M2 collaboration | ✅ essentially done: notifications, herdr badge, `/share-pane`, auto-away, `tc notify`, notes, `/name`, threads, webhooks + bots, privacy scrubbing, drafts, `/highlight`, activity (Alt-A), message viewer (`v`), pins (`p`, `/pins`), user groups (`@oncall`), reminders (`/remind`), diff/snippets (`tc send --file`, `/snippet`) |
-| M3 end-to-end encryption | steps 1–7 merged; step 9 (membership: chan.add+bundle, chan.remove, chan.encrypt) on branch `e2e/membership`; (#9, #10, #11, #13, #16, #25 client verification, #26 encrypted send/receive) — **encrypted DMs and private channels work end to end**; step 8 (encrypted edit/delete/react) in PR #28; step 10 (trust UX: safety numbers, `/verify`, `--github`, key-change banner, `/accept-key`, `/alarm`, audited `/alarm-clear`, `?` marks, `tc verify`) merged (#30); step 11 (malicious-server suite: `-tags tctamper` server hooks, `internal/e2e/malicious_test.go`, one client bug fixed — missed `key.epoch` now re-fetched) on branch `e2e/malicious-server` |
+| M3 end-to-end encryption | ✅ **done** (steps 1–12; step 12 — security pass with 7 medium+/high fixes, chaos during rotations, signed-time drift warning, 14 fuzz targets — on branch `e2e/final-pass`, not pushed). History: steps 1–7 merged; step 9 (membership: chan.add+bundle, chan.remove, chan.encrypt) on branch `e2e/membership`; (#9, #10, #11, #13, #16, #25 client verification, #26 encrypted send/receive) — **encrypted DMs and private channels work end to end**; step 8 (encrypted edit/delete/react) in PR #28; step 10 (trust UX: safety numbers, `/verify`, `--github`, key-change banner, `/accept-key`, `/alarm`, audited `/alarm-clear`, `?` marks, `tc verify`) merged (#30); step 11 (malicious-server suite: `-tags tctamper` server hooks, `internal/e2e/malicious_test.go`, one client bug fixed — missed `key.epoch` now re-fetched) on branch `e2e/malicious-server` |
 | M4 zero-setup onboarding | not started |
 | M5 voice | not started |
 

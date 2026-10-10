@@ -1,8 +1,9 @@
-# End-to-end encryption design (M3) — draft
+# End-to-end encryption design (M3)
 
-Status: draft r1 below was **rejected** by review (a malicious server could read DMs: device certs,
-membership and key boxes were all server-controlled). **r2 = the revisions at the end of this file
-("Review r1 → r2") supersede anything above that conflicts.** Implementation follows the PR plan there.
+Status: **implemented (steps 1–12)**. Draft r1 below was **rejected** by review (a malicious server
+could read DMs: device certs, membership and key boxes were all server-controlled). **r2 = the
+revisions at the end of this file ("Review r1 → r2") supersede anything above that conflicts.** The
+implementation followed the PR plan there; step 12's security pass is at the end of this file.
 
 ## Goals / non-goals
 
@@ -105,7 +106,7 @@ the local cache is therefore sensitive — rely on disk encryption, documented.
 Cap `e2e1`. DMs and new private channels encrypted by default; `/encrypt` converts an existing
 private channel. Public channels unchanged. Bots in encrypted channels get a bot device.
 
-## Threat model (as of step 11)
+## Threat model (as of step 12)
 
 What a malicious server can and cannot do today, and what closes each gap:
 
@@ -149,9 +150,24 @@ What a malicious server can and cannot do today, and what closes each gap:
 - **Edits and reactions over time**: the server can withhold the newest edit from a device that never
   saw it (it shows an older verified one), and can replay a reaction its author since removed (adds
   carry no version). It can't forge, move or reorder edits a client has seen. (Step 8.)
-- **Message times** are the server's: Plain `ts` is signed but the shown time is `Message.time`, which
-  the server can rewrite (metadata, like who talks to whom). Pinned down by the step-11 suite, like the
-  other accepted limits (`internal/e2e/malicious_test.go`, `..._AcceptedLimit`).
+- **Message times**: `Message.time` is the server's, Plain `ts` the author's (signed). When they differ by
+  more than 5 min the client shows the signed time with a dim "⚠ server time differs" (step 12), so a
+  server can shift a message's time only within the clock skew allowed. Plaintext messages and
+  metadata (who talks to whom, when, sizes) stay the server's word.
+- **A member can poison a rotation** (boxes that don't yield K, then never answer key.need). Since
+  step 12 the other members wait 2 min for a key.share and then rotate past it, linking back to a
+  random key: that epoch's messages are lost to them (a history gap), nothing else.
+- **Stolen device**: once revoked (`device.revoke`, signed by the user's SSH key or another of their
+  devices; the protocol and client support it, but there is no `tc` command for it yet), every client
+  rotates before sealing anything new in a channel whose epoch boxed it (step 12, not relying on the
+  server's `stale_epoch`) and ignores revokes the stolen device signs afterwards. Disabling the user
+  (admin) also rotates them out. It keeps what it could already read.
+- **Lost devices**: K lives only on devices. Losing every device of a user loses their encrypted
+  history (no backup in v1); a new device gets new messages, and older history only from a member's
+  backlinks (the history of every epoch whose K a remaining member holds).
+- **The local cache is sensitive**: `TC_HOME/cache.db` holds decrypted messages and the outbox, and
+  `e2e.db` the device and epoch keys (both 0600, SQLite `secure_delete`). Rely on disk encryption; a
+  thief with the disk reads what that device could.
 - **Availability** is not defended: a server can drop, delay or withhold anything. Clients recover
   what they can fetch again (bundles by `key.fetch`, keys by `key.share`) and never fail open.
 
@@ -441,7 +457,7 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    | plaintext `msg.new` in an encrypted DM | "inserted by server", no mention/notification |
    | enc replayed into another channel / a thread / as duplicate / as an edit | invalid (edit: rejected, text unchanged) |
    | rewritten author / thread | invalid |
-   | rewritten time | **accepted limit**: the shown time is the server's (metadata; Plain `ts` is signed but not compared) |
+   | rewritten time | step 11: accepted limit; **closed in step 12**: the signed time is shown with "⚠ server time differs" (`TestMaliciousRewrittenTime`) |
    | forged delete (unsigned / another message's signed delete) | "removed (not by author)" |
    | reordered events (seqs swapped) | message waits then opens; the newer edit wins |
    | dropped or skipped `key.epoch` | **bug found and fixed**: the client now `key.fetch`es (see below) |
@@ -460,3 +476,74 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    same K; per §13.3 an unusable box is not a fork). A bundle from an unverifiable device doesn't
    block sending under the verified head.
 12. Security pass + chaos during rotations + docs (threat model, device loss, local cache sensitivity).
+   Done (step 12). **Chaos during rotations** (`internal/e2e/chaos_rotate_test.go`, skipped under
+   `-short`): alice, bob, carol, dave in an encrypted private channel; alice/bob/dave send while alice
+   adds carol and removes dave and members rotate keys, all through the chaos proxy (kills a connection
+   every 150–500 ms, 0–15 ms latency per write; the server clock is skewed past the no-change rotation
+   cap). Checked: every member converges to the identical set of decrypted messages (each once, none
+   waiting, nothing pending, no alarm) and the identical verified head; dave can't open any row the
+   server stored after his removal and holds no later epoch key. `-count=5` with `-race`, 5/5 green:
+
+   | run | kills | explicit rotations | messages | dave removed at | head | converged after chaos |
+   |---|---|---|---|---|---|---|
+   | 1 | 28 | 6 | 50 | epoch 10 | 11 | 8.1 s |
+   | 2 | 32 | 6 | 50 | epoch 8 | 11 | 15.9 s |
+   | 3 | 36 | 5 | 50 | epoch 8 | 11 | 19.7 s |
+   | 4 | 36 | 5 | 50 | epoch 9 | 10 | 17.0 s |
+   | 5 | 27 | 6 | 50 | epoch 8 | 11 | 5.8 s |
+
+   **Signed-time drift** (closes step 11's "rewritten time"): verified messages keep Plain `ts`
+   (`Message.SignedTime`, cache column `msgs.sts`); `Message.TimeDrift()` when it is more than
+   `client.MaxTimeDrift` (5 min) from the server's time; the TUI then shows the signed time, doesn't
+   group the message under the previous one and adds a dim "⚠ server time differs" (also in the
+   viewer's title). **Fuzzing**: `make fuzz` (`FUZZTIME`, default 30 s) runs 14 targets covering
+   every decoder of untrusted E2E input (results below). **Security pass**: findings below; every
+   medium or higher is fixed with a test that fails without the fix.
+
+## Step 12 security pass
+
+Fresh-eyes review of `internal/client` (e2e, enc*, membership, verify, devices), `internal/trust`,
+`internal/server` (epochs, membership, keyshare, devices, encrypted send paths), `internal/e2ecrypto`
+and the signed-object code in `internal/identity`, as a malicious server, a malicious member, a
+removed member and a stolen-device holder. Things already listed as accepted limits above were not
+re-reported. Each fix's test was run against the code without the fix and failed.
+
+| # | sev | where | attacker · scenario | status |
+|---|---|---|---|---|
+| S1 | high | `client/e2e.go:801` (`poisonedLong`), `commitBundle` | **member**: rotates with a validly signed bundle whose every other box holds a wrong K, then goes silent. Honest clients accept it as head (§13.3); nobody has K, so nobody can rotate (the backlink needs K) or remove her: the channel is wedged, no alarm. | **fixed** (33a9c78): a box in the signed bundle that doesn't yield K proves the rotator's fault; after `poisonWait` (2 min) without a key.share the e2e worker rotates past it with a backlink to a random key (history gap for that epoch only). `TestEncRecoversFromPoisonedBox` |
+| C1 | medium | `client/encmsg.go:221` (`noteE2EChan`) | **server**: shows a new DM encrypted, withholds `devices.list` so the e2e worker never marks it, then sends `chan.update e2e:false`: queued messages went out as plaintext. | **fixed** (7cace74): the sticky e2e flag is set when a channel is first stored encrypted. `TestEncStickyFlagBeforeWorker` |
+| C2 | medium | `client/encops.go:121` (`checkSealer`) | **removed member + server**: keeps posting/editing under the last epoch it held; shown as verified. | **fixed** (1f4cb9e): messages and edits need the author in the named epoch's roster and (known seq) no later than the next epoch's key.epoch; earlier-judged ones are re-checked when that epoch verifies. `TestRemovedMemberCantPostUnderOldEpoch` |
+| C3 | medium | `client/e2e.go:594` (`applyRevoke`), `client/devices.go:212` | **stolen, already revoked device + server**: signs revokes of its owner's healthy devices and the server gives them seq 0 or an early seq: peers revoke them for good, their messages turn invalid, the victim's own client retires its keys. | **fixed** (9380eac): a revoked signer counts only if both seqs are known and both seq and signed time (±5 min) put the revoke before its own; SSH-signed revokes are applied first; own devices ignore revokes signed by a device we revoked. `TestE2ERevokedDeviceCantRevokeOthers`, `TestOwnRevokedIgnoresRevokedSigner` |
+| C4 | medium | `client/encmsg.go:756` (`boxedRevoked`), `trust` schema v11 | **stolen device + server**: after its revoke the server never answers `stale_epoch`, so senders kept sealing under an epoch boxed to the stolen device until the next membership change. | **fixed** (5fa066b): the trust store records each epoch's boxed devices; sends/edits rotate first when one is revoked. `TestEncRotatesAfterBoxedDeviceRevoked`, `TestEpochBoxed` |
+| S2 | medium | `server/epochs.go:465`, `client/e2e.go:735` | **user being disabled**: `dispatch` checks "disabled" outside the write lock, so an in-flight `key.rotate` (or `chan.add`) committed; the disabled user held the new K, and the admin's follow-up rotation was rate-limited away. | **fixed** (3d7750a): `rotateTx` re-checks disabled under the lock and requires the caller in the new roster; clients alarm on a rotator outside its own roster. `TestKeyRotateDisabledInFlight`, `TestE2ERotatorNotInNewRoster` |
+| M1 | medium | `trust/trust.go:1009` (`AdvanceEpoch`) | **none (two processes)**: the TUI and `tc send` share TC_HOME; the slower one offered an epoch the other had already recorded and passed: `ErrRollback`, a sticky alarm that blocked sending. | **fixed** (5893574): the same bundle below the head is a no-op, a different one a fork, only an unrecorded one a rollback. `TestEpochsAndKeys` |
+| C5 | low | `client/encmsg.go:447` (`reopenMsgs`) | **member**: 1000 replies to a root others don't have stay waiting forever; the queue only ever re-checked the 1000 oldest, so later messages never opened. | **fixed** (27c3947): the queue walks waiting rows batch by batch with a cursor. `TestEncReopenQueueNoStarvation` |
+| C6 | low | `client/encmsg.go:522`, `client/encops.go:240` | **race / server**: the e2e worker wrote a verdict/edit by id outside the event transaction; a delete or refetch applied meanwhile could get the old body written back. | **fixed** (6d0d868): the updates match what was judged (enc, chan, author, thread, not deleted). Covered by the existing suites (the window isn't reproducible deterministically). |
+| C7 | low | `trust/trust.go:744` (`PutDevice`) | **server + member**: a verified twin device carrying another device's X25519 key made every honest rotation fail (`ErrDuplicateKey`). §13.2 asks clients to check. | **fixed** (27c3947): the trust store refuses a new device with another device's X25519 or Ed25519 key. `TestDevices` |
+| S3 | low | `server/epochs.go:502` | **two colluding members**: leave / rotate / re-add churn changes the state each time, so the no-change rotation cap never applies: the chain grows at the write rate limit (~5/s); joiners must fetch and verify all of it. | documented: availability only (bounded by the write limit and `key.fetch` ≤ 256 per call); a cap on waived rotations is future work. |
+| S4 | info | `server/ops.go:195` (`canRead`) | **member removed mid-request**: `history`/`pins.list` check membership, release the lock, then query, so a removal in between returns post-removal rows. | documented: those rows are ciphertext under epochs the removed member has no key for (C2/C4 hold); only metadata leaks. |
+| I1 | info | `client/encmsg.go:338` and `encops.go` | **member**: Plain msgpack isn't checked for canonical form (duplicate/unknown keys, trailing bytes decode). | documented: a Plain is AEAD-sealed and signed by its one author and every client runs the same decoder, so it can't mean two things to two clients; `FuzzPlain` checks only valid text is shown. A canonical check needs Plain `v: 2`. |
+| I2 | info | `identity/certs.go:131` | **member**: a cert with a small-order Ed25519 key lets anyone forge that device's signatures. | documented: only weakens the member's own device (they can already post anything); rejecting small-order keys is future work. |
+| I3 | info | `client/e2e.go:492` | **server**: re-serves malleated ECDSA cert signatures (s → n−s); each is re-verified and reported as a change. | documented: costs a verify and a UI refresh. |
+| I4 | info | `trust/trust.go:897` | `AdvanceChain` skips the gap check. | documented: used only by tests; production uses `AdvanceEpoch`. |
+| C8 | info | `client/encmsg.go:348` | **server**: points a reply's thread at an invalid replayed copy of its root (same mid): the reply shows under a hidden root. | documented: the reply is genuine and in the right conversation; cosmetic. |
+| C9 | info | `client/conn.go:122` | **server**: `session.call` has no per-call timeout and some calls run under `e2eMu`; a withheld reply stalls e2e work until reconnect. | documented: availability (the server can always withhold); C1 no longer depends on it. |
+
+**Fuzzing** (`make fuzz FUZZTIME=60s`, 60 s each, 8 workers; no crashers, so no regression inputs to keep):
+
+| target | decodes | execs |
+|---|---|---|
+| `proto` FuzzDecode | every frame, op args, events | 8.7 M |
+| `proto` FuzzDevices | Device, revoke, devices.list, snapshot devs | 9.0 M |
+| `proto` FuzzKeyOps | key.share / key.rotate / key.epoch / key.fetch / chan.add payloads | 7.1 M |
+| `sanitize` FuzzSanitize | rendered text | 10.9 M |
+| `e2ecrypto` FuzzParseEnc | enc framing | 12.0 M |
+| `e2ecrypto` FuzzDecrypt | enc verify + AEAD + unpad (re-signed) | 10.2 M |
+| `e2ecrypto` FuzzUnpad | padding (only pad256 output accepted) | 15.3 M |
+| `e2ecrypto` FuzzOpenBoxes | epoch boxes, key.share boxes, backlinks | 3.1 M |
+| `identity` FuzzDeviceCert | DeviceCert decode/verify | 3.4 M |
+| `identity` FuzzKeyEndorse | KeyEndorse decode/verify | 2.5 M |
+| `identity` FuzzDeviceRevoke | DeviceRevoke decode/verify (SSH and device) | 2.7 M |
+| `identity` FuzzEpochBundle | EpochBundle decode/verify, CheckBoxKeys | 5.7 M |
+| `client` FuzzPlain | Plain msg/edit/del/react through judge, applyEdit, deleteVerdict, judgeReact | 94 k |
+| `client` FuzzKeyShare | key.share storage and application (never a key that misses kc) | 1.5 M |
