@@ -729,6 +729,11 @@ func (c *Client) validateBundle(sid e2ecrypto.ServerID, ch proto.Channel, epoch 
 		if !slices.Contains(prev.Roster, by.User) {
 			return eb, fmt.Errorf("epoch %d: rotated by someone not in epoch %d", epoch, prev.Epoch)
 		}
+		// The rotator holds the new K: one outside the new roster (a member
+		// removed or disabled while rotating) would keep reading.
+		if !slices.Contains(eb.Roster, by.User) {
+			return eb, fmt.Errorf("epoch %d: rotated by someone not in its roster", epoch)
+		}
 	}
 	keys := map[[32]byte]bool{}
 	for _, bx := range eb.Boxes {

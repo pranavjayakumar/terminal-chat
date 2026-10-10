@@ -684,6 +684,25 @@ func TestE2ERevokedRotator(t *testing.T) {
 	}
 }
 
+// A rotator outside its own new roster (removed or disabled while it
+// rotated) would hold K without being a member: an alarm (step 12).
+func TestE2ERotatorNotInNewRoster(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	b1 := newPeer(t, bob, nil)
+	f := startE2E(t, fs, proto.Snapshot{Chans: []proto.Channel{dmChan(0)}, Devs: []proto.Device{{Cert: b1.cert}}}, proto.DevicesListRes{})
+	me := f.myKeys(c)
+	k1 := newK(t)
+	e1 := mkBundle(t, b1.dev, dm, 1, nil, []uint64{alice, bob}, k1, nil, me, b1.dev)
+	f.keyEpoch(dm, bob, e1)
+	waitFor(t, "epoch 1", status(c, dm, E2EOK))
+	f.keyEpoch(dm, bob, mkBundle(t, b1.dev, dm, 2, &e1, []uint64{alice}, newK(t), &k1, me))
+	waitFor(t, "alarm", status(c, dm, E2EAlarm))
+	if st := c.E2EStatus(dm); headOf(t, c, dm) != 1 || st.Detail != "epoch 2: rotated by someone not in its roster" {
+		t.Fatalf("status %+v head %d", st, headOf(t, c, dm))
+	}
+}
+
 // A server that shows an older epoch than the one we verified (after a
 // forced reset) is rolling us back.
 func TestE2ERollback(t *testing.T) {

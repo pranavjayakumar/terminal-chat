@@ -1103,3 +1103,35 @@ func TestRevokeWithoutSeqOmitted(t *testing.T) {
 		t.Fatalf("snapshot: %d devs, revoked %d, seqs %v", len(sn.Devs), len(sn.Revoked), sn.RevokedSeqs)
 	}
 }
+
+// A rotation by a user disabled after dispatch checked them (in flight)
+// doesn't commit: they'd hold the new K though no roster includes them
+// (step 12 security pass). Called below dispatch to hit that window.
+func TestKeyRotateDisabledInFlight(t *testing.T) {
+	ts := startServer(t, "tcp")
+	fastClock(ts)
+	alice := ts.registerCaps(t, "alice", true, e2eCaps)
+	bob := ts.registerCaps(t, "bob", false, e2eCaps)
+	alice.syncFresh()
+	bob.syncFresh()
+	sid := ts.sid()
+	a1, _ := alice.registerDevice(ts)
+	b1, _ := bob.registerDevice(ts)
+	ch := alice.createE2E("sec")
+	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: bob.user.ID}, nil)
+	e1 := bundle(t, a1, sid, ch.ID, 1, nil, []uint64{alice.user.ID, bob.user.ID}, a1, b1)
+	alice.rotate(ch.ID, e1)
+	alice.ok(proto.OpUserDisable, proto.UserArgs{User: bob.user.ID}, nil)
+
+	_, err := ts.opKeyRotate(context.Background(), bob.user,
+		proto.KeyRotateArgs{Chan: ch.ID, Bundle: bundle(t, b1, sid, ch.ID, 2, &e1, []uint64{alice.user.ID}, a1)})
+	if err == nil {
+		t.Fatal("a disabled user's rotation committed")
+	}
+	var cur uint32
+	if err := ts.st.db.QueryRow(`SELECT epoch FROM channels WHERE id = ?`, ch.ID).Scan(&cur); err != nil || cur != 1 {
+		t.Fatalf("epoch %d %v", cur, err)
+	}
+	// The admin's own rotation goes through.
+	alice.rotate(ch.ID, bundle(t, a1, sid, ch.ID, 2, &e1, []uint64{alice.user.ID}, a1))
+}
