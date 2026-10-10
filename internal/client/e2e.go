@@ -990,6 +990,10 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 		if eb.Back != nil {
 			e.Back = eb.Back[:]
 		}
+		e.Boxed = make([]e2ecrypto.DevID, 0, len(eb.Boxes))
+		for _, bx := range eb.Boxes {
+			e.Boxed = append(e.Boxed, bx.Dev)
+		}
 		if err := ts.AdvanceEpoch(sid, ch.ID, e); err != nil {
 			if errors.Is(err, trust.ErrFork) || errors.Is(err, trust.ErrRollback) {
 				return c.alarm(sid, ch.ID, err.Error())

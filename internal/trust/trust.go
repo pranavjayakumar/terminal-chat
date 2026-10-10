@@ -42,7 +42,7 @@ const FileName = "e2e.db"
 // verified bundle; NULL = unknown) and legacy_cutoffs; v9 adds
 // legacy_cutoffs.claimed (the cutoff is the server's Channel.legacy); v10
 // adds trust_audit (deliberate alarm clears and out-of-band verifications).
-const schemaVersion = 10
+const schemaVersion = 11
 
 // maxKeyChanges bounds the pending key changes kept per user and server; the
 // least recently seen is dropped (it is re-recorded if seen again).
@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS e2e_chans (
 	server_id BLOB NOT NULL, chan INTEGER NOT NULL, PRIMARY KEY (server_id, chan));
 CREATE TABLE IF NOT EXISTS epochs (
 	server_id BLOB NOT NULL, chan INTEGER NOT NULL, epoch INTEGER NOT NULL, hash BLOB NOT NULL,
-	kc BLOB NOT NULL, roster BLOB NOT NULL, back BLOB, k BLOB, seq INTEGER, PRIMARY KEY (server_id, chan, epoch));
+	kc BLOB NOT NULL, roster BLOB NOT NULL, back BLOB, k BLOB, seq INTEGER, boxed BLOB, PRIMARY KEY (server_id, chan, epoch));
 CREATE TABLE IF NOT EXISTS chan_alarms (
 	server_id BLOB NOT NULL, chan INTEGER NOT NULL, detail TEXT NOT NULL, time INTEGER NOT NULL,
 	PRIMARY KEY (server_id, chan));
@@ -328,6 +328,17 @@ func initSchema(tx *sql.Tx) error {
 		}
 		if n == 0 {
 			if _, err := tx.Exec(`ALTER TABLE legacy_cutoffs ADD COLUMN claimed INTEGER NOT NULL DEFAULT 0`); err != nil {
+				return fmt.Errorf("migrating trust store v%d: %w", v, err)
+			}
+		}
+	}
+	if v >= 1 && v <= 10 {
+		var n int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('epochs') WHERE name = 'boxed'`).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			if _, err := tx.Exec(`ALTER TABLE epochs ADD COLUMN boxed BLOB`); err != nil {
 				return fmt.Errorf("migrating trust store v%d: %w", v, err)
 			}
 		}
@@ -915,6 +926,32 @@ type Epoch struct {
 	// (0 = unknown). Not evidence of anything: it orders messages against
 	// the epoch (plaintext after epoch 1 is suspect, PROTOCOL §13.4).
 	Seq uint64
+	// Boxed are the devices the bundle sealed K to (nil: recorded before
+	// trust schema v11). One of them revoked since means the epoch must
+	// be replaced before anything new is sealed under it.
+	Boxed []e2ecrypto.DevID
+}
+
+func packDevs(ds []e2ecrypto.DevID) []byte {
+	if ds == nil {
+		return nil
+	}
+	b := make([]byte, 0, len(ds)*e2ecrypto.IDSize)
+	for _, d := range ds {
+		b = append(b, d[:]...)
+	}
+	return b
+}
+
+func unpackDevs(b []byte) []e2ecrypto.DevID {
+	if b == nil {
+		return nil
+	}
+	out := make([]e2ecrypto.DevID, 0, len(b)/e2ecrypto.IDSize)
+	for ; len(b) >= e2ecrypto.IDSize; b = b[e2ecrypto.IDSize:] {
+		out = append(out, e2ecrypto.DevID(b[:e2ecrypto.IDSize]))
+	}
+	return out
 }
 
 func packRoster(r []uint64) []byte {
@@ -991,10 +1028,10 @@ func (s *Store) AdvanceEpoch(sid e2ecrypto.ServerID, ch uint64, e Epoch) error {
 		if e.Seq != 0 {
 			seq = i64(e.Seq)
 		}
-		if _, err := tx.Exec(`INSERT INTO epochs (server_id, chan, epoch, hash, kc, roster, back, k, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		if _, err := tx.Exec(`INSERT INTO epochs (server_id, chan, epoch, hash, kc, roster, back, k, seq, boxed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (server_id, chan, epoch) DO UPDATE SET hash = excluded.hash, kc = excluded.kc,
-				roster = excluded.roster, back = excluded.back, k = excluded.k, seq = excluded.seq`,
-			sid[:], i64(ch), int64(e.Epoch), e.Hash[:], e.KC[:], packRoster(e.Roster), e.Back, k, seq); err != nil {
+				roster = excluded.roster, back = excluded.back, k = excluded.k, seq = excluded.seq, boxed = excluded.boxed`,
+			sid[:], i64(ch), int64(e.Epoch), e.Hash[:], e.KC[:], packRoster(e.Roster), e.Back, k, seq, packDevs(e.Boxed)); err != nil {
 			return err
 		}
 		_, err = tx.Exec(`INSERT INTO chain_heads (server_id, chan, epoch, hash, eh) VALUES (?, ?, ?, ?, ?)
@@ -1010,10 +1047,10 @@ func (s *Store) AdvanceEpoch(sid e2ecrypto.ServerID, ch uint64, e Epoch) error {
 
 // Epoch returns a verified epoch of the channel; ok is false if none is recorded.
 func (s *Store) Epoch(sid e2ecrypto.ServerID, ch uint64, epoch uint32) (e Epoch, ok bool, err error) {
-	var hash, kc, roster, k []byte
+	var hash, kc, roster, k, boxed []byte
 	var seq sql.NullInt64
-	err = s.db.QueryRow(`SELECT hash, kc, roster, back, k, seq FROM epochs WHERE server_id = ? AND chan = ? AND epoch = ?`,
-		sid[:], i64(ch), int64(epoch)).Scan(&hash, &kc, &roster, &e.Back, &k, &seq)
+	err = s.db.QueryRow(`SELECT hash, kc, roster, back, k, seq, boxed FROM epochs WHERE server_id = ? AND chan = ? AND epoch = ?`,
+		sid[:], i64(ch), int64(epoch)).Scan(&hash, &kc, &roster, &e.Back, &k, &seq, &boxed)
 	e.Seq = uint64(seq.Int64)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Epoch{}, false, nil
@@ -1025,6 +1062,7 @@ func (s *Store) Epoch(sid e2ecrypto.ServerID, ch uint64, epoch uint32) (e Epoch,
 	copy(e.Hash[:], hash)
 	copy(e.KC[:], kc)
 	e.Roster = unpackRoster(roster)
+	e.Boxed = unpackDevs(boxed)
 	if len(k) == e2ecrypto.KeySize {
 		e.Key = new(e2ecrypto.Key)
 		copy(e.Key[:], k)

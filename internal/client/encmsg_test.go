@@ -813,3 +813,39 @@ func TestEncStickyFlagBeforeWorker(t *testing.T) {
 		}
 	}
 }
+
+// bob revokes b1 (stolen) and the server doesn't call our epoch stale: the
+// next send still rotates first, and the new epoch has no box for b1
+// (step 12 security pass).
+func TestEncRotatesAfterBoxedDeviceRevoked(t *testing.T) {
+	d := newEncDM(t, proto.Snapshot{})
+	rev, err := identity.NewDeviceRevoke(d.b1.ssh, testSID(), bob, d.b1.dev.ID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.f.event(proto.KDeviceRevoke, 0, bob, proto.DeviceRevokeArgs{Revoke: proto.Signed(rev)})
+	waitFor(t, "b1 revoked", func() bool { r, _, _ := d.c.Trust().Device(testSID(), d.b1.dev.ID); return r.Revoked })
+	if err := d.c.Send(dm, "after the theft", 0); err != nil {
+		t.Fatal(err)
+	}
+	var a proto.KeyRotateArgs
+	select {
+	case a = <-d.f.rotates:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no rotation before sending")
+	}
+	eb, err := identity.PeekEpochBundle(identity.Signed(a.Bundle))
+	if err != nil || eb.Epoch != 2 {
+		t.Fatalf("rotation %+v %v", eb, err)
+	}
+	for _, bx := range eb.Boxes {
+		if bx.Dev == d.b1.dev.ID {
+			t.Fatal("new epoch sealed to the revoked device")
+		}
+	}
+	if s := nextSend(t, d.f); s.Body != "" || len(s.Enc) == 0 {
+		t.Fatalf("send %+v", s)
+	} else if h, _ := e2ecrypto.ParseEnc(s.Enc); h.Epoch != 2 {
+		t.Fatalf("sent under epoch %d", h.Epoch)
+	}
+}

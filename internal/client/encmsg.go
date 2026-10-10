@@ -678,7 +678,7 @@ func (c *Client) sealOffline(e outboxEntry) []byte {
 		return nil
 	}
 	ep, ok, err := c.trust.Epoch(sid, e.chan_, head.Epoch)
-	if err != nil || !ok || ep.Key == nil || !slices.Equal(ep.Roster, c.liveMembers(ch)) {
+	if err != nil || !ok || ep.Key == nil || !slices.Equal(ep.Roster, c.liveMembers(ch)) || c.boxedRevoked(sid, ep) {
 		return nil
 	}
 	dev, err := c.trust.DeviceKeys(sid, c.Me().ID)
@@ -712,7 +712,8 @@ func (c *Client) encCurrent(e outboxEntry) bool {
 		return false
 	}
 	ep, ok, err := c.trust.Epoch(sid, e.chan_, head.Epoch)
-	return err == nil && ok && ep.Key != nil && slices.Equal(ep.Roster, c.liveMembers(ch)) // not rosterNow: an unconfirmed member must reach sealWith
+	// not rosterNow: an unconfirmed member must reach sealWith
+	return err == nil && ok && ep.Key != nil && slices.Equal(ep.Roster, c.liveMembers(ch)) && !c.boxedRevoked(sid, ep)
 }
 
 // sealEntry encrypts an outbox entry for sending (§13.4 "Sending"): it
@@ -724,6 +725,18 @@ func (c *Client) sealEntry(ctx context.Context, s *session, e outboxEntry, prev 
 	return c.sealWith(ctx, s, e.chan_, prev, func(sid e2ecrypto.ServerID, dev *e2ecrypto.DeviceKeys, ep trust.Epoch) ([]byte, error) {
 		return c.seal(sid, dev, ep, e)
 	})
+}
+
+// boxedRevoked reports whether ep sealed K to a device revoked since: a
+// stolen device must not read what is sent next, whether or not the server
+// answers stale_epoch (step 12 security pass).
+func (c *Client) boxedRevoked(sid e2ecrypto.ServerID, ep trust.Epoch) bool {
+	for _, id := range ep.Boxed {
+		if d, ok, err := c.trust.Device(sid, id); err == nil && ok && d.Revoked {
+			return true
+		}
+	}
+	return false
 }
 
 // sealWith is sealEntry for anything sealed with channel chID's current
@@ -821,7 +834,8 @@ func (c *Client) sealWith(ctx context.Context, s *session, chID uint64, prev []b
 			rotate = true
 		default:
 			cur, _, _ := c.trust.Epoch(sid, ch.ID, head.Epoch)
-			rotate = !slices.Equal(cur.Roster, c.rosterNow(ch)) || (prev != nil && head.Epoch == prevEpoch)
+			rotate = !slices.Equal(cur.Roster, c.rosterNow(ch)) || (prev != nil && head.Epoch == prevEpoch) ||
+				c.boxedRevoked(sid, cur)
 		}
 		if rotate && attempt < attempts-1 {
 			err := c.rotateOnce(ctx, s, sid, ch.ID)
