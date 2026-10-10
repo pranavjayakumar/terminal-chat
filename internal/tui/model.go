@@ -297,6 +297,7 @@ func (m *Model) reloadPresence() {
 
 func (m *Model) reloadChans() {
 	m.chans = m.c.Channels()
+	prev, hadPrev := m.e2e[m.active]
 	m.e2e = map[uint64]client.E2EStatus{}
 	for _, v := range m.chans {
 		if v.Member && v.Kind != proto.ChanPublic {
@@ -305,10 +306,13 @@ func (m *Model) reloadChans() {
 			}
 		}
 	}
+	if cur, ok := m.e2e[m.active]; ok && hadPrev && prev.Epoch > 0 && cur.Epoch > prev.Epoch && cur.State == client.E2EOK {
+		m.setInfo(fmt.Sprintf("🔒 new channel key (epoch %d)", cur.Epoch))
+	}
 	m.refreshHighlights()
 	m.refreshMentionNames()
 	if m.active != 0 {
-		if v, ok := m.chanView(m.active); !ok || (!v.Member && v.Kind != proto.ChanPublic) {
+		if v, ok := m.chanView(m.active); !ok || (!v.Member && !v.Removed && v.Kind != proto.ChanPublic) {
 			// Left or removed: fall back to something we're in.
 			m.active = 0
 			m.main = pane{sel: -1}
@@ -486,7 +490,7 @@ func (m *Model) markRead() tea.Cmd {
 func (m *Model) sidebarOrder() []client.ChannelView {
 	var out []client.ChannelView
 	for _, v := range m.chans {
-		if v.Member || v.ID == m.active {
+		if v.Member || v.Removed || v.ID == m.active {
 			out = append(out, v)
 		}
 	}

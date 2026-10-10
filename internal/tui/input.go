@@ -163,6 +163,10 @@ func (m *Model) submit() tea.Cmd {
 		m.setInfo("no channel open — Ctrl-K to pick one")
 		return nil
 	}
+	if v, _ := m.chanView(p.ch); v.Removed {
+		m.setErr("", errors.New("not sent: you were removed from this channel"))
+		return nil
+	}
 	if st := m.e2e[p.ch]; st.State == client.E2EAlarm {
 		// Input kept: nothing is sent while the channel's keys are suspect.
 		m.setErr("", fmt.Errorf("not sent: this channel's encryption is in alarm (%s)", sanitize.Line(st.Detail)))
@@ -317,10 +321,57 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 		return m.call("add", func(ctx context.Context) error {
 			for _, id := range ids {
 				if err := be.AddMember(ctx, ch, id); err != nil {
+					var ue *client.UnverifiedMembersError
+					if errors.As(err, &ue) {
+						// Names were sanitized by the client.
+						return fmt.Errorf("not added: no verified device of %s — they can't get this channel's key yet", strings.Join(ue.Names, ", "))
+					}
 					return err
 				}
 			}
 			return nil
+		}), nil
+	case "remove":
+		if err := need(1, "/remove @user"); err != nil {
+			return nil, err
+		}
+		ch, err := needChan()
+		if err != nil {
+			return nil, err
+		}
+		if v, _ := m.chanView(ch); v.Kind != proto.ChanPrivate {
+			return nil, errors.New("/remove only works in private channels (/leave to go yourself)")
+		}
+		var ids []uint64
+		for _, a := range c.args {
+			id, ok := m.findUser(a)
+			if !ok {
+				return nil, fmt.Errorf("unknown user %s", sanitize.Line(a))
+			}
+			ids = append(ids, id)
+		}
+		return m.call("remove", func(ctx context.Context) error {
+			for _, id := range ids {
+				if err := be.RemoveMember(ctx, ch, id); err != nil {
+					return err
+				}
+			}
+			return nil
+		}), nil
+	case "encrypt":
+		ch, err := needChan()
+		if err != nil {
+			return nil, err
+		}
+		v, _ := m.chanView(ch)
+		switch {
+		case v.E2E:
+			return nil, errors.New("this channel is already end-to-end encrypted")
+		case v.Kind == proto.ChanPublic:
+			return nil, errors.New("public channels can't be encrypted")
+		}
+		return m.callThen("encrypt", func(ctx context.Context) (tea.Msg, error) {
+			return infoMsg("🔒 now end-to-end encrypted — earlier messages are marked legacy"), be.EncryptChannel(ctx, ch)
 		}), nil
 	case "name":
 		display := c.rest
