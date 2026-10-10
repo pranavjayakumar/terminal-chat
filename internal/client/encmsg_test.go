@@ -371,8 +371,10 @@ func TestEncNeverSealsToStaleKey(t *testing.T) {
 		f.write(proto.TRes, proto.Res{ID: id, Err: proto.Errf(proto.ErrStaleEpoch, "nope")})
 	}
 	d.f.mu.Unlock()
-	d.f.event(proto.KChanJoin, dm, alice, proto.ChanJoin{User: carol}) // roster changed
-	waitFor(t, "carol joined", func() bool { return len(chanView(t, d.c, dm).Members) == 3 })
+	// The roster changed (bob was disabled). (An unsigned chan.join would
+	// not do: see TestUnconfirmedJoinNotSealedTo.)
+	d.f.event(proto.KUserUpdate, 0, alice, proto.User{ID: bob, Name: "bob", Disabled: true})
+	waitFor(t, "bob disabled", func() bool { return d.c.User(bob).Disabled })
 	if err := d.c.Send(dm, "for the old members only?", 0); err != nil {
 		t.Fatal(err)
 	}
@@ -387,7 +389,7 @@ func TestEncNeverSealsToStaleKey(t *testing.T) {
 }
 
 // An entry encrypted while queued is re-encrypted before its first send if
-// the channel moved on (here: a member joined), never sent as it was.
+// the channel moved on (here: a member was disabled), never sent as it was.
 func TestEncQueuedEncRevalidated(t *testing.T) {
 	d := newEncDM(t, proto.Snapshot{})
 	d.f.fc.conn.Close()
@@ -401,7 +403,7 @@ func TestEncQueuedEncRevalidated(t *testing.T) {
 		t.Fatalf("not encrypted while queued: %v", err)
 	}
 	f2 := resumeE2E(t, d.fs, d.f, func(f *e2eFake) {
-		f.event(proto.KChanJoin, dm, alice, proto.ChanJoin{User: carol})
+		f.event(proto.KUserUpdate, 0, alice, proto.User{ID: bob, Name: "bob", Disabled: true})
 	})
 	a := nextSend(t, f2)
 	if h, err := e2ecrypto.ParseEnc(a.Enc); err != nil || h.Epoch != 2 || bytes.Equal(a.Enc, queued) {
@@ -409,7 +411,7 @@ func TestEncQueuedEncRevalidated(t *testing.T) {
 	}
 	select {
 	case r := <-f2.rotates:
-		if eb, _ := identity.PeekEpochBundle(identity.Signed(r.Bundle)); !slices.Equal(eb.Roster, []uint64{alice, bob, carol}) {
+		if eb, _ := identity.PeekEpochBundle(identity.Signed(r.Bundle)); !slices.Equal(eb.Roster, []uint64{alice}) {
 			t.Fatalf("rotated to %v", eb.Roster)
 		}
 	default:
@@ -715,5 +717,64 @@ func TestEncLocalSearch(t *testing.T) {
 	}
 	if got, _ := d.c.Search(ctx, "zebra nope", 0); len(got) != 0 {
 		t.Fatalf("all terms must match: %+v", got)
+	}
+}
+
+// A chan.join the server sends without an epoch that includes the new
+// member (honest adds carry one) doesn't make them a member for sealing:
+// nothing is sealed to their device, and the channel shows an alarm.
+func TestUnconfirmedJoinNotSealedTo(t *testing.T) {
+	cp := newPeer(t, carol, nil)
+	d := newEncDM(t, proto.Snapshot{Devs: []proto.Device{{Cert: cp.cert}}})
+	waitFor(t, "carol verified", func() bool { _, ok, _ := d.c.Trust().Device(testSID(), cp.dev.ID); return ok })
+	d.f.event(proto.KChanJoin, dm, alice, proto.ChanJoin{User: carol})
+	waitFor(t, "alarm", func() bool {
+		st := d.c.E2EStatus(dm)
+		return st.State == E2EAlarm && strings.Contains(st.Detail, "not confirmed") && strings.Contains(st.Detail, "@carol")
+	})
+	cv, _, _ := getChan(d.c.db, dm)
+	if r := d.c.rosterNow(cv); !slices.Equal(r, dmRoster) {
+		t.Fatalf("sealing roster %v", r)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := d.c.RotateKey(ctx, dm); err == nil {
+		t.Fatal("rotated with an unconfirmed member")
+	}
+	if err := d.c.Send(dm, "for alice and bob", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.c.Flush(ctx); err == nil || !strings.Contains(err.Error(), "not confirmed") {
+		t.Fatalf("flush: %v (sends %d, status %+v)", err, len(d.f.sends), d.c.E2EStatus(dm))
+	}
+	for {
+		select {
+		case r := <-d.f.rotates:
+			eb, _ := identity.PeekEpochBundle(identity.Signed(r.Bundle))
+			if slices.Contains(eb.BoxDevs(), cp.dev.ID) {
+				t.Fatal("sealed a key to carol")
+			}
+		case a := <-d.f.sends:
+			t.Fatalf("sent %x", a.Enc[:8])
+		default:
+			return
+		}
+	}
+}
+
+// An honest add: chan.join, then a key.epoch (by a member) that includes
+// the joiner: confirmed, no alarm.
+func TestConfirmedJoinNoAlarm(t *testing.T) {
+	cp := newPeer(t, carol, nil)
+	d := newEncDM(t, proto.Snapshot{Devs: []proto.Device{{Cert: cp.cert}}})
+	waitFor(t, "carol verified", func() bool { _, ok, _ := d.c.Trust().Device(testSID(), cp.dev.ID); return ok })
+	k2 := newK(t)
+	e2 := mkBundle(t, d.b1.dev, dm, 2, &d.e1, []uint64{alice, bob, carol}, k2, &d.k1, d.me, d.b1.dev, cp.dev)
+	d.f.event(proto.KChanJoin, dm, bob, proto.ChanJoin{User: carol})
+	d.f.keyEpoch(dm, bob, e2)
+	waitFor(t, "epoch 2", func() bool { st := d.c.E2EStatus(dm); return st.State == E2EOK && st.Epoch == 2 })
+	cv, _, _ := getChan(d.c.db, dm)
+	if r := d.c.rosterNow(cv); !slices.Equal(r, []uint64{alice, bob, carol}) {
+		t.Fatalf("sealing roster %v", r)
 	}
 }

@@ -66,7 +66,11 @@ const (
 	MaxEnc = 64<<10 + 1<<10
 )
 
-// KeyRotateArgs is key.rotate's args.
+// OpChanEncrypt converts a plaintext private channel or DM to e2e
+// (PROTOCOL.md §13.5); its args are KeyRotateArgs (bundle = epoch 1).
+const OpChanEncrypt = "chan.encrypt"
+
+// KeyRotateArgs is key.rotate's (and chan.encrypt's) args.
 type KeyRotateArgs struct {
 	Chan   uint64 `msgpack:"chan"`
 	Bundle Signed `msgpack:"bundle"`

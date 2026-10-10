@@ -106,6 +106,13 @@ What a malicious server can and cannot do today, and what closes each gap:
 - **Revocation timing**: a bundle is rejected if the server's seq order or its signed time (with
   5 min clock skew allowed) put it after a revoke of its signer. This defends against a server
   acting alone; a revoked device colluding with the server can backdate its bundles.
+- **Membership changes rotate atomically** (step 9): a removed member's devices hold no key for
+  anything sent after the removal, even given the server's raw rows; a leaver's last epoch goes stale
+  and the next sender rotates first. A malicious server can still add a member it controls (the roster
+  is its word) — clients don't seal to anyone no verified epoch includes, so it needs an epoch-0
+  channel or a colluding member — or withhold a removal; a converted channel's legacy cutoff comes
+  from the server only for a device that cached none of the old plaintext, and only up to epoch 1.
+  A removed member still sees deletes/reactions on pre-removal messages (sealed under their epochs).
 - **Edits don't hide the original** from members holding that epoch's key: the original `enc` stays
   (the edit refers to its mid). Delete removes the ciphertext. (Step 8.)
 - **Edits and reactions over time**: the server can withhold the newest edit from a device that never
@@ -316,6 +323,45 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    reactions/edits per channel), reactions of deleted/invalid messages are dropped, and pending
    items no longer wake the e2e worker (it runs on key/device events), so it can't spin.
 9. `chan.add{bundle}`, `chan.remove`, `chan.encrypt`, disable → rotate; history via backlinks.
+   Decisions (step 9): in an encrypted channel with an epoch, `chan.add`/`chan.remove` carry the next
+   bundle and the server commits it in the same write as the membership change (events: chan.join /
+   chan.leave, then key.epoch; the joiner sees both, the removed user only its chan.leave). The bundle is
+   optional at epoch 0 (no key yet; the creator's epoch 1 includes everyone) and for removing a disabled
+   user (in no roster). `chan.remove`: the creator (while a member) or an admin may remove others,
+   anyone may remove themselves (= leave); private channels only (public: bad_request, DMs: forbidden);
+   only a roster member can make the bundle, so a member remover must send it, while an admin who isn't
+   a member removes without one (coordinator decision): the bundle goes stale and the next sender
+   rotates, as after a leave. `chan.encrypt` deletes the channel's webhooks in the same write and
+   retires orphaned bots (coordinator decision).
+   Leaving can't carry a bundle (the leaver would know K): the bundle goes stale and the next sender
+   rotates (unchanged step-7 path). `chan.encrypt` is cap-gated; only the creator of a private channel
+   (any member of a DM with others) may convert, because epoch 1 must be signed by the creator / a DM
+   member and clients already check exactly that — letting any member convert would need clients to
+   accept epoch 1 from anyone. It records `Channel.legacy` (newest message id); a client uses its own
+   newest cached id as the legacy cutoff, and the server's `legacy` only when it cached nothing (so the
+   server's word only affects devices that never saw the plaintext; both classes are unauthenticated).
+   A conversion marks cached plaintext legacy at once. `user.disable`: the admin's client rotates every
+   encrypted channel it shares with the user (best effort). A client removed by someone else keeps the
+   channel and its history (`ChannelView.Removed`, "you were removed") until `/leave` closes it; it
+   keeps its old epoch keys (trust store) and gets nothing newer. `/add` refuses with the names of
+   members who have devices but none verified.
+   Security review fixes (step 9): a server-claimed legacy cutoff (`Channel.legacy`, used only with
+   nothing cached) counts only if it is ≤ the seq of the channel's verified epoch 1 (else 0), and what it
+   classifies shows "⚠ unauthenticated (legacy, server-claimed)" (trust store v9 records the claim);
+   re-adding someone removed by another user (their last leave's actor ≠ themselves) to an encrypted
+   channel needs the creator or an admin; the creator can't be removed at epoch 0 (only they can make
+   epoch 1); clients seal and rotate only to members confirmed by the verified head's roster (a verified
+   epoch is signed by a previous-roster member): a user present only through an unsigned chan.join is
+   "unconfirmed", never sealed to, and an alarm ("membership not confirmed by a member") once the chain is
+   caught up. Epoch-0 channels still trust the server's member list (the creator builds epoch 1 from it).
+   Known limits (step 9): a removed member keeps the channel's history only until their next snapshot
+   reset (it wipes the cache; their trust store keeps the old keys, but the server no longer serves
+   them the messages). `Channel.legacy` is server-asserted and used only when a device cached none of
+   the channel's plaintext; carrying a signed cutoff in the epoch-1 bundle (bundle `v: 2`) is a future
+   improvement. Deletes and reactions are sealed under their message's own epoch (step 8), so for
+   messages from before a removal they use a key the removed member holds: a removed member colluding
+   with the server (or reading its database) can still see later deletes of, and reactions (real emoji)
+   to, those old messages — never new bodies.
 10. TUI: key-change banner + send block, fork alarm, "⚠ unencrypted", "waiting for key", `/verify`.
 11. Malicious-server suite (`Tamper` hook): injected devices/keys, fake joins, rollback, fork,
     forged bundles, swapped/withheld boxes, hidden leave, stripped cap/flag, plaintext injection,

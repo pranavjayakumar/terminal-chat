@@ -314,13 +314,15 @@ func TestKeyRotateRejects(t *testing.T) {
 	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 2, &ok1, roster, a1, b1, c1), proto.ErrBadRequest)
 
 	// A disabled member leaves the roster.
-	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: dave.user.ID}, nil)
+	ok2 := bundle(t, a1, sid, ch.ID, 2, &ok1, append(slices.Clone(roster), dave.user.ID), a1, b1, d1)
+	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: dave.user.ID, Bundle: &ok2}, nil)
+	bob.keyEpoch()
 	alice.ok(proto.OpUserDisable, proto.UserArgs{User: dave.user.ID}, nil)
-	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 2, &ok1, append(slices.Clone(roster), dave.user.ID), a1, b1), proto.ErrStaleEpoch)
+	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 3, &ok2, append(slices.Clone(roster), dave.user.ID), a1, b1), proto.ErrStaleEpoch)
 	// Boxing the disabled member's device is a client error: not on the roster.
-	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 2, &ok1, roster, a1, b1, d1), proto.ErrBadRequest)
+	rot(alice, ch.ID, bundle(t, a1, sid, ch.ID, 3, &ok2, roster, a1, b1, d1), proto.ErrBadRequest)
 	bob.noKind(proto.KKeyEpoch, 100*time.Millisecond)
-	alice.rotate(ch.ID, bundle(t, a1, sid, ch.ID, 2, &ok1, roster, a1, b1))
+	alice.rotate(ch.ID, bundle(t, a1, sid, ch.ID, 3, &ok2, roster, a1, b1))
 }
 
 // rawBox and rawBundleB mirror EpochBundle.b, to sign bundles that
@@ -517,11 +519,10 @@ func TestKeyRotateRateCap(t *testing.T) {
 	alice.ok(proto.OpDeviceRevoke, proto.DeviceRevokeArgs{Revoke: revokeBySSH(t, alice.signer, sid, alice.user.ID, a3.ID)}, nil)
 	e5 := bundle(t, a1, sid, ch.ID, 5, &e4, roster, a1, b1)
 	alice.rotate(ch.ID, e5)
-	// And a roster change.
-	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: carol.user.ID}, nil)
+	// And a roster change (the add carries the next epoch).
 	roster = []uint64{alice.user.ID, bob.user.ID, carol.user.ID}
 	e6 := bundle(t, a1, sid, ch.ID, 6, &e5, roster, a1, b1)
-	alice.rotate(ch.ID, e6)
+	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: carol.user.ID, Bundle: &e6}, nil)
 	e7 := bundle(t, a1, sid, ch.ID, 7, &e6, roster, a1, b1)
 	alice.fail(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: e7}, proto.ErrRateLimited)
 	advance(10 * time.Second)
@@ -718,13 +719,12 @@ func TestKeyEpochVisibility(t *testing.T) {
 		live[alice] = append(live[alice], alice.rotate(ch.ID, e1))
 		alice.keyEpoch()
 
-		alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: bob.user.ID}, nil)
-		bob.event(proto.KChanJoin)
 		r2 := []uint64{alice.user.ID, bob.user.ID, old.user.ID}
 		e2 := bundle(t, a1, sid, ch.ID, 2, &e1, r2, a1, b1)
-		s2 := alice.rotate(ch.ID, e2)
+		alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: bob.user.ID, Bundle: &e2}, nil)
+		bob.event(proto.KChanJoin)
+		s2, _ := alice.keyEpoch()
 		live[alice] = append(live[alice], s2)
-		alice.keyEpoch()
 		if s, _ := bob.keyEpoch(); s != s2 {
 			t.Fatalf("bob got key.epoch %d, want %d", s, s2)
 		}
@@ -852,12 +852,10 @@ func TestEpochStale(t *testing.T) {
 	e2 := bundle(t, a1, sid, ch.ID, 2, &e1, roster, a1, b2)
 	alice.rotate(ch.ID, e2)
 	stale(ch.ID, false)
-	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: carol.user.ID}, nil)
-	stale(ch.ID, true) // roster grew
 	roster = []uint64{alice.user.ID, bob.user.ID, carol.user.ID}
 	e3 := bundle(t, a1, sid, ch.ID, 3, &e2, roster, a1, b2)
-	alice.rotate(ch.ID, e3)
-	stale(ch.ID, false)
+	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: carol.user.ID, Bundle: &e3}, nil)
+	stale(ch.ID, false) // the add carried the next epoch
 	alice.ok(proto.OpUserDisable, proto.UserArgs{User: carol.user.ID}, nil)
 	stale(ch.ID, true) // a member was disabled
 	alice.rotate(ch.ID, bundle(t, a1, sid, ch.ID, 4, &e3, []uint64{alice.user.ID, bob.user.ID}, a1, b2))
@@ -967,8 +965,14 @@ func TestKeyRotateAuthorization(t *testing.T) {
 	e1 := bundle(t, a1, sid, ch.ID, 1, nil, r1, a1, b1)
 	alice.rotate(ch.ID, e1)
 
-	// carol joins: she isn't on epoch 1's roster, so she can't sign epoch 2.
-	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: carol.user.ID}, nil)
+	// carol is a member who isn't on epoch 1's roster (as after a chan.add
+	// from before adds carried bundles), so she can't sign epoch 2.
+	ts.mu.Lock()
+	if _, err := ts.st.db.Exec(`INSERT INTO membership (chan, user, join_seq) VALUES (?, ?, 1)`, ch.ID, carol.user.ID); err != nil {
+		t.Fatal(err)
+	}
+	ts.members[ch.ID][carol.user.ID] = true
+	ts.mu.Unlock()
 	r2 := []uint64{alice.user.ID, bob.user.ID, carol.user.ID}
 	carol.fail(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: bundle(t, c1, sid, ch.ID, 2, &e1, r2, a1, b1, c1)}, proto.ErrForbidden)
 	e2 := bundle(t, b1, sid, ch.ID, 2, &e1, r2, a1, b1, c1)

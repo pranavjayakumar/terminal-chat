@@ -276,6 +276,8 @@ func printMsg(w io.Writer, c *client.Client, m client.Message) {
 		body = "⚠ inserted by server: " + body
 	case m.Sec == client.SecLegacy:
 		body = "⚠ unauthenticated (legacy): " + body
+	case m.Sec == client.SecLegacyClaimed:
+		body = "⚠ unauthenticated (legacy, server-claimed): " + body
 	}
 	if m.Thread != 0 {
 		name += " ↳"

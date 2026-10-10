@@ -49,6 +49,7 @@ func migrateE2E(db *sql.DB) error {
 		{"chans", "e2e", "INTEGER NOT NULL DEFAULT 0"},
 		{"chans", "epoch", "INTEGER NOT NULL DEFAULT 0"},
 		{"chans", "creator", "INTEGER NOT NULL DEFAULT 0"},
+		{"chans", "legacy", "INTEGER NOT NULL DEFAULT 0"},
 		{"device_revokes", "seq", "INTEGER NOT NULL DEFAULT 0"},
 		{"msgs", "enc", "BLOB"},
 		{"msgs", "sec", "INTEGER NOT NULL DEFAULT 0"},

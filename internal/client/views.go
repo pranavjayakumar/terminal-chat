@@ -30,6 +30,9 @@ type ChannelView struct {
 	proto.Channel
 	Display string
 	Member  bool
+	// Removed: someone else removed us; the channel keeps the history we
+	// had until Leave closes it.
+	Removed bool
 	Unread  int    // messages after the read marker not written by me
 	Mention bool   // an unread message by a person @mentions me or has one of my highlight keywords, or any unread by a person in a DM
 	Read    uint64 // read marker (message id)
@@ -54,6 +57,7 @@ func (c *Client) Channels() []ChannelView {
 	}
 	rows.Close()
 
+	removed := c.uintMap(`SELECT chan, actor FROM removed`)
 	reads := c.uintMap(`SELECT chan, seq FROM reads`)
 	last := c.uintMap(`SELECT chan, MAX(id) FROM msgs GROUP BY chan`)
 	unread := c.uintMap(`SELECT m.chan, COUNT(*) FROM msgs m LEFT JOIN reads r ON r.chan = m.chan
@@ -91,6 +95,8 @@ func (c *Client) Channels() []ChannelView {
 		v.Pins = pins[v.ID]
 		v.Read, v.Last = reads[v.ID], last[v.ID]
 		v.Display = c.displayName(v.Channel, me.ID)
+		_, v.Removed = removed[v.ID]
+		v.Removed = v.Removed && !v.Member
 		if v.Member {
 			v.Unread = int(unread[v.ID])
 			v.Mention = mention[v.ID] || (v.Kind == proto.ChanDM && human[v.ID] > 0)

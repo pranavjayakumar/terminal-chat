@@ -139,13 +139,19 @@ func TestEncryptedSend(t *testing.T) {
 	wantErr(t, "old epoch", send(alice, proto.SendArgs{Chan: ch.ID, Nonce: newNonce(), Enc: encFor(t, sid, a1, ch.ID, 1, e1, "late")}),
 		proto.ErrStaleEpoch, "")
 
-	// A member joins: the epoch-2 bundle is stale until someone rotates.
-	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: carol.user.ID}, nil)
-	wantErr(t, "stale bundle", send(alice, proto.SendArgs{Chan: ch.ID, Nonce: newNonce(), Enc: encFor(t, sid, a1, ch.ID, 2, e2, "x")}),
-		proto.ErrStaleEpoch, "rotated")
+	// A member joins with the next epoch in the same transaction: the old
+	// epoch is stale at once.
 	e3 := bundle(t, a1, sid, ch.ID, 3, &e2, []uint64{alice.user.ID, bob.user.ID, carol.user.ID}, a1, b1)
-	alice.rotate(ch.ID, e3)
-	enc3 := encFor(t, sid, a1, ch.ID, 3, e3, "hello carol")
+	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: carol.user.ID, Bundle: &e3}, nil)
+	wantErr(t, "epoch before the add", send(alice, proto.SendArgs{Chan: ch.ID, Nonce: newNonce(), Enc: encFor(t, sid, a1, ch.ID, 2, e2, "x")}),
+		proto.ErrStaleEpoch, "")
+	// A member leaves: the epoch-3 bundle is stale until someone rotates.
+	carol.ok(proto.OpChanLeave, proto.ChanArgs{Chan: ch.ID}, nil)
+	wantErr(t, "stale bundle", send(alice, proto.SendArgs{Chan: ch.ID, Nonce: newNonce(), Enc: encFor(t, sid, a1, ch.ID, 3, e3, "x")}),
+		proto.ErrStaleEpoch, "rotated")
+	e4 := bundle(t, a1, sid, ch.ID, 4, &e3, roster, a1, b1)
+	alice.rotate(ch.ID, e4)
+	enc3 := encFor(t, sid, a1, ch.ID, 4, e4, "hello again")
 	var r3 proto.SendRes
 	alice.ok(proto.OpSend, proto.SendArgs{Chan: ch.ID, Nonce: newNonce(), Enc: enc3}, &r3)
 

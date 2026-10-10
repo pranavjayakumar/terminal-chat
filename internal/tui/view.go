@@ -391,6 +391,9 @@ func (m *Model) headerLeft(w int) string {
 	if !v.Member && v.Kind == proto.ChanPublic {
 		b.WriteString(m.st.dim.Render(" (not a member)"))
 	}
+	if v.Removed {
+		b.WriteString(m.st.noticeErr.Render(" — you were removed · /leave to close"))
+	}
 	return truncate(b.String(), w)
 }
 

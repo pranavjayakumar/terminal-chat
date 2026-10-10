@@ -395,6 +395,11 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		if !decode(&d) {
 			return nil
 		}
+		if d.User == me {
+			if _, err := tx.Exec(`DELETE FROM removed WHERE chan = ?`, ev.Chan); err != nil {
+				return err
+			}
+		}
 		if d.Chan.ID != 0 {
 			if !slices.Contains(d.Chan.Members, d.User) {
 				d.Chan.Members = append(d.Chan.Members, d.User)
@@ -410,6 +415,19 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		var d proto.UserRef
 		if !decode(&d) || ev.Chan == 0 {
 			return nil
+		}
+		if d.User == me && ev.Actor != me && ev.Actor != 0 {
+			// Removed by someone else: keep what we had, say so.
+			if cv, ok, err := getChan(tx, ev.Chan); err != nil {
+				return err
+			} else if ok && cv.Kind != proto.ChanPublic {
+				if err := c.markRemoved(tx, ev.Chan, me, ev.Actor, ev.Time); err != nil {
+					return err
+				}
+				u.msgs(ev.Chan)
+				u.Channels = true
+				return nil
+			}
 		}
 		if d.User == me {
 			if err := c.forgetChan(tx, ev.Chan, me); err != nil {

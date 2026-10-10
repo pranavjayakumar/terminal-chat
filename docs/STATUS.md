@@ -9,7 +9,7 @@ Last updated: 2026-10-10 (end of session 1; branch `m2-activity` adds drafts, hi
 | M0 scaffold, spec, agents, CI | ✅ done |
 | M1 core chat (server, client, TUI, sync, offline outbox) | ✅ done, battle-tested (chaos + adversarial + live herdr) |
 | M2 collaboration | ✅ essentially done: notifications, herdr badge, `/share-pane`, auto-away, `tc notify`, notes, `/name`, threads, webhooks + bots, privacy scrubbing, drafts, `/highlight`, activity (Alt-A), message viewer (`v`), pins (`p`, `/pins`), user groups (`@oncall`), reminders (`/remind`), diff/snippets (`tc send --file`, `/snippet`) |
-| M3 end-to-end encryption | steps 1–7 merged (#9, #10, #11, #13, #16, #25 client verification, #26 encrypted send/receive) — **encrypted DMs and private channels work end to end**; step 8 (encrypted edit/delete/react) in PR #28 |
+| M3 end-to-end encryption | steps 1–7 merged; step 9 (membership: chan.add+bundle, chan.remove, chan.encrypt) on branch `e2e/membership`; (#9, #10, #11, #13, #16, #25 client verification, #26 encrypted send/receive) — **encrypted DMs and private channels work end to end**; step 8 (encrypted edit/delete/react) in PR #28 |
 | M4 zero-setup onboarding | not started |
 | M5 voice | not started |
 

@@ -65,6 +65,7 @@ func migrateEpochs(db *sql.DB) error {
 		{"messages", "edit_enc", `BLOB`},
 		{"messages", "del_enc", `BLOB`},
 		{"reactions", "enc", `BLOB`},
+		{"channels", "legacy", `INTEGER NOT NULL DEFAULT 0`}, // chan.encrypt: newest plaintext message id
 	} {
 		if err := addColumn(db, c[0], c[1], c[2]); err != nil {
 			return err
@@ -372,7 +373,6 @@ func (s *Server) opKeyRotate(ctx context.Context, u proto.User, a proto.KeyRotat
 	if signedSize(a.Bundle) > proto.MaxBundle {
 		return nil, proto.Errf(proto.ErrTooLarge, "epoch bundles are limited to 16 KiB")
 	}
-	sid := s.sid()
 	var res proto.SeqRes
 	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
 		// Cheap checks first: non-members never make the server decode 16 KiB.
@@ -382,125 +382,142 @@ func (s *Server) opKeyRotate(ctx context.Context, u proto.User, a proto.KeyRotat
 		if !s.members[a.Chan][u.ID] {
 			return nil, errForbidden
 		}
-		head, err := chanEpoch(ctx, tx, a.Chan)
+		ev, err := s.rotateTx(ctx, tx, u, a.Chan, a.Bundle)
 		if err != nil {
-			return nil, err
-		}
-		if !head.e2e {
-			return nil, badRequest("channel is not encrypted")
-		}
-		peek, err := identity.PeekEpochBundle(identity.Signed(a.Bundle))
-		switch {
-		case errors.Is(err, e2ecrypto.ErrTooLarge):
-			return nil, proto.Errf(proto.ErrTooLarge, "epoch bundles are limited to 128 boxes")
-		case err != nil:
-			return nil, badRequest("malformed epoch bundle")
-		case peek.ServerID != sid:
-			return nil, badRequest("epoch bundle is for another server")
-		case peek.Chan != a.Chan:
-			return nil, badRequest("epoch bundle is for another channel")
-		}
-		// The rotator: one of the caller's active devices, whose key signed it.
-		var owner uint64
-		var edPub, revoked []byte
-		err = tx.QueryRowContext(ctx, `SELECT user, ed25519, revoked FROM devices WHERE dev = ?`, peek.By[:]).
-			Scan(&owner, &edPub, &revoked)
-		if errors.Is(err, sql.ErrNoRows) || (err == nil && (owner != u.ID || revoked != nil)) {
-			return nil, proto.Errf(proto.ErrForbidden, "bundle is not signed by one of your active devices")
-		}
-		if err != nil {
-			return nil, err
-		}
-		eb, err := identity.Signed(a.Bundle).VerifyEpochBundle(sid, ed25519.PublicKey(edPub))
-		if err != nil {
-			return nil, badRequest("epoch bundle signature does not verify")
-		}
-
-		// Compare-and-set on the chain head.
-		var prev [32]byte
-		copy(prev[:], head.hash)
-		if eb.Epoch != head.epoch+1 || eb.Prev != prev {
-			return nil, staleEpoch(fmt.Sprintf("channel is at epoch %d", head.epoch))
-		}
-		// Who may extend the chain: a previous-roster user (the caller, since
-		// by is the caller's device); for epoch 1 the creator, or any member
-		// of a DM. Clients check the same (§13.3).
-		if head.bundle != nil {
-			old, err := identity.PeekEpochBundle(identity.Signed(*head.bundle))
-			if err != nil {
-				return nil, err
-			}
-			if !slices.Contains(old.Roster, u.ID) {
-				return nil, proto.Errf(proto.ErrForbidden, "only members of the previous epoch may rotate")
-			}
-		} else if s.kinds[a.Chan] != proto.ChanDM {
-			var creator uint64
-			if err := tx.QueryRowContext(ctx, `SELECT creator FROM channels WHERE id = ?`, a.Chan).Scan(&creator); err != nil {
-				return nil, err
-			}
-			if creator != u.ID {
-				return nil, proto.Errf(proto.ErrForbidden, "only the channel's creator may create epoch 1")
-			}
-		}
-		roster, err := rosterOf(ctx, tx, a.Chan)
-		if err != nil {
-			return nil, err
-		}
-		if !slices.Equal(eb.Roster, roster) {
-			return nil, staleEpoch("roster is not the channel's current members")
-		}
-		devs, owners, err := rosterDevices(ctx, tx, roster)
-		if err != nil {
-			return nil, err
-		}
-		if err := checkBoxes(ctx, tx, eb, roster, devs, head.seq); err != nil {
-			return nil, err
-		}
-		if err := eb.CheckBoxKeys(devs); err != nil {
-			return nil, badRequest("bundle seals twice to one key")
-		}
-		// Clients may skip devices they haven't verified, but a member left
-		// without any box could only ever get K from someone's key.share.
-		if !boxesEveryUser(eb, owners) {
-			return nil, badRequest("every member with a device needs at least one box")
-		}
-
-		now := s.now()
-		state := epochState(roster, devs)
-		// The caps apply unless the members or their active devices changed
-		// since the current epoch was made. Compared against what the server
-		// recorded then, not what the bundle boxed: otherwise a member with
-		// one never-boxed device could rotate without limit.
-		if head.bundle != nil && bytes.Equal(head.state, state[:]) {
-			if now-head.time < rotateChanEveryMs {
-				return nil, proto.Errf(proto.ErrRateLimited, "nothing changed since the channel's last rotation")
-			}
-			var last sql.NullInt64
-			if err := tx.QueryRowContext(ctx, `SELECT MAX(time) FROM epochs WHERE chan = ? AND by_user = ?`,
-				a.Chan, u.ID).Scan(&last); err != nil {
-				return nil, err
-			}
-			if last.Valid && now-last.Int64 < rotateEveryMs {
-				return nil, proto.Errf(proto.ErrRateLimited, "nothing changed since your last rotation")
-			}
-		}
-
-		ev, err := appendEvent(ctx, tx, proto.KKeyEpoch, a.Chan, u.ID, 0, now, proto.KeyEpoch{Bundle: a.Bundle})
-		if err != nil {
-			return nil, err
-		}
-		hash := e2ecrypto.ChainHash(a.Bundle.B)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO epochs (chan, epoch, bundle, hash, by_user, time, seq, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			a.Chan, eb.Epoch, proto.MustRaw(a.Bundle), hash[:], u.ID, now, ev.Seq, state[:]); err != nil {
-			return nil, err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE channels SET epoch = ? WHERE id = ?`, eb.Epoch, a.Chan); err != nil {
 			return nil, err
 		}
 		res.Seq = ev.Seq
 		return []proto.Event{ev}, nil
 	})
 	return res, err
+}
+
+// rotateTx checks bundle as ch's next epoch by u against the state inside
+// tx (§13.3, from "channel is encrypted" on), stores it and returns its
+// key.epoch event, which the caller must emit. chan.add, chan.remove and
+// chan.encrypt call it after changing the membership or the e2e flag in
+// the same transaction, so the roster check sees the new members. The
+// caller has checked that the channel exists, u is a member (as of before
+// the change) and the bundle's size.
+func (s *Server) rotateTx(ctx context.Context, tx *sql.Tx, u proto.User, ch uint64, bundle proto.Signed) (proto.Event, error) {
+	var none proto.Event
+	sid := s.sid()
+	head, err := chanEpoch(ctx, tx, ch)
+	if err != nil {
+		return none, err
+	}
+	if !head.e2e {
+		return none, badRequest("channel is not encrypted")
+	}
+	peek, err := identity.PeekEpochBundle(identity.Signed(bundle))
+	switch {
+	case errors.Is(err, e2ecrypto.ErrTooLarge):
+		return none, proto.Errf(proto.ErrTooLarge, "epoch bundles are limited to 128 boxes")
+	case err != nil:
+		return none, badRequest("malformed epoch bundle")
+	case peek.ServerID != sid:
+		return none, badRequest("epoch bundle is for another server")
+	case peek.Chan != ch:
+		return none, badRequest("epoch bundle is for another channel")
+	}
+	// The rotator: one of the caller's active devices, whose key signed it.
+	var owner uint64
+	var edPub, revoked []byte
+	err = tx.QueryRowContext(ctx, `SELECT user, ed25519, revoked FROM devices WHERE dev = ?`, peek.By[:]).
+		Scan(&owner, &edPub, &revoked)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && (owner != u.ID || revoked != nil)) {
+		return none, proto.Errf(proto.ErrForbidden, "bundle is not signed by one of your active devices")
+	}
+	if err != nil {
+		return none, err
+	}
+	eb, err := identity.Signed(bundle).VerifyEpochBundle(sid, ed25519.PublicKey(edPub))
+	if err != nil {
+		return none, badRequest("epoch bundle signature does not verify")
+	}
+
+	// Compare-and-set on the chain head.
+	var prev [32]byte
+	copy(prev[:], head.hash)
+	if eb.Epoch != head.epoch+1 || eb.Prev != prev {
+		return none, staleEpoch(fmt.Sprintf("channel is at epoch %d", head.epoch))
+	}
+	// Who may extend the chain: a previous-roster user (the caller, since
+	// by is the caller's device); for epoch 1 the creator, or any member
+	// of a DM. Clients check the same (§13.3).
+	if head.bundle != nil {
+		old, err := identity.PeekEpochBundle(identity.Signed(*head.bundle))
+		if err != nil {
+			return none, err
+		}
+		if !slices.Contains(old.Roster, u.ID) {
+			return none, proto.Errf(proto.ErrForbidden, "only members of the previous epoch may rotate")
+		}
+	} else if s.kinds[ch] != proto.ChanDM {
+		var creator uint64
+		if err := tx.QueryRowContext(ctx, `SELECT creator FROM channels WHERE id = ?`, ch).Scan(&creator); err != nil {
+			return none, err
+		}
+		if creator != u.ID {
+			return none, proto.Errf(proto.ErrForbidden, "only the channel's creator may create epoch 1")
+		}
+	}
+	roster, err := rosterOf(ctx, tx, ch)
+	if err != nil {
+		return none, err
+	}
+	if !slices.Equal(eb.Roster, roster) {
+		return none, staleEpoch("roster is not the channel's current members")
+	}
+	devs, owners, err := rosterDevices(ctx, tx, roster)
+	if err != nil {
+		return none, err
+	}
+	if err := checkBoxes(ctx, tx, eb, roster, devs, head.seq); err != nil {
+		return none, err
+	}
+	if err := eb.CheckBoxKeys(devs); err != nil {
+		return none, badRequest("bundle seals twice to one key")
+	}
+	// Clients may skip devices they haven't verified, but a member left
+	// without any box could only ever get K from someone's key.share.
+	if !boxesEveryUser(eb, owners) {
+		return none, badRequest("every member with a device needs at least one box")
+	}
+
+	now := s.now()
+	state := epochState(roster, devs)
+	// The caps apply unless the members or their active devices changed
+	// since the current epoch was made. Compared against what the server
+	// recorded then, not what the bundle boxed: otherwise a member with
+	// one never-boxed device could rotate without limit.
+	if head.bundle != nil && bytes.Equal(head.state, state[:]) {
+		if now-head.time < rotateChanEveryMs {
+			return none, proto.Errf(proto.ErrRateLimited, "nothing changed since the channel's last rotation")
+		}
+		var last sql.NullInt64
+		if err := tx.QueryRowContext(ctx, `SELECT MAX(time) FROM epochs WHERE chan = ? AND by_user = ?`,
+			ch, u.ID).Scan(&last); err != nil {
+			return none, err
+		}
+		if last.Valid && now-last.Int64 < rotateEveryMs {
+			return none, proto.Errf(proto.ErrRateLimited, "nothing changed since your last rotation")
+		}
+	}
+
+	ev, err := appendEvent(ctx, tx, proto.KKeyEpoch, ch, u.ID, 0, now, proto.KeyEpoch{Bundle: bundle})
+	if err != nil {
+		return none, err
+	}
+	hash := e2ecrypto.ChainHash(bundle.B)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO epochs (chan, epoch, bundle, hash, by_user, time, seq, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		ch, eb.Epoch, proto.MustRaw(bundle), hash[:], u.ID, now, ev.Seq, state[:]); err != nil {
+		return none, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE channels SET epoch = ? WHERE id = ?`, eb.Epoch, ch); err != nil {
+		return none, err
+	}
+	return ev, nil
 }
 
 func (s *Server) opKeyFetch(ctx context.Context, u proto.User, a proto.KeyFetchArgs) (any, error) {

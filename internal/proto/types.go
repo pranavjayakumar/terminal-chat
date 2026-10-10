@@ -58,6 +58,7 @@ const (
 	OpChanJoin     = "chan.join"
 	OpChanLeave    = "chan.leave"
 	OpChanAdd      = "chan.add"
+	OpChanRemove   = "chan.remove"
 	OpChanTopic    = "chan.topic"
 	OpDMOpen       = "dm.open"
 	OpUsersList    = "users.list"
@@ -254,6 +255,10 @@ type Channel struct {
 	// Creator created the channel; 0 for #general and for some old DMs.
 	// Only it may sign epoch 1 of a non-DM e2e channel (§13.3).
 	Creator uint64 `msgpack:"creator,omitempty"`
+	// Legacy is the newest message id when chan.encrypt converted the
+	// channel (0 for channels encrypted from birth): plaintext at or below
+	// it predates encryption (§13.4). The server's word, unauthenticated.
+	Legacy uint64 `msgpack:"legacy,omitempty"`
 	// Pins are the ids of pinned messages, newest pin first (cap pins).
 	Pins []uint64 `msgpack:"pins,omitempty"`
 }
@@ -419,9 +424,13 @@ type ChanArgs struct {
 	Chan uint64 `msgpack:"chan"`
 }
 
+// ChanAddArgs is chan.add's and chan.remove's args. Bundle (§13.3) is the
+// channel's next epoch with the new roster, committed with the membership
+// change; required in encrypted channels (PROTOCOL.md §13.5).
 type ChanAddArgs struct {
-	Chan uint64 `msgpack:"chan"`
-	User uint64 `msgpack:"user"`
+	Chan   uint64  `msgpack:"chan"`
+	User   uint64  `msgpack:"user"`
+	Bundle *Signed `msgpack:"bundle,omitempty"`
 }
 
 type ChanTopicArgs struct {

@@ -40,6 +40,7 @@ type fakeClient struct {
 	activity []client.ActivityItem
 	pinOrder []uint64 // pinned message ids, newest pin first
 	e2eSt    map[uint64]client.E2EStatus
+	addErr   error
 
 	groups    []proto.Group
 	reminders []proto.Reminder
@@ -184,6 +185,16 @@ func (f *fakeClient) Join(ctx context.Context, ch uint64) error  { f.record("joi
 func (f *fakeClient) Leave(ctx context.Context, ch uint64) error { f.record("leave"); return nil }
 func (f *fakeClient) AddMember(ctx context.Context, ch, user uint64) error {
 	f.record("add")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.addErr
+}
+func (f *fakeClient) RemoveMember(ctx context.Context, ch, user uint64) error {
+	f.record("remove " + strconv.FormatUint(user, 10))
+	return nil
+}
+func (f *fakeClient) EncryptChannel(ctx context.Context, ch uint64) error {
+	f.record("encrypt " + strconv.FormatUint(ch, 10))
 	return nil
 }
 func (f *fakeClient) SetTopic(ctx context.Context, ch uint64, topic string) error {

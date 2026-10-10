@@ -427,6 +427,8 @@ func (r *renderer) body(m client.Message, bw int) []string {
 		out = append(out, st.failed.Render(truncate("⚠ inserted by server", bw)))
 	case client.SecLegacy:
 		out = append(out, st.failed.Render(truncate("⚠ unauthenticated (legacy)", bw)))
+	case client.SecLegacyClaimed:
+		out = append(out, st.failed.Render(truncate("⚠ unauthenticated (legacy, server-claimed)", bw)))
 	}
 	text := sanitize.Text(m.Body)
 	lastCode := false

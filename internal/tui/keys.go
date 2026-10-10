@@ -68,6 +68,8 @@ var helpLines = [][2]string{
 	{"/leave", "leave this channel"},
 	{"/create #x [--private]", "new channel"},
 	{"/add @user", "add someone here"},
+	{"/remove @user", "remove someone (private; creator or admin)"},
+	{"/encrypt", "end-to-end encrypt this private channel or DM"},
 	{"/topic text", "set the topic"},
 	{"/name Display Name", "set your display name"},
 	{"/dm @a @b", "direct message"},

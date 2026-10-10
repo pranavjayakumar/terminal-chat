@@ -49,7 +49,7 @@ var writeOps = map[string]bool{
 	proto.OpEdit: true, proto.OpDelete: true, proto.OpReact: true, proto.OpUnreact: true, proto.OpPin: true, proto.OpUnpin: true,
 	proto.OpGroupSet: true, proto.OpRemindCreate: true, proto.OpRemindDelete: true,
 	proto.OpRead: true, proto.OpChanCreate: true, proto.OpChanJoin: true, proto.OpChanAdd: true,
-	proto.OpChanLeave: true, proto.OpChanTopic: true, proto.OpDMOpen: true,
+	proto.OpChanLeave: true, proto.OpChanRemove: true, proto.OpChanEncrypt: true, proto.OpChanTopic: true, proto.OpDMOpen: true,
 	proto.OpInviteCreate: true, proto.OpUserDisable: true, proto.OpUserUpdate: true,
 	proto.OpHookCreate: true, proto.OpHookDelete: true, proto.OpHookList: true,
 	proto.OpDeviceRegister: true, proto.OpDeviceRevoke: true, proto.OpKeyRotate: true,
@@ -59,7 +59,7 @@ var writeOps = map[string]bool{
 // e2eOps exist only in sessions that negotiated proto.CapE2E.
 var e2eOps = map[string]bool{
 	proto.OpDeviceRegister: true, proto.OpDeviceRevoke: true, proto.OpDevicesList: true,
-	proto.OpKeyRotate: true, proto.OpKeyFetch: true, proto.OpKeyShare: true,
+	proto.OpKeyRotate: true, proto.OpKeyFetch: true, proto.OpKeyShare: true, proto.OpChanEncrypt: true,
 }
 
 func (s *Server) dispatch(ctx context.Context, sess *session, op string, args proto.Raw) (any, error) {
@@ -116,6 +116,10 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 		return withArgs(args, func(a proto.ChanAddArgs) (any, error) { return s.opChanAdd(ctx, u, a, false) })
 	case proto.OpChanLeave:
 		return withArgs(args, func(a proto.ChanArgs) (any, error) { return s.opChanLeave(ctx, u, a) })
+	case proto.OpChanRemove:
+		return withArgs(args, func(a proto.ChanAddArgs) (any, error) { return s.opChanRemove(ctx, u, a) })
+	case proto.OpChanEncrypt:
+		return withArgs(args, func(a proto.KeyRotateArgs) (any, error) { return s.opChanEncrypt(ctx, u, a) })
 	case proto.OpChanTopic:
 		return withArgs(args, func(a proto.ChanTopicArgs) (any, error) { return s.opChanTopic(ctx, u, a) })
 	case proto.OpDMOpen:
@@ -733,53 +737,6 @@ func (s *Server) opChanCreate(ctx context.Context, sess *session, a proto.ChanCr
 		return []proto.Event{ev}, err
 	})
 	return res, err
-}
-
-// opChanAdd implements chan.join (self, public only) and chan.add.
-func (s *Server) opChanAdd(ctx context.Context, u proto.User, a proto.ChanAddArgs, join bool) (any, error) {
-	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
-		kind, ok := s.kinds[a.Chan]
-		if !ok {
-			return nil, errNotFound
-		}
-		switch {
-		case kind == proto.ChanDM:
-			return nil, errForbidden
-		case join && kind != proto.ChanPublic:
-			return nil, errForbidden
-		case !join && !s.members[a.Chan][u.ID]:
-			return nil, errForbidden
-		}
-		if s.members[a.Chan][a.User] {
-			return nil, nil
-		}
-		target, err := getUser(ctx, tx, a.User)
-		if err != nil || target.Disabled {
-			return nil, errNotFound
-		}
-		ev, err := addMember(ctx, tx, s.now(), u.ID, a.Chan, a.User)
-		return []proto.Event{ev}, err
-	})
-	return proto.Empty{}, err
-}
-
-func (s *Server) opChanLeave(ctx context.Context, u proto.User, a proto.ChanArgs) (any, error) {
-	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
-		if s.kinds[a.Chan] == proto.ChanDM {
-			return nil, errForbidden
-		}
-		if !s.members[a.Chan][u.ID] {
-			return nil, nil
-		}
-		ev, err := appendEvent(ctx, tx, proto.KChanLeave, a.Chan, u.ID, u.ID, s.now(), proto.UserRef{User: u.ID})
-		if err != nil {
-			return nil, err
-		}
-		_, err = tx.ExecContext(ctx, `UPDATE membership SET leave_seq = ? WHERE chan = ? AND user = ? AND leave_seq IS NULL`,
-			ev.Seq, a.Chan, u.ID)
-		return []proto.Event{ev}, err
-	})
-	return proto.Empty{}, err
 }
 
 func (s *Server) opChanTopic(ctx context.Context, u proto.User, a proto.ChanTopicArgs) (any, error) {

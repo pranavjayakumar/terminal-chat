@@ -58,6 +58,8 @@ type Backend interface {
 	Join(ctx context.Context, ch uint64) error
 	Leave(ctx context.Context, ch uint64) error
 	AddMember(ctx context.Context, ch, user uint64) error
+	RemoveMember(ctx context.Context, ch, user uint64) error
+	EncryptChannel(ctx context.Context, ch uint64) error
 	SetTopic(ctx context.Context, ch uint64, topic string) error
 	OpenDM(ctx context.Context, users []uint64) (proto.Channel, error)
 	History(ctx context.Context, ch, before uint64) (bool, error)

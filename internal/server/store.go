@@ -301,8 +301,8 @@ func prefixCols(p, cols string) string {
 
 func getChannel(ctx context.Context, q querier, id uint64) (proto.Channel, error) {
 	var c proto.Channel
-	err := q.QueryRowContext(ctx, `SELECT id, name, kind, topic, created, e2e, epoch, creator FROM channels WHERE id = ?`, id).
-		Scan(&c.ID, &c.Name, &c.Kind, &c.Topic, &c.Created, &c.E2E, &c.Epoch, &c.Creator)
+	err := q.QueryRowContext(ctx, `SELECT id, name, kind, topic, created, e2e, epoch, creator, legacy FROM channels WHERE id = ?`, id).
+		Scan(&c.ID, &c.Name, &c.Kind, &c.Topic, &c.Created, &c.E2E, &c.Epoch, &c.Creator, &c.Legacy)
 	if err != nil {
 		return c, err
 	}
