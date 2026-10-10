@@ -1,15 +1,15 @@
-# tc — terminal chat
+# tc: terminal chat
 
 Team chat that lives in your terminal (and your herdr panes). One small binary, Mac + Linux.
 
 - Instant start from a local cache, works offline, sends when you're back
 - Channels, private channels, DMs, threads, reactions, edits, search, pinned messages
-- Sign in with your existing SSH key — no passwords, no accounts to manage
+- Sign in with your existing SSH key. No passwords, no accounts to manage
 - Pipe anything into chat: `make test 2>&1 | tc send '#backend'`
 
 ## Get started
 
-**Admin, once** — run a server on any machine your teammates can reach ([docs/DEPLOY.md](docs/DEPLOY.md)):
+**Admin, once:** run a server on any machine your teammates can reach ([docs/DEPLOY.md](docs/DEPLOY.md)):
 
 ```sh
 tc server --public YOUR_IP:7443          # first run prints your own admin invite
@@ -95,7 +95,7 @@ auto-away (0 disables). Details in [docs/TUI.md](docs/TUI.md).
 
 ## Webhooks
 
-CI jobs, scripts and agents can post into a channel with a plain HTTPS POST — no tc
+CI jobs, scripts and agents can post into a channel with a plain HTTPS POST, no tc
 install or SSH key needed. In the channel, run `/webhook ci` (any member can). tc
 creates a bot user `ci-bot` (bot names always end in `-bot`), adds it to the channel,
 and copies a ready-made curl command to your clipboard. The secret URL is only in the
@@ -107,7 +107,7 @@ so it stays out of your shell history and `ps`:
 curl -fsS -k --pinnedpubkey 'sha256//BASE64PIN=' -H 'Content-Type: application/json' -d '{"text":"hello from a webhook"}' "$TC_HOOK_URL"
 ```
 
-- The URL is the secret — treat it like a password: put it in a secret store or run the
+- The URL is the secret. Treat it like a password: put it in a secret store or run the
   `export` line yourself (without the `#`). `/webhooks` lists hooks; `/webhook-delete <id>`
   revokes one at once (any member of its channel can). Hooks stop working when their
   creator leaves the channel or is disabled.
@@ -120,7 +120,7 @@ curl -fsS -k --pinnedpubkey 'sha256//BASE64PIN=' -H 'Content-Type: application/j
   creator's own send limit (HTTP 429 with `Retry-After`). At most 10 hooks per person and
   20 per channel.
 
-GitHub Actions — store the URL and pin as secrets `TC_HOOK_URL` and `TC_HOOK_PIN`
+GitHub Actions: store the URL and pin as secrets `TC_HOOK_URL` and `TC_HOOK_PIN`
 (`sha256//…`):
 
 ```yaml
@@ -130,7 +130,7 @@ GitHub Actions — store the URL and pin as secrets `TC_HOOK_URL` and `TC_HOOK_P
     TC_HOOK_URL: ${{ secrets.TC_HOOK_URL }}
     TC_HOOK_PIN: ${{ secrets.TC_HOOK_PIN }}
     # Via env, not inline ${{ }}, so branch names can't inject shell.
-    MSG: "${{ github.repository }}@${{ github.ref_name }}: ${{ job.status }} — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+    MSG: "${{ github.repository }}@${{ github.ref_name }}: ${{ job.status }} - ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
     KEY: "${{ github.run_id }}-${{ github.run_attempt }}"
   run: |
     printf '%s' "$MSG" | curl -fsS -k --pinnedpubkey "$TC_HOOK_PIN" \
