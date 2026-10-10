@@ -765,7 +765,12 @@ an epoch. A plaintext `send` (or `edit`) into an e2e channel is
 metadata but not post into encrypted DMs or channels.
 
 Client validity: bundles are checked in epoch order, from epoch 1 (or the
-epoch after the pinned head), fetching gaps with `key.fetch`. Each must:
+epoch after the pinned head), fetching gaps with `key.fetch`. A client
+can't rely on seeing every `key.epoch` event (an event delivered after a
+later seq is skipped and never replayed), so it also asks `key.fetch` for
+the epochs above its head when a message waits for an epoch above every
+bundle it holds (once per epoch per connection) and when a send or
+rotation comes back `stale_epoch`. Each must:
 decode (canonical, `server_id` and `chan` match, the epoch is the next one);
 be signed by `by`, a device the client verified (§13.2) whose revoke, if
 any, has a seq not before the bundle's seq; have `by`'s user in the previous

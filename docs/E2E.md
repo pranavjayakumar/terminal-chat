@@ -105,7 +105,7 @@ the local cache is therefore sensitive — rely on disk encryption, documented.
 Cap `e2e1`. DMs and new private channels encrypted by default; `/encrypt` converts an existing
 private channel. Public channels unchanged. Bots in encrypted channels get a bot device.
 
-## Threat model (as of step 6)
+## Threat model (as of step 11)
 
 What a malicious server can and cannot do today, and what closes each gap:
 
@@ -149,6 +149,11 @@ What a malicious server can and cannot do today, and what closes each gap:
 - **Edits and reactions over time**: the server can withhold the newest edit from a device that never
   saw it (it shows an older verified one), and can replay a reaction its author since removed (adds
   carry no version). It can't forge, move or reorder edits a client has seen. (Step 8.)
+- **Message times** are the server's: Plain `ts` is signed but the shown time is `Message.time`, which
+  the server can rewrite (metadata, like who talks to whom). Pinned down by the step-11 suite, like the
+  other accepted limits (`internal/e2e/malicious_test.go`, `..._AcceptedLimit`).
+- **Availability** is not defended: a server can drop, delay or withhold anything. Clients recover
+  what they can fetch again (bundles by `key.fetch`, keys by `key.share`) and never fail open.
 
 ## Pitfalls checklist
 
@@ -405,4 +410,53 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
     forged bundles, swapped/withheld boxes, hidden leave, stripped cap/flag, plaintext injection,
     cross-channel/thread replay, author/thread/time rewrite, forged delete, reorder, forced reset,
     bad key.share; malicious member: inconsistent boxes, rotation spam, garbage enc, control chars.
+   Done (step 11). **Hooks**: `internal/server/tamper_on.go`, compiled only with `-tags tctamper`
+   (`tamper_off.go` is the default: empty stubs behind a `false` constant, so release builds hold no
+   hook code; `tc server` refuses to start from a tagged build). `Server.SetTamper` installs
+   `Welcome` (rewrite WELCOME per user) and `Out` (every outgoing frame of a user's sessions — EVENT,
+   RES, SNAPSHOT, EPHEMERAL — rewritten, dropped, multiplied or held back to reorder);
+   `TamperDB`/`TamperWrite`/`TamperAppendEvent`/`TamperAddMember` change the database and log as the
+   server would, `TamperPush`/`TamperKick` inject frames and force reconnects. **Suite**:
+   `internal/e2e/malicious_test.go` (+ `malicious_harness_test.go`, same tag), real clients over
+   loopback; each case checks that no key or plaintext reaches anything the attacker controls (no
+   box/share to its device in the server log, no epoch key in its trust store, no enc it can open,
+   no plaintext row) and the client-visible signal. Run: `make test-malicious` or
+   `GOTOOLCHAIN=local go test -race -tags tctamper ./internal/e2e -run Malicious` (`make test` and CI
+   run it too). Results:
+
+   | case | result |
+   |---|---|
+   | device cert under a server-added SSH key / add-key invite | detected: key-change banner, bob's sends `ErrKeyChange`, nothing sealed to it |
+   | fake `chan.join` of mallory (plain / + bundle signed by mallory) | detected: alarm "membership not confirmed" / "rotated by someone not in epoch n", sends and rotations refused |
+   | replayed old bundle; live claim of an older epoch | harmless: ignored, sends stay on the head epoch |
+   | forced reset to a snapshot at an older epoch | detected: rollback alarm (trust store survives the reset) |
+   | fork (different validly signed bundles to A and B) | detected: the other branch's messages invalid, fork alarm once both bundles are seen |
+   | bundle signed by an unknown device / claiming a member's device | unknown: "unverified", the server's K never used; claimed: signature alarm |
+   | box swapped with another's / bundle moved from another channel | swapped: signature alarm; moved: ignored |
+   | withheld box (device hidden from the rotator) | recovered by key.need/key.share, no alarm |
+   | hidden removal (`chan.remove`, leave event hidden from a member) | detected: alarm "membership not confirmed", nothing sealed to the removed user |
+   | hidden self-leave (server keeps the leaver a member) | **accepted limit** (threat model: withheld removal) |
+   | `e2e1` stripped from WELCOME / `e2e` cleared on a channel | detected: sticky alarm, sends refused, no plaintext |
+   | channel presented as plaintext at first contact | **accepted limit** (threat model: e2e flag of a never-seen channel) |
+   | plaintext `msg.new` in an encrypted DM | "inserted by server", no mention/notification |
+   | enc replayed into another channel / a thread / as duplicate / as an edit | invalid (edit: rejected, text unchanged) |
+   | rewritten author / thread | invalid |
+   | rewritten time | **accepted limit**: the shown time is the server's (metadata; Plain `ts` is signed but not compared) |
+   | forged delete (unsigned / another message's signed delete) | "removed (not by author)" |
+   | reordered events (seqs swapped) | message waits then opens; the newer edit wins |
+   | dropped or skipped `key.epoch` | **bug found and fixed**: the client now `key.fetch`es (see below) |
+   | different `server_id` in WELCOME | client stops ("server identity changed"), trust store untouched |
+   | `key.share` with a server-chosen K | rejected by kc; the real K arrives later |
+   | member: box with a different K for one recipient | kc rejects it; recovered by key.share, no alarm (§13.3) |
+   | member: rotation spam | one rotation, the rest `rate_limited` |
+   | member: well-signed garbage / control characters / wrong Plain type | invalid, attributed to the member |
+
+   Decisions (step 11): **bug fixed** — a `key.epoch` event delivered after a later seq (or dropped)
+   is skipped and never replayed, which wedged the channel for that client (messages waited forever,
+   every send failed after a stale_epoch). Clients now `key.fetch` the epochs above their head when a
+   message waits for an epoch above every bundle they hold (once per epoch per connection) and after
+   a `stale_epoch` on a send or rotation (PROTOCOL §13.3). An inconsistent box from a malicious member
+   is recovered silently rather than alarmed (kc already guarantees every member ends up with the
+   same K; per §13.3 an unusable box is not a fork). A bundle from an unverifiable device doesn't
+   block sending under the verified head.
 12. Security pass + chaos during rotations + docs (threat model, device loss, local cache sensitivity).

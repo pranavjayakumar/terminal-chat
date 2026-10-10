@@ -211,6 +211,7 @@ type Client struct {
 	needSent     map[uint64]time.Time
 	shared       map[shareKey]time.Time
 	autoTried    map[uint64]time.Time
+	probed       map[uint64]uint32     // channel → highest waiting-message epoch fetched ahead for, this session
 	badCerts     map[[32]byte]struct{} // hashes of certs that failed verification
 	needVerified time.Time             // last verifyDevices run from answerKeyNeed
 	certVerifies atomic.Int64          // cert signature checks (tests)
@@ -297,7 +298,7 @@ func Open(home string) (*Client, error) {
 		obChanged: make(chan struct{}), timing: defaultTiming,
 		e2eKick: make(chan struct{}, 1), keyNeeds: make(chan proto.Ephemeral, 32),
 		e2eSoft: map[uint64]string{}, needSent: map[uint64]time.Time{}, shared: map[shareKey]time.Time{},
-		autoTried: map[uint64]time.Time{}, badCerts: map[[32]byte]struct{}{},
+		autoTried: map[uint64]time.Time{}, badCerts: map[[32]byte]struct{}{}, probed: map[uint64]uint32{},
 	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	c.me = users[cfg.UserID]

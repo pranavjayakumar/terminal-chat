@@ -769,6 +769,11 @@ func (c *Client) sealWith(ctx context.Context, s *session, chID uint64, prev []b
 			return ctx.Err()
 		}
 	}
+	if prev != nil {
+		// A stale_epoch: if the server has a newer epoch whose key.epoch
+		// event never reached us (dropped, reordered), only a fetch finds it.
+		c.fetchAhead(ctx, s, sid, chID)
+	}
 	for attempt := 0; ; attempt++ {
 		c.verifyDevices(sid, s.sshPub, me)
 		ch, ok, err := getChan(c.db, chID)

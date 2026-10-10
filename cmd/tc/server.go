@@ -51,6 +51,9 @@ func cmdServer(args []string) error {
 			os.WriteFile(filepath.Join(*data, publicAddrFile), []byte(pub), 0o600)
 		}
 	}
+	if server.TamperBuild {
+		return errors.New("this tc binary was built with -tags tctamper (malicious-server test hooks); refusing to run a server")
+	}
 	srv, err := server.New(server.Config{DataDir: *data, PublicAddr: pub})
 	if err != nil {
 		return err

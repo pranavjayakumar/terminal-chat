@@ -2,6 +2,31 @@
 
 Last updated: 2026-10-10 (end of session 1; branch `m2-activity` adds drafts, highlights, activity view). Read this first when resuming.
 
+## Handoff (always current — read this first when switching accounts)
+
+**Goal of the current push (owner, 2026-10-10):** finish M3 (E2E steps 11–12) and M4 (onboarding) end to end,
+cut release v0.2.0, redeploy the droplet, hand the owner the one-line install/invite command, then PAUSE.
+
+**In flight**
+- E2E step 12 (final pass) — kiro; worktree `.claude/worktrees/kiro-step12`, branch `e2e/final-pass`: chaos during
+  rotations, signed-time drift marker, security pass (findings → docs/E2E.md), fuzzing, docs; closes M3.
+- M4 onboarding — kiro; worktree `.claude/worktrees/kiro-onboard`, branch `m4-onboarding`; release workflow,
+  install.sh, `tc join`, invite one-liner, multi-use invites, `tc update`.
+- Step 11 is DONE (PR #32).
+
+**Next (in order):** review + merge M4 and step 12 (whichever lands first; run protocol/security review on each)
+→ tag v0.2.0 (release workflow builds binaries) → redeploy droplet with the release binary
+(`docs/DEPLOY.md`) → test the one-liner from a clean HOME → give the owner the command → update this file → pause.
+
+**Rules:** kiro hard cap 55–60% of monthly credits (check `kiro-cli chat --no-interactive "/usage"`; stop at 55%).
+Claude only orchestrates (review/merge/log); workers on kiro, launched with herdr env vars unset. Merge only with
+`gh pr checks <n> --watch` exit 0 (CI works again since the repo is public). Log every event in `docs/WORKLOG.md`.
+
+**Production server:** root@159.65.152.35 (key-only SSH from the owner's Mac key), systemd unit `tc`,
+data `/var/lib/tc`, public addr 159.65.152.35:7443, pin `kizIIb-LUvMblyz18Ovf52VftSZnISNdJAEUz56LoU4`.
+The owner's one-time admin invite was printed in `journalctl -u tc` on first start (don't consume it).
+The owner should change the droplet root password (it was shared in chat; password SSH is disabled).
+
 ## Where we are
 
 | Milestone | State |
@@ -9,8 +34,8 @@ Last updated: 2026-10-10 (end of session 1; branch `m2-activity` adds drafts, hi
 | M0 scaffold, spec, agents, CI | ✅ done |
 | M1 core chat (server, client, TUI, sync, offline outbox) | ✅ done, battle-tested (chaos + adversarial + live herdr) |
 | M2 collaboration | ✅ essentially done: notifications, herdr badge, `/share-pane`, auto-away, `tc notify`, notes, `/name`, threads, webhooks + bots, privacy scrubbing, drafts, `/highlight`, activity (Alt-A), message viewer (`v`), pins (`p`, `/pins`), user groups (`@oncall`), reminders (`/remind`), diff/snippets (`tc send --file`, `/snippet`) |
-| M3 end-to-end encryption | steps 1–7 merged; step 9 (membership: chan.add+bundle, chan.remove, chan.encrypt) on branch `e2e/membership`; (#9, #10, #11, #13, #16, #25 client verification, #26 encrypted send/receive) — **encrypted DMs and private channels work end to end**; step 8 (encrypted edit/delete/react) in PR #28; step 10 (trust UX: safety numbers, `/verify`, `--github`, key-change banner, `/accept-key`, `/alarm`, audited `/alarm-clear`, `?` marks, `tc verify`) on branch `e2e/trust-ux` |
-| M4 zero-setup onboarding | on branch `m4-onboarding`: release workflow (`v*` tags → 4 static builds + `checksums.txt`), `install.sh` (verified install + `tc join`), `tc join` wizard (`tc login` alias), team invites (`--uses`/`--ttl`, `/invite [uses] [ttl]`, cap `team_invites`), invites print as the install one-liner, `tc update [--check]` + sidebar update notice. Left: brew tap, release signatures, any-member invites, `--key github:user` invites |
+| M3 end-to-end encryption | steps 1–7 merged; step 9 (membership: chan.add+bundle, chan.remove, chan.encrypt) on branch `e2e/membership`; (#9, #10, #11, #13, #16, #25 client verification, #26 encrypted send/receive) — **encrypted DMs and private channels work end to end**; step 8 (encrypted edit/delete/react) in PR #28; step 10 (trust UX: safety numbers, `/verify`, `--github`, key-change banner, `/accept-key`, `/alarm`, audited `/alarm-clear`, `?` marks, `tc verify`) merged (#30); step 11 (malicious-server suite: `-tags tctamper` server hooks, `internal/e2e/malicious_test.go`, one client bug fixed — missed `key.epoch` now re-fetched) on branch `e2e/malicious-server` |
+| M4 zero-setup onboarding | in PR: release workflow (`v*` tags), verified `install.sh`, `tc join` wizard, invite = install one-liner, multi-use team invites (`--uses/--ttl`), `tc update` + update notice. Deferred: brew tap, signed releases, any-member invites, `--key github:user` |
 | M5 voice | not started |
 
 Release tag: `v0.1.0` = M1. No newer tag yet.
@@ -26,16 +51,14 @@ Release tag: `v0.1.0` = M1. No newer tag yet.
    state, per-message markers, no sends in alarm. `tc send/notify/tail` covered. Decisions in `docs/E2E.md`
    step 7. Review with protocol-guardian + security-reviewer + tui-reviewer + breaker, then merge.
 2. **E2E steps 8–12** per `docs/E2E.md`: 8 edit/delete/react + local FTS, 9 membership changes +
-   `chan.remove` + `chan.encrypt` (legacy DMs), 10 TUI warnings + `/verify`, 11 malicious-server suite,
+   `chan.remove` + `chan.encrypt` (legacy DMs), 10 TUI warnings + `/verify`, 11 malicious-server suite
+   (done: `make test-malicious`; results table and decisions in `docs/E2E.md` step 11),
    12 security pass + chaos.
 3. **Finish M2**: diff and `file:line` snippets. (Long-line viewer, `/pins`, `/remind` and user groups
    `@team` are done.)
 4. **Deploy**: waiting on the droplet IP → `docs/DEPLOY.md`, then real-network tests.
-5. **M4 onboarding** — branch `m4-onboarding` (review with security-reviewer + protocol-guardian +
-   tui-reviewer, then merge). The repo is public now, so installs come from GitHub Releases. After merge,
-   push a `v0.2.0` tag: `install.sh` and `tc update` need a published release (until then `/releases/latest`
-   404s and they say "no releases yet"). Remaining M4: brew tap, signed releases, any-member invites,
-   `--key github:user` invites.
+5. **M4 onboarding** — see `docs/ROADMAP.md`. Note: the repo is private, so install-from-GitHub-releases needs
+   auth; consider serving install.sh + binaries from the tc server itself (pinned TLS).
 
 **Budget rule (owner):** kiro-cli may use at most 45–50% of its monthly credits (it reached 46.6% on 2026-10-10,
 so remaining work that day ran on Claude subagents) (check with
@@ -65,7 +88,7 @@ so remaining work that day ran on Claude subagents) (check with
   `ctrl+n`, `alt+a`, `esc`, `enter`): pane `tc server` runs
   `./bin/tc server --data <scratch>/live/srv --listen 127.0.0.1:17450`, panes `alice`/`bob` run `tc` with
   `TC_HOME=<scratch>/live/{a,b}` and `SSH_AUTH_SOCK=` (test keys). The scratch dir is session-specific; if
-  it's gone, recreate: start a server with a temp `--data`, `tc join` two users with throwaway
+  it's gone, recreate: start a server with a temp `--data`, `tc login` two users with throwaway
   `ssh-keygen -t ed25519` keys and `--key`. Drive panes with `herdr pane send-text/send-keys`, read with
   `herdr pane read <id> --source recent`.
 
@@ -80,6 +103,10 @@ so remaining work that day ran on Claude subagents) (check with
 - Bots are named `*-bot`, owned, capped (10 active per owner, 100 per server), retired when their last hook
   is deleted.
 - E2E design r1 was rejected (malicious server could read DMs); r2 in `docs/E2E.md` is authoritative.
+- Malicious-server tests need `-tags tctamper` (server hooks in `internal/server/tamper_on.go`, absent from
+  default/release builds; `tc server` refuses to run from a tagged build). `make test` runs them; plain
+  `go test ./...` does not. GitHub Actions was unavailable (billing) during step 11: local
+  `go test -race` (both builds) was the gate.
 
 ## Merged PRs (session 1)
 
