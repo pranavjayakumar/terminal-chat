@@ -87,6 +87,11 @@ not argv, so it isn't visible for the length of the join.
 
 ## Upgrades & backups
 
+- Update check: release builds of the tc *client* make one HTTPS `HEAD` request to
+  `github.com/pranavjayakumar/terminal-chat/releases/latest` at most once every 24 hours (per
+  `TC_HOME`, at TUI start, 5 s timeout) to show `update vX` in the sidebar. It sends no version,
+  user, server or channel data, but GitHub sees the machine's IP and that it runs tc. On private or
+  air-gapped teams, set `TC_NO_UPDATE_CHECK=1` in teammates' environment. The server never checks.
 - Upgrade: `tc update` as root on the server (or copy a new binary), then `systemctl restart tc`.
   Clients reconnect and catch up automatically; they update themselves with `tc update`.
 - Backup: `sqlite3 /var/lib/tc/tc.db ".backup /root/tc-$(date +%F).db"` (safe while running), plus

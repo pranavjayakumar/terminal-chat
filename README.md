@@ -31,8 +31,11 @@ Already have tc? `tc join 'tc://…'` (`tc login` still works; `TC_INVITE='tc://
 the code out of `ps`). Keep invites short-lived (a day is plenty) and revoke leftovers with
 `/invite-revoke` or `tc server invite --revoke`. Admins can also mint invites inside
 tc with `/invite [uses] [ttl]`, e.g. `/invite 15 1d`, which copies the one-liner to the clipboard.
-`tc update` installs the newest release in place (`--check` only reports); tc shows a dim
-`update vX` in the sidebar when one is out (`TC_NO_UPDATE_CHECK=1` turns that off).
+`tc update` installs the newest signed release in place (`--check` only reports); tc shows a dim
+`update vX` in the sidebar when one is out. For that, release builds make one HTTPS `HEAD` request to
+`github.com/pranavjayakumar/terminal-chat/releases/latest` at most once a day. It sends no version,
+user, server or chat data, but GitHub sees your IP address and that it runs tc.
+`TC_NO_UPDATE_CHECK=1` turns it off, and dev builds never check.
 
 ## Using it
 
