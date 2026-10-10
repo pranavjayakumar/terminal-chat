@@ -1177,7 +1177,19 @@ func TestEpochsAndKeys(t *testing.T) {
 	if err := s.AdvanceEpoch(sidA, ch, e2); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AdvanceEpoch(sidA, ch, e1); !errors.Is(err, ErrRollback) {
+	// A process sharing this home may offer an epoch the other already
+	// recorded and moved past (step 12 M1): the same bundle is a no-op, a
+	// different one a fork, an unrecorded lower epoch a rollback.
+	if err := open(t, home).AdvanceEpoch(sidA, ch, e1); err != nil {
+		t.Fatalf("recorded epoch again from a second store: %v", err)
+	}
+	if err := s.AdvanceEpoch(sidA, ch, fork); !errors.Is(err, ErrFork) {
+		t.Fatalf("different bundle below the head: %v", err)
+	}
+	if err := s.AdvanceChain(sidA, ch+1, Head{Epoch: 3, Hash: e2.Hash, EH: [e2ecrypto.IDSize]byte(e2.Hash[:])}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AdvanceEpoch(sidA, ch+1, e1); !errors.Is(err, ErrRollback) {
 		t.Fatalf("rollback: %v", err)
 	}
 	s.Close()

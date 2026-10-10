@@ -956,7 +956,24 @@ func (s *Store) AdvanceEpoch(sid e2ecrypto.ServerID, ch uint64, e Epoch) error {
 		case err != nil:
 			return err
 		case uint32(ep) > e.Epoch:
-			return fmt.Errorf("%w: epoch %d below pinned %d", ErrRollback, e.Epoch, ep)
+			// Another process sharing this trust store may have recorded e
+			// and moved on: the very same bundle is no rollback.
+			var old []byte
+			err := tx.QueryRow(`SELECT hash FROM epochs WHERE server_id = ? AND chan = ? AND epoch = ?`,
+				sid[:], i64(ch), int64(e.Epoch)).Scan(&old)
+			switch {
+			case errors.Is(err, sql.ErrNoRows):
+				return fmt.Errorf("%w: epoch %d below pinned %d", ErrRollback, e.Epoch, ep)
+			case err != nil:
+				return err
+			case subtle.ConstantTimeCompare(old, e.Hash[:]) != 1:
+				return fmt.Errorf("%w at epoch %d", ErrFork, e.Epoch)
+			}
+			if e.Key != nil {
+				_, err = tx.Exec(`UPDATE epochs SET k = ? WHERE server_id = ? AND chan = ? AND epoch = ? AND k IS NULL`,
+					e.Key[:], sid[:], i64(ch), int64(e.Epoch))
+			}
+			return err
 		case uint32(ep) == e.Epoch:
 			if subtle.ConstantTimeCompare(hash, e.Hash[:]) != 1 {
 				return fmt.Errorf("%w at epoch %d", ErrFork, ep)
