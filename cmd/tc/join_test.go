@@ -151,7 +151,7 @@ func TestJoinGeneratesKey(t *testing.T) {
 	if !strings.HasSuffix(string(pub), " tc\n") {
 		t.Fatalf("comment: %q", pub)
 	}
-	if !strings.Contains(out.String(), "made one just for itself: "+key) {
+	if !strings.Contains(out.String(), "made one just for itself: "+key) || !strings.Contains(out.String(), "no passphrase") {
 		t.Fatalf("output:\n%s", out)
 	}
 	// A second join reuses it.

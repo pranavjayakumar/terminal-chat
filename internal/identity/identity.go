@@ -269,9 +269,16 @@ func AgentED25519() (ssh.PublicKey, bool) {
 }
 
 // GenerateKey writes a new unencrypted ed25519 key to path (0600, OpenSSH
-// format, comment "tc") and path.pub, creating the directory 0700. It never
-// overwrites an existing file.
-func GenerateKey(path string) (ssh.Signer, error) {
+// format, comment "tc") and path.pub, creating the directory 0700 (and
+// tightening it to 0700 if it exists). It never overwrites an existing
+// file, and path appears only once fully written: the key goes to a temp
+// file that is then hard-linked into place, so a crash can't leave an
+// empty or partial key that later logins fail to parse.
+func GenerateKey(path string) (ssh.Signer, error) { return generateKey(path, nil) }
+
+// generateKey is GenerateKey; beforeLink (tests) runs once the temp file is
+// written, where a crash would leave it behind.
+func generateKey(path string, beforeLink func(tmp string)) (ssh.Signer, error) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -284,25 +291,80 @@ func GenerateKey(path string) (ssh.Signer, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("creating key directory: %w", err)
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("creating %s: %w", path, err)
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("securing key directory: %w", err)
 	}
-	if _, err := f.Write(pem.EncodeToMemory(blk)); err != nil {
-		f.Close()
-		os.Remove(path)
-		return nil, fmt.Errorf("writing %s: %w", path, err)
+	if _, err := os.Lstat(path); err == nil {
+		return nil, fmt.Errorf("creating %s: %w", path, os.ErrExist)
 	}
-	if err := f.Close(); err != nil {
-		os.Remove(path)
-		return nil, fmt.Errorf("writing %s: %w", path, err)
+	if err := writeNew(path, pem.EncodeToMemory(blk), 0o600, beforeLink); err != nil {
+		return nil, err
 	}
+	// The .pub is public and derived from the key we just created
+	// exclusively, so a leftover one is replaced (atomically) to match.
 	line := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub))) + " tc\n"
-	if err := os.WriteFile(path+".pub", []byte(line), 0o644); err != nil {
-		return nil, fmt.Errorf("writing %s.pub: %w", path, err)
+	if err := writeReplace(path+".pub", []byte(line), 0o644); err != nil {
+		return nil, err
 	}
 	return ssh.NewSignerFromKey(priv)
+}
+
+// writeReplace atomically sets path to b (mode perm).
+func writeReplace(path string, b []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	name := tmp.Name()
+	_, werr := tmp.Write(b)
+	cherr := tmp.Chmod(perm)
+	cerr := tmp.Close()
+	if err := errors.Join(werr, cherr, cerr); err != nil {
+		os.Remove(name)
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	if err := os.Rename(name, path); err != nil {
+		os.Remove(name)
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	return nil
+}
+
+// writeNew creates path holding b (mode perm), or fails with os.ErrExist
+// if something is already there, never exposing a partial file at path.
+func writeNew(path string, b []byte, perm os.FileMode, beforeLink func(tmp string)) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("creating %s: %w", path, err)
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	for _, step := range []func() error{
+		func() error { return tmp.Chmod(perm) },
+		func() error { _, err := tmp.Write(b); return err },
+		tmp.Sync,
+	} {
+		if err := step(); err != nil {
+			tmp.Close()
+			return fmt.Errorf("writing %s: %w", path, err)
+		}
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	if beforeLink != nil {
+		beforeLink(name)
+	}
+	// link (unlike rename) fails if path exists: never overwrite a key.
+	if err := os.Link(name, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("creating %s: %w", path, os.ErrExist)
+		}
+		return fmt.Errorf("creating %s: %w", path, err)
+	}
+	return nil
 }

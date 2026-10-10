@@ -195,6 +195,7 @@ func chooseKey(env joinEnv, keyPath string) (string, error) {
 		return "", err
 	}
 	fmt.Fprintf(env.out, "No SSH key found, so tc made one just for itself: %s\n", p)
+	fmt.Fprintln(env.out, "It has no passphrase: anyone who can read that file can chat as you. (Prefer your own key? tc join --key ~/.ssh/id_ed25519.)")
 	return p, nil
 }
 
