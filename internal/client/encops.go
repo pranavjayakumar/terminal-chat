@@ -62,14 +62,15 @@ type msgRow struct {
 	body                        string
 	mid, enc, eenc, epend, denc []byte
 	ev                          uint32
+	ets                         int64
 	deleted                     bool
 	edited                      int64
 }
 
 func getMsgRow(q dbtx, id uint64) (msgRow, bool) {
 	var r msgRow
-	err := q.QueryRow(`SELECT id, chan, author, sec, body, mid, enc, eenc, epend, denc, ev, deleted, edited FROM msgs WHERE id = ?`, id).
-		Scan(&r.id, &r.ch, &r.author, &r.sec, &r.body, &r.mid, &r.enc, &r.eenc, &r.epend, &r.denc, &r.ev, &r.deleted, &r.edited)
+	err := q.QueryRow(`SELECT id, chan, author, sec, body, mid, enc, eenc, epend, denc, ev, ets, deleted, edited FROM msgs WHERE id = ?`, id).
+		Scan(&r.id, &r.ch, &r.author, &r.sec, &r.body, &r.mid, &r.enc, &r.eenc, &r.epend, &r.denc, &r.ev, &r.ets, &r.deleted, &r.edited)
 	return r, err == nil
 }
 
@@ -179,17 +180,34 @@ func (c *Client) applyEdit(q dbtx, row msgRow, enc []byte, edited int64, seq uin
 		c.reject(row.id, "edit: invalid text")
 	case revokedAt(d, p.TS):
 		c.reject(row.id, "edit: signed after its device was revoked")
-	case p.V <= row.ev:
-		c.reject(row.id, "edit: version %d is not newer than %d", p.V, row.ev)
+	case !newerEdit(p.V, p.TS, enc, row):
+		c.reject(row.id, "edit: (v %d, ts %d) is not newer than the applied (v %d, ts %d)", p.V, p.TS, row.ev, row.ets)
 	default:
 		if edited == 0 {
 			edited = p.TS
 		}
-		_, err := q.Exec(`UPDATE msgs SET body = ?, edited = ?, ev = ?, eenc = ?, epend = NULL WHERE id = ?`,
-			p.Body, max(edited, 1), p.V, enc, row.id)
+		_, err := q.Exec(`UPDATE msgs SET body = ?, edited = ?, ev = ?, ets = ?, eenc = ?, epend = NULL WHERE id = ?`,
+			p.Body, max(edited, 1), p.V, p.TS, enc, row.id)
 		return err == nil
 	}
 	return false
+}
+
+// newerEdit orders edits the same way on every client, whatever the
+// arrival order: the higher (v, Plain ts, mid of the edit's enc) wins. Two
+// devices editing at once may pick the same v; the tie still has one
+// winner. An equal tuple is the same edit (equal mid = equal bytes).
+func newerEdit(v uint32, ts int64, enc []byte, row msgRow) bool {
+	switch {
+	case v == 0: // versions start at 1
+		return false
+	case v != row.ev:
+		return v > row.ev
+	case ts != row.ets:
+		return ts > row.ets
+	}
+	mid, cur := e2ecrypto.MID(enc), e2ecrypto.MID(row.eenc)
+	return bytes.Compare(mid[:], cur[:]) > 0
 }
 
 // deleteVerdict is what a deleted message of an encrypted channel shows
@@ -606,6 +624,11 @@ func (c *Client) sealForMsg(row msgRow, p any) ([]byte, e2ecrypto.Key, error) {
 func (c *Client) deleteArgs(msg uint64) (proto.DeleteArgs, error) {
 	a := proto.DeleteArgs{Msg: msg}
 	row, ok := getMsgRow(c.db, msg)
+	if ok && c.needsEnc(row.ch) {
+		if err := c.sendAllowed(row.ch); err != nil {
+			return a, err // no deletes in alarm, like sends
+		}
+	}
 	if !ok || row.deleted || row.author != c.Me().ID || row.mid == nil || !c.needsEnc(row.ch) {
 		return a, nil // someone else's (admin), or plaintext: unsigned
 	}
@@ -624,6 +647,9 @@ func (c *Client) reactArgs(msg uint64, emoji string, add bool) (proto.ReactArgs,
 	row, ok := getMsgRow(c.db, msg)
 	if !ok || !c.needsEnc(row.ch) {
 		return a, nil
+	}
+	if err := c.sendAllowed(row.ch); err != nil {
+		return a, err // no reactions in alarm, like sends
 	}
 	if row.sec != SecE2E || row.mid == nil || row.deleted {
 		return a, ErrNotEditable

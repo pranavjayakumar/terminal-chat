@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -115,9 +116,9 @@ func TestEncEditApplies(t *testing.T) {
 	v2 := d.edit(t, d.b1.dev, 2, "hello v2", mid)
 	d.event(t, proto.KMsgEdit, bob, proto.MsgEdit{Msg: id, Edited: 78, Enc: v2})
 	for name, enc := range map[string][]byte{
-		"older version": d.edit(t, d.b1.dev, 1, "rolled back", mid),
-		"same version":  d.edit(t, d.b1.dev, 2, "other v2", mid),
-		"same bytes":    v2,
+		"older version":          d.edit(t, d.b1.dev, 1, "rolled back", mid),
+		"same version, older ts": sealP(t, d.b1.dev, d.k1, 1, d.e1, plainEdit{T: "edit", TS: 1, Body: "other v2", Ref: mid, V: 2}),
+		"same bytes":             v2,
 	} {
 		d.event(t, proto.KMsgEdit, bob, proto.MsgEdit{Msg: id, Edited: 79, Enc: enc})
 		if m := d.msg(t, id); m.Body != "hello v2" || m.Edited != 78 {
@@ -476,4 +477,80 @@ func TestEncOpsWaitForKey(t *testing.T) {
 		return m.Sec == SecE2E && m.Body == "final" && m.Edited == 2 && len(m.Reactions["🎉"]) == 1
 	})
 	waitFor(t, "signed delete judged", func() bool { m := d.msg(t, b); return m.Deleted && m.Sec == SecE2E })
+}
+
+// Two of bob's devices edit the same message at once with the same v: the
+// higher (v, ts, mid) wins whatever order the edits arrive in, so every
+// client shows the same text.
+func TestEncConcurrentEditsConverge(t *testing.T) {
+	d := newOpsDM(t)
+	b2 := newPeer(t, bob, d.b1.ssh) // bob's second device, same SSH key
+	d.event(t, proto.KDeviceNew, bob, proto.Device{Cert: b2.cert})
+	waitFor(t, "b2 verified", func() bool { _, ok, _ := d.c.Trust().Device(testSID(), b2.dev.ID); return ok })
+	type edit struct {
+		enc  []byte
+		body string
+	}
+	mk := func(dev *e2ecrypto.DeviceKeys, ts int64, body string, mid []byte) edit {
+		return edit{sealP(t, dev, d.k1, 1, d.e1, plainEdit{T: "edit", TS: ts, Body: body, Ref: mid, V: 1}), body}
+	}
+	for _, sameTS := range []bool{false, true} {
+		var want []string
+		var got []string
+		for _, reversed := range []bool{false, true} {
+			id, mid := d.post(t, bob, d.b1.dev, "orig")
+			tsY := int64(20)
+			if sameTS {
+				tsY = 10
+			}
+			x, y := mk(d.b1.dev, 10, "from b1", mid), mk(b2.dev, tsY, "from b2", mid)
+			win := y.body
+			if mx, my := e2ecrypto.MID(x.enc), e2ecrypto.MID(y.enc); sameTS && bytes.Compare(mx[:], my[:]) > 0 {
+				win = x.body
+			}
+			order := []edit{x, y}
+			if reversed {
+				order = []edit{y, x}
+			}
+			for _, e := range order {
+				d.event(t, proto.KMsgEdit, bob, proto.MsgEdit{Msg: id, Edited: 5, Enc: e.enc})
+			}
+			want = append(want, win)
+			got = append(got, d.msg(t, id).Body)
+		}
+		if got[0] != want[0] || got[1] != want[1] {
+			t.Fatalf("same ts %v: got %q, want %q", sameTS, got, want)
+		}
+		if !sameTS && (got[0] != "from b2" || got[1] != "from b2") {
+			t.Fatalf("the later ts didn't win: %q", got)
+		}
+	}
+}
+
+// Deletes and reactions into a channel in alarm are refused locally, like
+// sends and edits.
+func TestEncOpsBlockedInAlarm(t *testing.T) {
+	d := newOpsDM(t)
+	l := serveOps(d)
+	mine, _ := d.post(t, alice, d.me, "mine")
+	theirs, _ := d.post(t, bob, d.b1.dev, "theirs")
+	if err := d.c.Trust().RaiseAlarm(testSID(), dm, "fork: test"); err != nil {
+		t.Fatal(err)
+	}
+	ctx := ctx5(t)
+	for name, err := range map[string]error{
+		"delete":  d.c.Delete(ctx, mine),
+		"react":   d.c.React(ctx, theirs, "👍"),
+		"unreact": d.c.Unreact(ctx, theirs, "👍"),
+		"edit":    d.c.Edit(ctx, mine, "changed"),
+	} {
+		if !errors.Is(err, ErrE2EAlarm) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.dels)+len(l.reqs)+len(l.edits) != 0 {
+		t.Fatal("something was sent")
+	}
 }

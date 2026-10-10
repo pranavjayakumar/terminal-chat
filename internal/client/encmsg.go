@@ -336,8 +336,8 @@ func (c *Client) saveMsg(q dbtx, m *proto.Message, replace bool, memo *keyMemo) 
 	if encrypted {
 		if same {
 			// The edit state of the stored copy survives the refetch.
-			if _, err := q.Exec(`UPDATE msgs SET ev = ?, eenc = ?, epend = ? WHERE id = ?`,
-				old.ev, old.eenc, old.epend, m.ID); err != nil {
+			if _, err := q.Exec(`UPDATE msgs SET ev = ?, ets = ?, eenc = ?, epend = ? WHERE id = ?`,
+				old.ev, old.ets, old.eenc, old.epend, m.ID); err != nil {
 				return sec, err
 			}
 		}
