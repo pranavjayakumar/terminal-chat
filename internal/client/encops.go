@@ -214,8 +214,8 @@ func newerEdit(v uint32, ts int64, enc []byte, row msgRow) bool {
 // plaintext from before encryption, else SecRemoved.
 func (c *Client) deleteVerdict(q dbtx, sid e2ecrypto.ServerID, hasSID bool, ch, id, author uint64, mid, enc []byte, seq uint64, memo *keyMemo) Sec {
 	if enc == nil {
-		if mid == nil && c.plainSec(q, ch, id) == SecLegacy {
-			return SecLegacy
+		if s := c.plainSec(q, ch, id); mid == nil && (s == SecLegacy || s == SecLegacyClaimed) {
+			return s
 		}
 		return SecRemoved
 	}

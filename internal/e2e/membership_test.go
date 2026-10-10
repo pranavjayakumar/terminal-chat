@@ -269,7 +269,7 @@ func TestMembershipEncryptChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, "carol reads", carol.reads(ch.ID, "secret now"))
-	if sec, ok := carol.sec(ch.ID, "plain old"); !ok || sec != client.SecLegacy {
+	if sec, ok := carol.sec(ch.ID, "plain old"); !ok || sec != client.SecLegacyClaimed {
 		// sec() skips messages whose body isn't shown; legacy bodies are.
 		t.Fatalf("carol's view of the old message: %s %v", sec, ok)
 	}

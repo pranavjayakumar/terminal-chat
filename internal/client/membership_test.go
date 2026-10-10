@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"math"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -146,4 +147,59 @@ func TestRemovedChannelKeepsHistory(t *testing.T) {
 	if _, ok := c.Channel(secChan); ok || len(c.Messages(secChan, 10)) != 0 {
 		t.Fatal("closing a removed channel kept it")
 	}
+}
+
+// secLegacy is alice's encrypted channel at epoch 1 as a fresh device sees
+// it, with the server claiming Channel.legacy = claim.
+func secLegacySetup(t *testing.T, claim uint64) (*e2eFake, *Client) {
+	t.Helper()
+	fs, c := e2eClient(t)
+	run(t, c)
+	sec := proto.Channel{ID: secChan, Name: "sec", Kind: proto.ChanPrivate, Members: []uint64{alice}, E2E: true, Creator: alice, Legacy: claim}
+	f := startE2E(t, fs, proto.Snapshot{Chans: []proto.Channel{sec}}, proto.DevicesListRes{})
+	f.myKeys(c)
+	waitFor(t, "epoch 1", func() bool { st := c.E2EStatus(secChan); return st.State == E2EOK && st.Epoch == 1 })
+	return f, c
+}
+
+func secOf(c *Client, ch, id uint64) Sec {
+	for _, m := range c.Messages(ch, 50) {
+		if m.ID == id {
+			return m.Sec
+		}
+	}
+	return 255
+}
+
+// A server claim of a legacy cutoff past the channel's epoch 1 (here:
+// everything, on a channel encrypted from birth) is ignored: plaintext it
+// injects shows as inserted, not legacy.
+func TestLegacyClaimPastEpoch1Ignored(t *testing.T) {
+	f, c := secLegacySetup(t, math.MaxUint64)
+	id := f.post(proto.Message{Chan: secChan, Author: bob, Body: "trust me"})
+	waitFor(t, "inserted", func() bool { return secOf(c, secChan, id) == SecInserted })
+}
+
+// A claim at or below epoch 1's seq (an honest conversion seen by a device
+// that cached none of the plaintext) marks older plaintext legacy, as
+// server-claimed; plaintext after it is still inserted.
+func TestLegacyClaimBelowEpoch1(t *testing.T) {
+	f, c := secLegacySetup(t, 5)
+	f.mu.Lock()
+	f.onOp = func(f *e2eFake, r proto.Req) bool {
+		if r.Op != proto.OpHistory {
+			return false
+		}
+		f.ok(r.ID, proto.HistoryRes{Msgs: []proto.Message{{ID: 5, Chan: secChan, Author: bob, Body: "old plaintext", Time: 1}}})
+		return true
+	}
+	f.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := c.History(ctx, secChan, 0); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "legacy, server-claimed", func() bool { return secOf(c, secChan, 5) == SecLegacyClaimed })
+	id := f.post(proto.Message{Chan: secChan, Author: bob, Body: "late"})
+	waitFor(t, "inserted", func() bool { return secOf(c, secChan, id) == SecInserted })
 }

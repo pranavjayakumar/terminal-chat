@@ -26,6 +26,7 @@ func e2eFake(f *fakeClient, st client.E2EStatus) {
 	}
 	f.msgs[20] = []client.Message{
 		mk(300, "from before encryption", client.SecLegacy),
+		mk(299, "claimed old", client.SecLegacyClaimed),
 		mk(301, "", client.SecWaiting),
 		mk(302, "", client.SecInvalid),
 		mk(303, "click https://evil.example "+strings.Repeat("now ", 30), client.SecInserted),
@@ -64,7 +65,7 @@ func TestE2EMarkersFit(t *testing.T) {
 	run(m, m.applyUpdate(client.Update{Channels: true}))
 	run(m, m.openChannel(20))
 	v := ansi.Strip(checkView(t, m, "e2e dm"))
-	for _, want := range []string{"@bob 🔒", "⚠ unauthenticated (legacy)", "🔒 waiting for key", "⚠ invalid encrypted message",
+	for _, want := range []string{"@bob 🔒", "⚠ unauthenticated (legacy)", "⚠ unauthenticated (legacy, server-claimed)", "🔒 waiting for key", "⚠ invalid encrypted message",
 		"⚠ inserted by server", "a real secret"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("missing %q in\n%s", want, v)

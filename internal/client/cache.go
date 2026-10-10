@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 
@@ -248,7 +249,7 @@ func upsertChan(q dbtx, c proto.Channel) error {
 		ON CONFLICT (id) DO UPDATE SET name = excluded.name, kind = excluded.kind, topic = excluded.topic,
 			members = excluded.members, created = excluded.created, e2e = excluded.e2e,
 			epoch = max(epoch, excluded.epoch), creator = excluded.creator, legacy = excluded.legacy`,
-		c.ID, c.Name, c.Kind, c.Topic, string(members), c.Created, c.E2E, c.Epoch, c.Creator, c.Legacy)
+		c.ID, c.Name, c.Kind, c.Topic, string(members), c.Created, c.E2E, c.Epoch, c.Creator, min(c.Legacy, math.MaxInt64)) // SQLite ints are signed
 	return err
 }
 

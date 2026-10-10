@@ -39,8 +39,9 @@ const FileName = "e2e.db"
 // v1–v4 stored unknown as 0, which the migration turns into NULL); v6 adds
 // key_changes.last_seen (pending key changes are an LRU of maxKeyChanges);
 // v7 adds archived_device_keys; v8 adds epochs.seq (the key.epoch seq of a
-// verified bundle; NULL = unknown) and legacy_cutoffs.
-const schemaVersion = 8
+// verified bundle; NULL = unknown) and legacy_cutoffs; v9 adds
+// legacy_cutoffs.claimed (the cutoff is the server's Channel.legacy).
+const schemaVersion = 9
 
 // maxKeyChanges bounds the pending key changes kept per user and server; the
 // least recently seen is dropped (it is re-recorded if seen again).
@@ -84,9 +85,11 @@ CREATE TABLE IF NOT EXISTS archived_device_keys (
 	server_id BLOB NOT NULL, keys BLOB NOT NULL, user INTEGER NOT NULL, created INTEGER NOT NULL,
 	archived INTEGER NOT NULL, PRIMARY KEY (server_id, keys));
 -- Per encrypted channel: the newest cached message id when it was first
--- seen encrypted (plaintext up to it is legacy). Set once.
+-- seen encrypted (plaintext up to it is legacy), or with claimed = 1 the
+-- server's claim (Channel.legacy) when nothing was cached. Set once.
 CREATE TABLE IF NOT EXISTS legacy_cutoffs (
-	server_id BLOB NOT NULL, chan INTEGER NOT NULL, cutoff INTEGER NOT NULL, PRIMARY KEY (server_id, chan));
+	server_id BLOB NOT NULL, chan INTEGER NOT NULL, cutoff INTEGER NOT NULL,
+	claimed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (server_id, chan));
 CREATE TABLE IF NOT EXISTS server_alarms (
 	server_id BLOB PRIMARY KEY, detail TEXT NOT NULL, time INTEGER NOT NULL);
 `
@@ -301,6 +304,17 @@ func initSchema(tx *sql.Tx) error {
 		}
 		if n == 0 {
 			if _, err := tx.Exec(`ALTER TABLE epochs ADD COLUMN seq INTEGER`); err != nil {
+				return fmt.Errorf("migrating trust store v%d: %w", v, err)
+			}
+		}
+	}
+	if v >= 1 && v <= 8 {
+		var n int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('legacy_cutoffs') WHERE name = 'claimed'`).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			if _, err := tx.Exec(`ALTER TABLE legacy_cutoffs ADD COLUMN claimed INTEGER NOT NULL DEFAULT 0`); err != nil {
 				return fmt.Errorf("migrating trust store v%d: %w", v, err)
 			}
 		}
@@ -1068,25 +1082,34 @@ func (s *Store) ChannelE2E(sid e2ecrypto.ServerID, ch uint64) (bool, error) {
 // only have been inserted by the server. If none is recorded yet, maxCached
 // is recorded (sticky: set once, never changed) and returned.
 func (s *Store) LegacyCutoff(sid e2ecrypto.ServerID, ch uint64, maxCached uint64) (uint64, error) {
-	var cut int64
-	err := s.db.QueryRow(`SELECT cutoff FROM legacy_cutoffs WHERE server_id = ? AND chan = ?`, sid[:], i64(ch)).Scan(&cut)
+	cut, _, err := s.LegacyCutoffAs(sid, ch, maxCached, false)
+	return cut, err
+}
+
+// LegacyCutoffAs is LegacyCutoff where the value to record, cut, may be
+// the server's claim (claimed) rather than what this device cached. It
+// returns the recorded cutoff and whether it was a claim.
+func (s *Store) LegacyCutoffAs(sid e2ecrypto.ServerID, ch uint64, cut uint64, claimed bool) (uint64, bool, error) {
+	var got int64
+	var cl bool
+	err := s.db.QueryRow(`SELECT cutoff, claimed FROM legacy_cutoffs WHERE server_id = ? AND chan = ?`, sid[:], i64(ch)).Scan(&got, &cl)
 	if err == nil {
-		return uint64(cut), nil
+		return uint64(got), cl, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return 0, err
+		return 0, false, err
 	}
 	err = s.tx(func(tx *sql.Tx) error {
-		if _, err := tx.Exec(`INSERT OR IGNORE INTO legacy_cutoffs (server_id, chan, cutoff) VALUES (?, ?, ?)`,
-			sid[:], i64(ch), i64(maxCached)); err != nil {
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO legacy_cutoffs (server_id, chan, cutoff, claimed) VALUES (?, ?, ?, ?)`,
+			sid[:], i64(ch), i64(cut), claimed); err != nil {
 			return err
 		}
-		return tx.QueryRow(`SELECT cutoff FROM legacy_cutoffs WHERE server_id = ? AND chan = ?`, sid[:], i64(ch)).Scan(&cut)
+		return tx.QueryRow(`SELECT cutoff, claimed FROM legacy_cutoffs WHERE server_id = ? AND chan = ?`, sid[:], i64(ch)).Scan(&got, &cl)
 	})
 	if err != nil {
-		return 0, fmt.Errorf("legacy cutoff of channel %d: %w", ch, err)
+		return 0, false, fmt.Errorf("legacy cutoff of channel %d: %w", ch, err)
 	}
-	return uint64(cut), nil
+	return uint64(got), cl, nil
 }
 
 // ---- server identity ----

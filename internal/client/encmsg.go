@@ -50,10 +50,14 @@ const (
 	// its author didn't sign (an admin, or the server): "removed (not by
 	// author)". A delete the author signed keeps SecE2E.
 	SecRemoved
+	// SecLegacyClaimed: legacy by the server's Channel.legacy (this device
+	// cached none of the channel's plaintext when it first saw it
+	// encrypted), not by what it witnessed. Unauthenticated.
+	SecLegacyClaimed
 )
 
 func (s Sec) String() string {
-	return [...]string{"plain", "e2e", "waiting", "invalid", "legacy", "inserted", "removed"}[s]
+	return [...]string{"plain", "e2e", "waiting", "invalid", "legacy", "inserted", "removed", "legacy-claimed"}[s]
 }
 
 // trustedSecs is Trusted() as an SQL list: (SecPlain, SecE2E).
@@ -164,23 +168,50 @@ func (c *Client) chanIsE2E(q dbtx, sid e2ecrypto.ServerID, hasSID bool, ch uint6
 // the server's Channel.legacy, its claim of where chan.encrypt converted
 // it). ok is false without a server id.
 func (c *Client) legacyCutoff(q dbtx, ch uint64) (uint64, bool) {
+	cut, _, ok := c.legacyInfo(q, ch)
+	return cut, ok
+}
+
+// legacyInfo is legacyCutoff and whether the cutoff is the server's claim.
+// A claim counts only up to the seq of the channel's verified epoch 1
+// (honest: the conversion's last message precedes its epoch 1); above it,
+// or before epoch 1 is verified, it counts as 0.
+func (c *Client) legacyInfo(q dbtx, ch uint64) (cut uint64, claimed, ok bool) {
 	sid, ok := qServerID(q)
 	if !ok {
-		return 0, false
+		return 0, false, false
 	}
 	var newest uint64
 	if err := q.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM msgs WHERE chan = ?`, ch).Scan(&newest); err != nil {
-		return 0, false
+		return 0, false, false
 	}
+	claim := false
 	if newest == 0 {
 		// Only a device that saw none of the plaintext takes the server's
-		// word (both kinds of plaintext are unauthenticated anyway): one that
-		// watched the conversion knows the newest message itself, because
-		// events (msg.new before chan.update) apply in order.
+		// word: one that watched the conversion knows the newest message
+		// itself, because events (msg.new before chan.update) apply in order.
 		_ = q.QueryRow(`SELECT legacy FROM chans WHERE id = ?`, ch).Scan(&newest)
+		claim = newest > 0
 	}
-	cut, err := c.trust.LegacyCutoff(sid, ch, newest)
-	return cut, err == nil
+	cut, claimed, err := c.trust.LegacyCutoffAs(sid, ch, newest, claim)
+	if err != nil {
+		return 0, false, false
+	}
+	if claimed {
+		ep1, ok, err := c.trust.Epoch(sid, ch, 1)
+		if err != nil || !ok || ep1.Seq == 0 || cut > ep1.Seq {
+			return 0, false, true
+		}
+	}
+	return cut, claimed, true
+}
+
+// legacySec is the Sec of plaintext at or below a cutoff.
+func legacySec(claimed bool) Sec {
+	if claimed {
+		return SecLegacyClaimed
+	}
+	return SecLegacy
 }
 
 // noteE2EChan records the legacy cutoff of an encrypted channel the moment
@@ -205,9 +236,9 @@ func (c *Client) storeChanE2E(q dbtx, ch proto.Channel) error {
 	if ch.E2E && had && !old.E2E {
 		// Converted (chan.encrypt): the plaintext we cached is legacy from
 		// this event on, not only once the e2e worker reclassifies it.
-		if cut, ok := c.legacyCutoff(q, ch.ID); ok {
+		if cut, claimed, ok := c.legacyInfo(q, ch.ID); ok {
 			if _, err := q.Exec(`UPDATE msgs SET sec = ? WHERE chan = ? AND enc IS NULL AND deleted = 0 AND sec = ? AND id <= ?`,
-				SecLegacy, ch.ID, SecPlain, cut); err != nil {
+				legacySec(claimed), ch.ID, SecPlain, cut); err != nil {
 				return err
 			}
 		}
@@ -219,8 +250,8 @@ func (c *Client) storeChanE2E(q dbtx, ch proto.Channel) error {
 // below the legacy cutoff it predates encryption, above it only the server
 // can have put it there. Neither is authenticated.
 func (c *Client) plainSec(q dbtx, ch, id uint64) Sec {
-	if cut, ok := c.legacyCutoff(q, ch); ok && id <= cut {
-		return SecLegacy
+	if cut, claimed, ok := c.legacyInfo(q, ch); ok && id <= cut {
+		return legacySec(claimed)
 	}
 	return SecInserted
 }
@@ -406,13 +437,13 @@ func (c *Client) reopenMsgs(sid e2ecrypto.ServerID, chans []proto.Channel) {
 	for _, ch := range chans {
 		// Plaintext rows cached before the channel was known as encrypted
 		// are plain: classify them against the legacy cutoff.
-		cut, ok := c.legacyCutoff(c.db, ch.ID)
+		cut, claimed, ok := c.legacyInfo(c.db, ch.ID)
 		if !ok {
 			continue
 		}
 		res, _ := c.db.Exec(`UPDATE msgs SET sec = CASE WHEN id <= ?1 THEN ?2 ELSE ?3 END
-			WHERE chan = ?4 AND enc IS NULL AND deleted = 0 AND sec IN (?5, ?2, ?3)
-			AND sec != CASE WHEN id <= ?1 THEN ?2 ELSE ?3 END`, cut, SecLegacy, SecInserted, ch.ID, SecPlain)
+			WHERE chan = ?4 AND enc IS NULL AND deleted = 0 AND sec IN (?5, ?3, ?6, ?7)
+			AND sec != CASE WHEN id <= ?1 THEN ?2 ELSE ?3 END`, cut, legacySec(claimed), SecInserted, ch.ID, SecPlain, SecLegacy, SecLegacyClaimed)
 		if n, _ := rowsAffected(res); n > 0 {
 			u.msgs(ch.ID)
 		}

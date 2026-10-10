@@ -894,6 +894,28 @@ func TestLegacyCutoffSticky(t *testing.T) {
 	}
 }
 
+// Whether the cutoff was the server's claim is recorded with it, once;
+// v8 files gain the column (unclaimed).
+func TestLegacyCutoffClaimed(t *testing.T) {
+	s, home := newStore(t)
+	if c, cl, err := s.LegacyCutoffAs(sidA, 8, 12, true); err != nil || c != 12 || !cl {
+		t.Fatalf("first: %d %v %v", c, cl, err)
+	}
+	if c, cl, _ := s.LegacyCutoffAs(sidA, 8, 99, false); c != 12 || !cl {
+		t.Fatalf("moved to %d %v", c, cl)
+	}
+	if _, err := s.db.Exec(`ALTER TABLE legacy_cutoffs DROP COLUMN claimed`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`PRAGMA user_version = 8`); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if c, cl, err := open(t, home).LegacyCutoffAs(sidA, 8, 0, true); err != nil || c != 12 || cl {
+		t.Fatalf("after migration: %d %v %v", c, cl, err)
+	}
+}
+
 func TestRevokeSeqKeepsEarliest(t *testing.T) {
 	s, _ := newStore(t)
 	d := device(t, bob)
