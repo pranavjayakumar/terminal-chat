@@ -19,8 +19,11 @@ import (
 const (
 	maxEmojiPerMsg      = 32
 	maxReactionsPerUser = 10
-	maxSearchQuery      = 256
-	maxSearchTerms      = 8
+	// maxReactionsPerMsg bounds every copy of a message (each encrypted
+	// reaction carries its enc), so history pages keep fitting a frame.
+	maxReactionsPerMsg = 256
+	maxSearchQuery     = 256
+	maxSearchTerms     = 8
 )
 
 var (
@@ -485,6 +488,13 @@ func (s *Server) opReact(ctx context.Context, u proto.User, a proto.ReactArgs, a
 			if mine >= maxReactionsPerUser {
 				return nil, badRequest("too many reactions from you on this message")
 			}
+			total := 0
+			for _, users := range m.Reactions {
+				total += len(users)
+			}
+			if total >= maxReactionsPerMsg && !slices.Contains(m.Reactions[a.Emoji], u.ID) {
+				return nil, proto.Errf(proto.ErrConflict, "too many reactions on this message")
+			}
 		}
 		var r sql.Result
 		kind := proto.KReactAdd
@@ -539,14 +549,25 @@ func (s *Server) opHistory(ctx context.Context, u proto.User, a proto.HistoryArg
 }
 
 // trimBytes keeps messages until ~MaxResultBytes so a RES fits in a frame.
+// It always keeps the first message, so paging never stalls: one that is
+// too big on its own loses reaction encs (from the end) until it fits.
 func trimBytes(msgs []proto.Message, more *bool) []proto.Message {
 	size := 0
 	for i, m := range msgs {
 		size += encodedSize(m)
-		if size > proto.MaxResultBytes {
-			*more = true
+		if size <= proto.MaxResultBytes {
+			continue
+		}
+		*more = true
+		if i > 0 {
 			return msgs[:i]
 		}
+		for len(m.Renc) > 0 && encodedSize(m) > proto.MaxResultBytes {
+			m.Renc = m.Renc[:len(m.Renc)/2]
+		}
+		msgs[0] = m
+		*more = len(msgs) > 1
+		return msgs[:1]
 	}
 	return msgs
 }

@@ -165,3 +165,46 @@ func TestEncryptedEditDeleteReact(t *testing.T) {
 		t.Fatalf("unsigned delete stored %x (%v)", dstored, err)
 	}
 }
+
+// A message holds at most 256 reactions in all (each encrypted one carries
+// its enc in every copy of the message).
+func TestReactionsCapPerMessage(t *testing.T) {
+	ts := startServer(t, "tcp")
+	alice := ts.registerCaps(t, "alice", true, e2eCaps)
+	bob := ts.registerCaps(t, "bob", false, e2eCaps)
+	snap, _ := alice.syncFresh()
+	bob.syncFresh()
+	id := alice.send(generalID(t, snap), "popular").Msg
+	for i := range maxReactionsPerMsg - 1 {
+		if _, err := ts.st.db.Exec(`INSERT INTO reactions (msg, user, emoji) VALUES (?, ?, ?)`, id, 1000+i, "👍"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bob.ok(proto.OpReact, proto.ReactArgs{Msg: id, Emoji: "👍"}, nil) // the 256th
+	bob.ok(proto.OpReact, proto.ReactArgs{Msg: id, Emoji: "👍"}, nil) // a repeat is still a no-op
+	wantErr(t, "257th", alice.errOf(proto.OpReact, proto.ReactArgs{Msg: id, Emoji: "👍"}), proto.ErrConflict, "too many")
+}
+
+// A history page always holds at least one message: one too big on its own
+// loses reaction encs until it fits.
+func TestTrimBytesNeverStalls(t *testing.T) {
+	big := proto.Message{ID: 9, Enc: make([]byte, proto.MaxEnc), EditEnc: make([]byte, proto.MaxEnc)}
+	for i := range 2000 {
+		big.Renc = append(big.Renc, proto.ReactEnc{User: uint64(i), Emoji: tag(i % 100), Enc: make([]byte, 397)})
+	}
+	small := proto.Message{ID: 8, Body: "x"}
+	for _, msgs := range [][]proto.Message{{big, small}, {big}} {
+		more := false
+		got := trimBytes(msgs, &more)
+		if len(got) != 1 || got[0].ID != 9 || encodedSize(got[0]) > proto.MaxResultBytes || len(got[0].Renc) == 0 {
+			t.Fatalf("got %d messages, size %d, %d renc", len(got), encodedSize(got[0]), len(got[0].Renc))
+		}
+		if more != (len(msgs) > 1) {
+			t.Fatalf("more = %v for %d messages", more, len(msgs))
+		}
+	}
+	more := false
+	if got := trimBytes([]proto.Message{small, big}, &more); len(got) != 1 || got[0].ID != 8 || !more {
+		t.Fatalf("small then big: %d, more %v", len(got), more)
+	}
+}
