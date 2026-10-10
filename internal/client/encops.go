@@ -237,8 +237,11 @@ func (c *Client) applyEdit(q dbtx, row msgRow, enc []byte, seq uint64, memo *key
 	case !newerEdit(p.V, p.TS, enc, row):
 		c.reject(row.id, "edit: (v %d, ts %d) is not newer than the applied (v %d, ts %d)", p.V, p.TS, row.ev, row.ets)
 	default:
-		_, err := q.Exec(`UPDATE msgs SET body = ?, edited = ?, ev = ?, ets = ?, eenc = ?, epend = NULL WHERE id = ?`,
-			p.Body, max(p.TS, 1), p.V, p.TS, enc, row.id)
+		// Only the row we judged (the e2e worker runs outside the event
+		// transaction): not if it was deleted or replaced meanwhile.
+		_, err := q.Exec(`UPDATE msgs SET body = ?, edited = ?, ev = ?, ets = ?, eenc = ?, epend = NULL
+			WHERE id = ? AND deleted = 0 AND author = ? AND mid = ?`,
+			p.Body, max(p.TS, 1), p.V, p.TS, enc, row.id, row.author, row.mid)
 		return err == nil
 	}
 	return false

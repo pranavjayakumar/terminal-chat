@@ -512,7 +512,10 @@ func (c *Client) reopenMsgs(sid e2ecrypto.ServerID, chans []proto.Channel) {
 		if sec != SecE2E {
 			body = ""
 		}
-		res, err := c.db.Exec(`UPDATE msgs SET body = ?, sec = ? WHERE id = ? AND sec = ?`, body, sec, m.ID, SecWaiting)
+		// Only the row we judged: an event applied meanwhile (a delete, a
+		// refetch with other bytes or metadata) wins.
+		res, err := c.db.Exec(`UPDATE msgs SET body = ?, sec = ? WHERE id = ? AND sec = ? AND deleted = 0
+			AND enc = ? AND chan = ? AND author = ? AND thread = ?`, body, sec, m.ID, SecWaiting, m.Enc, m.Chan, m.Author, m.Thread)
 		if n, _ := rowsAffected(res); err != nil || n == 0 {
 			continue
 		}
