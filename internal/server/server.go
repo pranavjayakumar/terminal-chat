@@ -45,6 +45,9 @@ type Server struct {
 	pin  string
 	log  *slog.Logger
 	hk   *hookState
+	// tamper holds the malicious-server test hooks; an empty struct unless
+	// built with -tags tctamper (tamper_on.go).
+	tamper tamperState
 
 	// mu serializes every write transaction together with its fan-out, so
 	// sessions observe events in seq order and sync can take an exact head.

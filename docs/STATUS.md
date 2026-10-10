@@ -34,7 +34,7 @@ The owner should change the droplet root password (it was shared in chat; passwo
 | M0 scaffold, spec, agents, CI | ✅ done |
 | M1 core chat (server, client, TUI, sync, offline outbox) | ✅ done, battle-tested (chaos + adversarial + live herdr) |
 | M2 collaboration | ✅ essentially done: notifications, herdr badge, `/share-pane`, auto-away, `tc notify`, notes, `/name`, threads, webhooks + bots, privacy scrubbing, drafts, `/highlight`, activity (Alt-A), message viewer (`v`), pins (`p`, `/pins`), user groups (`@oncall`), reminders (`/remind`), diff/snippets (`tc send --file`, `/snippet`) |
-| M3 end-to-end encryption | steps 1–7 merged; step 9 (membership: chan.add+bundle, chan.remove, chan.encrypt) on branch `e2e/membership`; (#9, #10, #11, #13, #16, #25 client verification, #26 encrypted send/receive) — **encrypted DMs and private channels work end to end**; step 8 (encrypted edit/delete/react) in PR #28; step 10 (trust UX: safety numbers, `/verify`, `--github`, key-change banner, `/accept-key`, `/alarm`, audited `/alarm-clear`, `?` marks, `tc verify`) on branch `e2e/trust-ux` |
+| M3 end-to-end encryption | steps 1–7 merged; step 9 (membership: chan.add+bundle, chan.remove, chan.encrypt) on branch `e2e/membership`; (#9, #10, #11, #13, #16, #25 client verification, #26 encrypted send/receive) — **encrypted DMs and private channels work end to end**; step 8 (encrypted edit/delete/react) in PR #28; step 10 (trust UX: safety numbers, `/verify`, `--github`, key-change banner, `/accept-key`, `/alarm`, audited `/alarm-clear`, `?` marks, `tc verify`) merged (#30); step 11 (malicious-server suite: `-tags tctamper` server hooks, `internal/e2e/malicious_test.go`, one client bug fixed — missed `key.epoch` now re-fetched) on branch `e2e/malicious-server` |
 | M4 zero-setup onboarding | not started |
 | M5 voice | not started |
 
@@ -51,7 +51,8 @@ Release tag: `v0.1.0` = M1. No newer tag yet.
    state, per-message markers, no sends in alarm. `tc send/notify/tail` covered. Decisions in `docs/E2E.md`
    step 7. Review with protocol-guardian + security-reviewer + tui-reviewer + breaker, then merge.
 2. **E2E steps 8–12** per `docs/E2E.md`: 8 edit/delete/react + local FTS, 9 membership changes +
-   `chan.remove` + `chan.encrypt` (legacy DMs), 10 TUI warnings + `/verify`, 11 malicious-server suite,
+   `chan.remove` + `chan.encrypt` (legacy DMs), 10 TUI warnings + `/verify`, 11 malicious-server suite
+   (done: `make test-malicious`; results table and decisions in `docs/E2E.md` step 11),
    12 security pass + chaos.
 3. **Finish M2**: diff and `file:line` snippets. (Long-line viewer, `/pins`, `/remind` and user groups
    `@team` are done.)
@@ -102,6 +103,10 @@ so remaining work that day ran on Claude subagents) (check with
 - Bots are named `*-bot`, owned, capped (10 active per owner, 100 per server), retired when their last hook
   is deleted.
 - E2E design r1 was rejected (malicious server could read DMs); r2 in `docs/E2E.md` is authoritative.
+- Malicious-server tests need `-tags tctamper` (server hooks in `internal/server/tamper_on.go`, absent from
+  default/release builds; `tc server` refuses to run from a tagged build). `make test` runs them; plain
+  `go test ./...` does not. GitHub Actions was unavailable (billing) during step 11: local
+  `go test -race` (both builds) was the gate.
 
 ## Merged PRs (session 1)
 
