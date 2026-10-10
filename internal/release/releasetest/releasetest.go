@@ -188,6 +188,17 @@ func (s *Server) Publish(t testing.TB, tag string, bins map[string][]byte) {
 	s.PutChecksums(t, tag, []byte(sums.String()))
 }
 
+// SymlinkTarball is a .tar.gz whose "tc" member is a symlink to target.
+func SymlinkTarball(target string) []byte {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(zw)
+	tw.WriteHeader(&tar.Header{Name: "tc", Mode: 0o777, Typeflag: tar.TypeSymlink, Linkname: target})
+	tw.Close()
+	zw.Close()
+	return buf.Bytes()
+}
+
 // Tarball is a .tar.gz holding bin as an executable "tc" plus a README.
 func Tarball(bin []byte) []byte {
 	var buf bytes.Buffer

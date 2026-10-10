@@ -4,3 +4,8 @@ package release
 func ReplaceHook(exe string, bin []byte, afterClose func(tmp string)) error {
 	return replace(exe, bin, afterClose)
 }
+
+// Extract exposes extract; MaxUnpacked its bound.
+var Extract = extract
+
+const MaxUnpacked = maxUnpacked

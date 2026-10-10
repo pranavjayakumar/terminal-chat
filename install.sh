@@ -174,7 +174,8 @@ main() {
 
 	mkdir -p "$tmp/x"
 	tar -xzf "$tmp/$asset" -C "$tmp/x" tc || die "can't unpack $asset"
-	[ -f "$tmp/x/tc" ] || die "$asset has no tc binary"
+	# -f follows symlinks; a symlink member must not pass as the binary.
+	[ -f "$tmp/x/tc" ] && [ ! -L "$tmp/x/tc" ] || die "$asset has no tc binary"
 
 	mkdir -p "$dir" || die "can't create $dir"
 	# Copy next to the target, then rename: atomic, and a running tc keeps

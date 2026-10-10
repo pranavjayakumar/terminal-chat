@@ -39,10 +39,12 @@ import (
 // DefaultBase is where releases live unless TC_RELEASE_BASE says otherwise.
 const DefaultBase = "https://github.com/pranavjayakumar/terminal-chat/releases"
 
-// Size caps: a release tarball and the binary in it.
+// Size caps: a release tarball, the binary in it, and everything the
+// tarball decompresses to (a gzip bomb in another member stops here).
 const (
 	maxArchive  = 64 << 20
 	maxBinary   = 96 << 20
+	maxUnpacked = 128 << 20
 	maxSmallDoc = 64 << 10
 )
 
@@ -253,16 +255,43 @@ func (s *Source) Fetch(ctx context.Context, tag, goos, goarch string) ([]byte, e
 	if hex.EncodeToString(got[:]) != want {
 		return nil, fmt.Errorf("%s: %w (expected %s, got %x); not installing", asset, ErrChecksum, want, got)
 	}
-	return extract(arc)
+	return extract(ctx, arc)
 }
 
-// extract returns the regular file named "tc" from a .tar.gz.
-func extract(arc []byte) ([]byte, error) {
+// errUnpacked: the archive decompresses to more than maxUnpacked.
+var errUnpacked = errors.New("archive unpacks to too much data")
+
+// capReader reads at most n bytes from r, then fails, and stops once ctx is
+// done; it bounds the work of skipping over members we don't want.
+type capReader struct {
+	ctx context.Context
+	r   io.Reader
+	n   int64
+}
+
+func (c *capReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	if c.n <= 0 {
+		return 0, errUnpacked
+	}
+	if int64(len(p)) > c.n {
+		p = p[:c.n]
+	}
+	n, err := c.r.Read(p)
+	c.n -= int64(n)
+	return n, err
+}
+
+// extract returns the regular file named "tc" from a .tar.gz, reading at
+// most maxUnpacked decompressed bytes and stopping when ctx is done.
+func extract(ctx context.Context, arc []byte) ([]byte, error) {
 	zr, err := gzip.NewReader(bytes.NewReader(arc))
 	if err != nil {
 		return nil, fmt.Errorf("reading archive: %w", err)
 	}
-	tr := tar.NewReader(zr)
+	tr := tar.NewReader(&capReader{ctx: ctx, r: zr, n: maxUnpacked})
 	for {
 		h, err := tr.Next()
 		if errors.Is(err, io.EOF) {

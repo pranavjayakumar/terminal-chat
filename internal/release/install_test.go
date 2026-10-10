@@ -458,3 +458,21 @@ func TestInstallCopiesIntoMktempFile(t *testing.T) {
 		t.Fatalf("leftovers: %v", ents)
 	}
 }
+
+// A (correctly signed and checksummed) archive whose tc member is a
+// symlink is refused: [ -f ] alone follows it.
+func TestInstallRejectsSymlinkMember(t *testing.T) {
+	srv := releasetest.New(t, "v0.4.0")
+	target := filepath.Join(t.TempDir(), "elsewhere")
+	os.WriteFile(target, stubTC("evil"), 0o755)
+	arc := releasetest.SymlinkTarball(target)
+	srv.Put("v0.4.0", "tc_linux_amd64.tar.gz", arc)
+	srv.PutChecksums(t, "v0.4.0", []byte(fmt.Sprintf("%x  tc_linux_amd64.tar.gz\n", sha256.Sum256(arc))))
+	r := runInstall(t, srv, installOpts{unameS: "Linux", unameM: "x86_64", args: []string{installInvite}})
+	if r.err == nil || !strings.Contains(r.stderr, "has no tc binary") {
+		t.Fatalf("symlink member: %v\n%s", r.err, r.stderr)
+	}
+	if _, err := os.Lstat(filepath.Join(r.dir, "tc")); !os.IsNotExist(err) || r.stubLog(t) != nil {
+		t.Fatal("installed or ran the symlink target")
+	}
+}
