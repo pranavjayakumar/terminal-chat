@@ -43,11 +43,12 @@ type fakeClient struct {
 	addErr   error
 	tr       fakeTrust
 
-	groups    []proto.Group
-	reminders []proto.Reminder
-	reminded  []remindCall
-	remindErr error
-	nextRemID uint64
+	groups     []proto.Group
+	reminders  []proto.Reminder
+	reminded   []remindCall
+	remindErr  error
+	nextRemID  uint64
+	inviteCode string // CreateTeamInvite returns this when set
 }
 
 type remindCall struct {
@@ -217,6 +218,20 @@ func (f *fakeClient) Search(ctx context.Context, q string, ch uint64) ([]proto.M
 }
 func (f *fakeClient) CreateInvite(ctx context.Context, user uint64) (string, error) {
 	return "tc1-invite", nil
+}
+func (f *fakeClient) CreateTeamInvite(ctx context.Context, uses int, ttl time.Duration) (proto.InviteRes, error) {
+	f.record(fmt.Sprintf("invite %d %s", uses, ttl))
+	if uses == 0 {
+		uses = 1
+	}
+	if ttl == 0 {
+		ttl = proto.DefaultInviteTTL
+	}
+	code := "tc://chat.example.com:7443/abcdefghijklmnopqrstuvwxyz#Pin-_x"
+	if f.inviteCode != "" {
+		code = f.inviteCode
+	}
+	return proto.InviteRes{Code: code, Uses: int64(uses), Expires: time.Now().Add(ttl).UnixMilli()}, nil
 }
 func (f *fakeClient) SendTyping(ch uint64) error { return nil }
 func (f *fakeClient) SetAway(away bool, status string) error {

@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS invites (
 	user INTEGER,
 	created INTEGER NOT NULL,
 	expires INTEGER NOT NULL,
-	used INTEGER NOT NULL DEFAULT 0
+	used INTEGER NOT NULL DEFAULT 0,
+	uses INTEGER NOT NULL DEFAULT 1 -- redemptions left; used = 1 once it hits 0
 );
 CREATE TABLE IF NOT EXISTS channels (
 	id INTEGER PRIMARY KEY,
@@ -129,6 +130,16 @@ func openStore(path string) (*store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("creating schema: %w", err)
+	}
+	// Team invites (PROTOCOL.md §4.1): older invites keep one use.
+	if err := addColumn(db, "invites", "uses", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	// invite.list (PROTOCOL.md §5): who minted it; 0 = the server host.
+	if err := addColumn(db, "invites", "created_by", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		db.Close()
+		return nil, err
 	}
 	if err := migrateHooks(db); err != nil {
 		db.Close()

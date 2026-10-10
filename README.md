@@ -1,27 +1,41 @@
-# tc — terminal chat
+# tc: terminal chat
 
 Team chat that lives in your terminal (and your herdr panes). One small binary, Mac + Linux.
 
 - Instant start from a local cache, works offline, sends when you're back
 - Channels, private channels, DMs, threads, reactions, edits, search, pinned messages
-- Sign in with your existing SSH key — no passwords, no accounts to manage
+- Sign in with your existing SSH key. No passwords, no accounts to manage
 - Pipe anything into chat: `make test 2>&1 | tc send '#backend'`
 
-## Quickstart
+## Get started
 
-**Server** (once, on any machine teammates can reach — see [docs/DEPLOY.md](docs/DEPLOY.md)):
-
-```sh
-tc server --public YOUR_IP:7443       # prints a one-time admin invite on first run
-tc server invite                       # one invite per teammate
-```
-
-**Everyone:**
+**Admin, once:** run a server on any machine your teammates can reach ([docs/DEPLOY.md](docs/DEPLOY.md)):
 
 ```sh
-tc login 'tc://host:7443/abc…#pin…'   # uses ssh-agent or ~/.ssh/id_ed25519
-tc                                    # chat
+tc server --public YOUR_IP:7443          # first run prints your own admin invite
+tc server invite --uses 15 --ttl 24h     # one invite for the whole team
 ```
+
+It prints a one-liner. Share it in your team's usual channel:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/install.sh | sh -s -- 'tc://host:7443/abc…#pin…'
+```
+
+**Teammates** paste it. It downloads the release for their Mac or Linux box, checks its sha256,
+installs `tc` to `~/.local/bin` and runs `tc join`, which picks their SSH key (ssh-agent, then
+`~/.ssh/id_ed25519`, else it makes a tc-only key), suggests a name from `git config user.name`,
+and asks once to confirm. Then `tc`.
+
+Already have tc? `tc join 'tc://…'` (`tc login` still works; `TC_INVITE='tc://…' tc join` keeps
+the code out of `ps`). Keep invites short-lived (a day is plenty) and revoke leftovers with
+`/invite-revoke` or `tc server invite --revoke`. Admins can also mint invites inside
+tc with `/invite [uses] [ttl]`, e.g. `/invite 15 1d`, which copies the one-liner to the clipboard.
+`tc update` installs the newest signed release in place (`--check` only reports); tc shows a dim
+`update vX` in the sidebar when one is out. For that, release builds make one HTTPS `HEAD` request to
+`github.com/pranavjayakumar/terminal-chat/releases/latest` at most once a day. It sends no version,
+user, server or chat data, but GitHub sees your IP address and that it runs tc.
+`TC_NO_UPDATE_CHECK=1` turns it off, and dev builds never check.
 
 ## Using it
 
@@ -36,7 +50,7 @@ tc                                    # chat
 | `F1` or `/help` | all keys and commands |
 | `Ctrl-C` twice | quit |
 
-Commands: `/join #x` `/create #x [--private]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/pins` `/activity` `/highlight [word…]` `/unhighlight word…` `/group name @a @b` (admin) `/groups` `/remind <when> <text>` `/reminders` `/remind-delete id` `/away [status]` `/back` `/snippet file[:range]` `/share-pane [pane]` `/invite` (admin) `/webhook name` `/webhooks` `/webhook-delete id` `/verify @user` `/accept-key @user` `/members` `/alarm`.
+Commands: `/join #x` `/create #x [--private]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/pins` `/activity` `/highlight [word…]` `/unhighlight word…` `/group name @a @b` (admin) `/groups` `/remind <when> <text>` `/reminders` `/remind-delete id` `/away [status]` `/back` `/snippet file[:range]` `/share-pane [pane]` `/invite [uses] [ttl]` `/invites` `/invite-revoke id` (admin) `/webhook name` `/webhooks` `/webhook-delete id` `/verify @user` `/accept-key @user` `/members` `/alarm`.
 
 Unsent text is kept per channel and thread (a dim `✎` in the sidebar marks channels with a draft) and
 survives restarts. `/remind 10m stand up` or `/remind tomorrow 9am …` posts `⏰ …` in your private notes on time, even
@@ -116,7 +130,7 @@ auto-away (0 disables). Details in [docs/TUI.md](docs/TUI.md).
 
 ## Webhooks
 
-CI jobs, scripts and agents can post into a channel with a plain HTTPS POST — no tc
+CI jobs, scripts and agents can post into a channel with a plain HTTPS POST, no tc
 install or SSH key needed. In the channel, run `/webhook ci` (any member can). tc
 creates a bot user `ci-bot` (bot names always end in `-bot`), adds it to the channel,
 and copies a ready-made curl command to your clipboard. The secret URL is only in the
@@ -128,7 +142,7 @@ so it stays out of your shell history and `ps`:
 curl -fsS -k --pinnedpubkey 'sha256//BASE64PIN=' -H 'Content-Type: application/json' -d '{"text":"hello from a webhook"}' "$TC_HOOK_URL"
 ```
 
-- The URL is the secret — treat it like a password: put it in a secret store or run the
+- The URL is the secret. Treat it like a password: put it in a secret store or run the
   `export` line yourself (without the `#`). `/webhooks` lists hooks; `/webhook-delete <id>`
   revokes one at once (any member of its channel can). Hooks stop working when their
   creator leaves the channel or is disabled.
@@ -141,7 +155,7 @@ curl -fsS -k --pinnedpubkey 'sha256//BASE64PIN=' -H 'Content-Type: application/j
   creator's own send limit (HTTP 429 with `Retry-After`). At most 10 hooks per person and
   20 per channel.
 
-GitHub Actions — store the URL and pin as secrets `TC_HOOK_URL` and `TC_HOOK_PIN`
+GitHub Actions: store the URL and pin as secrets `TC_HOOK_URL` and `TC_HOOK_PIN`
 (`sha256//…`):
 
 ```yaml
@@ -151,7 +165,7 @@ GitHub Actions — store the URL and pin as secrets `TC_HOOK_URL` and `TC_HOOK_P
     TC_HOOK_URL: ${{ secrets.TC_HOOK_URL }}
     TC_HOOK_PIN: ${{ secrets.TC_HOOK_PIN }}
     # Via env, not inline ${{ }}, so branch names can't inject shell.
-    MSG: "${{ github.repository }}@${{ github.ref_name }}: ${{ job.status }} — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+    MSG: "${{ github.repository }}@${{ github.ref_name }}: ${{ job.status }} - ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
     KEY: "${{ github.run_id }}-${{ github.run_attempt }}"
   run: |
     printf '%s' "$MSG" | curl -fsS -k --pinnedpubkey "$TC_HOOK_PIN" \

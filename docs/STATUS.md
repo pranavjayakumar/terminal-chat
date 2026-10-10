@@ -8,19 +8,20 @@ Last updated: 2026-10-10 (end of session 1; branch `m2-activity` adds drafts, hi
 cut release v0.2.0, redeploy the droplet, hand the owner the one-line install/invite command, then PAUSE.
 
 **In flight**
-- E2E step 11 malicious-server suite — Claude subagent; worktree `.claude/worktrees/agent-ab2d5e801827b592f`,
-  branch `e2e/malicious-server` (not pushed yet). If that worktree is gone/unfinished: re-run step 11 per
-  `docs/E2E.md` PR plan on a fresh branch.
-- M4 onboarding — kiro; worktree `.claude/worktrees/kiro-onboard`, branch `m4-onboarding`; prompt covers release
-  workflow, install.sh, `tc join`, invite one-liner, multi-use invites, `tc update`.
+- E2E step 12 (final pass) — kiro; worktree `.claude/worktrees/kiro-step12`, branch `e2e/final-pass`: chaos during
+  rotations, signed-time drift marker, security pass (findings → docs/E2E.md), fuzzing, docs; closes M3.
+- M4 onboarding — DONE (PR #34). Signing key (owner's ~/.ssh/id_ed25519 public half) embedded.
+- Step 11 is DONE (PR #32).
 
-**Step 12 (E2E final pass)** is done on branch `e2e/final-pass` (kiro worktree `.claude/worktrees/kiro-step12`,
-not pushed): findings table, fuzz and chaos results in `docs/E2E.md` "Step 12 security pass".
-
-**Next (in order):** review + merge step 11 → review + merge M4 → review + merge step 12 (`e2e/final-pass`) → tag v0.2.0 (release workflow builds binaries) → redeploy droplet with the release binary
+**Next (in order):** review + merge step 12 (run a security review on it) → `git tag v0.2.0 && git push origin v0.2.0`
+→ `gh run watch` (draft release) → `make release-sign TAG=v0.2.0 KEY=~/.ssh/id_ed25519` → tag v0.2.0 done (release workflow builds binaries) → redeploy droplet with the release binary
 (`docs/DEPLOY.md`) → test the one-liner from a clean HOME → give the owner the command → update this file → pause.
 
-**Rules:** kiro hard cap 55–60% of monthly credits (check `kiro-cli chat --no-interactive "/usage"`; stop at 55%).
+**Repo hygiene:** GitHub deletes PR branches on merge; after merging, remove the worktree and local branch so
+only `main` (plus in-flight work) exists. Owner wants an onboarding session after the pause — prepare a clear
+walkthrough of the product workflow (install → join → chat → herdr → encryption/verify → admin/invites → deploy).
+
+**Rules:** kiro hard cap 55–60% of monthly credits; once reached, run workers as Claude subagents (owner) (check `kiro-cli chat --no-interactive "/usage"`; stop at 55%).
 Claude only orchestrates (review/merge/log); workers on kiro, launched with herdr env vars unset. Merge only with
 `gh pr checks <n> --watch` exit 0 (CI works again since the repo is public). Log every event in `docs/WORKLOG.md`.
 
@@ -36,8 +37,8 @@ The owner should change the droplet root password (it was shared in chat; passwo
 | M0 scaffold, spec, agents, CI | ✅ done |
 | M1 core chat (server, client, TUI, sync, offline outbox) | ✅ done, battle-tested (chaos + adversarial + live herdr) |
 | M2 collaboration | ✅ essentially done: notifications, herdr badge, `/share-pane`, auto-away, `tc notify`, notes, `/name`, threads, webhooks + bots, privacy scrubbing, drafts, `/highlight`, activity (Alt-A), message viewer (`v`), pins (`p`, `/pins`), user groups (`@oncall`), reminders (`/remind`), diff/snippets (`tc send --file`, `/snippet`) |
-| M3 end-to-end encryption | ✅ **done** (steps 1–12; step 12 — security pass with 7 medium+/high fixes, chaos during rotations, signed-time drift warning, 14 fuzz targets — on branch `e2e/final-pass`, not pushed). History: steps 1–7 merged; step 9 (membership: chan.add+bundle, chan.remove, chan.encrypt) on branch `e2e/membership`; (#9, #10, #11, #13, #16, #25 client verification, #26 encrypted send/receive) — **encrypted DMs and private channels work end to end**; step 8 (encrypted edit/delete/react) in PR #28; step 10 (trust UX: safety numbers, `/verify`, `--github`, key-change banner, `/accept-key`, `/alarm`, audited `/alarm-clear`, `?` marks, `tc verify`) merged (#30); step 11 (malicious-server suite: `-tags tctamper` server hooks, `internal/e2e/malicious_test.go`, one client bug fixed — missed `key.epoch` now re-fetched) on branch `e2e/malicious-server` |
-| M4 zero-setup onboarding | not started |
+| M3 end-to-end encryption | ✅ done: steps 1–12 (PRs #9–#13, #16, #25, #26, #28–#30, #32, step 12 PR) incl. malicious-server suite, chaos during rotations, fuzzing, security pass |
+| M4 zero-setup onboarding | ✅ done (PR #34): signed releases, verified install.sh, `tc join`, invite one-liner, team invites + list/revoke, `tc update`. Deferred: brew tap, any-member invites |
 | M5 voice | not started |
 
 Release tag: `v0.1.0` = M1. No newer tag yet.

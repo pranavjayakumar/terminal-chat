@@ -12,4 +12,13 @@ The current resume point always lives in [STATUS.md](STATUS.md) → "Handoff".
 - 08:50 · E2E step 11 (malicious-server suite) · Claude Opus subagent, worktree agent-ab2d5e801827b592f, branch e2e/malicious-server · running
 - 08:55 · M4 onboarding · kiro Opus, worktree .claude/worktrees/kiro-onboard, branch m4-onboarding · running
 - 09:00 · Owner: finish M3 + M4 end to end, then pause; kiro cap 55–60% (now 46.8%); Claude orchestrates only
-- 09:30 · E2E step 12 final pass (security pass: 1 high + 6 medium fixed, 3 low fixed, rest documented; chaos during rotations 5/5; signed-time drift warning; 14 fuzz targets 60 s, no crashers) · kiro, worktree kiro-step12, branch e2e/final-pass · done, not pushed; M3 done
+- 10:30 · E2E step 11 merged · PR #32 (CI green — Actions back after repo went public) · 24 cases; bug fixed: dropped key.epoch left clients stuck
+- 10:35 · E2E step 12 (chaos during rotations, signed-time drift, security pass, fuzz, docs) · kiro Opus, worktree .claude/worktrees/kiro-step12, branch e2e/final-pass · running · kiro 47.0%
+- 11:40 · Switched Claude account; resumed from handoff
+- 11:45 · M4 onboarding built (kiro) · PR #34 · security review (kiro Sonnet): H1 release trust root, M1–M4, L1–L7
+- 11:50 · M4 security fixes · kiro Opus in .claude/worktrees/kiro-onboard (branch m4-onboarding) · running · signed releases with the owner's SSH key (signing step done locally by the coordinator at release time) · kiro 48.3%
+- 12:30 · Owner: if kiro reaches the cap, run workers as Claude subagents · kiro 50.3%
+- 13:20 · M4 security fixes done (kiro) + owner's signing key embedded · PR #34 merged (CI green) · M4 on main
+- 13:20 · Waiting for E2E step 12 before tagging v0.2.0 (release must include M3 final pass)
+- 13:50 · Repo cleanup: 37 merged remote branches deleted, local merged branches + obsolete stash removed, GitHub 'delete branch on merge' enabled · only main + e2e/final-pass (step 12, in flight) remain
+- 14:00 · E2E step 12 final pass (security pass: 1 high + 6 medium fixed, 3 low fixed, rest documented; chaos during rotations 5/5; signed-time drift warning; 14 fuzz targets 60 s, no crashers) · kiro, worktree kiro-step12, branch e2e/final-pass · done, not pushed; M3 done
