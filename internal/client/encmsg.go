@@ -214,11 +214,16 @@ func legacySec(claimed bool) Sec {
 	return SecLegacy
 }
 
-// noteE2EChan records the legacy cutoff of an encrypted channel the moment
-// the client first sees it so (no-op afterwards).
+// noteE2EChan records, the moment the client first sees a channel
+// encrypted, its legacy cutoff and the sticky e2e flag: from then on a
+// "plaintext" claim never makes a send go out in the clear, even if the e2e
+// worker never got to the channel (step 12 security pass).
 func (c *Client) noteE2EChan(q dbtx, ch proto.Channel) {
 	if ch.E2E {
 		c.legacyCutoff(q, ch.ID)
+		if sid, ok := qServerID(q); ok {
+			_ = c.trust.MarkChannelE2E(sid, ch.ID)
+		}
 	}
 }
 

@@ -153,6 +153,7 @@ type e2eFake struct {
 	onOp      func(f *e2eFake, r proto.Req) bool            // other ops; true: answered (encops_test.go)
 	searchRes proto.MsgsRes
 	searched  atomic.Int32
+	devHold   chan struct{} // non-nil: devices.list is answered once it's closed
 
 	registered chan proto.Signed
 	sends      chan proto.SendArgs
@@ -232,6 +233,12 @@ func (f *e2eFake) keyEpoch(ch, actor uint64, b proto.Signed) uint64 {
 // (a reset at head 20) and then serves e2e requests in the background.
 func startE2E(t *testing.T, fs *fakeServer, sn proto.Snapshot, devs proto.DevicesListRes) *e2eFake {
 	t.Helper()
+	return startE2EWith(t, fs, sn, devs, nil)
+}
+
+// startE2EWith is startE2E with setup run before the fake starts serving.
+func startE2EWith(t *testing.T, fs *fakeServer, sn proto.Snapshot, devs proto.DevicesListRes, setup func(*e2eFake)) *e2eFake {
+	t.Helper()
 	fc := fs.accept()
 	f := &e2eFake{t: t, fc: fc, seq: 20, devs: devs, bundles: map[uint64]map[uint32]proto.EpochKey{},
 		registered: make(chan proto.Signed, 4), rotates: make(chan proto.KeyRotateArgs, 16), sends: make(chan proto.SendArgs, 16),
@@ -245,6 +252,9 @@ func startE2E(t *testing.T, fs *fakeServer, sn proto.Snapshot, devs proto.Device
 	}
 	f.write(proto.TSnapshot, sn)
 	f.ok(r.ID, proto.SyncRes{Head: 20, Reset: true})
+	if setup != nil {
+		setup(f)
+	}
 	go f.serve()
 	return f
 }
@@ -267,6 +277,16 @@ func (f *e2eFake) serve() {
 			}
 			switch r.Op {
 			case proto.OpDevicesList:
+				if f.devHold != nil {
+					go func(id uint32) {
+						<-f.devHold
+						f.mu.Lock()
+						res := f.devs
+						f.mu.Unlock()
+						f.ok(id, res)
+					}(r.ID)
+					continue
+				}
 				f.mu.Lock()
 				res := f.devs
 				f.mu.Unlock()

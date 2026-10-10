@@ -778,3 +778,38 @@ func TestConfirmedJoinNoAlarm(t *testing.T) {
 		t.Fatalf("sealing roster %v", r)
 	}
 }
+
+// The server shows a DM encrypted, stalls devices.list so the e2e worker
+// never reaches the channel, then claims it's plaintext: queued messages
+// must not go out in the clear (step 12 security pass: the e2e flag is
+// sticky from the first sight, not from the worker's first pass).
+func TestEncStickyFlagBeforeWorker(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	hold := make(chan struct{})
+	t.Cleanup(func() { close(hold) })
+	f := startE2EWith(t, fs, proto.Snapshot{Chans: []proto.Channel{dmChan(0)}}, proto.DevicesListRes{},
+		func(f *e2eFake) { f.devHold = hold })
+	waitFor(t, "dm cached", func() bool { _, ok, _ := getChan(c.db, dm); return ok })
+	if err := c.Send(dm, "first secret", 0); err != nil {
+		t.Fatal(err)
+	}
+	plain := dmChan(0)
+	plain.E2E = false
+	f.event(proto.KChanUpdate, dm, bob, plain)
+	waitFor(t, "update applied", func() bool { cv, _, _ := getChan(c.db, dm); return !cv.E2E })
+	if err := c.Send(dm, "second secret", 0); err != nil && !errors.Is(err, ErrE2EAlarm) {
+		t.Logf("second send: %v", err)
+	}
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case a := <-f.sends:
+			if a.Body != "" || len(a.Enc) == 0 {
+				t.Fatalf("plaintext sent into a channel seen encrypted: %+v", a)
+			}
+		case <-deadline:
+			return
+		}
+	}
+}
