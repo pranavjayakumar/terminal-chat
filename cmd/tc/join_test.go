@@ -335,14 +335,40 @@ func TestParseJoinArgs(t *testing.T) {
 		{"--name", "ann", "--key", "/k", testInvite},
 		{"--name=ann", testInvite, "--key=/k"},
 	} {
-		inv, name, key, err := parseJoinArgs(args)
+		inv, name, key, err := parseJoinArgs(args, "")
 		if err != nil || inv != testInvite || name != "ann" || key != "/k" {
 			t.Errorf("%v: %q %q %q %v", args, inv, name, key, err)
 		}
 	}
 	for _, args := range [][]string{{}, {"--name", "ann"}, {testInvite, "extra"}, {"--bogus", testInvite}} {
-		if _, _, _, err := parseJoinArgs(args); !errors.Is(err, errUsage) {
+		if _, _, _, err := parseJoinArgs(args, ""); !errors.Is(err, errUsage) {
 			t.Errorf("%v: %v", args, err)
 		}
+	}
+}
+
+// With no invite argument, TC_INVITE supplies it (install.sh passes it that
+// way, so it isn't in tc's argv for ps to show); an argument wins.
+func TestParseJoinArgsEnvInvite(t *testing.T) {
+	const other = "tc://h:1/tok#pin"
+	for _, c := range []struct {
+		args []string
+		env  string
+		want string
+	}{
+		{nil, testInvite, testInvite},
+		{[]string{"--name", "ann"}, " " + testInvite + "\n", testInvite},
+		{[]string{other}, testInvite, other},
+	} {
+		inv, _, _, err := parseJoinArgs(c.args, c.env)
+		if err != nil || inv != c.want {
+			t.Errorf("%v env %q: %q %v", c.args, c.env, inv, err)
+		}
+	}
+	if _, _, _, err := parseJoinArgs([]string{"--name", "ann", "extra", "more"}, testInvite); !errors.Is(err, errUsage) {
+		t.Errorf("extra args with env invite: %v", err)
+	}
+	if _, _, _, err := parseJoinArgs(nil, "  "); !errors.Is(err, errUsage) {
+		t.Errorf("blank env: %v", err)
 	}
 }

@@ -66,9 +66,13 @@ func gitUserName() string {
 	return strings.TrimSpace(string(b))
 }
 
-// cmdJoin: tc join <invite> [--name you] [--key path] (also `tc login`).
+// cmdJoin: tc join [<invite>] [--name you] [--key path] (also `tc login`).
+// Without an argument the invite comes from $TC_INVITE, which (unlike argv)
+// other local users can't read in ps; install.sh passes it that way.
 func cmdJoin(args []string) error {
-	invite, name, key, err := parseJoinArgs(args)
+	invite, name, key, err := parseJoinArgs(args, os.Getenv(inviteEnv))
+	// Not passed on to anything tc runs (git, ssh-agent).
+	os.Unsetenv(inviteEnv)
 	if err != nil {
 		return err
 	}
@@ -77,8 +81,12 @@ func cmdJoin(args []string) error {
 	return runJoin(ctx, osJoinEnv(), invite, name, key)
 }
 
-// parseJoinArgs accepts flags before or after the invite.
-func parseJoinArgs(args []string) (invite, name, key string, err error) {
+// inviteEnv holds the invite for `tc join` with no argument.
+const inviteEnv = "TC_INVITE"
+
+// parseJoinArgs accepts flags before or after the invite; envInvite
+// ($TC_INVITE) is used when no invite is given.
+func parseJoinArgs(args []string, envInvite string) (invite, name, key string, err error) {
 	fs := flag.NewFlagSet("join", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&name, "name", "", "your user name (default: from git config user.name or $USER)")
@@ -95,7 +103,13 @@ func parseJoinArgs(args []string) (invite, name, key string, err error) {
 			return "", "", "", errUsage
 		}
 	}
-	if invite == "" || fs.NArg() > 0 {
+	if fs.NArg() > 0 {
+		return "", "", "", errUsage
+	}
+	if invite == "" {
+		invite = strings.TrimSpace(envInvite)
+	}
+	if invite == "" {
 		return "", "", "", errUsage
 	}
 	return invite, name, key, nil

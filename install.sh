@@ -3,7 +3,7 @@
 # machine from GitHub Releases, checks the maintainer's signature on
 # checksums.txt (ssh-keygen -Y verify) and the download's sha256 against it,
 # installs it to ~/.local/bin (or $TC_INSTALL_DIR) and, given an invite,
-# runs `tc join '<invite>'`.
+# runs `tc join` with it in $TC_INVITE (not argv, which ps shows to everyone).
 #
 #   curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/install.sh | sh -s -- 'tc://…'
 #
@@ -209,9 +209,9 @@ main() {
 		# stdin is this script when piped into sh; give tc the terminal instead
 		# (or nothing, so it uses defaults without prompting).
 		if [ -t 1 ] && (: </dev/tty) 2>/dev/null; then
-			"$dir/tc" join "$invite" </dev/tty
+			TC_INVITE=$invite "$dir/tc" join </dev/tty
 		else
-			"$dir/tc" join "$invite" </dev/null
+			TC_INVITE=$invite "$dir/tc" join </dev/null
 		fi
 	else
 		say "next: $dir/tc join 'tc://…' with the invite your admin sent"

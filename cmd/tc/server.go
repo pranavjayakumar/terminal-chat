@@ -76,7 +76,7 @@ func cmdServer(args []string) error {
 		if err == nil {
 			fmt.Println("\nNo users yet. Admin invite for you (single use, 24 hours):")
 			printInvite(os.Stdout, inv, version)
-			fmt.Println("Then invite your team with: tc server invite --uses 15 --ttl 72h")
+			fmt.Println("Then invite your team with: tc server invite --uses 15 --ttl 24h")
 		}
 	}
 	return srv.Serve(ctx, ln)

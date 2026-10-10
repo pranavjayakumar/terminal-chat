@@ -63,7 +63,7 @@ Run the admin invite's one-liner (or `tc join '<code>'`) on your laptop.
 ## 4. Invite the team
 
 ```sh
-sudo -u tc tc server invite --data /var/lib/tc --uses 15 --ttl 72h   # one invite, 15 people, 3 days
+sudo -u tc tc server invite --data /var/lib/tc --uses 15 --ttl 24h   # one invite, 15 people, 1 day
 sudo -u tc tc server invite --data /var/lib/tc                       # one person, 7 days
 sudo -u tc tc server invite --data /var/lib/tc --admin               # another admin (single use, 24h)
 sudo -u tc tc server invite --data /var/lib/tc --list                # open invites: id, kind, uses left, expiry, creator
@@ -77,10 +77,13 @@ curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/
 ```
 
 Teammates paste it: it installs tc and runs `tc join`. Inside tc, admins can run
-`/invite 15 3d` instead; it copies the same line. `/invites` lists open invites and
+`/invite 15 1d` instead; it copies the same line. `/invites` lists open invites and
 `/invite-revoke ID` revokes one. Invites are limited to 100 uses and 30 days
 (admin invites: one use, 24 hours); anyone holding one can join, so share it where only your
-team can read it.
+team can read it, keep the TTL short (a day, not a month) and revoke what's left once everyone is
+in. The invite sits in shell history and, while `install.sh` runs, in the `sh -s -- '…'` command line
+that `ps` shows other users on a shared machine; `install.sh` hands it to `tc join` in `TC_INVITE`,
+not argv, so it isn't visible for the length of the join.
 
 ## Upgrades & backups
 

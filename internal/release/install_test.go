@@ -20,8 +20,9 @@ import (
 
 const installInvite = "tc://chat.example.com:7443/abcdefghijklmnopqrstuvwxyz#Pin-_x"
 
+// stubTC logs its os/arch, its argv, then "TC_INVITE=<value>".
 func stubTC(osArch string) []byte {
-	return []byte("#!/bin/sh\nprintf '%s\\n' " + osArch + " \"$@\" > \"$TC_STUB_LOG\"\ncat > \"$TC_STUB_LOG.stdin\"\n")
+	return []byte("#!/bin/sh\nprintf '%s\\n' " + osArch + " \"$@\" \"TC_INVITE=${TC_INVITE-}\" > \"$TC_STUB_LOG\"\ncat > \"$TC_STUB_LOG.stdin\"\n")
 }
 
 func publishAll(t *testing.T, srv *releasetest.Server, tag string) {
@@ -143,7 +144,8 @@ func TestInstallPicksArchAndJoins(t *testing.T) {
 			t.Fatalf("%s/%s: %v\n%s", c.s, c.m, r.err, r.stderr)
 		}
 		got := r.stubLog(t)
-		want := []string{c.want + "@v0.4.0", "join", installInvite}
+		// The invite goes in the environment, never argv (ps shows argv).
+		want := []string{c.want + "@v0.4.0", "join", "TC_INVITE=" + installInvite}
 		if strings.Join(got, "|") != strings.Join(want, "|") {
 			t.Fatalf("%s/%s: tc ran as %q, want %q", c.s, c.m, got, want)
 		}
@@ -172,7 +174,7 @@ func TestInstallPiped(t *testing.T) {
 	if r.err != nil {
 		t.Fatalf("%v\n%s", r.err, r.stderr)
 	}
-	if got := r.stubLog(t); len(got) != 3 || got[2] != installInvite {
+	if got := r.stubLog(t); len(got) != 3 || got[2] != "TC_INVITE="+installInvite {
 		t.Fatalf("tc ran as %q", got)
 	}
 	if b, _ := os.ReadFile(r.log + ".stdin"); len(b) != 0 {
@@ -238,7 +240,7 @@ func TestInstallInviteIsNotEvaluated(t *testing.T) {
 	if r.err != nil {
 		t.Fatalf("%v\n%s", r.err, r.stderr)
 	}
-	if got := r.stubLog(t); len(got) != 3 || got[2] != nasty {
+	if got := r.stubLog(t); len(got) != 3 || got[2] != "TC_INVITE="+nasty {
 		t.Fatalf("tc ran as %q", got)
 	}
 	for _, f := range []string{"PWNED", "PWNED2", "PWNED3"} {

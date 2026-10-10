@@ -13,7 +13,7 @@ Team chat that lives in your terminal (and your herdr panes). One small binary, 
 
 ```sh
 tc server --public YOUR_IP:7443          # first run prints your own admin invite
-tc server invite --uses 15 --ttl 72h     # one invite for the whole team
+tc server invite --uses 15 --ttl 24h     # one invite for the whole team
 ```
 
 It prints a one-liner. Share it in your team's usual channel:
@@ -27,8 +27,10 @@ installs `tc` to `~/.local/bin` and runs `tc join`, which picks their SSH key (s
 `~/.ssh/id_ed25519`, else it makes a tc-only key), suggests a name from `git config user.name`,
 and asks once to confirm. Then `tc`.
 
-Already have tc? `tc join 'tc://…'` (`tc login` still works). Admins can also mint invites inside
-tc with `/invite [uses] [ttl]`, e.g. `/invite 15 3d`, which copies the one-liner to the clipboard.
+Already have tc? `tc join 'tc://…'` (`tc login` still works; `TC_INVITE='tc://…' tc join` keeps
+the code out of `ps`). Keep invites short-lived (a day is plenty) and revoke leftovers with
+`/invite-revoke` or `tc server invite --revoke`. Admins can also mint invites inside
+tc with `/invite [uses] [ttl]`, e.g. `/invite 15 1d`, which copies the one-liner to the clipboard.
 `tc update` installs the newest release in place (`--check` only reports); tc shows a dim
 `update vX` in the sidebar when one is out (`TC_NO_UPDATE_CHECK=1` turns that off).
 
