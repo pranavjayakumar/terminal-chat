@@ -293,6 +293,9 @@ func (c *Client) e2ePass(ctx context.Context, s *session, sid e2ecrypto.ServerID
 	defer c.e2eMu.Unlock()
 	me := c.Me().ID
 	changed := c.verifyDevices(sid, s.sshPub, me)
+	if c.selfRevoked(s, sid, me) {
+		return
+	}
 	chans, err := c.e2eChannels(sid, me)
 	if err != nil {
 		return
@@ -313,6 +316,25 @@ func (c *Client) e2ePass(ctx context.Context, s *session, sid e2ecrypto.ServerID
 	if changed {
 		c.post(Update{Channels: true})
 	}
+}
+
+// selfRevoked ends session s when another process on this TC_HOME retired
+// this device's keys (tc devices revoke --self), so the next connection
+// registers the new keys (ensureDevice) instead of sends failing. A revoke
+// made elsewhere is left to the next connection, as before: re-registering
+// at once wouldn't stop a thief holding the SSH key, and would surprise an
+// owner who revoked a device they still have.
+func (c *Client) selfRevoked(s *session, sid e2ecrypto.ServerID, me uint64) bool {
+	dev := s.myDevice()
+	if dev == nil {
+		return false
+	}
+	cur, err := c.trust.DeviceKeys(sid, me)
+	if err != nil || cur.ID == dev.ID {
+		return false
+	}
+	s.fail()
+	return true
 }
 
 // e2eChannels lists the cached channels we're a member of that are, or
@@ -1373,6 +1395,10 @@ func (c *Client) commitBundle(ctx context.Context, s *session, sid e2ecrypto.Ser
 	if me == nil {
 		return errors.New("this device isn't registered yet")
 	}
+	// A revoke whose event arrived while we held e2eMu (the worker that
+	// would apply it waits for us) must count, or the retry after a
+	// stale_epoch boxes the revoked device again.
+	c.verifyDevices(sid, s.sshPub, c.Me().ID)
 	ch, ok, err := getChan(c.db, chID)
 	if err != nil {
 		return err
