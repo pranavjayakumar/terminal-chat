@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
@@ -73,7 +74,7 @@ func huddlers(t *testing.T, transport string, names ...string) []*user {
 	s, addr := startServer(t, t.TempDir(), "127.0.0.1:0")
 	var us []*user
 	for i, n := range names {
-		us = append(us, login(t, s, addr, n, i == 0))
+		us = append(us, loginQUIC(t, s, addr, n, i == 0))
 	}
 	eventually(t, "online", func() bool {
 		for _, u := range us {
@@ -84,6 +85,45 @@ func huddlers(t *testing.T, transport string, names ...string) []*user {
 		return true
 	})
 	return us
+}
+
+// loginQUIC is login with retries: a QUIC handshake on a loaded CI runner
+// can hit its idle timeout (Run reconnects by itself afterwards; only the
+// first, blocking login needs this).
+func loginQUIC(t *testing.T, s *srv, addr, name string, admin bool) *user {
+	t.Helper()
+	s.Server.SetPublicAddr(addr)
+	home := t.TempDir()
+	key := writeKey(t, home)
+	var err error
+	for try := range 4 {
+		var code string
+		if code, err = s.CreateInvite(context.Background(), admin, 0); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		n := name
+		if try > 0 {
+			n = fmt.Sprintf("%s%d", name, try) // an earlier try may have got in
+		}
+		_, err = client.Login(ctx, home, code, n, key)
+		cancel()
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		t.Fatalf("login %s: %v", name, err)
+	}
+	c, err := client.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rctx, rcancel := context.WithCancel(context.Background())
+	go c.Run(rctx)
+	u := &user{Client: c, cancel: rcancel, home: home}
+	t.Cleanup(func() { rcancel(); c.Close() })
+	return u
 }
 
 // talk has a speak for n frames while everyone else's device runs, and
