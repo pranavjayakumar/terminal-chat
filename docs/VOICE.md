@@ -54,8 +54,9 @@ Status: **draft r1** (target release v0.4.0). Wire format: PROTOCOL.md §14 (cap
 ## Codec
 
 - Opus, 48 kHz mono, 20 ms frames (960 samples), `OPUS_APPLICATION_VOIP`.
-- 24 kbit/s VBR (≈ 60 B/frame), in-band FEC on with expected loss 10 %, DTX on (silence costs
-  ~1 frame / 400 ms). Complexity 5 (cheap on laptops).
+- 24 kbit/s VBR (≈ 60 B/frame), in-band FEC on with expected loss 10 %, complexity 5 (cheap on
+  laptops). DTX off: push-to-talk already gates silence, and DTX's skipped frames would look like
+  loss to the jitter buffer.
 - Push-to-talk default: nothing is captured or sent while the key isn't held.
 - The datagram limit (512 B, §14.3) leaves room for 120 ms-worth or a 128 kbit/s frame; v1 only
   ever sends 20 ms frames.
@@ -64,7 +65,9 @@ Status: **draft r1** (target release v0.4.0). Wire format: PROTOCOL.md §14 (cap
 
 - Frames are ordered by `seq`. Playout starts after a target delay (initial 60 ms), adapted
   between 40 and 200 ms from the observed inter-arrival jitter (RFC 3550 estimator, target ≈
-  3 × jitter + 20 ms, re-evaluated at talk-spurt starts so it never stretches mid-sentence).
+  3 × jitter + 20 ms, re-evaluated at talk-spurt starts). Mid-spurt, a frame that arrives just
+  behind the playout point grows the delay by one frame (one concealed slot) instead of being
+  lost every time.
 - Missing frame at playout: if `seq+1` is buffered, decode its FEC data; else Opus PLC; after 5
   consecutive missing frames the stream goes silent and the buffer resets.
 - Late frames (behind the playout point) are dropped. A flag bit marks the last frame of a
@@ -104,8 +107,8 @@ ct    = ChaCha20-Poly1305(sk, nonce, opus_frame, AD = header)                   
   frames older than the window. **Cross-session replay** (the server re-announcing an old
   `stream` and replaying a recording): every encrypted header carries `ts`, the sender's Unix
   time in seconds, inside the AD; receivers drop frames whose `ts` is more than 60 s from their
-  own clock. This needs clocks within a minute (NTP); the TUI shows "voice rejected (clock?)"
-  when it happens repeatedly.
+  own clock. This needs clocks within a minute (NTP). Rejections are counted per reason in the
+  engine (`voice.Stats`); a TUI warning for repeated clock-skew drops is a follow-up.
 - **Which keys a receiver accepts**: frames under the channel's newest verified epoch and the
   one before it (so a rotation mid-sentence doesn't cut audio), with `dev` a verified,
   non-revoked device of the user the roster names (trust store), and only from senders in that
@@ -135,8 +138,9 @@ exactly like public-channel text. The TUI marks encrypted huddles with the lock 
 ## UX (TUI + herdr)
 
 - `/huddle` — join the current channel's huddle (or start it). In a huddle, the status line
-  shows `🎧 #chan · ana bo* cy` — `*` marks who's talking right now, `(m)` muted, and the lock
-  for encrypted channels. Channels with a huddle you're not in show a small `🎧3` in the list.
+  starts with `🎧 #chan · bo* cy alice🎙` — `*` marks who's talking right now, `🎙` that our mic
+  is on, and `🔒` precedes encrypted channels. Viewing a channel whose huddle you're not in shows
+  `🎧 3 in huddle — /huddle`. (A sidebar marker is a follow-up.)
 - **Talk key `ctrl+t`** (bound only while in a huddle; unbound otherwise).
   Terminals don't report key-up, so: press starts talking; if key-repeats follow (you're
   holding it) talking stops 600 ms after the last repeat — push-to-talk. If no repeat arrives
@@ -145,8 +149,8 @@ exactly like public-channel text. The TUI marks encrypted huddles with the lock 
 - Not talking = muted. `/leave-huddle` leaves.
 - Builds without voice: `/huddle` explains "this tc build has no voice — install the voice
   build (see docs/VOICE.md)"; the roster indicator still works.
-- herdr: the pane's metadata badge gets `🎧` while you're in a huddle; no notifications for
-  huddle starts in v1 (could be noisy; owner decision, see open questions).
+- herdr (follow-up, not in this PR): the pane's metadata badge gets `🎧` while you're in a
+  huddle; no notifications for huddle starts in v1 (could be noisy; owner decision).
 
 ## Audio I/O library
 
@@ -194,7 +198,7 @@ a removed member; a hostile client spamming datagrams.
 | Server downgrades an e2e huddle to plaintext | Receivers drop plaintext kinds in e2e channels; senders never send them there. |
 | Removed member keeps listening | Senders move to the new epoch as soon as it verifies; old `K` decrypts nothing new. Honest servers also drop them from the huddle at once. |
 | **Malicious member impersonates another member's voice** | **Not prevented in v1.** Any roster member can derive any sender's `sk` (group-symmetric, like SFrame with a shared key). Text messages are signed per message; per-frame Ed25519 would add 64 B × 50/s = 25.6 kbit/s. Future: per-sender keys sealed to the roster with signed announcements. |
-| Metadata | The server sees who is in which huddle, when, and frame sizes/timing (talk patterns; VBR sizes can leak some content). DTX + VBR leak more than CBR; CBR is a possible opt-in later. |
+| Metadata | The server sees who is in which huddle, when, and frame sizes/timing (talk patterns; VBR sizes can leak some content). VBR leaks more than CBR; CBR is a possible opt-in later. |
 | Datagram flood / amplification | Only huddle participants can send; per-session token bucket; fixed max size; relay fan-out ≤ 15; bounded per-receiver queues with drop. A client can't make the server send to non-participants. |
 | Hostile datagram parser input | Fixed-layout header parsed with bounds checks, fuzzed (`FuzzParseDatagram`); the server never touches payloads. |
 | Audio-device privacy | Mic is opened only while in a huddle and (push-to-talk) only captured while talking; leaving closes the device. |
