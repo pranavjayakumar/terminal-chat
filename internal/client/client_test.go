@@ -174,7 +174,7 @@ func (fs *fakeServer) accept() *fakeConn {
 	select {
 	case fc := <-fs.conns:
 		return fc
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		fs.t.Fatal("no connection")
 		return nil
 	}
@@ -183,7 +183,7 @@ func (fs *fakeServer) accept() *fakeConn {
 // next returns the next frame of type t, skipping others.
 func (fc *fakeConn) next(t proto.FrameType) proto.Frame {
 	fc.t.Helper()
-	timeout := time.After(5 * time.Second)
+	timeout := time.After(testWait)
 	for {
 		select {
 		case f, ok := <-fc.in:
@@ -332,9 +332,13 @@ func run(t *testing.T, c *Client) (stopped chan struct{}) {
 	return stopped
 }
 
+// testWait bounds waits for something that must happen. It only guards
+// against hangs, so it is generous: loaded CI runners under -race are slow.
+const testWait = 15 * time.Second
+
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testWait)
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)
@@ -755,7 +759,7 @@ func TestRequestsFailOffline(t *testing.T) {
 		if !errors.Is(err, ErrOffline) {
 			t.Fatalf("react = %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		t.Fatal("pending request not failed on disconnect")
 	}
 
@@ -849,7 +853,7 @@ func TestByeRevokedStops(t *testing.T) {
 	fc.conn.Close()
 	select {
 	case <-stopped:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		t.Fatal("Run kept going after revoked")
 	}
 	st := c.Status()
@@ -896,7 +900,7 @@ func TestUpdatesCoalesce(t *testing.T) {
 	// so keep draining until all five arrive rather than stopping at the
 	// first empty read after last_seq moves.
 	var merged Update
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(testWait)
 	for len(merged.New) < 5 {
 		select {
 		case u := <-c.Updates():
@@ -962,7 +966,7 @@ func TestCloseStopsEverything(t *testing.T) {
 	}
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		t.Fatal("Run still running after Close")
 	}
 	for range c.Updates() { // drained, then closed
