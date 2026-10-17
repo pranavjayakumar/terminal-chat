@@ -99,6 +99,7 @@ type Backend interface {
 	FindDevice(user uint64, prefix string) (client.DeviceInfo, error)
 	RefreshDevices(ctx context.Context, user uint64) error
 	RevokeDevice(ctx context.Context, dev e2ecrypto.DevID, allowSelf bool) (int, error)
+	DeviceError() error // why this device isn't registered for encryption (nil: it is)
 }
 
 var _ Backend = (*client.Client)(nil)

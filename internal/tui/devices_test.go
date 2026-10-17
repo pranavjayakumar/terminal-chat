@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,13 @@ type fakeDevs struct {
 	refreshErr error
 	revoked    []e2ecrypto.DevID
 	revokeErr  error
+	devErr     error
+}
+
+func (f *fakeClient) DeviceError() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.dv.devErr
 }
 
 func (f *fakeClient) Devices(user uint64) []client.DeviceInfo {
@@ -167,6 +175,25 @@ func TestDevicesStaleSanitized(t *testing.T) {
 			t.Fatalf("devs %v: no stale marker:\n%s", devs, p)
 		}
 		checkView(t, m, "stale")
+	}
+}
+
+// B11: when the server refused this device (too many devices), /devices
+// says so (sanitized), and only in our own list.
+func TestDevicesUnregisteredNotice(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	devFake(f)
+	f.dv.devErr = fmt.Errorf("%w: %w (8 active)\x1b]0;x\x07", client.ErrDeviceNotRegistered, client.ErrTooManyDevices)
+	runInput(t, m, "/devices")
+	v := checkView(t, m, "unregistered")
+	if strings.Contains(v, "\x1b]0;") || !strings.Contains(ansi.Strip(v), "isn't registered for encryption") || !m.noticeErr {
+		t.Fatalf("no notice:\n%s", ansi.Strip(v))
+	}
+	m.clearNotice()
+	press(m, kEsc)
+	runInput(t, m, "/devices @bob")
+	if m.notice != "" {
+		t.Fatalf("notice in bob's list: %q", m.notice)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -111,6 +112,9 @@ type fakeDevices struct {
 	refreshed []uint64
 	revoked   []e2ecrypto.DevID
 	allowSelf bool
+	force     bool
+	left      int
+	devErr    error
 }
 
 func (f *fakeDevices) Me() proto.User { return proto.User{ID: 1, Name: "alice"} }
@@ -130,11 +134,13 @@ func (f *fakeDevices) FindDevice(u uint64, p string) (client.DeviceInfo, error) 
 	}
 	return client.DeviceInfo{}, client.ErrNoDevice
 }
-func (f *fakeDevices) RevokeDevice(_ context.Context, id e2ecrypto.DevID, allowSelf bool) (int, error) {
+func (f *fakeDevices) RevokeDeviceOpts(_ context.Context, id e2ecrypto.DevID, o client.RevokeOpts) (int, error) {
 	f.revoked = append(f.revoked, id)
-	f.allowSelf = allowSelf
+	f.allowSelf, f.force = o.Self, o.Force
 	return 2, nil
 }
+func (f *fakeDevices) RegistrationsLeft() int { return f.left }
+func (f *fakeDevices) DeviceError() error     { return f.devErr }
 
 func dev(b byte, this, revoked, verified bool) client.DeviceInfo {
 	d := client.DeviceInfo{ID: e2ecrypto.DevID{b, b, b, b}, Created: time.Date(2026, 10, 1, 9, 0, 0, 0, time.Local),
@@ -146,7 +152,7 @@ func dev(b byte, this, revoked, verified bool) client.DeviceInfo {
 }
 
 func newFakeDevices() *fakeDevices {
-	return &fakeDevices{devs: map[uint64][]client.DeviceInfo{
+	return &fakeDevices{left: 20, devs: map[uint64][]client.DeviceInfo{
 		1: {dev(0xaa, true, false, true), dev(0xbb, false, false, true), dev(0xcc, false, true, true), dev(0xdd, false, false, false)},
 		2: {dev(0x11, false, false, true)},
 	}}
@@ -224,8 +230,48 @@ func TestDevicesRevoke(t *testing.T) {
 
 	f = newFakeDevices()
 	out, err = run(f, "yes\n", "revoke", "aa", "--self")
-	if err != nil || len(f.revoked) != 1 || !f.allowSelf || !strings.Contains(out, "THIS device") {
+	if err != nil || len(f.revoked) != 1 || !f.allowSelf || f.force || !strings.Contains(out, "THIS device") ||
+		!strings.Contains(out, "registers again as a new device") {
 		t.Fatalf("--self: %q %v", out, err)
+	}
+	f = newFakeDevices()
+	f.left = 2
+	if out, err = run(f, "y\n", "revoke", "aa", "--self"); err != nil || !strings.Contains(out, "only 2 more devices") {
+		t.Fatalf("--self, 2 left: %q %v", out, err)
+	}
+
+	// B12: no registration left: refused before asking, unless --force.
+	f = newFakeDevices()
+	f.left = 0
+	if out, err = run(f, "y\n", "revoke", "aa", "--self"); err == nil || !strings.Contains(err.Error(), "--force") ||
+		len(f.revoked) != 0 || strings.Contains(out, "[y/N]") {
+		t.Fatalf("--self, none left: %q %v %v", out, err, f.revoked)
+	}
+	if out, err = run(f, "y\n", "revoke", "aa", "--self", "--force"); err != nil || len(f.revoked) != 1 || !f.force ||
+		!strings.Contains(out, "can never register again") {
+		t.Fatalf("--self --force, none left: %q %v %v", out, err, f.revoked)
+	}
+}
+
+// B11: a device the server refused (too many devices) says so in the list
+// and after revoking.
+func TestDevicesUnregisteredWarning(t *testing.T) {
+	f := newFakeDevices()
+	f.devErr = fmt.Errorf("%w: %w (8 active)", client.ErrDeviceNotRegistered, client.ErrTooManyDevices)
+	var out bytes.Buffer
+	if err := devices(context.Background(), f, nil, strings.NewReader(""), &out); err != nil {
+		t.Fatal(err)
+	}
+	if s := out.String(); !strings.Contains(s, "⚠ this device isn't registered") || !strings.Contains(s, "can't read or send") {
+		t.Errorf("list:\n%s", s)
+	}
+	out.Reset()
+	if err := devices(context.Background(), f, []string{"@bob"}, strings.NewReader(""), &out); err != nil || strings.Contains(out.String(), "⚠") {
+		t.Errorf("bob's list warns about this device: %v\n%s", err, out.String())
+	}
+	out.Reset()
+	if err := devices(context.Background(), f, []string{"revoke", "bb", "--yes"}, strings.NewReader(""), &out); err != nil || !strings.Contains(out.String(), "⚠") {
+		t.Errorf("revoke: %v\n%s", err, out.String())
 	}
 }
 

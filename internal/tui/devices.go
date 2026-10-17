@@ -196,6 +196,12 @@ func (m *Model) gotDevices(msg devicesMsg) tea.Cmd {
 		m.devPick(s.pendPick, s.pendAsk)
 	}
 	s.pendPick, s.pendAsk = e2ecrypto.DevID{}, false
+	if s.user == m.me.ID {
+		// E.g. too many devices: the list is where to fix it.
+		if err := m.c.DeviceError(); err != nil {
+			m.setErr("", err)
+		}
+	}
 	return nil
 }
 
