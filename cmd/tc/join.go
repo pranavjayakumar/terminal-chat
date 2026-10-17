@@ -104,7 +104,7 @@ func showLogin(out io.Writer, home string) error {
 	}
 	fmt.Fprintf(out, "This computer is signed in as %s to:\n\n  %s\n\n", sanitize.Line(cfg.Name), line)
 	fmt.Fprintf(out, "On another computer that has the same SSH key (in ssh-agent or ~/.ssh), run:\n\n  tc login '%s'\n\n", line)
-	fmt.Fprintln(out, "With a different key there, ask an admin for an invite that adds a key to your account.")
+	fmt.Fprintln(out, "The account is the SSH key: copy that key to the other computer (or reach it through ssh-agent forwarding).")
 	return nil
 }
 
@@ -408,7 +408,7 @@ func noKeyError(all []joinKey, last error) error {
 		b.WriteString(" (no keys found in ssh-agent or ~/.ssh)")
 	}
 	writeTried(&b, all)
-	b.WriteString("\n  tc login needs the key you joined with: load it into ssh-agent (ssh-add) or pass --key path; with a new key, ask an admin for an invite that adds it to your account")
+	b.WriteString("\n  tc login needs the key you joined with: load it into ssh-agent (ssh-add) or pass --key path; the account belongs to that key, so copy it here from the computer you joined on")
 	if last != nil {
 		var bye *client.ByeError
 		if !errors.As(last, &bye) || bye.Code != proto.ByeAuthFailed {
