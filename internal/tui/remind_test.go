@@ -259,3 +259,18 @@ func TestReminderCountsAsUnreadInTheSidebar(t *testing.T) {
 		t.Fatalf("notes missing from the sidebar:\n%s", v)
 	}
 }
+
+// In an encrypted channel the reminder is still set, just without the link back.
+func TestRemindInEncryptedChannelDropsLink(t *testing.T) {
+	m, f := newTestModelFake(t, 100, 24)
+	newClock(m)
+	f.remindEnc = true
+	m.openChannel(20)
+	runInput(t, m, "/remind 1h ask bob")
+	if len(f.reminded) != 1 || f.reminded[0].ch != 0 || f.reminded[0].text != "ask bob" {
+		t.Fatalf("reminded %+v", f.reminded)
+	}
+	if m.noticeErr || !strings.Contains(m.notice, "no link back") {
+		t.Fatalf("notice %q err %v", m.notice, m.noticeErr)
+	}
+}

@@ -131,6 +131,9 @@ func cmdSend(args []string) error {
 		if err != nil {
 			return err
 		}
+		if strings.TrimSpace(sanitize.StripANSI(string(b))) == "" {
+			return errors.New("nothing to send") // else pipedBody wraps it in an empty code block
+		}
 		body = pipedBody(string(b), *raw)
 	}
 	if strings.TrimSpace(body) == "" {

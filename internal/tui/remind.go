@@ -37,10 +37,17 @@ func (m *Model) remindCommand(c command) (cmd tea.Cmd, ok bool, err error) {
 		now := m.now()
 		return m.callThen("remind", func(ctx context.Context) (tea.Msg, error) {
 			id, err := be.Remind(ctx, at, text, ch)
+			note := ""
+			if errors.Is(err, client.ErrRemindEncrypted) {
+				// The link back is only a label; the server must not learn
+				// which encrypted channel it came from, so drop it.
+				id, err = be.Remind(ctx, at, text, 0)
+				note = " (no link back: this channel is encrypted)"
+			}
 			if err != nil {
 				return nil, err
 			}
-			return infoMsg(fmt.Sprintf("reminder %d set for %s", id, client.FormatReminderTime(at.UnixMilli(), now))), nil
+			return infoMsg(fmt.Sprintf("reminder %d set for %s%s", id, client.FormatReminderTime(at.UnixMilli(), now), note)), nil
 		}), true, nil
 	case "reminders":
 		titles := make(map[uint64]string, len(m.chans))

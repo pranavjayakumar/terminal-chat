@@ -48,6 +48,7 @@ type fakeClient struct {
 	reminders  []proto.Reminder
 	reminded   []remindCall
 	remindErr  error
+	remindEnc  bool // Remind refuses a channel link like an encrypted channel
 	nextRemID  uint64
 	inviteCode string // CreateTeamInvite returns this when set
 }
