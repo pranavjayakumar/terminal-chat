@@ -519,6 +519,9 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 	if cmd, ok, err := m.huddleCommand(c); ok {
 		return cmd, err
 	}
+	if cmd, ok, err := m.notifyCommand(c); ok {
+		return cmd, err
+	}
 	if cmd, ok, err := m.devicesCommand(c); ok {
 		return cmd, err
 	}

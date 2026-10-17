@@ -170,10 +170,13 @@ func (m *Model) huddleCommand(c command) (tea.Cmd, bool, error) {
 		m.refreshHuddle()
 		return nil, true, nil
 	}
-	if m.active == 0 {
+	ch := m.active
+	if m.nt.ring.ch != 0 { // answering a ring
+		ch = m.nt.ring.ch
+	}
+	if ch == 0 {
 		return nil, true, errors.New("no channel open")
 	}
-	ch := m.active
 	if in && cur == ch {
 		return nil, true, errors.New("already in this huddle (/leave-huddle to leave)")
 	}

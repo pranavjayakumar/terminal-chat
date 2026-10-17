@@ -317,6 +317,10 @@ func (m *Model) statusLine(w int) string {
 		b.WriteString(head + roster)
 		head = ""
 	}
+	if r := m.ringLine(); r != "" { // a ring is time-critical: right after our mic
+		sep()
+		b.WriteString(m.st.noticeInfo.Render(r))
+	}
 	if m.notice != "" && m.noticeErr {
 		sep()
 		b.WriteString(m.st.noticeErr.Render("! " + m.notice))
@@ -324,6 +328,10 @@ func (m *Model) statusLine(w int) string {
 	if head != "" {
 		sep()
 		b.WriteString(head + roster)
+	}
+	if q := m.quietMark(); q != "" {
+		sep()
+		b.WriteString(m.st.dim.Render(q))
 	}
 	if m.notice != "" && !m.noticeErr {
 		sep()
@@ -353,7 +361,7 @@ func (m *Model) unreadSummary() string {
 		}
 		if v.Mention {
 			mentions++
-		} else {
+		} else if !m.muted(v.ID) {
 			unread += v.Unread
 		}
 	}
@@ -423,6 +431,9 @@ func (m *Model) headerLeft(w int) string {
 	}
 	if n := len(v.Pins); n > 0 {
 		b.WriteString(m.st.dim.Render(" 📌 " + strconv.Itoa(n)))
+	}
+	if mm := m.muteMark(m.active); mm != "" {
+		b.WriteString(m.st.dim.Render(mm))
 	}
 	if v.Kind == proto.ChanDM {
 		if others := m.dmOthers(v); len(others) == 1 {
@@ -543,9 +554,11 @@ func (m *Model) sideEntry(v client.ChannelView, w int) string {
 		name = sanitize.Line(v.Name)
 	}
 	badge := ""
+	muted := m.muted(v.ID)
 	switch {
 	case v.Mention:
-		badge = "@"
+		badge = "@" // a muted channel still shows a direct mention
+	case muted:
 	case v.Unread > 99:
 		badge = "99+"
 	case v.Unread > 0:
@@ -577,8 +590,11 @@ func (m *Model) sideEntry(v client.ChannelView, w int) string {
 		return m.st.sideActive.Render(fit(label+hud+draft+" "+badge, w-1))
 	}
 	st := m.st.sideItem
-	if v.Unread > 0 || v.Mention {
+	switch {
+	case v.Mention || (v.Unread > 0 && !muted):
 		st = m.st.sideUnrd
+	case muted:
+		st = m.st.dim
 	}
 	out := st.Render(label)
 	if hud != "" {

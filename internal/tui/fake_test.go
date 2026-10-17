@@ -52,6 +52,11 @@ type fakeClient struct {
 	nextRemID  uint64
 	inviteCode string // CreateTeamInvite returns this when set
 	disableErr error  // disable_test.go
+
+	// notify_test.go
+	nchans    map[uint64]client.ChanNotify
+	nset      map[string]string
+	myThreads map[uint64]bool
 }
 
 type remindCall struct {
@@ -304,13 +309,21 @@ func (f *fakeClient) awayCalls() []bool {
 type fakeNotifier struct {
 	mu    sync.Mutex
 	notes [][2]string
+	full  []notify.Note
 }
 
-func (n *fakeNotifier) Notify(title, body string) bool {
+func (n *fakeNotifier) Send(nt notify.Note) bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.notes = append(n.notes, [2]string{title, body})
+	n.notes = append(n.notes, [2]string{nt.Title, nt.Body})
+	n.full = append(n.full, nt)
 	return true
+}
+
+func (n *fakeNotifier) sent() []notify.Note {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return slices.Clone(n.full)
 }
 
 func (n *fakeNotifier) got() [][2]string {

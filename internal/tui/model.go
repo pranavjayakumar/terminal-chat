@@ -58,6 +58,7 @@ func (p *pane) open() bool { return p.ch != 0 }
 // Model is the Bubble Tea model.
 type Model struct {
 	hud    huddleUI // voice huddles (huddle.go)
+	nt     notifyUI // notification levels, rings (notifypolicy.go)
 	opened bool     // a channel has been opened; stops the first-start auto-open
 	c      Backend
 	ctx    context.Context
@@ -212,6 +213,7 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 	m.input = newInput(st)
 	m.line = newLine(st)
 	m.loadDrafts()
+	m.refreshPrefs()
 	m.reloadAll()
 	if ch := m.defaultChannel(); ch != 0 {
 		m.openChannel(ch)
@@ -728,6 +730,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.hud.seenActive = m.active
 		m.refreshHuddle()
 	}
+	m.checkRing()
 	m.syncDraft()
 	m.updatePlaceholder()
 	if t := m.draftTick(); t != nil {
@@ -780,6 +783,10 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case notifyFlushMsg:
 		return m, m.flushNote(msg)
+	case ringMsg:
+		return m, m.ringMsg(msg)
+	case notifyTestMsg:
+		return m, m.notifyTestNext()
 	case badgeMsg:
 		return m, m.reportBadge(msg)
 	case awayTickMsg:
@@ -811,10 +818,13 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.focused = false
 		return m, nil
 	case updateMsg:
+		if msg.Channels || msg.Reset {
+			m.refreshPrefs()
+		}
 		if msg.Huddle || msg.Reset || msg.Channels {
 			m.refreshHuddle()
 		}
-		return m, tea.Batch(m.applyUpdate(client.Update(msg)), m.waitUpdate())
+		return m, tea.Batch(m.applyUpdate(client.Update(msg)), m.huddleStarted(msg.HuddleStarted), m.waitUpdate())
 	case updatesClosedMsg:
 		return m, nil
 	case errMsg:
@@ -1124,7 +1134,11 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 			m.escAt = m.now()
 			m.setNotice("Esc again to clear draft", false, false, escWindow)
 		default:
-			if !m.micOff() {
+			switch {
+			case m.nt.ring.ch != 0:
+				m.stopRing(true) // dismissed
+			case m.micOff():
+			default:
 				m.clearNotice()
 			}
 		}

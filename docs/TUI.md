@@ -288,11 +288,52 @@ and are not listed; they appear in the log as usual. Rows are kept for the newes
   messages in that window become one `N new messages` notification when it closes. At most one
   notification per 2 s overall (a message over the cap waits for its window). Opening the channel
   drops what's pending for it.
-- **Backend** (`internal/notify`), chosen by `TC_NOTIFY=auto|herdr|os|bell|off` (default `auto`):
-  auto = `herdr notification show` when `HERDR_ENV=1` and `herdr` is in PATH, else the OS
-  (`osascript` on macOS — text passed as argv to an `on run argv` script, never interpolated;
-  `notify-send` on Linux), else the terminal bell. `TC_BELL=0` still turns the bell off.
-  Every backend runs via exec argv (no shell), async, 2 s timeout, one at a time (extra ones dropped).
+- **Backend** (`internal/notify`), chosen by `TC_NOTIFY=auto|herdr|os|terminal|bell|off` (default `auto`):
+  auto = `herdr notification show` when `HERDR_ENV=1` and `herdr` is in PATH; else, **over SSH**
+  (`SSH_CONNECTION`/`SSH_TTY`) with a terminal known to support it, the `terminal` backend; else
+  the OS (`osascript` on macOS — text passed as argv to an `on run argv` script, never
+  interpolated; `notify-send` on Linux), else the terminal bell. `TC_BELL=0` still turns the bell
+  off. Every exec backend runs via argv (no shell), async, 2 s timeout, one at a time (extra ones
+  dropped); a ring has its own slot so a hung popup can't swallow it.
+- **Terminal backend** (OSC; the local terminal shows it, so it works over SSH): OSC 99 for
+  kitty (`TERM=xterm-kitty`), OSC 777 for Ghostty/WezTerm/foot, OSC 9 for iTerm2
+  (`LC_TERMINAL=iTerm2`, forwarded by macOS ssh); `TC_NOTIFY_OSC=9|777|99` forces one. Inside
+  tmux it's wrapped for passthrough (`set -g allow-passthrough on`) plus a BEL; never inside herdr.
+  Text is filtered to printable characters (no ESC/BEL/C1), ≤ 256 bytes; OSC 9 text starting with
+  a digit gets a `tc · ` prefix (Windows Terminal/ConEmu read `9;4` as progress).
+- **Sounds**: one event, one sound, played by whatever shows the popup — herdr `--sound`
+  (`request` for mentions and rings, `done` for channel huddle starts, `none` for level-`all`
+  messages), macOS `sound name` (Glass, Tink, Submarine, Pop), notify-send `sound-name` hints
+  (`message-new-instant`, `phone-incoming-call`, `service-login`) and categories, the terminal's
+  own, or one BEL. tc never starts a second player and ships no audio files. In a huddle (voice
+  build) short synthesized cues play through the call's audio: someone joined / left (not in
+  huddles of 8+, not right after you join, at most one a second) and mic on/off clicks.
+- **Levels** (`/notify`, per channel, this device only): `mentions` (default: DMs, @mentions,
+  highlights, reminders, replies in threads I started or replied in, DM huddle rings), `all`
+  (every message — 30 s coalescing, soft sound — and channel huddle starts), `off` (muted: no
+  popup, sound or ring; the sidebar dims it and drops its count, keeping `@` for a direct mention;
+  its unread is left out of the header/herdr summary; the header shows `🔕`, or `🔕 until 14:30`
+  for a timed mute). `/notify off for 2h` lapses back to the default.
+- **Huddles**: a huddle someone starts in a DM or group DM **rings**: one popup with the ring
+  sound (sent again once after 10 s), and the status line shows `📞 alice — /huddle to join · Esc
+  dismiss` until you join (from any device), it ends, you open that DM, Esc, or 30 s; a dismissed
+  or unanswered ring keeps that DM quiet for 5 min. Never for rosters a sync or channel join
+  hands us (reconnects don't ring). Channel huddle starts are silent at `mentions` (the sidebar
+  `🎧n` shows them); at `all`, one popup per channel per 5 min.
+- **Privacy**: `/notify content full|name|none` (`TC_NOTIFY_CONTENT`): `name` shows who but not
+  the text, `none` shows just `tc` / `new message`. Popups persist in the OS notification history
+  (Notification Center, GNOME's tray): use `name` on shared machines.
+- **DND and quiet hours**: `/dnd [30m|2h|until 09:00|off]` (bare `/dnd` toggles 1 h) and
+  `/notify quiet 22:00-08:00|off` (`TC_QUIET`, local time, may wrap midnight) silence popups,
+  sounds and rings but not badges or the activity view; the status line shows a dim `🔕 09:00`
+  or `🔕 quiet`. Nothing is replayed afterwards.
+- **Commands**: `/notify` (current settings), `/notify all|mentions|off [#chan] [for 2h]`,
+  `/notify default [#chan]`, `/notify global all|mentions|off`, `/notify content …`,
+  `/notify quiet …`, `/notify test` (one sample per sound through the real backend, 2.5 s apart —
+  shows whether herdr toasts, macOS permission or OSC support work), `/dnd …`, `/sounds`
+  (list), `/sounds on|off` (`TC_SOUND`), `/sounds mention|message|ring|huddle|join|mic on|off`,
+  `/sounds volume 0-100` (huddle cues only). `/mute` stays the mic. Env vars win over stored
+  settings. Settings live in the local cache (`notify_prefs`, `meta`), never on the server.
 - **Unread badge** (herdr only): the pane's herdr title is set to `tc · 3 unread · 1@` (same
   counts as the header summary) with `herdr pane report-metadata <pane> --source tc --title …`,
   or `--clear-title` when nothing is unread. Reported only when the text changes, 1 s after the

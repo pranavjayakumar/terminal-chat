@@ -113,6 +113,7 @@ func (p NotifyPrefs) InQuiet(now time.Time) bool {
 	if err != nil {
 		return false
 	}
+	now = now.Local()
 	t := now.Hour()*60 + now.Minute()
 	if from < to {
 		return t >= from && t < to

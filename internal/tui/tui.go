@@ -112,7 +112,8 @@ var _ Backend = (*client.Client)(nil)
 func Run(ctx context.Context, c *client.Client, version string) error {
 	env := notify.OSEnv()
 	o := Options{Out: os.Stdout, Notifier: notify.New(env, os.Stdout), AwayAfter: awayAfter(os.Getenv("TC_AWAY_MIN")), Version: version, ExtCopy: defaultExtCopy,
-		Tmux: os.Getenv("TMUX") != "", SSH: os.Getenv("SSH_TTY") != "" || os.Getenv("SSH_CONNECTION") != ""}
+		Tmux: os.Getenv("TMUX") != "", SSH: os.Getenv("SSH_TTY") != "" || os.Getenv("SSH_CONNECTION") != "",
+		NotifyEnv: NotifyEnv{Sound: os.Getenv("TC_SOUND"), Content: os.Getenv("TC_NOTIFY_CONTENT"), Quiet: os.Getenv("TC_QUIET")}}
 	o.UpdateCheck = func() string {
 		return release.Check(ctx, c.Home(), version, release.NewSource(), time.Now())
 	}
@@ -146,6 +147,8 @@ type Options struct {
 	Tmux, SSH bool
 	// Notifier gets mentions and DMs the user isn't looking at; nil: none.
 	Notifier Notifier
+	// NotifyEnv overrides stored notification settings (from the env).
+	NotifyEnv NotifyEnv
 	// Herdr is set when running inside herdr: unread badge, /share-pane.
 	Herdr Herdr
 	// AwayAfter sets presence to away after this long without a key; 0: never.
