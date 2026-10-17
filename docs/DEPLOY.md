@@ -117,6 +117,13 @@ allowed signers compiled into `internal/release/signers.go` and embedded in `ins
    them against `checksums.txt`, signs it (`ssh-keygen -Y sign -n tc-release`), checks the
    signature exactly as `tc update` will, uploads `checksums.txt.sig` and publishes the release
    as latest.
+4. Homebrew: `make release-sign` ends by regenerating `Formula/tc.rb` from the just-signed
+   `checksums.txt` (`scripts/brew-formula.sh`, which re-verifies the signature first). Commit the
+   change on a branch and open a PR to `main`; until it merges, `brew upgrade` stays on the old
+   version. Users tap this repo directly:
+   `brew tap pranavjayakumar/tc https://github.com/pranavjayakumar/terminal-chat && brew install pranavjayakumar/tc/tc`.
+   To regenerate by hand: `scripts/brew-formula.sh vX.Y.Z`. `tc update` on a Homebrew install
+   (binary under `Cellar/`) tells the user to run `brew upgrade tc` instead of replacing the binary.
 
 Downloads are https-only, redirects included (`install.sh` runs curl with `--proto '=https'
 --proto-redir '=https' --tlsv1.2` and ignores `~/.curlrc`; `tc update` refuses non-https redirects).
