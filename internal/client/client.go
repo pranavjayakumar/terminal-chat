@@ -220,6 +220,8 @@ type Client struct {
 	needVerified time.Time               // last verifyDevices run from answerKeyNeed
 	certVerifies atomic.Int64            // cert signature checks (tests)
 	rejects      []string                // why recent encrypted edits/deletes/reactions were ignored (encops.go)
+
+	hud huddleState // voice huddles (huddle.go)
 }
 
 // timing holds the protocol's timers; tests shrink them.
@@ -386,6 +388,7 @@ type Update struct {
 	New []Message
 	// Failed lists outbox messages that the server permanently rejected.
 	Failed []Message
+	Huddle bool // a huddle roster or our participation changed
 }
 
 const maxNew = 256
@@ -398,7 +401,7 @@ func (u *Update) msgs(ch uint64) {
 }
 
 func (u Update) empty() bool {
-	return !u.Status && !u.Channels && !u.Users && !u.Presence && !u.Reset &&
+	return !u.Status && !u.Channels && !u.Users && !u.Presence && !u.Reset && !u.Huddle &&
 		len(u.Msgs) == 0 && len(u.Typing) == 0 && len(u.New) == 0 && len(u.Failed) == 0
 }
 
@@ -408,6 +411,7 @@ func (u Update) merge(v Update) Update {
 	u.Users = u.Users || v.Users
 	u.Presence = u.Presence || v.Presence
 	u.Reset = u.Reset || v.Reset
+	u.Huddle = u.Huddle || v.Huddle
 	for k := range v.Msgs {
 		u.msgs(k)
 	}

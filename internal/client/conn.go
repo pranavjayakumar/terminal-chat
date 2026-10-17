@@ -187,7 +187,7 @@ func handshake(conn transport.Conn, codec *proto.Codec, signer ssh.Signer, invit
 	if err != nil {
 		return proto.Welcome{}, err
 	}
-	hello := proto.Hello{Client: clientName, Caps: []string{proto.CapE2E},
+	hello := proto.Hello{Client: clientName, Caps: []string{proto.CapE2E, proto.CapVoice},
 		Auth: proto.Auth{Pubkey: signer.PublicKey().Marshal(), Sig: sig, Invite: invite, Name: name}}
 	if err := codec.Write(proto.THello, hello); err != nil {
 		return proto.Welcome{}, fmt.Errorf("sending hello: %w", err)
@@ -543,6 +543,7 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 	c.typing = map[uint64]map[uint64]time.Time{}
 	c.presence = map[uint64]Presence{}
 	c.mu.Unlock()
+	c.clearHuddles()
 	wg.Wait()
 	c.post(Update{Presence: true, Typing: typing})
 	return online, err

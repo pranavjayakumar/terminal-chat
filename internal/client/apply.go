@@ -563,6 +563,8 @@ func (c *Client) ephemeral(e proto.Ephemeral) {
 			})
 		}
 		c.mu.Unlock()
+	case proto.EphHuddle:
+		c.huddleEphemeral(e)
 	case proto.EphKeyNeed:
 		select { // the worker answers; drop if it's swamped
 		case c.keyNeeds <- e:
