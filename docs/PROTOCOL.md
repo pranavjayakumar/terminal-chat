@@ -61,7 +61,7 @@ The server key never rotates in v1; rotating means re-issuing invites.
 | 0x30 | PING | both | `{t: i64}` |
 | 0x31 | PONG | both | `{t: i64}` (echo) |
 | 0x40 | VOICE | both | reserved (a possible TCP voice fallback; voice is QUIC datagrams only, §14.3) |
-| 0x7F | BYE | both | `{code: str, msg: str}` then close |
+| 0x7F | BYE | both | `{code: str, msg: str, keys?: [str]}` then close (`keys`: §4.1 key hint) |
 
 Effective caps = intersection of HELLO and WELCOME caps. Protocol version is the ALPN.
 
@@ -92,18 +92,32 @@ Auth = {pubkey: bin, sig: bin, invite?: str, name?: str}
   signature can't be replayed on another connection or relayed by a MITM.
 - Without `invite`: log in an existing key.
 - With `invite` (+ `name` for a new user): redeem an invite (§4.1).
+- A key that is already registered always logs in, as the user it belongs to, whatever
+  `invite`/`name` come with it; the invite is not checked, applied or spent (BYE `revoked`
+  if that user is disabled). The key alone already proves who this is, and so a join retried
+  after a lost WELCOME, or an invite code reused on a second computer, signs in. An admin or
+  add-key invite grants nothing to such a key (it doesn't become admin or move to the
+  invite's user), and an unknown or garbage `invite` gets the same WELCOME, so this is no
+  oracle for invite validity. Clients should say when the invite went unused. (Servers
+  through v0.2.0 checked the invite first, answering `invite_invalid` for a spent, expired or
+  key-bound invite and `key_exists` otherwise; clients retry either as a plain login.)
+- Clients give a second computer the server as `tc://<host>:<port>#<pin>` (an invite code
+  without the token): `tc login` with it sends a HELLO without `invite`.
 
 The handshake must complete within 30 s (hardware keys may wait for a touch).
 
 ### 4.1 Invites
 
-Created by an admin (`/invite [uses] [ttl]`, op `invite.create`) or on the server host
-(`tc server invite [--uses N] [--ttl 24h] [--admin]`). An invite allows `uses`
-redemptions (1–100, default 1) until it expires (`ttl` 1 minute–30 days, default 7 days).
+Created by an admin (`/invite [uses] [ttl] [--key github:<login>]`, `tc invite`, op
+`invite.create`), by a member when the server allows it (below), or on the server host
+(`tc server invite [--uses N] [--ttl 24h] [--admin] [--key github:<login>]`). An invite allows `uses`
+redemptions (1–100, default 1) until it expires (`ttl` 1 minute–30 days, default 7 days);
+it is live while `expires > now`, everywhere (redemption, list, revoke, the member cap).
 Redemption decrements the remaining uses — conditionally (`uses > 0`), in the same
 transaction that creates the user/key, so concurrent redemptions of an N-use invite
-produce exactly N users. A redemption that fails (`name_taken`, `key_exists`, reserved
-name) rolls back and spends nothing. Exhausted, expired or unknown → BYE `invite_invalid`.
+produce exactly N users. A redemption that fails (`name_taken`, a reserved name, or
+`key_exists` when a concurrent redemption registered the same key first) rolls back and
+spends nothing. A key that was already registered never redeems (§4). Exhausted, expired or unknown → BYE `invite_invalid`.
 Add-key invites are always single-use. Admin invites (server host only) are single-use and
 last at most 24 hours (default 24 hours). `uses`/`ttl_ms` in `invite.create` need cap
 `team_invites` (servers without it ignore them and mint a 1-use, 7-day invite).
@@ -115,6 +129,64 @@ reveals a usable token. `invite.list` returns only invites that can still be red
 `invite.revoke` deletes one at once; it is serialized with redemption, so a concurrent
 redemption either completed before it or fails with `invite_invalid`.
 
+**Member invites** (cap `member_invites`, advertised only while the server runs with
+`tc server --member-invites=true`, the default). Members (not bots) may then use `invite.create`,
+`invite.list` and `invite.revoke` within tighter limits; admins are unaffected:
+- `invite.create` makes a new-user invite that never grants admin. `user` (an add-key
+  invite) → `forbidden`, even for the member's own account: only admins add login keys, so
+  a stolen SSH key can't mint a second key that outlives revoking it. `uses` 1–10, `ttl`
+  at most 7 days (default 7 days); beyond → `bad_request`.
+- At most 5 live (redeemable) invites per member; a 6th → `conflict`. The count and the
+  insert are one serialized transaction, so concurrent creates can't exceed it. Spent,
+  expired and revoked invites free their slot.
+- `invite.list` returns only the caller's own invites; `invite.revoke` of anyone else's id
+  → `not_found` (indistinguishable from no such invite). Admins may revoke any open
+  (unused, unexpired) invite by id, including members' invites hidden while the setting is off.
+- While the setting is off, members get `forbidden` for all three ops (the v0.2.0
+  behaviour), and invites members made earlier are neither listed nor redeemable
+  (`invite_invalid`); they come back, if unexpired, when it is turned on again.
+- Disabling a user (`user.disable`), member or admin, deletes every invite they created
+  in the same transaction. Redemption also re-checks that the creator is still enabled and
+  still allowed to invite. An add-key invite whose creator isn't an admin (members could make
+  them for themselves in development builds) is neither listed nor redeemable (`invite_invalid`).
+
+**Key-bound invites** (cap `key_invites`). `invite.create {keys: [bin], key_src?: str}`
+binds an invite to SSH public keys (wire format, `ssh.PublicKey.Marshal`): only a joiner
+whose HELLO `pubkey` is one of them can redeem it, so a leaked code alone is useless. Any
+other key → BYE `invite_invalid` and nothing is spent. **Key hint:** if HELLO `caps`
+contains `key_hint`, that BYE also carries `keys`: the SHA256 fingerprints
+(`SHA256:<base64 without padding>` of the wire-format key, sorted) of every key the invite
+accepts, so a client holding several keys retries once with the right one instead of
+signing with each (hardware keys and password-manager agents prompt per signature). It is
+only sent for a live (unexpired, unspent, creator still allowed) key-bound invite and a
+HELLO whose signature verified; the fingerprints are of public keys the invitee published or
+handed over, so a token holder learns nothing secret. Without `key_hint` the BYE is as
+before (servers ignore unknown HELLO caps; clients ignore unknown BYE fields). `key_hint` is
+a request cap in HELLO only; servers don't echo it in WELCOME.
+Rules (else `bad_request`, nothing stored):
+- 1–32 keys, each at most 4096 bytes, canonically encoded, of a type tc logs in with:
+  ed25519, ECDSA (nistp256/384/521), their `sk-` security-key forms, or RSA of
+  2048–16384 bits. Duplicates collapse; the server stores only fingerprints.
+- Key-bound invites are single-use (`uses` > 1 → `bad_request`). They may be new-user,
+  add-key or (server host) admin invites, made by admins or (new-user only, with
+  `member_invites`) members.
+- `key_src` is a label shown by `invite.list`: empty or `github:<login>`, `login` matching
+  `^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`; it needs `keys`. It is the creator's claim, not
+  checked by the server: informational only.
+- **Where keys come from:** the creator's client resolves `--key github:<login>` by
+  fetching `https://github.com/<login>.keys` itself (HTTPS only, same-origin redirects only,
+  15 s timeout, a body over 256 KiB is an error), keeps the keys that pass the rules above,
+  and refuses to create the invite if none remain or more than 32 do. The server never makes outbound
+  requests; it only validates what it is sent. Trusting GitHub's answer is the creator's
+  decision, made at creation time.
+- Clients MUST NOT send `keys` to a server without `key_invites`: an older server ignores
+  unknown fields and would mint an unbound invite. A reply without `keys` means the server
+  didn't bind it; clients refuse that invite (and try to revoke it).
+- Servers store key-bound and member invites under a hash an older server never looks up
+  (`SHA-256("tc-invite-v2\0" || token)` instead of `SHA-256(token)`), so after a downgrade
+  they are unusable rather than unbound; the `id` is the first 12 hex digits of whichever
+  hash the invite is stored under. Invites expired for over 24 hours are deleted.
+
 Clients show an invite as the code and as the install command
 `curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/<ref>/install.sh | sh -s -- '<code>'`,
 where `<ref>` is the client's own version when it is a release tag `vX.Y.Z` (so the script
@@ -125,6 +197,9 @@ The code is single-quoted; a code containing any byte outside `[A-Za-z0-9:/#.\-_
 ```
 tc://<host>:<port>/<token>#<pin>
 ```
+
+A server line without the token, `tc://<host>:<port>#<pin>` (an empty path, `/#`, too), is
+a client-side form for `tc login` (§4); it is not an invite, and invite parsers reject it.
 
 `token` = 16 random bytes, lowercase base32 without padding, compared in
 constant time. `pin` = base64url (no padding) SHA-256 SPKI pin.
@@ -141,6 +216,7 @@ Kinds:
 
 `auth_failed, invite_invalid, name_taken, key_exists, frame_too_large,
 handshake_timeout, protocol_error, slow_consumer, server_shutdown, revoked`.
+(`key_exists` now only when a concurrent redemption registered the key first, §4.)
 
 ## 5. Requests
 
@@ -172,10 +248,10 @@ session **before** the RES. The `seq` in a RES is informational: clients advance
 | `chan.remove` | `{chan, user, bundle?: Signed}` | `{}` (`bundle`: e2e channels, §13.5) |
 | `chan.topic` | `{chan, topic: str}` | `{seq}` |
 | `dm.open` | `{users: [u64]}` (0–7 others; 0 = your private notes) | `{chan: Channel}` |
-| `users.list` | `{}` | `{users: [User]}` |
-| `invite.create` | `{user?: u64, uses?: int, ttl_ms?: i64}` (admin; `uses` 1–100, `ttl_ms` 60 000–30 days, else `bad_request`; `uses` > 1 with `user` → `bad_request`) | `{code: str, uses?: int, expires?: i64}` (cap `team_invites` for `uses`/`ttl_ms`, §4.1) |
-| `invite.list` | `{}` (admin) | `{invites: [{id: str, kind: "user"\|"admin"\|"key", user?: u64, uses_left: int, expires: i64, created: i64, created_by: u64}]}` — live invites only, soonest to expire first; `created_by` 0 = made on the server host; never the token (cap `invite_manage`, §4.1) |
-| `invite.revoke` | `{id: str}` (admin; 12 lowercase hex, else `bad_request`) | `{}` — no live invite with that id → `not_found`; an id matching two invites → `conflict` (cap `invite_manage`) |
+| `users.list` | `{}` | `{users: [User], invited_by?: {u64: u64}}` — `invited_by` (admin callers only; omitted when empty) maps a user id to who made the invite the account was created with (0 = the server host); accounts with no record (created by older servers, bots) are absent |
+| `invite.create` | `{user?: u64, uses?: int, ttl_ms?: i64, keys?: [bin], key_src?: str}` (admin; `uses` 1–100, `ttl_ms` 60 000–30 days, else `bad_request`; `uses` > 1 with `user` or `keys` → `bad_request`; members with cap `member_invites`: `uses` 1–10, `ttl_ms` ≤ 7 days, any `user` → `forbidden`, ≤ 5 live else `conflict`) | `{code: str, uses?: int, expires?: i64, keys?: int}` (cap `team_invites` for `uses`/`ttl_ms`, cap `key_invites` for `keys`/`key_src`, §4.1) |
+| `invite.list` | `{}` (admin: all; member with cap `member_invites`: own only) | `{invites: [{id: str, kind: "user"\|"admin"\|"key", user?: u64, uses_left: int, expires: i64, created: i64, created_by: u64, keys?: int, key_src?: str}]}` — live invites only, soonest to expire first; `created_by` 0 = made on the server host; `keys` = how many SSH keys it is bound to; never the token (cap `invite_manage`, §4.1) |
+| `invite.revoke` | `{id: str}` (admin; member with cap `member_invites`: own only, others' → `not_found`; 12 lowercase hex, else `bad_request`) | `{}` — no open (unused, unexpired) invite with that id → `not_found`; an id matching two invites → `conflict` (cap `invite_manage`) |
 | `user.disable` | `{user}` (admin) | `{}` — closes their sessions with BYE `revoked` |
 | `user.update` | `{display: str}` (self) | `{seq}` — emits `user.update`; unchanged → `{seq: 0}` |
 | `hook.create` | `{chan, name}` | `{id: u64, name: str, url: str, pin: str}` (cap `hooks`, §12) |
@@ -717,7 +793,9 @@ epoch's stored state (nothing changed), a rotation is refused if the
 channel's last rotation was < 2 s ago (whoever made it) or the caller's last
 rotation of this channel was < 10 s ago. When it differs (a member joined,
 left or was disabled, or one of their devices was registered or revoked),
-neither cap applies. The comparison is with the server's record, not with
+neither cap applies; nor when a device of a current non-disabled member was revoked
+after the current epoch's `key.epoch` (registered and revoked since, it
+leaves the state as it was, yet may hold K by `key.share`). The comparison is with the server's record, not with
 what the current bundle boxed, so never-boxed devices don't exempt
 anyone. Epoch 1, and epochs stored before `state` existed, are uncapped.
 
@@ -766,8 +844,17 @@ earliest known time apply. (Boxes to revoked devices are still judged by seq alo
 
 A channel's current bundle is **stale** (encrypted sends will need a
 rotation first, §13.4) when there is none yet, its roster isn't the current
-non-disabled members, or it boxes a revoked device. A newly registered
-device doesn't make it stale (it gets K via `key.share`, §13.7).
+non-disabled members, it boxes a revoked device, or a device of a roster
+user (a current non-disabled member) was revoked after the bundle's
+`key.epoch` seq (that device may hold K without a box: it got it via
+`key.share`, §13.7). A newly registered device doesn't make it stale (it
+gets K via `key.share`). Clients judge the last rule by seqs, which a
+stolen device colluding with the server can misorder (the revoking client
+doesn't rely on them: docs/E2E.md, "Stolen device"): a revoke whose seq
+they don't know counts only through the boxes, a revoke seq past the
+client's sync cursor counts as unknown until the cursor reaches it, and
+for an epoch whose seq they don't know every revoke with a known seq
+counts (the rotation gives the new epoch a known seq).
 
 Creating encrypted channels: `chan.create {…, e2e: true}` requires `e2e1`
 and `private: true` (else `bad_request`). `dm.open` creates a new DM with
@@ -864,8 +951,10 @@ idempotency (§5) holds across reconnects and rotations. Before encrypting it
 catches up on the channel's chain, and rotates first (§13.3) when the
 current bundle is stale as far as it can tell: there is none yet (epoch 1:
 only the creator, or any DM member), its roster isn't the current
-non-disabled members, or it boxed a device the client now knows to be
-revoked (clients don't rely on the server's `stale_epoch` for that). Once the channel has a verified epoch, the roster of
+non-disabled members, or a device the client now knows to be revoked may
+hold its K: one it boxed, or any device of a roster user revoked after its
+`key.epoch` (clients don't rely on the server's `stale_epoch` for devices
+they know of). Once the channel has a verified epoch, the roster of
 a new bundle (and who a sender seals to) is only the members the verified
 head's roster includes: a verified epoch is signed by a previous-roster
 member, while the member list is the server's word, so a user who appears

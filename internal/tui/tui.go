@@ -19,6 +19,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/skailama/tc/internal/client"
+	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/notify"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/release"
@@ -56,6 +57,7 @@ type Backend interface {
 	React(ctx context.Context, msg uint64, emoji string) error
 	Unreact(ctx context.Context, msg uint64, emoji string) error
 	CreateChannel(ctx context.Context, name string, private bool, topic string) (proto.Channel, error)
+	CreateEncryptedChannel(ctx context.Context, name, topic string) (proto.Channel, error)
 	Join(ctx context.Context, ch uint64) error
 	Leave(ctx context.Context, ch uint64) error
 	AddMember(ctx context.Context, ch, user uint64) error
@@ -67,6 +69,7 @@ type Backend interface {
 	Search(ctx context.Context, q string, ch uint64) ([]proto.Message, error)
 	CreateInvite(ctx context.Context, user uint64) (string, error)
 	CreateTeamInvite(ctx context.Context, uses int, ttl time.Duration) (proto.InviteRes, error)
+	DisableUser(ctx context.Context, user uint64) error
 	SendTyping(ch uint64) error
 	SetAway(away bool, status string) error
 	SetDisplay(ctx context.Context, display string) error
@@ -93,6 +96,12 @@ type Backend interface {
 	ConfirmGitHub(res client.GitHubCheck) error
 	Alarm(ch uint64) (client.AlarmInfo, bool)
 	ClearAlarm(ch uint64) error
+	// Devices (devices.go): local list, refresh and revoke.
+	Devices(user uint64) []client.DeviceInfo
+	FindDevice(user uint64, prefix string) (client.DeviceInfo, error)
+	RefreshDevices(ctx context.Context, user uint64) error
+	RevokeDevice(ctx context.Context, dev e2ecrypto.DevID, allowSelf bool) (int, error)
+	DeviceError() error // why this device isn't registered for encryption (nil: it is)
 }
 
 var _ Backend = (*client.Client)(nil)
@@ -102,7 +111,8 @@ var _ Backend = (*client.Client)(nil)
 // version is this build's release tag, for the update notice.
 func Run(ctx context.Context, c *client.Client, version string) error {
 	env := notify.OSEnv()
-	o := Options{Out: os.Stdout, Notifier: notify.New(env, os.Stdout), AwayAfter: awayAfter(os.Getenv("TC_AWAY_MIN")), Version: version}
+	o := Options{Out: os.Stdout, Notifier: notify.New(env, os.Stdout), AwayAfter: awayAfter(os.Getenv("TC_AWAY_MIN")), Version: version, ExtCopy: defaultExtCopy,
+		Tmux: os.Getenv("TMUX") != "", SSH: os.Getenv("SSH_TTY") != "" || os.Getenv("SSH_CONNECTION") != ""}
 	o.UpdateCheck = func() string {
 		return release.Check(ctx, c.Home(), version, release.NewSource(), time.Now())
 	}
@@ -127,6 +137,13 @@ type Options struct {
 	// between renderer frames; neither moves the cursor, so they don't
 	// disturb the alt screen.
 	Out io.Writer
+	// ExtCopy copies to the system clipboard with a tool like pbcopy; nil:
+	// OSC 52 only. It is the fallback for terminals and tmux setups that
+	// drop OSC 52.
+	ExtCopy func(context.Context, string) error
+	// Tmux wraps OSC 52 for tmux passthrough; SSH skips ExtCopy (it would
+	// reach the remote clipboard). Both are set from the environment in Run.
+	Tmux, SSH bool
 	// Notifier gets mentions and DMs the user isn't looking at; nil: none.
 	Notifier Notifier
 	// Herdr is set when running inside herdr: unread badge, /share-pane.

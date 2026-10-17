@@ -15,7 +15,10 @@ const usage = `tc — terminal team chat
 
   tc                         open chat
   tc join <invite> [--name you] [--key ~/.ssh/id_ed25519]   (or the invite in $TC_INVITE)
-                             join a team (tc login is the same)
+                             join a team (--key may be a .pub held in ssh-agent)
+  tc login tc://host:port#pin [--key path]
+                             sign in on another computer with the same SSH key
+  tc login                   show this computer's tc://host:port#pin
   tc send <#chan|@user> [message...]   (reads stdin if no message)
   tc send <#chan|@user> --file path[:start[-end]] [--context N] [message...]
   tc tail <#chan>            stream a channel
@@ -23,8 +26,16 @@ const usage = `tc — terminal team chat
                              run a command, then post ✓/✗, time and output tail
   tc verify @user [--github login]
                              compare safety numbers (or GitHub keys) to verify someone
-  tc server [--listen :7443] [--public host:port] [--data dir]
-  tc server invite [--uses N] [--ttl 72h] [--admin] [--raw]
+  tc devices [@user]         list your (or someone's) devices
+  tc devices revoke <id> [--yes] [--self [--force]]
+                             revoke a lost or stolen device
+  tc invite [--uses N] [--ttl 72h] [--key github:user] [--raw]   (or --list, --revoke ID)
+                             invite someone (admins; members if the server allows)
+  tc users                   list everyone (admins also see who invited whom)
+  tc users disable @user [--yes]
+                             (admin) shut an account out for good, e.g. after a stolen SSH key
+  tc server [--listen :7443] [--public host:port] [--data dir] [--member-invites=false]
+  tc server invite [--uses N] [--ttl 72h] [--admin] [--key github:user] [--raw]
   tc update [--check]        install the latest release (or just check)
   tc version
 `

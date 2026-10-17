@@ -47,18 +47,20 @@ func TestTeamInviteUses(t *testing.T) {
 	}
 }
 
-// A failed redemption (name taken, reserved name, known key) doesn't spend a use.
+// A failed redemption (name taken, reserved name) doesn't spend a use, and
+// a known key logs in without spending one.
 func TestTeamInviteFailedRedemptionKeepsUse(t *testing.T) {
 	ts := startServer(t, "tcp")
 	inv := teamInvite(t, ts, InviteOpts{Uses: 2})
 	key := newKey(t)
-	if _, bye := ts.connect(t, key, inv.Token, "alice"); bye != "" {
+	alice, bye := ts.connect(t, key, inv.Token, "alice")
+	if bye != "" {
 		t.Fatal(bye)
 	}
 	if _, bye := ts.connect(t, newKey(t), inv.Token, "alice"); bye != proto.ByeNameTaken {
 		t.Fatalf("taken name: %q", bye)
 	}
-	if _, bye := ts.connect(t, key, inv.Token, "alice2"); bye != proto.ByeKeyExists {
+	if c, bye := ts.connect(t, key, inv.Token, "alice2"); bye != "" || c.user.ID != alice.user.ID {
 		t.Fatalf("known key: %q", bye)
 	}
 	if _, bye := ts.connect(t, newKey(t), inv.Token, "x-bot"); bye != proto.ByeProtocolError {

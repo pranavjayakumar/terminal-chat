@@ -4,11 +4,9 @@ package server
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"database/sql"
-	"encoding/base32"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -16,7 +14,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -35,6 +32,9 @@ type Config struct {
 	Logger     *slog.Logger
 	// Now is the clock; nil means time.Now. Tests override it.
 	Now func() time.Time
+	// MemberInvites lets non-admins create, list and revoke their own
+	// invites, within proto.MaxMember* limits (cap member_invites).
+	MemberInvites bool
 }
 
 // Server is a running tc server.
@@ -368,139 +368,6 @@ func (s *Server) Serve(ctx context.Context, ln transport.Listener) error {
 			connMu.Unlock()
 		}()
 	}
-}
-
-// CreateInvite mints an invite code. admin makes a new-user invite that
-// grants admin; user != 0 makes an add-key invite for that user.
-// It is single-use and lasts proto.DefaultInviteTTL.
-func (s *Server) CreateInvite(ctx context.Context, admin bool, user uint64) (string, error) {
-	inv, err := s.CreateInviteOpts(ctx, InviteOpts{Admin: admin, User: user})
-	return inv.Code, err
-}
-
-// InviteOpts configures CreateInviteOpts. Zero Uses means 1, zero TTL means
-// proto.DefaultInviteTTL (proto.MaxAdminInviteTTL for admin invites).
-type InviteOpts struct {
-	Admin bool   // single-use, at most proto.MaxAdminInviteTTL
-	User  uint64 // add-key invite for this user (always single-use)
-	Uses  int
-	TTL   time.Duration
-	// CreatedBy is the admin minting it over the protocol; 0: the server host.
-	CreatedBy uint64
-}
-
-// CreateInviteOpts mints an invite that Uses people can redeem before TTL
-// passes (PROTOCOL.md §4.1).
-func (s *Server) CreateInviteOpts(ctx context.Context, o InviteOpts) (proto.InviteRes, error) {
-	if o.Uses == 0 {
-		o.Uses = 1
-	}
-	if o.TTL == 0 {
-		o.TTL = proto.DefaultInviteTTL
-		if o.Admin {
-			o.TTL = proto.MaxAdminInviteTTL
-		}
-	}
-	if o.Uses < 1 || o.Uses > proto.MaxInviteUses {
-		return proto.InviteRes{}, fmt.Errorf("uses must be 1..%d", proto.MaxInviteUses)
-	}
-	if o.TTL < time.Minute || o.TTL > proto.MaxInviteTTL {
-		return proto.InviteRes{}, errors.New("ttl must be between 1 minute and 30 days")
-	}
-	if o.User != 0 && o.Uses != 1 {
-		return proto.InviteRes{}, errors.New("add-key invites are single-use")
-	}
-	if o.Admin && o.Uses != 1 {
-		return proto.InviteRes{}, errors.New("admin invites are single-use")
-	}
-	if o.Admin && o.TTL > proto.MaxAdminInviteTTL {
-		return proto.InviteRes{}, errors.New("admin invites last at most 24 hours")
-	}
-	if o.Admin && o.User != 0 {
-		return proto.InviteRes{}, errors.New("an invite is either admin or add-key")
-	}
-	raw := make([]byte, 16)
-	rand.Read(raw)
-	token := strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw))
-	now := s.now()
-	expires := now + o.TTL.Milliseconds()
-	_, err := s.st.db.ExecContext(ctx,
-		`INSERT INTO invites (token, admin, user, created, expires, uses, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		tokenHash(token), o.Admin, nullable(o.User), now, expires, o.Uses, o.CreatedBy)
-	if err != nil {
-		return proto.InviteRes{}, fmt.Errorf("creating invite: %w", err)
-	}
-	return proto.InviteRes{Code: proto.FormatInvite(s.cfg.PublicAddr, token, s.pin), Uses: int64(o.Uses), Expires: expires}, nil
-}
-
-// ListInvites returns the invites that can still be redeemed, soonest to
-// expire first. Tokens aren't stored, so they can't be returned.
-func (s *Server) ListInvites(ctx context.Context) ([]proto.InviteInfo, error) {
-	rows, err := s.st.db.QueryContext(ctx, `SELECT token, admin, COALESCE(user, 0), uses, expires, created, created_by
-		FROM invites WHERE used = 0 AND uses > 0 AND expires > ? ORDER BY expires, token`, s.now())
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []proto.InviteInfo{}
-	for rows.Next() {
-		var hash string
-		var admin bool
-		var inv proto.InviteInfo
-		if err := rows.Scan(&hash, &admin, &inv.User, &inv.UsesLeft, &inv.Expires, &inv.Created, &inv.CreatedBy); err != nil {
-			return nil, err
-		}
-		inv.ID = hash[:proto.InviteIDLen]
-		switch {
-		case inv.User != 0:
-			inv.Kind = proto.InviteKindKey
-		case admin:
-			inv.Kind = proto.InviteKindAdmin
-		default:
-			inv.Kind = proto.InviteKindUser
-		}
-		out = append(out, inv)
-	}
-	return out, rows.Err()
-}
-
-// UserName is user id's name, or "" if there is none.
-func (s *Server) UserName(ctx context.Context, id uint64) string {
-	u, err := getUser(ctx, s.st.db, id)
-	if err != nil {
-		return ""
-	}
-	return u.Name
-}
-
-// ErrInviteNotFound: no live invite has that id.
-var ErrInviteNotFound = errors.New("no such invite (see the invite list)")
-
-var errInviteAmbiguous = errors.New("invite id matches more than one invite")
-
-// RevokeInvite deletes the live invite with id (InviteInfo.ID). It runs in
-// the same serialized write path as redemption, so a redemption either
-// finished before it or fails after.
-func (s *Server) RevokeInvite(ctx context.Context, id string) error {
-	if !proto.ValidInviteID(id) {
-		return ErrInviteNotFound
-	}
-	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
-		res, err := tx.ExecContext(ctx, `DELETE FROM invites WHERE substr(token, 1, ?) = ? AND used = 0 AND uses > 0 AND expires > ?`,
-			proto.InviteIDLen, id, s.now())
-		if err != nil {
-			return nil, err
-		}
-		switch n, _ := res.RowsAffected(); n {
-		case 0:
-			return nil, ErrInviteNotFound
-		case 1:
-			return nil, nil
-		default: // a 48-bit prefix collision: revoke neither, say so
-			return nil, errInviteAmbiguous
-		}
-	})
-	return err
 }
 
 // tokenHash is what the database stores, so lookups don't compare secrets

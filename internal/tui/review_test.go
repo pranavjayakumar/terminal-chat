@@ -187,9 +187,31 @@ func (context0Err) Error() string { return "boom" }
 func TestSelectModeNav(t *testing.T) {
 	m := newTestModel(t, 80, 24)
 	run(m, m.handleKey(keyMsg("up")))
-	if v := checkView(t, m, "select"); !strings.Contains(v, "e edit · d delete · r thread · + react · y copy · Esc") {
-		t.Fatalf("no select hint:\n%s", v)
+	if v := checkView(t, m, "select"); !strings.Contains(v, "r retry · d discard · v view · y copy · Esc") {
+		t.Fatalf("failed message should offer retry/discard:\n%s", v)
 	}
+	m.Update(tea.WindowSizeMsg{Width: 200, Height: 24}) // wide: the long form
+	defer m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.Update(tea.WindowSizeMsg{Width: 200, Height: 24}) // wide: the long form
+	defer m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	// Another person's message: no edit or delete; pin and view are offered.
+	m.main.sel = 0
+	m.updatePlaceholder()
+	if h := m.input.Placeholder; strings.Contains(h, "edit") || strings.Contains(h, "delete") ||
+		!strings.Contains(h, "p pin") || !strings.Contains(h, "v view") || !strings.Contains(h, "r thread") {
+		t.Fatalf("footer for another person's message: %q", h)
+	}
+	// My own sent message: edit and delete.
+	for i, x := range m.main.msgs {
+		if x.Author == m.me.ID && x.ID != 0 && x.Failed == "" {
+			m.main.sel = i
+		}
+	}
+	m.updatePlaceholder()
+	if h := m.input.Placeholder; !strings.Contains(h, "e edit") || !strings.Contains(h, "d delete") {
+		t.Fatalf("footer for my message: %q", h)
+	}
+	m.main.sel = len(m.main.msgs) - 1
 	last := m.main.sel
 	run(m, m.handleKey(keyMsg("pgup")))
 	if m.main.sel >= last-3 {
@@ -315,5 +337,19 @@ func TestSearchJump(t *testing.T) {
 	run(m, m.jumpTo(proto.Message{ID: 5, Chan: 10, Author: 2, Body: "ancient"}))
 	if !strings.Contains(m.notice, "older message — scroll up to find it") {
 		t.Fatalf("notice %q", m.notice)
+	}
+}
+
+// The select footer keeps Esc visible at narrow widths.
+func TestSelectFooterCompactKeepsEsc(t *testing.T) {
+	for _, w := range []int{40, 30} {
+		m := newTestModel(t, w, 14)
+		run(m, m.handleKey(keyMsg("up")))
+		plain := checkView(t, m, "select narrow")
+		rows := strings.Split(strings.TrimRight(plain, "\n"), "\n")
+		last := rows[len(rows)-1]
+		if !strings.Contains(last, "Esc") || !strings.Contains(last, "r") {
+			t.Errorf("%d cols: footer %q", w, last)
+		}
 	}
 }

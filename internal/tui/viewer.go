@@ -16,6 +16,9 @@ type viewer struct {
 	title string
 	lines []string
 	x, y  int
+	copy  string               // what y copies; "": the lines
+	back  mode                 // where Esc returns
+	build func(w int) []string // re-lays lines out for the width; nil: static
 }
 
 const viewerStep = 8
@@ -32,6 +35,7 @@ func (m *Model) openViewer(msg client.Message) {
 	m.view = viewer{
 		title: sanitize.Line(m.r.userName(msg.Author)) + " · " + when,
 		lines: m.viewerBody(body),
+		back:  modeSelect,
 	}
 	m.mode = modeViewer
 }
@@ -41,7 +45,7 @@ func (m *Model) viewerKey(key string) {
 	page := max(m.dims().bodyH-2, 1)
 	switch key {
 	case kEsc, "q", kEnter, kSelView:
-		m.mode = modeSelect
+		m.mode = v.back
 		return
 	case kUp, "k":
 		v.y--
@@ -71,9 +75,13 @@ func (m *Model) viewerKey(key string) {
 
 func (m *Model) viewerLines(w, h int) []string {
 	v := m.view
+	if v.build != nil {
+		v.lines = v.build(w)
+		m.view.lines = v.lines
+	}
 	hint := "←/→ ↑/↓ scroll · y copy · Esc closes"
 	if w < 50 {
-		hint = "Esc closes"
+		hint = "y copy · Esc"
 	}
 	out := []string{fit(m.st.overlayTitle.Render(truncate(v.title+" — "+hint, w)), w)}
 	rows := h - 1

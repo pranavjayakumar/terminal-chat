@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -35,6 +34,8 @@ const (
 	modeViewer
 	modeList
 	modeVerify
+	modeDevices // devices.go
+	modeDisable // disable.go
 )
 
 // pane is a scrollable message list: a channel (root 0) or a thread.
@@ -56,14 +57,14 @@ func (p *pane) open() bool { return p.ch != 0 }
 
 // Model is the Bubble Tea model.
 type Model struct {
-	hud huddleUI // voice huddles (huddle.go)
-
-	c   Backend
-	ctx context.Context
-	st  *styles
-	r   renderer
-	rc  renderCache
-	opt Options
+	hud    huddleUI // voice huddles (huddle.go)
+	opened bool     // a channel has been opened; stops the first-start auto-open
+	c      Backend
+	ctx    context.Context
+	st     *styles
+	r      renderer
+	rc     renderCache
+	opt    Options
 
 	w, h      int
 	me        proto.User
@@ -140,6 +141,8 @@ type Model struct {
 	keyChg     map[uint64][]uint64 // e2e channel → members with an unacknowledged key change
 	hinted     map[uint64]bool     // channels that showed the "?" hint this run
 	verify     verifyState
+	devs       devicesState
+	dis        disableState
 	noticeDim  bool   // the notice is a quiet hint
 	newRelease string // newer release tag, shown in the sidebar title
 }
@@ -215,6 +218,15 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 	}
 	m.syncDraft()
 	return m
+}
+
+// openDefault selects the default channel when none is active. A fresh
+// client's cache is empty when New runs; the first snapshot arrives later.
+func (m *Model) openDefault() tea.Cmd {
+	if m.active != 0 || m.opened {
+		return nil
+	}
+	return m.openChannel(m.defaultChannel())
 }
 
 func (m *Model) defaultChannel() uint64 { return m.defaultChannelExcept(0) }
@@ -442,6 +454,7 @@ func (m *Model) openChannel(ch uint64) tea.Cmd {
 	if ch == 0 {
 		return nil
 	}
+	m.opened = true
 	if m.jump.wide != 0 && m.jump.wide != ch {
 		m.endWiden(false) // leaving the channel a jump widened
 	}
@@ -479,6 +492,11 @@ func (m *Model) markRead() tea.Cmd {
 	// Not gated on terminal focus: a visible but unfocused pane (a herdr
 	// split next to an editor) is still being read.
 	if m.active == 0 || m.main.scroll > 0 {
+		return nil
+	}
+	if m.status.State == client.Syncing {
+		// Read state is incomplete mid-sync; marking now would clobber
+		// unread/mentions on every device. Online transition retries.
 		return nil
 	}
 	for i := range m.chans {
@@ -684,17 +702,18 @@ func (m *Model) noticeTick() tea.Cmd {
 
 // ---- clipboard ----
 
-// copyCmd puts text on the clipboard with OSC 52. Most terminals support
-// it; tmux needs set-clipboard on.
+// copyCmd puts text on the clipboard (see clip). It only says "copied" when
+// a method was actually attempted.
 func (m *Model) copyCmd(text string) tea.Cmd {
-	out := m.opt.Out
-	if out == nil {
-		return nil
-	}
-	seq := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(text)) + "\a"
+	ctx, opt := m.ctx, m.opt
 	return func() tea.Msg {
-		if _, err := out.Write([]byte(seq)); err != nil {
+		// May run a clipboard tool: never on the UI goroutine.
+		how, err := clip(ctx, opt, text)
+		switch {
+		case err != nil:
 			return errMsg{"copy", err}
+		case how == "":
+			return errMsg{"copy", errors.New("no clipboard available")}
 		}
 		return infoMsg("copied")
 	}
@@ -770,6 +789,8 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case verifyGHMsg:
 		m.gotVerifyGH(msg)
 		return m, nil
+	case devicesMsg:
+		return m, m.gotDevices(msg)
 	case snippetMsg:
 		m.gotSnippet(msg)
 		return m, nil
@@ -801,6 +822,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case infoMsg:
 		m.setInfo(string(msg))
+		return m, nil
+	case inviteShownMsg:
+		m.showInvite(msg)
 		return m, nil
 	case updateAvailMsg:
 		m.newRelease = string(msg)
@@ -893,8 +917,11 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 		if m.status.Stopped && m.status.Err != "" && !prev.Stopped {
 			m.setNotice("disconnected: "+m.status.Err, true, false, 0)
 		}
-		if m.status.State == client.Online && prev.State != client.Online && len(m.main.msgs) < 30 {
-			cmds = append(cmds, m.fetchHistory(m.active))
+		if m.status.State == client.Online && prev.State != client.Online {
+			if len(m.main.msgs) < 30 {
+				cmds = append(cmds, m.fetchHistory(m.active))
+			}
+			cmds = append(cmds, m.markRead())
 		}
 	}
 	if u.Reset || u.Channels {
@@ -902,6 +929,7 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 	}
 	if u.Reset {
 		m.reloadAll()
+		cmds = append(cmds, m.openDefault())
 		if m.mode == modeActivity {
 			m.refreshActivity()
 		}
@@ -915,6 +943,7 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 	}
 	if u.Channels || u.Users {
 		m.reloadChans()
+		cmds = append(cmds, m.openDefault())
 	}
 	if u.Msgs[m.main.ch] {
 		m.reloadPane(&m.main)
@@ -931,6 +960,7 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 		f := u.Failed[len(u.Failed)-1]
 		m.setNotice("message not sent: "+f.Failed, true, false, 0)
 	}
+	m.devicesNotice(u.Revoked, u.NewOwn)
 	cmds = append(cmds, m.notifyFor(u.New))
 	if m.mode == modeActivity && m.activityAffected(u) {
 		cmds = append(cmds, m.queueActivityRefresh())
@@ -991,8 +1021,15 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 	case modeVerify:
 		m.verifyKey(key)
 		return nil
+	case modeDevices:
+		return m.devicesKey(key)
+	case modeDisable:
+		return m.disableKey(key)
 	case modeViewer:
 		if key == kSelCopy {
+			if m.view.copy != "" {
+				return m.copyCmd(m.view.copy)
+			}
 			return m.copyCmd(strings.Join(m.view.lines, "\n"))
 		}
 		m.viewerKey(key)

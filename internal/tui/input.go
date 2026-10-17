@@ -120,10 +120,51 @@ func (m *Model) layoutInput() {
 	m.line.Width = max(d.mainW-strWidth(m.line.Prompt)-1, 1)
 }
 
+// selectFooter lists only the keys that do something for the selected
+// message, so it never offers an edit of someone else's message.
+func (m *Model) selectFooter() string {
+	sel, ok := m.selected()
+	if !ok {
+		return "Esc leaves select mode"
+	}
+	var keys []string
+	if sel.Failed != "" {
+		keys = []string{"r retry", "d discard", "v view", "y copy"}
+	} else {
+		live := sel.ID != 0 && !sel.Deleted
+		mine := sel.Author == m.me.ID
+		if mine && live && sel.Sec.Trusted() {
+			keys = append(keys, "e edit")
+		}
+		if mine && live {
+			keys = append(keys, "d delete")
+		}
+		if live {
+			keys = append(keys, "r thread", "+ react")
+			if sel.Pinned {
+				keys = append(keys, "p unpin")
+			} else {
+				keys = append(keys, "p pin")
+			}
+		}
+		keys = append(keys, "v view", "y copy")
+	}
+	full := strings.Join(keys, " · ") + " · Esc"
+	if strWidth(full) < m.dims().mainW-1 {
+		return full
+	}
+	// Narrow: just the key letters, Esc last so leaving is always visible.
+	letters := make([]string, len(keys))
+	for i, k := range keys {
+		letters[i], _, _ = strings.Cut(k, " ")
+	}
+	return strings.Join(letters, " ") + " · Esc"
+}
+
 func (m *Model) updatePlaceholder() {
 	switch {
 	case m.mode == modeSelect:
-		m.input.Placeholder = "e edit · d delete · r thread · + react · y copy · Esc"
+		m.input.Placeholder = m.selectFooter()
 	case m.thread.open():
 		m.input.Placeholder = "reply in thread"
 	case m.active != 0:
@@ -284,23 +325,40 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 			return openChanMsg{}, be.Leave(ctx, ch)
 		}), nil
 	case "create":
-		if err := need(1, "/create #name [--private]"); err != nil {
+		const usage = "/create #name [--private [--plaintext]]"
+		if err := need(1, usage); err != nil {
 			return nil, err
 		}
 		var name string
-		private := false
+		private, plaintext := false, false
 		for _, a := range c.args {
 			switch {
 			case a == "--private":
 				private = true
+			case a == "--plaintext":
+				plaintext = true
 			case name == "":
 				name = strings.TrimPrefix(a, "#")
 			default:
-				return nil, errors.New("usage: /create #name [--private]")
+				return nil, errors.New("usage: " + usage)
 			}
+		}
+		if plaintext && !private {
+			return nil, errors.New("--plaintext goes with --private (public channels are never encrypted)")
 		}
 		if !proto.ValidName(name) {
 			return nil, errors.New("channel names are 1-32 of a-z 0-9 _ - (lowercase)")
+		}
+		// Private channels are end-to-end encrypted unless asked otherwise
+		// (--plaintext: e.g. for webhooks, which can't post into encrypted ones).
+		if private && !plaintext {
+			return m.callThen("create", func(ctx context.Context) (tea.Msg, error) {
+				ch, err := be.CreateEncryptedChannel(ctx, name, "")
+				if pe := (*proto.Error)(nil); errors.As(err, &pe) && pe.Code == proto.ErrBadRequest && strings.Contains(pe.Msg, "e2e1") {
+					err = errors.New("this server can't encrypt channels; /create #" + name + " --private --plaintext makes an unencrypted one")
+				}
+				return openChanMsg{ch.ID}, err
+			}), nil
 		}
 		return m.callThen("create", func(ctx context.Context) (tea.Msg, error) {
 			ch, err := be.CreateChannel(ctx, name, private, "")
@@ -459,6 +517,12 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 		return cmd, err
 	}
 	if cmd, ok, err := m.huddleCommand(c); ok {
+		return cmd, err
+	}
+	if cmd, ok, err := m.devicesCommand(c); ok {
+		return cmd, err
+	}
+	if cmd, ok, err := m.disableCommand(c); ok {
 		return cmd, err
 	}
 	return nil, fmt.Errorf("unknown command /%s", sanitize.Line(c.name))

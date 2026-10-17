@@ -229,6 +229,9 @@ type Ping struct {
 type Bye struct {
 	Code string `msgpack:"code"`
 	Msg  string `msgpack:"msg"`
+	// Keys: SHA256 fingerprints a key-bound invite accepts, in an
+	// invite_invalid for another key when HELLO carried cap key_hint (§4.1).
+	Keys []string `msgpack:"keys,omitempty"`
 }
 
 // ---- objects (PROTOCOL.md §8) ----
@@ -446,6 +449,10 @@ type DMOpenArgs struct {
 
 type UsersRes struct {
 	Users []User `msgpack:"users"`
+	// InvitedBy (admin callers only) maps a user id to the id of whoever
+	// made the invite the account was created with; 0 = the server host.
+	// Users missing from it have no record (older accounts, bots).
+	InvitedBy map[uint64]uint64 `msgpack:"invited_by,omitempty"`
 }
 
 // InviteCreateArgs: Uses and TTLMs (cap `team_invites`) default to 1 and
@@ -454,12 +461,17 @@ type InviteCreateArgs struct {
 	User  uint64 `msgpack:"user,omitempty"`
 	Uses  int64  `msgpack:"uses,omitempty"`
 	TTLMs int64  `msgpack:"ttl_ms,omitempty"`
+	// Keys (cap key_invites) binds the invite to these SSH public keys
+	// (wire format): only a joiner holding one of them can redeem it.
+	Keys   [][]byte `msgpack:"keys,omitempty"`
+	KeySrc string   `msgpack:"key_src,omitempty"` // "github:<login>", shown by invite.list
 }
 
 type InviteRes struct {
 	Code    string `msgpack:"code"`
 	Uses    int64  `msgpack:"uses,omitempty"`    // redemptions allowed
 	Expires int64  `msgpack:"expires,omitempty"` // Unix ms
+	Keys    int64  `msgpack:"keys,omitempty"`    // SSH keys it is bound to (cap key_invites)
 }
 
 type UserArgs = UserRef

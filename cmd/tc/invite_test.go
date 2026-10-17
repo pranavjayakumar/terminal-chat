@@ -83,9 +83,10 @@ func TestPrintInvites(t *testing.T) {
 		{ID: "0123456789ab", Kind: proto.InviteKindUser, UsesLeft: 14, Expires: exp, CreatedBy: 1},
 		{ID: "ba9876543210", Kind: proto.InviteKindKey, User: 2, UsesLeft: 1, Expires: exp},
 		{ID: "ffffffffffff", Kind: proto.InviteKindAdmin, UsesLeft: 1, Expires: exp, CreatedBy: 7},
-	}, func(id uint64) string { return names[id] })
+		{ID: "aaaaaaaaaaaa", Kind: proto.InviteKindUser, UsesLeft: 1, Expires: exp, CreatedBy: 2, Keys: 2, KeySrc: "github:x\x1b]0;t\a"},
+	}, func(id uint64) string { return names[id] }, "tc server invite --revoke ID")
 	out := b.String()
-	for _, want := range []string{"0123456789ab", "14", "@admin", "key for @bob", "server host", "user 7", "--revoke ID"} {
+	for _, want := range []string{"0123456789ab", "14", "@admin", "key for @bob", "server host", "user 7", "--revoke ID", "user (github:x", "2 keys)"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
 		}
@@ -94,7 +95,7 @@ func TestPrintInvites(t *testing.T) {
 		t.Fatalf("unsanitized name:\n%q", out)
 	}
 	b.Reset()
-	printInvites(&b, nil, nil)
+	printInvites(&b, nil, nil, "")
 	if !strings.Contains(b.String(), "No open invites") {
 		t.Fatal(b.String())
 	}

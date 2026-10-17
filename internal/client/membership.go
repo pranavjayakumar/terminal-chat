@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"slices"
+	"time"
 
 	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/identity"
@@ -22,8 +24,23 @@ import (
 var ErrNotMember = errors.New("only members can change who is in an encrypted channel")
 
 // e2eSession is the live session of a server that speaks e2e1, once this
-// device is registered.
+// device is registered. If registration failed (e.g. too many devices) it
+// says why (ErrDeviceNotRegistered) instead of waiting for ever.
 func (c *Client) e2eSession(ctx context.Context) (*session, e2ecrypto.ServerID, error) {
+	s, sid, err := c.e2eConn(ctx)
+	if err != nil {
+		return nil, sid, err
+	}
+	if err := s.deviceErr(); err != nil {
+		return nil, sid, err
+	}
+	return s, sid, nil
+}
+
+// e2eConn is the live session of a server that speaks e2e1, once this
+// device's first registration attempt finished (successful or not; see
+// session.registered), waiting at most timing.devWait for it.
+func (c *Client) e2eConn(ctx context.Context) (*session, e2ecrypto.ServerID, error) {
 	c.mu.Lock()
 	s := c.sess
 	c.mu.Unlock()
@@ -34,12 +51,17 @@ func (c *Client) e2eSession(ctx context.Context) (*session, e2ecrypto.ServerID, 
 	if !ok || !s.e2e() {
 		return nil, sid, errors.New("server doesn't support end-to-end encryption")
 	}
+	wait := time.NewTimer(c.timing.devWait)
+	defer wait.Stop()
 	select {
 	case <-s.devReady:
+	case <-s.devTried:
 	case <-s.done:
 		return nil, sid, ErrOffline
 	case <-ctx.Done():
 		return nil, sid, ctx.Err()
+	case <-wait.C:
+		return nil, sid, fmt.Errorf("%w yet (still trying)", ErrDeviceNotRegistered)
 	}
 	return s, sid, nil
 }
@@ -179,6 +201,14 @@ func (c *Client) EncryptChannel(ctx context.Context, ch uint64) error {
 		_ = c.trust.MarkChannelE2E(sid, ch) // our choice: sticky from now on
 	}
 	return err
+}
+
+// ListUsers asks the server for every user; for an admin the result also
+// says who invited each account (UsersRes.InvitedBy).
+func (c *Client) ListUsers(ctx context.Context) (proto.UsersRes, error) {
+	var r proto.UsersRes
+	err := c.call(ctx, proto.OpUsersList, proto.Empty{}, &r, nil)
+	return r, err
 }
 
 // DisableUser (admin) disables a user and closes their sessions, then

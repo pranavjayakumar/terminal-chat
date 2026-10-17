@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -53,16 +54,31 @@ type session struct {
 	sawSnapshot bool
 
 	// E2E: our login key, our device keys once loaded, and devReady,
-	// closed once the server has our device (e2e.go).
-	sshPub   []byte
-	dev      atomic.Pointer[e2ecrypto.DeviceKeys]
-	devReady chan struct{}
-	devOnce  sync.Once
+	// closed once the server has our device (e2e.go). devTried closes
+	// after the first registration attempt whatever its outcome; devErr
+	// is why the last attempt failed (nil once registered); devRetry asks
+	// the e2e worker to try again (a revoke may have freed a slot).
+	sshPub      []byte
+	dev         atomic.Pointer[e2ecrypto.DeviceKeys]
+	devReady    chan struct{}
+	devOnce     sync.Once
+	devTried    chan struct{}
+	devTriedOne sync.Once
+	devErr      atomic.Pointer[error]
+	devRetry    chan chan error
+	revokedSeen int           // e2e worker only: our revoked devices at the last retry (retryDue)
+	devGap      time.Duration // e2e worker only: retryDue's current gap
+	devNext     time.Time     // e2e worker only: no transient retry before
+
+	// restarting: we ended the session on purpose (new device keys), so
+	// the reconnect isn't a failure that grows the backoff.
+	restarting atomic.Bool
 }
 
 func newSession(conn transport.Conn, codec *proto.Codec, w proto.Welcome, recvTimeout time.Duration) *session {
 	s := &session{conn: conn, codec: codec, welcome: w, done: make(chan struct{}),
-		pending: map[uint32]pendingReq{}, syncing: true, devReady: make(chan struct{})}
+		pending: map[uint32]pendingReq{}, syncing: true, devReady: make(chan struct{}),
+		devTried: make(chan struct{}), devRetry: make(chan chan error)}
 	s.lastSend.Store(time.Now().UnixNano())
 	// A timer rather than a polling goroutine: a blocked write must not be
 	// able to delay the receive timeout.
@@ -78,6 +94,16 @@ func (s *session) send(t proto.FrameType, v any) error {
 	s.lastSend.Store(time.Now().UnixNano())
 	return err
 }
+
+// restart ends the session on purpose: Run reconnects soon, without
+// counting it as a failure.
+func (s *session) restart() {
+	s.restarting.Store(true)
+	s.fail()
+}
+
+// errRestart is connect's result for a session ended by restart.
+var errRestart = errors.New("reconnecting with new device keys")
 
 // fail closes the connection and fails every pending request with ErrOffline.
 func (s *session) fail() {
@@ -187,7 +213,7 @@ func handshake(conn transport.Conn, codec *proto.Codec, signer ssh.Signer, invit
 	if err != nil {
 		return proto.Welcome{}, err
 	}
-	hello := proto.Hello{Client: clientName, Caps: []string{proto.CapE2E, proto.CapVoice},
+	hello := proto.Hello{Client: clientName, Caps: []string{proto.CapE2E, proto.CapKeyHint, proto.CapVoice},
 		Auth: proto.Auth{Pubkey: signer.PublicKey().Marshal(), Sig: sig, Invite: invite, Name: name}}
 	if err := codec.Write(proto.THello, hello); err != nil {
 		return proto.Welcome{}, fmt.Errorf("sending hello: %w", err)
@@ -211,19 +237,33 @@ func handshake(conn transport.Conn, codec *proto.Codec, signer ssh.Signer, invit
 		case proto.TBye:
 			var b proto.Bye
 			_ = f.Decode(&b)
-			return proto.Welcome{}, &ByeError{Code: b.Code, Msg: b.Msg}
+			return proto.Welcome{}, &ByeError{Code: b.Code, Msg: b.Msg, Keys: b.Keys}
 		}
 	}
 }
 
-// Login redeems an invite (new user or new key for an existing user), writes
-// home/config.json and starts a fresh cache. keyPath "" means ssh-agent or
-// the default ~/.ssh keys.
 const stableSession = 10 * time.Second
 
+// v020Retry reports whether an invite_invalid without a key hint is worth
+// a second signature as a plain login, for a v0.2.0 server that checks the
+// invite before the key. It can't tell server versions apart, so it costs
+// a dead invite one extra signature against current servers; not with a
+// security key (a touch each), and not for a key-bound invite refusing
+// this key (the join loop moves on to the next key instead). Matching the
+// msg text is only for frozen v0.2.0 servers; nothing new keys on msg.
+func v020Retry(bye *ByeError, signer ssh.Signer) bool {
+	return !strings.HasPrefix(signer.PublicKey().Type(), "sk-") && !strings.Contains(bye.Msg, "other SSH keys")
+}
+
+// Login redeems an invite (new user or new key for an existing user), or
+// with a tokenless tc://host:port#pin logs in a key already registered,
+// then writes home/config.json and starts a fresh cache. keyPath is an
+// identity.Load spec: "" means ssh-agent or the default ~/.ssh keys. A key
+// that is already registered logs in whatever the invite (§4), also
+// against servers that answer key_exists.
 func Login(ctx context.Context, home, invite, name, keyPath string) (proto.User, error) {
 	home = homeOr(home)
-	inv, err := proto.ParseInvite(invite)
+	inv, err := proto.ParseLogin(invite)
 	if err != nil {
 		return proto.User{}, err
 	}
@@ -231,22 +271,31 @@ func Login(ctx context.Context, home, invite, name, keyPath string) (proto.User,
 	if err != nil {
 		return proto.User{}, err
 	}
-	conn, err := transport.Dial(ctx, inv.Addr, inv.Pin)
-	if err != nil {
-		return proto.User{}, err
-	}
-	defer conn.Close()
-	stop := context.AfterFunc(ctx, func() { conn.Close() })
-	defer stop()
-	w, err := handshake(conn, proto.NewCodec(conn), signer, inv.Token, name, defaultTiming.handshake)
-	if err != nil {
-		if ctx.Err() != nil {
-			return proto.User{}, ctx.Err()
+	w, err := loginOnce(ctx, inv, signer, inv.Token, name)
+	var bye *ByeError
+	if errors.As(err, &bye) && inv.Token != "" {
+		switch {
+		case bye.Code == proto.ByeKeyExists:
+			w, err = loginOnce(ctx, inv, signer, "", "")
+		case bye.Code == proto.ByeInviteInvalid && len(bye.Keys) == 0 && v020Retry(bye, signer):
+			// A v0.2.0 server checks the invite before the key, so a join
+			// retried after a lost WELCOME gets invite_invalid there.
+			if w2, err2 := loginOnce(ctx, inv, signer, "", ""); err2 == nil {
+				w, err = w2, nil
+			}
 		}
+	}
+	if err != nil {
 		return proto.User{}, err
 	}
 
-	if keyPath != "" {
+	keyFP := ""
+	switch {
+	case keyPath == "":
+		keyFP = identity.Fingerprint(signer.PublicKey())
+	case strings.HasPrefix(keyPath, "SHA256:"):
+		keyFP, keyPath = keyPath, ""
+	default:
 		if abs, err := filepath.Abs(keyPath); err == nil {
 			keyPath = abs
 		}
@@ -285,11 +334,27 @@ func Login(ctx context.Context, home, invite, name, keyPath string) (proto.User,
 			return proto.User{}, err
 		}
 	}
-	cfg := Config{Addr: inv.Addr, Pin: inv.Pin, KeyPath: keyPath, UserID: w.User.ID, Name: w.User.Name}
+	cfg := Config{Addr: inv.Addr, Pin: inv.Pin, KeyPath: keyPath, KeyFP: keyFP, UserID: w.User.ID, Name: w.User.Name}
 	if err := writeConfig(home, cfg); err != nil {
 		return proto.User{}, err
 	}
 	return w.User, nil
+}
+
+// loginOnce runs one handshake on a new connection.
+func loginOnce(ctx context.Context, inv proto.Invite, signer ssh.Signer, token, name string) (proto.Welcome, error) {
+	conn, err := transport.Dial(ctx, inv.Addr, inv.Pin)
+	if err != nil {
+		return proto.Welcome{}, err
+	}
+	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+	w, err := handshake(conn, proto.NewCodec(conn), signer, token, name, defaultTiming.handshake)
+	if err != nil && ctx.Err() != nil {
+		return proto.Welcome{}, ctx.Err()
+	}
+	return w, err
 }
 
 func writeConfig(home string, cfg Config) error {
@@ -411,7 +476,8 @@ func (c *Client) Run(ctx context.Context) {
 		}
 		// Only a session that stayed up resets the backoff, so a server that
 		// syncs and immediately drops us can't make us reconnect in a hot loop.
-		if online && time.Since(start) >= stableSession {
+		restart := errors.Is(err, errRestart)
+		if online && (restart || time.Since(start) >= stableSession) {
 			backoff = c.timing.backoffMin
 		}
 		st := Status{State: Offline, Stopped: fatal(err)}
@@ -423,7 +489,9 @@ func (c *Client) Run(ctx context.Context) {
 			return
 		}
 		d := backoff/2 + rand.N(backoff/2+1)
-		backoff = min(backoff*2, c.timing.backoffMax)
+		if !restart || !online {
+			backoff = min(backoff*2, c.timing.backoffMax)
+		}
 		t := time.NewTimer(d)
 		select {
 		case <-ctx.Done():
@@ -439,7 +507,7 @@ func (c *Client) Run(ctx context.Context) {
 // through sync (which resets the backoff).
 func (c *Client) connect(ctx context.Context) (online bool, err error) {
 	c.setStatus(Status{State: Connecting})
-	signer, err := identity.Load(c.cfg.KeyPath)
+	signer, err := identity.Load(c.cfg.KeySpec())
 	if err != nil {
 		return false, err
 	}
@@ -498,6 +566,10 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 	if err == nil {
 		c.checkDowngrade(s)
 		online = true
+		if s.e2e() {
+			// Before publishing s: RefreshDevices reads it without waiting.
+			s.sshPub = signer.PublicKey().Marshal()
+		}
 		c.mu.Lock()
 		c.sess = s
 		away := c.away
@@ -513,7 +585,6 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 			c.outboxLoop(sctx, s)
 		}()
 		if s.e2e() {
-			s.sshPub = signer.PublicKey().Marshal()
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -529,8 +600,11 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 	}
 	s.fail()
 	scancel()
-	if s.timedOut.Load() {
+	switch {
+	case s.timedOut.Load():
 		err = errTimeout
+	case s.restarting.Load():
+		err = errRestart
 	}
 	c.mu.Lock()
 	if c.sess == s {

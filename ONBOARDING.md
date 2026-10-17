@@ -8,18 +8,31 @@ binary, Mac and Linux, end-to-end encrypted DMs and private channels, signed rel
 Your admin sends you a line like this. Paste it into a terminal:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/v0.2.0/install.sh | sh -s -- 'tc://host:7443/token#pin'
+curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/v0.3.0/install.sh | sh -s -- 'tc://host:7443/token#pin'
 ```
 
 What happens:
 
 1. `install.sh` downloads the release for your OS and CPU, checks the maintainer's SSH signature on
    the checksums, and installs `tc` into `~/.local/bin` (it tells you if that's not on your PATH).
-2. `tc join` picks your SSH key (ssh-agent, then `~/.ssh/id_ed25519`, or it creates one for tc),
-   suggests a name from your git config, and asks at most two questions.
+2. `tc join` tries your SSH keys (ssh-agent, then `~/.ssh`, or it creates one for tc), suggests a
+   name from your git config, and asks at most two questions. If the invite is tied to your GitHub
+   keys, it picks the matching one.
 3. You're in `#general`. Run `tc` to open the chat.
 
-Already have tc? `tc join '<invite>'`. Keep it current with `tc update` (signed, atomic).
+Already have tc? `tc join '<invite>'`. On a Mac with Homebrew:
+`brew tap pranavjayakumar/tc https://github.com/pranavjayakumar/terminal-chat && brew install pranavjayakumar/tc/tc`.
+Keep it current with `tc update` (signed, atomic) or `brew upgrade tc`.
+
+Interrupted? Run the same command again: a key that's already registered just logs in, and the
+invite isn't used up.
+
+**Second computer:** run `tc login` on the first one. It prints `tc login 'tc://host:port#pin'`; run
+that on the other computer with the same SSH key there (or re-run your original install command).
+
+**Lost a laptop?** `tc devices` lists your devices, `tc devices revoke <id>` (or `/devices` in chat)
+revokes one and re-keys every encrypted conversation it could read. If the thief may also have your
+SSH key, ask an admin to `tc users disable` the account and invite you again with a new key.
 
 ## 2. Everyday use
 
@@ -34,7 +47,7 @@ Already have tc? `tc join '<invite>'`. Keep it current with `tc update` (signed,
 | `Esc` | back out of anything |
 | `Ctrl-C` twice | quit |
 
-Common commands: `/dm @a @b`, `/create #x [--private]`, `/join #x`, `/add @user`, `/topic …`,
+Common commands: `/dm @a @b`, `/create #x [--private]` (private = encrypted), `/join #x`, `/add @user`, `/topic …`,
 `/name …`, `/search …`, `/pins`, `/highlight word`, `/group oncall @a @b`, `/remind 2h text`,
 `/snippet file.go:40-60`, `/away`, `/back`.
 
@@ -78,10 +91,15 @@ Run tc in a herdr pane and it notices automatically:
 tc server invite --uses 15 --ttl 24h        # one line for the whole team
 tc server invite --admin                     # single-use, 24 h max
 tc server invite --list / --revoke ID        # see and cancel live invites
+tc invite --key github:alice                 # only alice's GitHub SSH keys can redeem it
+tc users                                     # accounts and who invited them
+tc users disable @name                       # lock an account out for good
 ```
 
-In chat: `/invite 15 24h` copies the one-liner, `/invites`, `/invite-revoke ID`, `/webhook name`
-(CI and agents can then post with curl), `/group …`.
+Members can invite too (`/invite 5 1d`; up to 10 uses, 7 days, 5 live invites each); turn that off
+with `tc server --member-invites=false`. In chat: `/invite 15 24h` shows and copies the one-liner,
+`/invites`, `/invite-revoke ID`, `/disable @name`, `/webhook name` (CI and agents can then post with
+curl; webhooks need a plain channel: `/create #ci --private --plaintext`), `/group …`.
 
 Running the server: see [docs/DEPLOY.md](docs/DEPLOY.md). The production server runs as a systemd
 unit `tc` with its data in `/var/lib/tc`. Back up `tc.db` with `sqlite3 … ".backup …"`, and keep

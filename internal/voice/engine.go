@@ -99,10 +99,10 @@ type Engine struct {
 	// wins keeps every src's replay window for the whole participation, so
 	// a roster that drops and re-adds a src can't reset it and let the
 	// server replay that stream's recent frames (bounded by maxWins).
-	wins map[uint32]*window
-	stats   Stats
-	mix     []int32
-	pcm     []int16
+	wins  map[uint32]*window
+	stats Stats
+	mix   []int32
+	pcm   []int16
 }
 
 func NewEngine(cfg Config) (*Engine, error) {

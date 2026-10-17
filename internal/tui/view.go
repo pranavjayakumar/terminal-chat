@@ -225,6 +225,10 @@ func (m *Model) bodyLines(d dims) []string {
 		return m.helpLines(w, h)
 	case modeVerify:
 		return m.verifyLines(w, h)
+	case modeDevices:
+		return m.devicesLines(w, h)
+	case modeDisable:
+		return m.disableLines(w, h)
 	case modeSwitcher:
 		return m.switcherLines(w, h)
 	case modeSearch:
@@ -573,9 +577,15 @@ func (m *Model) helpMaxScroll() int {
 // helpLines is the scrollable help overlay; a "↓ more" row marks a cut.
 func (m *Model) helpLines(w, h int) []string {
 	out := []string{fit(m.st.overlayTitle.Render(truncate("help — ↑/↓ PgUp/PgDn scroll, Esc closes", w)), w)}
-	kw := 24
-	if w < 60 {
-		kw = 0
+	// The key column fits the longest key plus a gap, up to half the width.
+	kw := 0
+	if w >= 60 {
+		for _, kv := range helpLines {
+			if kv[1] != "" {
+				kw = max(kw, strWidth(kv[0])+1)
+			}
+		}
+		kw = min(max(kw, 24), w/2)
 	}
 	rows := h - 1
 	scroll := min(max(m.helpScroll, 0), max(len(helpLines)-rows, 0))

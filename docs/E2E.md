@@ -158,10 +158,25 @@ What a malicious server can and cannot do today, and what closes each gap:
   step 12 the other members wait 2 min for a key.share and then rotate past it, linking back to a
   random key: that epoch's messages are lost to them (a history gap), nothing else.
 - **Stolen device**: once revoked (`device.revoke`, signed by the user's SSH key or another of their
-  devices; the protocol and client support it, but there is no `tc` command for it yet), every client
-  rotates before sealing anything new in a channel whose epoch boxed it (step 12, not relying on the
+  devices: `tc devices revoke <id>` or `/devices`; the revoking client records, durably and before it sends the
+  revoke, that every encrypted channel it is in owes a rotation away from that device: it seals nothing
+  new there until it commits an epoch of its own that doesn't box the device (someone else's newer epoch
+  doesn't count: the device may hold that key by key.share), and keeps trying at once and after any
+  failure, reconnect or `--self` re-registration, so it never depends on the server's seqs, PROTOCOL
+  §13.3), every client
+  rotates before sealing anything new in a channel whose current key it may hold (boxed, or by key.share; B5) (step 12, not relying on the
   server's `stale_epoch`) and ignores revokes the stolen device signs afterwards. Disabling the user
-  (admin) also rotates them out. It keeps what it could already read.
+  (admin) also rotates them out. It keeps what it could already read. A device revoke does not remove
+  an SSH login key: a stolen device that holds the user's SSH private key signs in again and registers
+  as a new device, which every client trusts (its cert verifies under the pinned key). Clients announce
+  a new device of the user to the user's other devices ("new device of yours"), including in the pass
+  where a device that was revoked while offline re-registers. The only remedy today is a whole account:
+  an admin disables it (`tc users disable @name`, op `user.disable`: its sessions close, none of its
+  keys can sign in, its invites go, encrypted channels rotate it out) and invites the owner again as a
+  new account (new name, new SSH key); the old account's encrypted history stays with the old devices.
+  **Known gap:** there is no per-key removal, so the owner can't drop just the stolen key and keep the
+  account. Members can't mint add-key invites (admins only, §4.1 of PROTOCOL.md), so a stolen key alone
+  can't add a second key of the thief's that would survive this.
 - **Lost devices**: K lives only on devices. Losing every device of a user loses their encrypted
   history (no backup in v1); a new device gets new messages, and older history only from a member's
   backlinks (the history of every epoch whose K a remaining member holds).

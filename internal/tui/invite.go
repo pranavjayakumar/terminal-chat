@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"strconv"
@@ -20,9 +19,10 @@ import (
 type updateAvailMsg string
 
 // inviteArgs parses /invite [uses] [ttl]: a number of uses (1-100) and a
-// duration like 72h, 3d or 30m, in either order.
+// duration like 72h, 3d or 30m, in either order. The server applies the
+// tighter member limits.
 func inviteArgs(args []string) (uses int, ttl time.Duration, err error) {
-	const usage = "usage: /invite [uses 1-100] [ttl like 72h or 3d, at most 30d]"
+	const usage = "usage: /invite [uses 1-100, members 1-10] [ttl like 72h or 3d, at most 30d, members 7d]"
 	if len(args) > 2 {
 		return 0, 0, errors.New(usage)
 	}
@@ -43,46 +43,229 @@ func inviteArgs(args []string) (uses int, ttl time.Duration, err error) {
 	return uses, ttl, nil
 }
 
-func parseTTL(s string) (time.Duration, error) {
-	if n, ok := strings.CutSuffix(s, "d"); ok {
-		days, err := strconv.Atoi(n)
-		if err != nil || days < 1 || days > 30 {
-			return 0, errors.New("bad days")
-		}
-		return time.Duration(days) * 24 * time.Hour, nil
-	}
-	return time.ParseDuration(s)
+func parseTTL(s string) (time.Duration, error) { return client.ParseTTL(s) }
+
+// GitHubInviteBackend is implemented by backends that can mint invites
+// bound to a GitHub account's SSH keys (*client.Client does).
+type GitHubInviteBackend interface {
+	CreateGitHubInvite(ctx context.Context, login string, ttl time.Duration) (proto.InviteRes, error)
 }
 
-// inviteCommand mints an invite and copies the install one-liner with OSC
-// 52; the notice shows the raw code for people who already have tc.
+var _ GitHubInviteBackend = (*client.Client)(nil)
+
+// keyArg removes "--key github:<login>" from args and returns the login
+// ("" without --key).
+func keyArg(args []string) (login string, rest []string, err error) {
+	for i := 0; i < len(args); i++ {
+		if args[i] != "--key" {
+			rest = append(rest, args[i])
+			continue
+		}
+		if login != "" {
+			return "", nil, errors.New("give --key once")
+		}
+		if i+1 >= len(args) {
+			return "", nil, errors.New("usage: /invite --key github:user [ttl like 72h or 3d]")
+		}
+		l, ok := proto.GitHubKeySpec(args[i+1])
+		if !ok {
+			if proto.ValidKeySrc("github:" + args[i+1]) {
+				return "", nil, errors.New("--key needs github:<user> (did you mean github:" + args[i+1] + "?)")
+			}
+			return "", nil, errors.New("--key needs github:<user>, a GitHub user name")
+		}
+		login = l
+		i++
+	}
+	return login, rest, nil
+}
+
+// inviteErr turns the server's forbidden into what it means here, keeping
+// any reason the server gave (sanitized when shown).
+func inviteErr(err error, what string) error {
+	var pe *proto.Error
+	if errors.As(err, &pe) && pe.Code == proto.ErrForbidden {
+		if pe.Msg != "" {
+			return errors.New(pe.Msg + " (only admins can " + what + " on this server)")
+		}
+		return errors.New("only admins can " + what + " on this server")
+	}
+	return err
+}
+
+// boundLabel is how a key binding reads everywhere: "github:carol only (2 keys)".
+func boundLabel(src string, keys int64) string {
+	n := "1 key"
+	if keys != 1 {
+		n = fmt.Sprintf("%d keys", keys)
+	}
+	if src == "" {
+		return "bound to " + n
+	}
+	return sanitize.Line(src) + " only (" + n + ")"
+}
+
+// inviteCommand mints an invite, copies the install one-liner (OSC 52, tmux
+// passthrough, pbcopy & co) and shows code and one-liner in full. With
+// --key github:<login> the client fetches that account's SSH keys and binds
+// the invite to them. Members may invite when the server allows it; the
+// server enforces who and how much.
 func (m *Model) inviteCommand(args []string) (tea.Cmd, error) {
+	login, args, err := keyArg(args)
+	if err != nil {
+		return nil, err
+	}
 	uses, ttl, err := inviteArgs(args)
 	if err != nil {
 		return nil, err
 	}
-	be, out, version := m.c, m.opt.Out, m.opt.Version
+	var gh GitHubInviteBackend
+	if login != "" {
+		if uses > 1 {
+			return nil, errors.New("--key invites are single-use: drop the uses")
+		}
+		var ok bool
+		if gh, ok = m.c.(GitHubInviteBackend); !ok {
+			return nil, errors.New("key-bound invites aren't supported here")
+		}
+	}
+	be, opt, version := m.c, m.opt, m.opt.Version
+	if gh != nil {
+		// The GitHub fetch can take seconds; say something meanwhile.
+		m.setInfo("fetching github.com/" + login + "'s SSH keys…")
+	}
 	return m.callThen("invite", func(ctx context.Context) (tea.Msg, error) {
-		inv, err := be.CreateTeamInvite(ctx, uses, ttl)
+		var inv proto.InviteRes
+		var err error
+		if gh != nil {
+			inv, err = gh.CreateGitHubInvite(ctx, login, ttl)
+		} else {
+			inv, err = be.CreateTeamInvite(ctx, uses, ttl)
+		}
 		if err != nil {
-			return nil, err
+			return nil, inviteErr(err, "invite people")
 		}
 		line, err := proto.InstallCommand(inv.Code, version)
 		if err != nil {
 			return nil, err
 		}
-		if out != nil {
-			_, _ = out.Write([]byte("\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(line)) + "\a"))
+		how, cerr := clip(ctx, opt, line)
+		// What matters first: narrow panes cut the notice from the right.
+		parts := []string{"invite created"}
+		if inv.Keys > 0 {
+			parts = append(parts, "for "+boundLabel("github:"+login, inv.Keys))
 		}
-		what := "1 use"
 		if inv.Uses > 1 {
-			what = fmt.Sprintf("%d uses", inv.Uses)
+			parts = append(parts, fmt.Sprintf("%d uses", inv.Uses))
+		} else {
+			parts = append(parts, "1 use")
 		}
 		if inv.Expires > 0 {
-			what += " · expires " + time.UnixMilli(inv.Expires).Format("Jan 2 15:04")
+			parts = append(parts, "expires "+time.UnixMilli(inv.Expires).Format("Jan 2 15:04"))
 		}
-		return infoMsg("invite (" + what + ") · install command copied · code: " + sanitize.Line(inv.Code)), nil
+		return inviteShownMsg{summary: strings.Join(parts, " · "), code: sanitize.Line(inv.Code),
+			line: line, how: how, copyErr: cerr}, nil
 	}), nil
+}
+
+// inviteShownMsg carries a new invite to the UI, which shows it in full:
+// the status line truncates, and the copy can silently fail (tmux), so the
+// code must stay readable and selectable on screen.
+type inviteShownMsg struct {
+	summary, code, line, how string
+	copyErr                  error
+}
+
+func (m *Model) showInvite(s inviteShownMsg) {
+	copied := "NOT copied: select the text below"
+	switch s.how {
+	case "system":
+		copied = "copied to the clipboard"
+	case "terminal":
+		copied = "sent to terminal clipboard"
+	}
+	m.view = viewer{
+		title: "invite",
+		build: func(w int) []string { return inviteLines(s, copied, w) },
+		copy:  s.line,
+		back:  modeNormal,
+	}
+	m.mode = modeViewer
+	m.setInfo("invite created")
+}
+
+// inviteLines lays the invite out for width w: copy result first, then the
+// summary, the code in chunks, and the install command broken at spaces with
+// backslash continuations so pasting several rows still runs in sh.
+func inviteLines(s inviteShownMsg, copied string, w int) []string {
+	w = max(w, 8)
+	out := wrapWords(copied, w)
+	out = append(out, "")
+	out = append(out, wrapWords(s.summary, w)...)
+	out = append(out, "", "code:")
+	for r := []rune(s.code); len(r) > 0; {
+		n := min(len(r), w)
+		out = append(out, string(r[:n]))
+		r = r[n:]
+	}
+	out = append(out, "", "install command:")
+	return append(out, wrapShell(s.line, w)...)
+}
+
+// wrapShell breaks a shell command into rows of at most w columns that still
+// run when pasted together: a backslash-newline is removed by sh even inside
+// a word, and a quoted word is cut as adjacent quoted pieces.
+func wrapShell(line string, w int) []string {
+	var out []string
+	row := ""
+	flush := func() { out = append(out, row+" \\"); row = "" }
+	for _, tok := range strings.Fields(line) {
+		if row != "" && len(row)+1+len(tok)+2 <= w {
+			row += " " + tok
+			continue
+		}
+		if row != "" {
+			flush()
+		}
+		if len(tok)+2 <= w {
+			row = tok
+			continue
+		}
+		quoted := len(tok) >= 2 && tok[0] == '\'' && tok[len(tok)-1] == '\''
+		body, q, size := tok, "", w-1
+		if quoted {
+			body, q, size = tok[1:len(tok)-1], "'", w-3
+		}
+		size = max(size, 1)
+		for len(body) > size {
+			out = append(out, q+body[:size]+q+"\\")
+			body = body[size:]
+		}
+		row = q + body + q
+	}
+	if row != "" {
+		out = append(out, row)
+	}
+	return out
+}
+
+// wrapWords breaks text at spaces into rows of at most w columns (a longer
+// word stays whole).
+func wrapWords(text string, w int) []string {
+	var out []string
+	row := ""
+	for _, tok := range strings.Fields(text) {
+		switch {
+		case row == "":
+			row = tok
+		case strWidth(row)+1+strWidth(tok) <= w:
+			row += " " + tok
+		default:
+			out = append(out, row)
+			row = tok
+		}
+	}
+	return append(out, row)
 }
 
 // InviteBackend is implemented by backends that can list and revoke
@@ -104,9 +287,6 @@ func (m *Model) inviteManageCommand(c command) (cmd tea.Cmd, ok bool, err error)
 	if !has {
 		return nil, true, errors.New("invite management isn't supported here")
 	}
-	if !m.me.Admin {
-		return nil, true, errors.New("only admins can list or revoke invites")
-	}
 	if c.name == "invite-revoke" {
 		if len(c.args) != 1 || !proto.ValidInviteID(strings.ToLower(c.args[0])) {
 			return nil, true, errors.New("usage: /invite-revoke id (the 12-character id from /invites)")
@@ -114,7 +294,11 @@ func (m *Model) inviteManageCommand(c command) (cmd tea.Cmd, ok bool, err error)
 		id := strings.ToLower(c.args[0])
 		return m.callThen("invite-revoke", func(ctx context.Context) (tea.Msg, error) {
 			if err := be.RevokeInvite(ctx, id); err != nil {
-				return nil, err
+				var pe *proto.Error
+				if errors.As(err, &pe) && pe.Code == proto.ErrNotFound {
+					return nil, errors.New("no open invite " + id + " of yours (see /invites)")
+				}
+				return nil, inviteErr(err, "revoke invites")
 			}
 			return infoMsg("invite " + id + " revoked"), nil
 		}), true, nil
@@ -129,7 +313,7 @@ func (m *Model) inviteManageCommand(c command) (cmd tea.Cmd, ok bool, err error)
 	return m.callThen("invites", func(ctx context.Context) (tea.Msg, error) {
 		invs, err := be.ListInvites(ctx)
 		if err != nil {
-			return nil, err
+			return nil, inviteErr(err, "list invites")
 		}
 		if len(invs) == 0 {
 			return infoMsg("no open invites"), nil
@@ -138,12 +322,13 @@ func (m *Model) inviteManageCommand(c command) (cmd tea.Cmd, ok bool, err error)
 		for i, inv := range invs {
 			parts[i] = describeInvite(inv, names)
 		}
-		return infoMsg("invites (/invite-revoke id): " + strings.Join(parts, " · ")), nil
+		// Ids first so they survive truncation in narrow panes.
+		return infoMsg(strings.Join(parts, " · ") + " · revoke with /invite-revoke id"), nil
 	}), true, nil
 }
 
-// describeInvite is "<id> <kind> <n> left, exp <time>, by <who>". Every
-// server-supplied field is sanitized or numeric.
+// describeInvite is "<id> <kind>[, <binding>], <n> left, exp <time>, by
+// <who>". Every server-supplied field is sanitized or numeric.
 func describeInvite(inv proto.InviteInfo, names map[uint64]string) string {
 	kind := sanitize.Line(inv.Kind)
 	switch inv.Kind {
@@ -161,7 +346,10 @@ func describeInvite(inv proto.InviteInfo, names map[uint64]string) string {
 			by = fmt.Sprintf("user%d", inv.CreatedBy)
 		}
 	}
-	return fmt.Sprintf("%s %s %d left, exp %s, by %s", sanitize.Line(inv.ID), kind, inv.UsesLeft,
+	if inv.Keys > 0 {
+		kind += ", " + boundLabel(inv.KeySrc, inv.Keys)
+	}
+	return fmt.Sprintf("%s %s, %d left, exp %s, by %s", sanitize.Line(inv.ID), kind, inv.UsesLeft,
 		time.UnixMilli(inv.Expires).Format("Jan 2 15:04"), by)
 }
 

@@ -1,21 +1,32 @@
 # Status & handoff
 
-Last updated: 2026-10-10 (end of session 1; branch `m2-activity` adds drafts, highlights, activity view). Read this first when resuming.
+Last updated: 2026-10-17 (session 4). Read this first when resuming.
 
 ## Handoff (always current — read this first when switching accounts)
 
-**PAUSED (2026-10-10, owner's request)** after completing M3 and M4 and shipping the first release.
+**ACTIVE: releasing v0.3.0 (session 4, 2026-10-17).** All v0.3.0 fixes are merged (#43–#61). Open work lives
+in GitHub issues + PRs, never only in a scratchpad. Resume = this list:
+
+1. Tag **v0.3.0** on main, wait for the draft release, `make release-sign` with the owner's key, commit the
+   regenerated `Formula/tc.rb` via PR, redeploy the droplet from the signed release, make new invites.
+2. **v0.4.0** = draft PR **#47** voice huddles (owner decisions listed in the PR): merge main, review, release.
+3. Follow-ups: #59 admin add-key invite command; per-key removal (`key.remove`, proposed in #52); M6 from
+   `docs/research/PRODUCT-2026-10.md` (owner to approve); rename after v0.4.
+
+Done this session: #43 docs, #44 brew tap, #45 first-start (#42), #46/#49 chaos deflakes, #48 member + github-key
+invites, #50 device list/revoke, #52 B1–B3 (add-key invites admin-only, `tc users [disable]`, invited_by), #51 UX
+polish, #53 B4/B7/B8, #58 `tc login` + join fixes, #60 CI flakes, #61 B5/B11/B12 device revoke gaps.
+
+**How the parallel run works:** one Claude subagent per area in its own worktree (`isolation: worktree`), each
+owns named files; overlaps are called out in the agent prompt. Reviewer agents (tui/security/protocol/breaker)
+check each PR before merge. Merge one PR at a time; later branches `git merge origin/main`. `gh` must use the
+personal account (`gh auth status` → pranavjayakumar active).
 
 - **Released:** v0.2.0 (signed with the owner's SSH key; https://github.com/pranavjayakumar/terminal-chat/releases/tag/v0.2.0).
-  Install: `curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/v0.2.0/install.sh | sh -s -- '<invite>'`.
 - **Production:** root@159.65.152.35 (key-only SSH), systemd `tc` running v0.2.0 on :7443 (UDP+TCP), data
-  `/var/lib/tc`, pin `kizIIb-LUvMblyz18Ovf52VftSZnISNdJAEUz56LoU4`. Owner got an admin invite and a 15-use team
-  invite (24 h). Owner should change the droplet root password (it was shared in chat; password SSH is off).
-- **Repo:** only `main`; GitHub deletes merged branches automatically; CI green.
-- **Name:** stays `tc` for now (owner). A rename later should happen before many installs; note `tc` clashes with
-  iproute2's `tc` on Linux.
-- **In progress (2026-10-17):** v0.3.0 + M5 voice in parallel (see WORKLOG). **Was next:** owner onboarding using `ONBOARDING.md`. Then candidates: M5 voice huddles; deferred M4 items
-  (brew tap, any-member invites, `--key github:user`, device revoke command); polish from real team use.
+  `/var/lib/tc`, pin `kizIIb-LUvMblyz18Ovf52VftSZnISNdJAEUz56LoU4`. The Oct 10 invites expired; make new ones
+  after the v0.3.0 redeploy. Owner should change the droplet root password (it was shared in chat).
+- **Name:** stays `tc` until v0.3/v0.4 are done, then rename (owner). `tc` clashes with iproute2's `tc` on Linux.
 
 **Rules:** kiro hard cap 55–60% of monthly credits (check `kiro-cli chat --no-interactive "/usage"`); once reached,
 run workers as Claude subagents. Claude orchestrates (review/merge/log). Merge only with `gh pr checks <n> --watch`

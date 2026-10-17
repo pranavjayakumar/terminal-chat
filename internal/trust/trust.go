@@ -13,14 +13,17 @@
 package trust
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/subtle"
 	"database/sql"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -41,8 +44,9 @@ const FileName = "e2e.db"
 // v7 adds archived_device_keys; v8 adds epochs.seq (the key.epoch seq of a
 // verified bundle; NULL = unknown) and legacy_cutoffs; v9 adds
 // legacy_cutoffs.claimed (the cutoff is the server's Channel.legacy); v10
-// adds trust_audit (deliberate alarm clears and out-of-band verifications).
-const schemaVersion = 11
+// adds trust_audit (deliberate alarm clears and out-of-band verifications);
+// v11 adds epochs.boxed; v12 adds owed_rotations.
+const schemaVersion = 12
 
 // maxKeyChanges bounds the pending key changes kept per user and server; the
 // least recently seen is dropped (it is re-recorded if seen again).
@@ -100,6 +104,14 @@ CREATE TABLE IF NOT EXISTS trust_audit (
 	server_id BLOB NOT NULL, time INTEGER NOT NULL, by INTEGER NOT NULL, action TEXT NOT NULL,
 	chan INTEGER NOT NULL DEFAULT 0, user INTEGER NOT NULL DEFAULT 0, detail TEXT NOT NULL,
 	raised INTEGER NOT NULL DEFAULT 0);
+-- Rotations this device owes: it revoked device dev, which may hold the
+-- key of channel chan's current epoch, so it seals nothing new there until
+-- it commits an epoch of its own that doesn't box dev (PROTOCOL §13.3).
+-- Someone else's newer epoch doesn't pay it: the revoked device may hold
+-- that key by key.share, and only the server's seqs would say otherwise.
+CREATE TABLE IF NOT EXISTS owed_rotations (
+	server_id BLOB NOT NULL, chan INTEGER NOT NULL, dev BLOB NOT NULL,
+	PRIMARY KEY (server_id, chan, dev));
 `
 
 // migrateV1 adds the v2 columns to a v1 file (the v2 tables come from schema).
@@ -867,6 +879,92 @@ func (s *Store) Devices(sid e2ecrypto.ServerID, user uint64) ([]Device, error) {
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+// OweRotation records that this device owes channel ch a rotation away
+// from device dev (it revoked dev): see owed_rotations.
+func (s *Store) OweRotation(sid e2ecrypto.ServerID, ch uint64, dev e2ecrypto.DevID) error {
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO owed_rotations (server_id, chan, dev) VALUES (?, ?, ?)`,
+		sid[:], i64(ch), dev[:])
+	if err != nil {
+		return fmt.Errorf("recording owed rotation of channel %d: %w", ch, err)
+	}
+	return nil
+}
+
+// RotationOwed reports whether this device owes ch a rotation.
+func (s *Store) RotationOwed(sid e2ecrypto.ServerID, ch uint64) (bool, error) {
+	var owed bool
+	err := s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM owed_rotations WHERE server_id = ? AND chan = ?)`,
+		sid[:], i64(ch)).Scan(&owed)
+	if err != nil {
+		return false, fmt.Errorf("loading owed rotation of channel %d: %w", ch, err)
+	}
+	return owed, nil
+}
+
+// PayRotation settles ch's owed rotations by an epoch this device itself
+// committed, which sealed K to boxed: every owed device it didn't box.
+func (s *Store) PayRotation(sid e2ecrypto.ServerID, ch uint64, boxed []e2ecrypto.DevID) error {
+	err := s.tx(func(tx *sql.Tx) error {
+		rows, err := tx.Query(`SELECT dev FROM owed_rotations WHERE server_id = ? AND chan = ?`, sid[:], i64(ch))
+		if err != nil {
+			return err
+		}
+		var paid [][]byte
+		for rows.Next() {
+			var d []byte
+			if err := rows.Scan(&d); err != nil {
+				rows.Close()
+				return err
+			}
+			if !slices.ContainsFunc(boxed, func(b e2ecrypto.DevID) bool { return bytes.Equal(b[:], d) }) {
+				paid = append(paid, d)
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, d := range paid {
+			if _, err := tx.Exec(`DELETE FROM owed_rotations WHERE server_id = ? AND chan = ? AND dev = ?`, sid[:], i64(ch), d); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("settling owed rotation of channel %d: %w", ch, err)
+	}
+	return nil
+}
+
+// RevokedAfter reports whether a stored device of one of users was revoked
+// by a revoke whose seq is known and after seq (any known seq when seq is
+// 0, i.e. unknown). Such a device existed while the epoch with key.epoch
+// seq was current, so it may hold that epoch's key by key.share even if
+// the bundle never boxed it (PROTOCOL §13.3 "stale").
+func (s *Store) RevokedAfter(sid e2ecrypto.ServerID, users []uint64, seq uint64) (bool, error) {
+	if len(users) == 0 {
+		return false, nil
+	}
+	ids := make([]int64, len(users))
+	for i, u := range users {
+		ids[i] = i64(u)
+	}
+	js, err := json.Marshal(ids)
+	if err != nil {
+		return false, err
+	}
+	var hit bool
+	err = s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM revoked_devices r
+		JOIN devices d ON d.server_id = r.server_id AND d.dev = r.dev
+		WHERE r.server_id = ? AND r.seq IS NOT NULL AND r.seq > ?
+			AND d.user IN (SELECT value FROM json_each(?)))`, sid[:], i64(seq), string(js)).Scan(&hit)
+	if err != nil {
+		return false, fmt.Errorf("checking revoked devices: %w", err)
+	}
+	return hit, nil
 }
 
 // ---- epoch chain ----

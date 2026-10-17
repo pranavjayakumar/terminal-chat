@@ -174,7 +174,7 @@ func (fs *fakeServer) accept() *fakeConn {
 	select {
 	case fc := <-fs.conns:
 		return fc
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		fs.t.Fatal("no connection")
 		return nil
 	}
@@ -183,7 +183,7 @@ func (fs *fakeServer) accept() *fakeConn {
 // next returns the next frame of type t, skipping others.
 func (fc *fakeConn) next(t proto.FrameType) proto.Frame {
 	fc.t.Helper()
-	timeout := time.After(5 * time.Second)
+	timeout := time.After(testWait)
 	for {
 		select {
 		case f, ok := <-fc.in:
@@ -332,9 +332,13 @@ func run(t *testing.T, c *Client) (stopped chan struct{}) {
 	return stopped
 }
 
+// testWait bounds waits for something that must happen. It only guards
+// against hangs, so it is generous: loaded CI runners under -race are slow.
+const testWait = 15 * time.Second
+
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testWait)
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)
@@ -431,6 +435,14 @@ func TestLoginAndSnapshot(t *testing.T) {
 func TestLoginBadInvite(t *testing.T) {
 	testEnv(t)
 	fs := newFakeServer(t)
+	// A v0.2.0 server answers invite_invalid to a spent invite even when
+	// the key is registered (a join retried after a lost WELCOME), so
+	// Login retries as a plain login...
+	if u, err := Login(context.Background(), t.TempDir(), proto.FormatInvite(fs.addr(), "bad", fs.pin), "x", writeKey(t)); err != nil || u.ID != users[0].ID {
+		t.Fatalf("plain-login fallback: %+v %v", u, err)
+	}
+	// ...and reports the invite error when that fails too.
+	fs.bye.Store(proto.ByeAuthFailed)
 	_, err := Login(context.Background(), t.TempDir(), proto.FormatInvite(fs.addr(), "bad", fs.pin), "x", writeKey(t))
 	var bye *ByeError
 	if !errors.As(err, &bye) || bye.Code != proto.ByeInviteInvalid {
@@ -677,6 +689,48 @@ func TestSendPermanentFailure(t *testing.T) {
 	}
 }
 
+// B4: a row rejected for good stays listed (Failed) but a later
+// SendLocal+FlushLocal reports only on its own message.
+func TestFlushLocalIgnoresOlderFailures(t *testing.T) {
+	testEnv(t)
+	fs := newFakeServer(t)
+	c := open(t, login(t, fs))
+	run(t, c)
+	fc := fs.accept()
+	fc.bootstrap()
+	waitFor(t, "online", online(c))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	bad, err := c.SendLocal(general, "rejected", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fc.fail(fc.expectReq(proto.OpSend, nil).ID, proto.ErrBadRequest)
+	if err := c.FlushLocal(ctx, bad); err == nil || !strings.Contains(err.Error(), "bad_request") {
+		t.Fatalf("flush own rejected = %v", err)
+	}
+
+	good, err := c.SendLocal(general, "fine", 0)
+	if err != nil || good == bad {
+		t.Fatalf("SendLocal = %d, %v", good, err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- c.FlushLocal(ctx, good) }()
+	r := fc.expectReq(proto.OpSend, nil)
+	fc.ok(r.ID, proto.SendRes{Msg: 60})
+	if err := <-done; err != nil {
+		t.Fatalf("flush own delivered = %v (an older failure leaked in)", err)
+	}
+	if err := c.Flush(ctx); err == nil {
+		t.Fatal("Flush (whole outbox) should still report the rejected row")
+	}
+	ms := c.Messages(general, 50)
+	if last := ms[len(ms)-1]; last.Failed == "" {
+		t.Fatalf("rejected row no longer shown as failed: %+v", ms)
+	}
+}
+
 func TestRequestsFailOffline(t *testing.T) {
 	testEnv(t)
 	fs := newFakeServer(t)
@@ -705,7 +759,7 @@ func TestRequestsFailOffline(t *testing.T) {
 		if !errors.Is(err, ErrOffline) {
 			t.Fatalf("react = %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		t.Fatal("pending request not failed on disconnect")
 	}
 
@@ -799,7 +853,7 @@ func TestByeRevokedStops(t *testing.T) {
 	fc.conn.Close()
 	select {
 	case <-stopped:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		t.Fatal("Run kept going after revoked")
 	}
 	st := c.Status()
@@ -846,7 +900,7 @@ func TestUpdatesCoalesce(t *testing.T) {
 	// so keep draining until all five arrive rather than stopping at the
 	// first empty read after last_seq moves.
 	var merged Update
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(testWait)
 	for len(merged.New) < 5 {
 		select {
 		case u := <-c.Updates():
@@ -912,7 +966,7 @@ func TestCloseStopsEverything(t *testing.T) {
 	}
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		t.Fatal("Run still running after Close")
 	}
 	for range c.Updates() { // drained, then closed
@@ -1134,5 +1188,21 @@ func TestBotMessagesNeverMention(t *testing.T) {
 	waitFor(t, "events", func() bool { return lastSeq(t, c) == 33 })
 	if g := chanView(t, c, general); g.Unread != 2 || !g.Mention {
 		t.Errorf("general after bob = %+v", g)
+	}
+}
+
+// The v0.2.0 plain-login fallback re-signs only where it can help: not for
+// a key-bound invite refusing this key (the join loop moves on).
+func TestV020Retry(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	s, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !v020Retry(&ByeError{Code: proto.ByeInviteInvalid, Msg: "invite is invalid, used or expired"}, s) {
+		t.Fatal("spent invite: no retry")
+	}
+	if v020Retry(&ByeError{Code: proto.ByeInviteInvalid, Msg: "this invite is for other SSH keys; join with one of them (tc join --key path)"}, s) {
+		t.Fatal("key-bound mismatch: retried")
 	}
 }

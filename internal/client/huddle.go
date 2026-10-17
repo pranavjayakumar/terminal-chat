@@ -458,7 +458,7 @@ type huddleKeys struct {
 	// grace is until when frames under the epoch before the head are
 	// still accepted: briefly after the head moves, never indefinitely,
 	// so an ex-member holding the old K can't keep injecting audio.
-	grace   time.Time
+	grace      time.Time
 	blocked    bool // sending paused: the epoch is stale or the channel in alarm
 	refreshing bool // a background refresh is running
 }
@@ -494,9 +494,10 @@ func (k *huddleKeys) refresh(ctx context.Context, s *session) error {
 }
 
 // fresh reports whether the verified head may still be sealed to: we hold
-// its K, its roster is who we'd seal to now, and it boxed no device revoked
-// since (the text path's rule, so a removed member or a stolen device never
-// hears what is said next).
+// its K, its roster is who we'd seal to now, no device revoked since may
+// hold its K and we owe no rotation for a revoke (revokedStale, the text
+// path's rule), so a removed member or a stolen device never hears what is
+// said next.
 func (k *huddleKeys) fresh() bool {
 	h, ok, err := k.c.trust.ChainHead(k.sid, k.ch)
 	if err != nil || !ok {
@@ -510,7 +511,7 @@ func (k *huddleKeys) fresh() bool {
 	if err != nil || !ok {
 		return false
 	}
-	return slices.Equal(ep.Roster, k.c.rosterNow(ch)) && !k.c.boxedRevoked(k.sid, ep)
+	return slices.Equal(ep.Roster, k.c.rosterNow(ch)) && !k.c.revokedStale(k.sid, k.ch, ep)
 }
 
 // prime re-reads the head and re-derives our sender key off the audio

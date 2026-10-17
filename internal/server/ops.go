@@ -5,12 +5,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"math"
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 	"unicode"
 
 	"github.com/skailama/tc/internal/e2ecrypto"
@@ -132,16 +130,11 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 	case proto.OpDMOpen:
 		return withArgs(args, func(a proto.DMOpenArgs) (any, error) { return s.opDMOpen(ctx, sess, a) })
 	case proto.OpUsersList:
-		users, err := listUsers(ctx, s.st.db)
-		return proto.UsersRes{Users: users}, err
+		return s.opUsersList(ctx, u)
 	case proto.OpInviteCreate:
 		return withArgs(args, func(a proto.InviteCreateArgs) (any, error) { return s.opInviteCreate(ctx, u, a) })
 	case proto.OpInviteList:
-		if !u.Admin {
-			return nil, errForbidden
-		}
-		invs, err := s.ListInvites(ctx)
-		return proto.InvitesRes{Invites: invs}, err
+		return s.opInviteList(ctx, u)
 	case proto.OpInviteRevoke:
 		return withArgs(args, func(a proto.InviteRevokeArgs) (any, error) { return s.opInviteRevoke(ctx, u, a) })
 	case proto.OpUserUpdate:
@@ -822,48 +815,20 @@ func (s *Server) opDMOpen(ctx context.Context, sess *session, a proto.DMOpenArgs
 
 // ---- admin ----
 
-func (s *Server) opInviteCreate(ctx context.Context, u proto.User, a proto.InviteCreateArgs) (any, error) {
-	if !u.Admin {
-		return nil, errForbidden
-	}
-	if a.User != 0 {
-		target, err := getUser(ctx, s.st.db, a.User)
-		if err != nil {
-			return nil, errNotFound
-		}
-		if target.Bot {
-			return nil, badRequest("bots can't log in")
-		}
-	}
-	if a.Uses < 0 || a.Uses > proto.MaxInviteUses {
-		return nil, badRequest(fmt.Sprintf("uses must be 1..%d", proto.MaxInviteUses))
-	}
-	if a.User != 0 && a.Uses > 1 {
-		return nil, badRequest("add-key invites are single-use")
-	}
-	if a.TTLMs < 0 || a.TTLMs > proto.MaxInviteTTL.Milliseconds() ||
-		(a.TTLMs != 0 && a.TTLMs < time.Minute.Milliseconds()) {
-		return nil, badRequest("ttl must be between 1 minute and 30 days")
-	}
-	return s.CreateInviteOpts(ctx, InviteOpts{User: a.User, Uses: int(a.Uses), TTL: time.Duration(a.TTLMs) * time.Millisecond, CreatedBy: u.ID})
-}
-
-func (s *Server) opInviteRevoke(ctx context.Context, u proto.User, a proto.InviteRevokeArgs) (any, error) {
-	if !u.Admin {
-		return nil, errForbidden
-	}
-	if !proto.ValidInviteID(a.ID) {
-		return nil, badRequest(fmt.Sprintf("invite id is %d hex digits (see invite.list)", proto.InviteIDLen))
-	}
-	switch err := s.RevokeInvite(ctx, a.ID); {
-	case errors.Is(err, ErrInviteNotFound):
-		return nil, errNotFound
-	case errors.Is(err, errInviteAmbiguous):
-		return nil, proto.Errf(proto.ErrConflict, err.Error())
-	case err != nil:
+// opUsersList adds, for admins, who invited each account, so the accounts
+// a disabled member brought in can be found.
+func (s *Server) opUsersList(ctx context.Context, u proto.User) (any, error) {
+	users, err := listUsers(ctx, s.st.db)
+	if err != nil {
 		return nil, err
 	}
-	return proto.Empty{}, nil
+	res := proto.UsersRes{Users: users}
+	if u.Admin {
+		if res.InvitedBy, err = invitedBy(ctx, s.st.db); err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
 }
 
 func (s *Server) opUserDisable(ctx context.Context, u proto.User, a proto.UserArgs) (any, error) {
@@ -889,6 +854,10 @@ func (s *Server) opUserDisable(ctx context.Context, u proto.User, a proto.UserAr
 			return nil, err
 		}
 		if err := retireOrphanBots(tx); err != nil {
+			return nil, err
+		}
+		// So do the invites they made (PROTOCOL.md §4.1).
+		if _, err := tx.ExecContext(ctx, `DELETE FROM invites WHERE created_by = ?`, a.User); err != nil {
 			return nil, err
 		}
 		target.Disabled = true

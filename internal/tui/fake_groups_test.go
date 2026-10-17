@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
 )
 
@@ -44,6 +45,9 @@ func (f *fakeClient) Remind(ctx context.Context, at time.Time, text string, ch u
 	defer f.mu.Unlock()
 	if f.remindErr != nil {
 		return 0, f.remindErr
+	}
+	if f.remindEnc && ch != 0 {
+		return 0, client.ErrRemindEncrypted
 	}
 	f.nextRemID++
 	f.reminded = append(f.reminded, remindCall{at, text, ch})

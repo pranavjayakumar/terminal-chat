@@ -701,7 +701,7 @@ func (c *Client) sealOffline(e outboxEntry) []byte {
 		return nil
 	}
 	ep, ok, err := c.trust.Epoch(sid, e.chan_, head.Epoch)
-	if err != nil || !ok || ep.Key == nil || !slices.Equal(ep.Roster, c.liveMembers(ch)) || c.boxedRevoked(sid, ep) {
+	if err != nil || !ok || ep.Key == nil || !slices.Equal(ep.Roster, c.liveMembers(ch)) || c.revokedStale(sid, e.chan_, ep) {
 		return nil
 	}
 	dev, err := c.trust.DeviceKeys(sid, c.Me().ID)
@@ -736,7 +736,7 @@ func (c *Client) encCurrent(e outboxEntry) bool {
 	}
 	ep, ok, err := c.trust.Epoch(sid, e.chan_, head.Epoch)
 	// not rosterNow: an unconfirmed member must reach sealWith
-	return err == nil && ok && ep.Key != nil && slices.Equal(ep.Roster, c.liveMembers(ch)) && !c.boxedRevoked(sid, ep)
+	return err == nil && ok && ep.Key != nil && slices.Equal(ep.Roster, c.liveMembers(ch)) && !c.revokedStale(sid, e.chan_, ep)
 }
 
 // sealEntry encrypts an outbox entry for sending (§13.4 "Sending"): it
@@ -750,16 +750,29 @@ func (c *Client) sealEntry(ctx context.Context, s *session, e outboxEntry, prev 
 	})
 }
 
-// boxedRevoked reports whether ep sealed K to a device revoked since: a
-// stolen device must not read what is sent next, whether or not the server
-// answers stale_epoch (step 12 security pass).
-func (c *Client) boxedRevoked(sid e2ecrypto.ServerID, ep trust.Epoch) bool {
+// revokedStale reports whether a device revoked since may hold ep's K, so
+// ep must be replaced before anything new is sealed under it: a stolen
+// device must not read what is sent next, whether or not the server answers
+// stale_epoch (step 12 security pass). That is a device ep boxed, or any
+// device of a roster user whose revoke came after ep's key.epoch (it may
+// have got K by key.share, e.g. history backfill on a new device: B5). An
+// error counts as stale: rotating needlessly is cheap, sealing to a
+// revoked device is not. A revoke whose seq is unknown counts only through
+// the boxes (only a lying server leaves it out, and it could as well
+// withhold the revoke). In a channel this device owes a rotation (it
+// revoked a device, OweRotation) every epoch is stale until it commits its
+// own, whatever the seqs say.
+func (c *Client) revokedStale(sid e2ecrypto.ServerID, ch uint64, ep trust.Epoch) bool {
+	if owed, err := c.trust.RotationOwed(sid, ch); err != nil || owed {
+		return true
+	}
 	for _, id := range ep.Boxed {
-		if d, ok, err := c.trust.Device(sid, id); err == nil && ok && d.Revoked {
+		if d, ok, err := c.trust.Device(sid, id); err != nil || (ok && d.Revoked) {
 			return true
 		}
 	}
-	return false
+	hit, err := c.trust.RevokedAfter(sid, ep.Roster, ep.Seq)
+	return err != nil || hit
 }
 
 // sealWith is sealEntry for anything sealed with channel chID's current
@@ -772,18 +785,34 @@ func (c *Client) sealWith(ctx context.Context, s *session, chID uint64, prev []b
 	}
 	wait := time.NewTimer(c.timing.devWait)
 	defer wait.Stop()
-	select {
-	case <-s.devReady:
-	case <-s.done:
-		return nil, ErrOffline
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-wait.C:
-		return nil, failErr{"this device isn't registered for encryption yet"}
+	tried := s.devTried
+	for waiting := true; waiting; {
+		select {
+		case <-s.devReady:
+			waiting = false
+		case <-tried:
+			// Fail at once only for what no retry on this connection fixes
+			// by itself; anything else (a dropped connection, a busy
+			// server) waits like before.
+			if err := s.deviceErr(); errors.Is(err, ErrTooManyDevices) || errors.Is(err, ErrNoRegistrations) {
+				return nil, failErr{sanitize.Line(err.Error())}
+			}
+			tried = nil
+			waiting = !s.registered()
+		case <-s.done:
+			return nil, ErrOffline
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-wait.C:
+			return nil, failErr{"this device isn't registered for encryption yet"}
+		}
 	}
 	dev := s.myDevice()
 	if dev == nil {
 		return nil, failErr{"this device isn't registered for encryption yet"}
+	}
+	if c.selfRevoked(s, sid, c.Me().ID) {
+		return nil, ErrOffline // sent after reconnecting with the new keys
 	}
 	c.e2eMu.Lock()
 	defer c.e2eMu.Unlock()
@@ -858,7 +887,7 @@ func (c *Client) sealWith(ctx context.Context, s *session, chID uint64, prev []b
 		default:
 			cur, _, _ := c.trust.Epoch(sid, ch.ID, head.Epoch)
 			rotate = !slices.Equal(cur.Roster, c.rosterNow(ch)) || (prev != nil && head.Epoch == prevEpoch) ||
-				c.boxedRevoked(sid, cur)
+				c.revokedStale(sid, ch.ID, cur)
 		}
 		if rotate && attempt < attempts-1 {
 			err := c.rotateOnce(ctx, s, sid, ch.ID)
@@ -874,6 +903,10 @@ func (c *Client) sealWith(ctx context.Context, s *session, chID uint64, prev []b
 				return nil, err
 			case errors.As(err, &unv):
 				return nil, failErr{sanitize.Line(err.Error())}
+			case errors.Is(err, errNoPrevKey):
+				// Like having no key at all: key.need asks for it, and the
+				// entry is requeued (requeueNoKey) once it arrives.
+				return nil, failErr{noKeyReason}
 			case errors.Is(err, ErrOffline) || ctx.Err() != nil:
 				return nil, ErrOffline
 			default:
@@ -906,6 +939,30 @@ func (c *Client) requeueNoKey(ch uint64) {
 	res, err := c.db.Exec(`UPDATE outbox SET failed = '' WHERE chan = ? AND failed = ?`, ch, noKeyReason)
 	if n, _ := rowsAffected(res); err == nil && n > 0 {
 		c.outboxChanged(ch, nil)
+	}
+}
+
+// requeueUnregistered puts messages that failed because this device wasn't
+// registered (too many devices, no registrations left, or not yet) back in the outbox
+// once it is.
+func (c *Client) requeueUnregistered() {
+	pat := ErrDeviceNotRegistered.Error() + "%" // also "... yet" (gave up waiting)
+	rows, err := c.db.Query(`SELECT DISTINCT chan FROM outbox WHERE failed LIKE ?`, pat)
+	if err != nil {
+		return
+	}
+	var chans []uint64
+	for rows.Next() {
+		var ch uint64
+		if rows.Scan(&ch) == nil {
+			chans = append(chans, ch)
+		}
+	}
+	rows.Close()
+	for _, ch := range chans {
+		if _, err := c.db.Exec(`UPDATE outbox SET failed = '' WHERE chan = ? AND failed LIKE ?`, ch, pat); err == nil {
+			c.outboxChanged(ch, nil)
+		}
 	}
 }
 

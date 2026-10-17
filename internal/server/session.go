@@ -48,13 +48,14 @@ type session struct {
 	wake    chan struct{}
 	done    chan struct{}
 
-	synced       bool
-	e2e          bool // both sides advertised proto.CapE2E
-	voice        bool // both sides advertised proto.CapVoice
+	synced  bool
+	e2e     bool     // both sides advertised proto.CapE2E
+	byeKeys []string // Bye.Keys for a failed handshake (cap key_hint)
+	voice   bool     // both sides advertised proto.CapVoice
 	// Voice datagrams (huddle.go); dg is nil unless voice over QUIC.
-	dg       transport.DatagramConn
-	dgOut    chan dgItem
-	dgBucket bucket // only the datagram reader goroutine touches it
+	dg           transport.DatagramConn
+	dgOut        chan dgItem
+	dgBucket     bucket // only the datagram reader goroutine touches it
 	lastTyping   map[uint64]time.Time
 	lastKeyNeed  map[uint64]time.Time // under srv.mu
 	lastPresence time.Time
@@ -78,7 +79,7 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 		return
 	}
 	if code != "" {
-		sendBye(sess.codec, conn, code, msg)
+		sendBye(sess.codec, conn, code, msg, sess.byeKeys...)
 		return
 	}
 	sess.user = user
@@ -92,7 +93,7 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 	}
 	defer s.unregister(sess)
 	w := proto.Welcome{
-		Server: Version, Caps: []string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapTeamInvites, proto.CapInviteManage, proto.CapVoice}, ServerID: s.st.serverID, User: user, Time: s.now(),
+		Server: Version, Caps: append([]string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapVoice}, s.inviteCaps()...), ServerID: s.st.serverID, User: user, Time: s.now(),
 	}
 	if tamperEnabled {
 		s.tamper.welcome(user.ID, &w)
@@ -134,45 +135,67 @@ func (s *Server) handshake(ctx context.Context, sess *session) (proto.User, stri
 	}
 	fp := identity.Fingerprint(pk)
 
-	if h.Auth.Invite == "" {
-		u, err := userByKey(ctx, s.st.db, fp)
-		if err != nil {
-			return proto.User{}, proto.ByeAuthFailed, "unknown key"
-		}
+	// A registered key logs in whatever invite comes with it, which stays
+	// unspent (§4): the key alone already proves who this is, and so a join
+	// retried after a lost WELCOME, or an invite reused on a second
+	// computer, signs in instead of failing.
+	if u, err := userByKey(ctx, s.st.db, fp); err == nil {
 		if u.Disabled {
 			return proto.User{}, proto.ByeRevoked, ""
 		}
 		return u, "", ""
 	}
-	return s.redeem(ctx, h.Auth, pk.Marshal(), fp)
+	if h.Auth.Invite == "" {
+		return proto.User{}, proto.ByeAuthFailed, "unknown key"
+	}
+	var hint *[]string
+	if slices.Contains(h.Caps, proto.CapKeyHint) {
+		hint = &sess.byeKeys
+	}
+	return s.redeem(ctx, h.Auth, pk.Marshal(), fp, hint)
 }
 
 var errBye = errors.New("bye")
 
-func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp string) (proto.User, string, string) {
+// redeem redeems a.Invite for a key not yet registered. A key-bound invite
+// refusing fp stores the fingerprints it accepts in *hint (if non-nil).
+func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp string, hint *[]string) (proto.User, string, string) {
 	var user proto.User
+	var hintFPs []string
 	byeCode, byeMsg := "", ""
 	fail := func(code, msg string) error { byeCode, byeMsg = code, msg; return errBye }
 
 	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
 		now := s.now()
+		hintFPs = nil // in case the transaction is ever retried
 		var admin bool
 		var target sql.NullInt64
 		var expires, uses int64
 		var used bool
-		err := tx.QueryRowContext(ctx, `SELECT admin, user, expires, used, uses FROM invites WHERE token = ?`,
-			tokenHash(a.Invite)).Scan(&admin, &target, &expires, &used, &uses)
-		if err != nil || used || uses < 1 || expires < now {
+		var createdBy uint64
+		var stored string // tokenHash or boundTokenHash (invites.go)
+		err := tx.QueryRowContext(ctx, `SELECT token, admin, user, expires, used, uses, created_by FROM invites WHERE token IN (?, ?)`,
+			tokenHash(a.Invite), boundTokenHash(a.Invite)).Scan(&stored, &admin, &target, &expires, &used, &uses, &createdBy)
+		// expires <= now matches invite.list, revoke and the member cap,
+		// which count an invite as live only while expires > now.
+		if err != nil || used || uses < 1 || expires <= now {
 			return nil, fail(proto.ByeInviteInvalid, "invite is invalid, used or expired")
 		}
+		if msg, fps, err := s.redeemCheck(ctx, tx, stored, createdBy, target.Valid, fp); err != nil {
+			return nil, err
+		} else if msg != "" {
+			hintFPs = fps
+			return nil, fail(proto.ByeInviteInvalid, msg)
+		}
+		// Registered since handshake looked (a concurrent redemption).
 		if _, err := userByKey(ctx, tx, fp); err == nil {
-			return nil, fail(proto.ByeKeyExists, "this key is already registered; log in without an invite")
+			return nil, fail(proto.ByeKeyExists, "this key is already registered; log in without an invite (tc login)")
 		}
 		// Conditional so a use can never be spent twice, whatever serializes
 		// the callers; the rest of the transaction rolls back with it.
 		res, err := tx.ExecContext(ctx,
 			`UPDATE invites SET uses = uses - 1, used = (uses - 1 <= 0) WHERE token = ? AND uses > 0 AND used = 0`,
-			tokenHash(a.Invite))
+			stored)
 		if err != nil {
 			return nil, err
 		}
@@ -198,7 +221,8 @@ func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp str
 			if n > 0 || groupNameTaken(ctx, tx, a.Name) {
 				return nil, fail(proto.ByeNameTaken, "")
 			}
-			res, err := tx.ExecContext(ctx, `INSERT INTO users (name, admin, created) VALUES (?, ?, ?)`, a.Name, admin, now)
+			res, err := tx.ExecContext(ctx, `INSERT INTO users (name, admin, created, invited_by) VALUES (?, ?, ?, ?)`,
+				a.Name, admin, now, createdBy)
 			if err != nil {
 				return nil, err
 			}
@@ -222,6 +246,9 @@ func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp str
 		return evs, nil
 	})
 	if byeCode != "" {
+		if hint != nil && byeCode == proto.ByeInviteInvalid {
+			*hint = hintFPs
+		}
 		return proto.User{}, byeCode, byeMsg
 	}
 	if err != nil {
@@ -369,11 +396,11 @@ func (sess *session) bye(code, msg string) {
 // CloseWithError discards unsent stream data.
 const byeGrace = 200 * time.Millisecond
 
-func sendBye(c *proto.Codec, conn transport.Conn, code, msg string) {
+func sendBye(c *proto.Codec, conn transport.Conn, code, msg string, keys ...string) {
 	// A peer that isn't reading (slow consumer) would block the write forever.
 	t := time.AfterFunc(time.Second, func() { conn.CloseWithCode(code) })
 	defer t.Stop()
-	if c.Write(proto.TBye, proto.Bye{Code: code, Msg: msg}) == nil {
+	if c.Write(proto.TBye, proto.Bye{Code: code, Msg: msg, Keys: keys}) == nil {
 		time.Sleep(byeGrace)
 	}
 	conn.CloseWithCode(code)

@@ -35,7 +35,14 @@ func startServer(t *testing.T, dir, addr string) (*srv, string) {
 // startServerClock is startServer with the server's clock (nil: time.Now).
 func startServerClock(t *testing.T, dir, addr string, now func() time.Time) (*srv, string) {
 	t.Helper()
-	s, err := server.New(server.Config{DataDir: dir, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: now})
+	return startServerConfig(t, addr, server.Config{DataDir: dir, Now: now})
+}
+
+// startServerConfig is startServer with cfg (its Logger is replaced).
+func startServerConfig(t *testing.T, addr string, cfg server.Config) (*srv, string) {
+	t.Helper()
+	cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	s, err := server.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

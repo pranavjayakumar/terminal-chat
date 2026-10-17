@@ -62,7 +62,8 @@
 //	messages that aren't our own verified ones (edit) or verified (react); E2ERejects() []string
 //	says why received ones were ignored
 //	CreateInvite(ctx, user) (string, error); CreateTeamInvite(ctx, uses, ttl) (proto.InviteRes, error)
-//	ListInvites(ctx) ([]proto.InviteInfo, error); RevokeInvite(ctx, id) error (admin, cap invite_manage)
+//	CreateGitHubInvite(ctx, login, ttl) (proto.InviteRes, error) // key-bound, cap key_invites; FetchGitHubInviteKeys
+//	ListInvites(ctx) ([]proto.InviteInfo, error); RevokeInvite(ctx, id) error (cap invite_manage; members: own, cap member_invites)
 //	DisableUser(ctx, user) error
 //	SetGroup(ctx, name, members) error (admin); FetchGroups(ctx) ([]proto.Group, error)
 //	Remind(ctx, at, text, ch) (id, error); Reminders(ctx) ([]proto.Reminder, error); DeleteReminder(ctx, id) error
@@ -120,7 +121,11 @@ var (
 )
 
 // ByeError is a BYE received from the server.
-type ByeError struct{ Code, Msg string }
+type ByeError struct {
+	Code, Msg string
+	// Keys: the fingerprints a key-bound invite accepts (cap key_hint, §4.1).
+	Keys []string
+}
 
 func (e *ByeError) Error() string {
 	if e.Msg == "" {
@@ -160,8 +165,11 @@ type Config struct {
 	Addr    string `json:"addr"`
 	Pin     string `json:"pin"`
 	KeyPath string `json:"key_path,omitempty"`
-	UserID  uint64 `json:"user_id"`
-	Name    string `json:"name"`
+	// KeyFP pins the login key by fingerprint when KeyPath is "" (an agent
+	// or default key), so a reordered agent can't switch keys.
+	KeyFP  string `json:"key_fp,omitempty"`
+	UserID uint64 `json:"user_id"`
+	Name   string `json:"name"`
 }
 
 // Client owns one user's connection and cache. All methods are safe for
@@ -212,7 +220,8 @@ type Client struct {
 	needSent     map[uint64]time.Time
 	shared       map[shareKey]time.Time
 	autoTried    map[uint64]time.Time
-	reopenAfter  uint64 // reopenMsgs' cursor (under e2eMu)
+	owedTried    map[uint64]time.Time // rotateOwed's own throttle
+	reopenAfter  uint64               // reopenMsgs' cursor (under e2eMu)
 	reopenBatch  int
 	poisonSeen   map[[2]uint64]time.Time // (chan, epoch) → when our box there first proved unusable
 	probed       map[uint64]uint32       // channel → highest waiting-message epoch fetched ahead for, this session
@@ -305,7 +314,7 @@ func Open(home string) (*Client, error) {
 		obChanged: make(chan struct{}), timing: defaultTiming,
 		e2eKick: make(chan struct{}, 1), keyNeeds: make(chan proto.Ephemeral, 32),
 		e2eSoft: map[uint64]string{}, needSent: map[uint64]time.Time{}, shared: map[shareKey]time.Time{},
-		autoTried: map[uint64]time.Time{}, poisonSeen: map[[2]uint64]time.Time{}, reopenBatch: reopenBatch, badCerts: map[[32]byte]struct{}{}, probed: map[uint64]uint32{},
+		autoTried: map[uint64]time.Time{}, owedTried: map[uint64]time.Time{}, poisonSeen: map[[2]uint64]time.Time{}, reopenBatch: reopenBatch, badCerts: map[[32]byte]struct{}{}, probed: map[uint64]uint32{},
 	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	c.me = users[cfg.UserID]
@@ -341,6 +350,14 @@ func (c *Client) Home() string { return c.home }
 
 // Config returns the loaded configuration.
 func (c *Client) Config() Config { return c.cfg }
+
+// KeySpec is the identity.Load spec for the login key.
+func (cfg Config) KeySpec() string {
+	if cfg.KeyPath == "" {
+		return cfg.KeyFP
+	}
+	return cfg.KeyPath
+}
 
 // Status is the current connection status.
 func (c *Client) Status() Status {
@@ -389,6 +406,12 @@ type Update struct {
 	// Failed lists outbox messages that the server permanently rejected.
 	Failed []Message
 	Huddle bool // a huddle roster or our participation changed
+	// Revoked lists verified devices that a verified revoke just retired
+	// (devmgmt.go), so the UI can say so. Never set on a first sync.
+	Revoked []DeviceRef
+	// NewOwn lists newly verified devices of ours other than this one
+	// (never on our first verification): "was that you?".
+	NewOwn []DeviceRef
 }
 
 const maxNew = 256
@@ -402,7 +425,7 @@ func (u *Update) msgs(ch uint64) {
 
 func (u Update) empty() bool {
 	return !u.Status && !u.Channels && !u.Users && !u.Presence && !u.Reset && !u.Huddle &&
-		len(u.Msgs) == 0 && len(u.Typing) == 0 && len(u.New) == 0 && len(u.Failed) == 0
+		len(u.Msgs) == 0 && len(u.Typing) == 0 && len(u.New) == 0 && len(u.Failed) == 0 && len(u.Revoked) == 0 && len(u.NewOwn) == 0
 }
 
 func (u Update) merge(v Update) Update {
@@ -428,6 +451,14 @@ func (u Update) merge(v Update) Update {
 	u.Failed = append(u.Failed, v.Failed...)
 	if len(u.Failed) > maxNew {
 		u.Failed = append([]Message(nil), u.Failed[len(u.Failed)-maxNew:]...)
+	}
+	u.NewOwn = append(u.NewOwn, v.NewOwn...)
+	if len(u.NewOwn) > maxNew {
+		u.NewOwn = append([]DeviceRef(nil), u.NewOwn[len(u.NewOwn)-maxNew:]...)
+	}
+	u.Revoked = append(u.Revoked, v.Revoked...)
+	if len(u.Revoked) > maxNew {
+		u.Revoked = append([]DeviceRef(nil), u.Revoked[len(u.Revoked)-maxNew:]...)
 	}
 	return u
 }
