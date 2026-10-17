@@ -71,13 +71,18 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 
 ## Slash commands
 
-`/join #x`, `/leave`, `/create #x [--private]`, `/add @user`, `/topic text`, `/dm @a @b`,
+`/join #x`, `/leave`, `/create #x [--private [--plaintext]]`, `/add @user`, `/topic text`, `/dm @a @b`,
 `/invite` (admin; prints code), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps), `/pins` (overlay of this channel's pinned messages, newest pin first, as `author · preview`; Enter jumps, Esc closes),
 `/activity`, `/highlight [word…]`, `/unhighlight word…`, `/group name @a @b…` (admin), `/groups`,
 `/remind <when> <text>`, `/reminders`, `/remind-delete id`, `/snippet path[:range] [message]`,
 `/share-pane [pane]` (herdr only), `/verify @user [--github login]`, `/accept-key @user`, `/members`,
 `/alarm`, `/alarm-clear #name`, `/devices [@user]`, `/device-revoke id`, `/quit`.
 Unknown command → inline error, input kept.
+
+`/create #x --private` makes an end-to-end encrypted channel (🔒; the server never sees its text).
+`--plaintext` opts out, e.g. for a private channel webhooks post into (webhooks can't post into encrypted
+channels). Private channels made by older tc versions (whose `/create --private` didn't encrypt) stay unencrypted
+until someone runs `/encrypt` there (earlier messages are then marked legacy); their header has no 🔒.
 
 ## Verifying people (encrypted channels)
 

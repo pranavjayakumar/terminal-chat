@@ -57,6 +57,7 @@ type Backend interface {
 	React(ctx context.Context, msg uint64, emoji string) error
 	Unreact(ctx context.Context, msg uint64, emoji string) error
 	CreateChannel(ctx context.Context, name string, private bool, topic string) (proto.Channel, error)
+	CreateEncryptedChannel(ctx context.Context, name, topic string) (proto.Channel, error)
 	Join(ctx context.Context, ch uint64) error
 	Leave(ctx context.Context, ch uint64) error
 	AddMember(ctx context.Context, ch, user uint64) error

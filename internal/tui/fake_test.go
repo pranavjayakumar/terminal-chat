@@ -181,8 +181,18 @@ func (f *fakeClient) Unreact(ctx context.Context, msg uint64, emoji string) erro
 	return nil
 }
 func (f *fakeClient) CreateChannel(ctx context.Context, name string, private bool, topic string) (proto.Channel, error) {
+	kind := "public"
+	if private {
+		kind = "private"
+	}
 	f.record("create " + name)
+	f.record("create " + kind + " " + name)
 	return proto.Channel{ID: 99, Name: name}, nil
+}
+func (f *fakeClient) CreateEncryptedChannel(ctx context.Context, name, topic string) (proto.Channel, error) {
+	f.record("create " + name)
+	f.record("create e2e " + name)
+	return proto.Channel{ID: 99, Name: name, Kind: proto.ChanPrivate, E2E: true}, nil
 }
 func (f *fakeClient) Join(ctx context.Context, ch uint64) error  { f.record("join"); return nil }
 func (f *fakeClient) Leave(ctx context.Context, ch uint64) error { f.record("leave"); return nil }
