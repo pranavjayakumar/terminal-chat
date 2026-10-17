@@ -120,10 +120,51 @@ func (m *Model) layoutInput() {
 	m.line.Width = max(d.mainW-strWidth(m.line.Prompt)-1, 1)
 }
 
+// selectFooter lists only the keys that do something for the selected
+// message, so it never offers an edit of someone else's message.
+func (m *Model) selectFooter() string {
+	sel, ok := m.selected()
+	if !ok {
+		return "Esc leaves select mode"
+	}
+	var keys []string
+	if sel.Failed != "" {
+		keys = []string{"r retry", "d discard", "v view", "y copy"}
+	} else {
+		live := sel.ID != 0 && !sel.Deleted
+		mine := sel.Author == m.me.ID
+		if mine && live && sel.Sec.Trusted() {
+			keys = append(keys, "e edit")
+		}
+		if mine && live {
+			keys = append(keys, "d delete")
+		}
+		if live {
+			keys = append(keys, "r thread", "+ react")
+			if sel.Pinned {
+				keys = append(keys, "p unpin")
+			} else {
+				keys = append(keys, "p pin")
+			}
+		}
+		keys = append(keys, "v view", "y copy")
+	}
+	full := strings.Join(keys, " · ") + " · Esc"
+	if strWidth(full) < m.dims().mainW-1 {
+		return full
+	}
+	// Narrow: just the key letters, Esc last so leaving is always visible.
+	letters := make([]string, len(keys))
+	for i, k := range keys {
+		letters[i], _, _ = strings.Cut(k, " ")
+	}
+	return strings.Join(letters, " ") + " · Esc"
+}
+
 func (m *Model) updatePlaceholder() {
 	switch {
 	case m.mode == modeSelect:
-		m.input.Placeholder = "e edit · d delete · r thread · + react · y copy · Esc"
+		m.input.Placeholder = m.selectFooter()
 	case m.thread.open():
 		m.input.Placeholder = "reply in thread"
 	case m.active != 0:

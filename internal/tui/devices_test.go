@@ -98,6 +98,9 @@ func TestDevicesOverlay(t *testing.T) {
 		}
 		v := checkView(t, m, "devices")
 		if sz[1] >= 12 {
+			if !strings.Contains(v, ":00") {
+				t.Errorf("%v: created time with seconds missing:\n%s", sz, v)
+			}
 			for _, want := range []string{"aaaaaaaa", "this device", "bbbbbbbb", "active", "revoked", "unverified"} {
 				if !strings.Contains(v, want) {
 					t.Errorf("%v: missing %q in\n%s", sz, want, v)

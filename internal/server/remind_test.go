@@ -66,7 +66,8 @@ func startServerAt(t *testing.T, dir string, clk *fakeClock) (ts *testServer, sh
 
 func waitFor(t *testing.T, what string, ok func() bool) {
 	t.Helper()
-	for i := 0; i < 200; i++ {
+	// Generous: a hang guard, and loaded CI runners under -race are slow.
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); {
 		if ok() {
 			return
 		}

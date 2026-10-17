@@ -125,3 +125,17 @@ func TestShellSafeCharset(t *testing.T) {
 		}
 	}
 }
+
+func FuzzParseLogin(f *testing.F) {
+	f.Add("tc://h:1/abc#pin")
+	f.Add("tc://h:1#pin")
+	f.Add("tc://h:1/#pin")
+	f.Fuzz(func(t *testing.T, s string) {
+		if inv, err := ParseInvite(s); err == nil && (inv.Token == "" || inv.Pin == "") {
+			t.Fatalf("ParseInvite(%q) = %+v", s, inv)
+		}
+		if inv, err := ParseLogin(s); err == nil && (inv.Pin == "" || inv.Addr == "") {
+			t.Fatalf("ParseLogin(%q) = %+v", s, inv)
+		}
+	})
+}

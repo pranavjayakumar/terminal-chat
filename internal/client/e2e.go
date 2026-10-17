@@ -1375,7 +1375,20 @@ func (c *Client) sendKeyNeed(s *session, sid e2ecrypto.ServerID, ch uint64) {
 		return
 	}
 	missing, err := c.trust.MissingKeys(sid, ch)
-	if err != nil || len(missing) == 0 {
+	if err != nil {
+		return
+	}
+	// Members only share K of epochs whose roster has us (§13.7); older
+	// ones come by backlink. Asking for one would only spend the single
+	// key.need per 30 s that the server relays, delaying the one we need.
+	myID := c.Me().ID
+	missing = slices.DeleteFunc(missing, func(e uint32) bool {
+		// Only a verified roster without us is proof nobody will answer;
+		// an epoch we can't read yet is still worth asking for.
+		ep, ok, err := c.trust.Epoch(sid, ch, e)
+		return err == nil && ok && !slices.Contains(ep.Roster, myID)
+	})
+	if len(missing) == 0 {
 		return
 	}
 	c.mu.Lock()

@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/skailama/tc/internal/identity"
 	"github.com/skailama/tc/internal/proto"
 )
 
@@ -166,6 +167,18 @@ func TestMemberAddKeyInviteFromBefore(t *testing.T) {
 			}
 			if _, bye := ts.connect(t, newKey(t), token, ""); bye != proto.ByeInviteInvalid {
 				t.Fatalf("member add-key redeemed: %q", bye)
+			}
+			// Key-bound too: neither the bound key nor a key_hint
+			// request gets past the creator rule (#55 merged with #52).
+			bound := newKey(t)
+			if _, err := ts.st.db.Exec(`INSERT INTO invite_keys (token, fp) VALUES (?, ?)`,
+				boundTokenHash(token), identity.Fingerprint(bound.PublicKey())); err != nil {
+				t.Fatal(err)
+			}
+			for _, k := range []ssh.Signer{bound, newKey(t)} {
+				if b, _ := helloBye(t, ts, k, token, "", []string{proto.CapKeyHint}); b.Code != proto.ByeInviteInvalid || b.Keys != nil {
+					t.Fatalf("bound member add-key: %+v", b)
+				}
 			}
 			var n int
 			ts.st.db.QueryRow(`SELECT COUNT(*) FROM keys WHERE user = ?`, bob.user.ID).Scan(&n)

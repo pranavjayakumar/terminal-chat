@@ -295,24 +295,39 @@ func (s *Server) revokeInvite(ctx context.Context, id string, creator uint64) er
 // redeem's transaction: the creator must still be allowed to invite (the
 // liveInvite rule; an add-key invite needs an admin creator, which also
 // voids member add-key invites minted before they were admin-only), and a
-// key-bound invite needs one of its keys (fp). It returns a BYE message,
-// or "" if the invite may be redeemed.
-func (s *Server) redeemCheck(ctx context.Context, tx *sql.Tx, token string, createdBy uint64, addKey bool, fp string) (string, error) {
+// key-bound invite needs one of its keys (fp). It returns a BYE message, or
+// "" if the invite may be redeemed; for a key mismatch also the fingerprints
+// the invite accepts (the key_hint, §4.1).
+func (s *Server) redeemCheck(ctx context.Context, tx *sql.Tx, token string, createdBy uint64, addKey bool, fp string) (string, []string, error) {
 	if createdBy != 0 {
 		c, err := getUser(ctx, tx, createdBy)
 		if err != nil || c.Disabled || (!c.Admin && (addKey || !s.cfg.MemberInvites)) {
-			return "invite is invalid, used or expired", nil
+			return "invite is invalid, used or expired", nil, nil
 		}
 	}
-	var n, match int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COUNT(CASE WHEN fp = ? THEN 1 END) FROM invite_keys WHERE token = ?`,
-		fp, token).Scan(&n, &match); err != nil {
-		return "", err
+	rows, err := tx.QueryContext(ctx, `SELECT fp FROM invite_keys WHERE token = ? ORDER BY fp`, token)
+	if err != nil {
+		return "", nil, err
 	}
-	if n > 0 && match == 0 {
-		return "this invite is for other SSH keys; join with one of them (tc join --key path)", nil
+	defer rows.Close()
+	var fps []string
+	for rows.Next() {
+		var f string
+		if err := rows.Scan(&f); err != nil {
+			return "", nil, err
+		}
+		if f == fp {
+			return "", nil, nil
+		}
+		fps = append(fps, f)
 	}
-	return "", nil
+	if err := rows.Err(); err != nil {
+		return "", nil, err
+	}
+	if len(fps) > 0 {
+		return "this invite is for other SSH keys; join with one of them (tc join --key path)", fps, nil
+	}
+	return "", nil, nil
 }
 
 // ---- ops ----

@@ -52,7 +52,7 @@ func TestDeviceRevokeNotice(t *testing.T) {
 		if r.User != bob || r.Dev != d.b1.dev.ID {
 			t.Fatalf("notice %+v", r)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		t.Fatal("no notice for bob's revoked device")
 	}
 	select {
@@ -77,7 +77,7 @@ func TestDeviceRevokeNotice(t *testing.T) {
 		if r.User != alice || r.Dev != laptop.dev.ID {
 			t.Fatalf("new own device %+v", r)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		t.Fatal("a new device of mine wasn't announced")
 	}
 
