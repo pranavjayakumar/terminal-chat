@@ -818,18 +818,16 @@ earliest known time apply. (Boxes to revoked devices are still judged by seq alo
 A channel's current bundle is **stale** (encrypted sends will need a
 rotation first, §13.4) when there is none yet, its roster isn't the current
 non-disabled members, it boxes a revoked device, or a device of a roster
-user was revoked after the bundle's `key.epoch` seq (that device may hold
-K without a box: it got it via `key.share`, §13.7). A newly registered
-device doesn't make it stale (it gets K via `key.share`). Clients judge
-the last rule by seqs (a stolen device colluding with the server can
-misorder them; the revoking client therefore owes a rotation to every
-encrypted channel it is in, recorded durably before it sends the revoke:
-it never seals under those epochs and keeps rotating them, at once and
-after any failure, reconnect or `--self` re-registration, until a newer
-epoch exists, §13.2): a revoke whose seq
-they don't know counts only through the boxes, and for an epoch whose
-seq they don't know every revoke with a known seq counts (the rotation
-gives the new epoch a known seq).
+user (a current non-disabled member) was revoked after the bundle's
+`key.epoch` seq (that device may hold K without a box: it got it via
+`key.share`, §13.7). A newly registered device doesn't make it stale (it
+gets K via `key.share`). Clients judge the last rule by seqs, which a
+stolen device colluding with the server can misorder (the revoking client
+doesn't rely on them: docs/E2E.md, "Stolen device"): a revoke whose seq
+they don't know counts only through the boxes, a revoke seq past the
+client's sync cursor counts as unknown until the cursor reaches it, and
+for an epoch whose seq they don't know every revoke with a known seq
+counts (the rotation gives the new epoch a known seq).
 
 Creating encrypted channels: `chan.create {…, e2e: true}` requires `e2e1`
 and `private: true` (else `bad_request`). `dm.open` creates a new DM with

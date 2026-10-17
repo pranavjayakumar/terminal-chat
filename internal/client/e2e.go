@@ -747,6 +747,7 @@ func (c *Client) applyRevoke(sid e2ecrypto.ServerID, r seqRevoke, byDevice bool,
 	if err != nil || pr.ServerID != sid {
 		return false
 	}
+	r.seq = c.plausibleRevokeSeq(sid, r.seq)
 	d, ok, _ := ts.Device(sid, pr.Dev)
 	// Only a known device of the revoke's user: a member must not be able
 	// to pre-revoke someone else's device id. Skip a revoke if we already
@@ -782,6 +783,23 @@ func (c *Client) applyRevoke(sid e2ecrypto.ServerID, r seqRevoke, byDevice bool,
 		}
 	}
 	return valid && ts.RevokeDeviceAtTime(sid, pr.Dev, r.seq, signedAt) == nil
+}
+
+// plausibleRevokeSeq is a revoke's claimed seq, or 0 (unknown) while it is
+// past this device's sync cursor: a seq the stream hasn't reached would
+// make every epoch until then stale (§13.3), and a server inflating it
+// could keep everyone rotating. Our own revoke's seq can run a little
+// ahead of the cursor; a claim more than proto.SnapshotGap ahead (no
+// honest server is that far) raises a server alarm.
+func (c *Client) plausibleRevokeSeq(sid e2ecrypto.ServerID, seq uint64) uint64 {
+	cur, err := metaUint(c.db, "last_seq")
+	if err != nil || seq <= cur {
+		return seq
+	}
+	if seq-cur > proto.SnapshotGap {
+		_ = c.trust.RaiseServerAlarm(sid, fmt.Sprintf("a device revoke claims seq %d, far past this device's sync position %d", seq, cur))
+	}
+	return 0
 }
 
 // seqRevoke is a cached DeviceRevoke with its event seq (0 = unknown).
@@ -998,12 +1016,12 @@ func (c *Client) recoverPoisoned(ctx context.Context, s *session, sid e2ecrypto.
 	_ = c.rotateLocked(ctx, s, sid, ch)
 }
 
-// rotateOwed rotates ch when its head is owed a rotation (we revoked a
-// device that may hold its key, trust.OweRotation) and the revoke couldn't
-// do it then (not registered, offline, refused), at most once per channel
+// rotateOwed rotates ch while it is owed a rotation (we revoked a device
+// that may hold its key, trust.OweRotation) and the revoke couldn't make it
+// then (not registered, offline, refused), at most once per channel
 // per timing.keyNeed. Caller holds e2eMu.
 func (c *Client) rotateOwed(ctx context.Context, s *session, sid e2ecrypto.ServerID, ch uint64) {
-	head, ok, err := c.trust.ChainHead(sid, ch)
+	_, ok, err := c.trust.ChainHead(sid, ch)
 	if err != nil || !ok || !s.registered() {
 		return
 	}
@@ -1012,7 +1030,7 @@ func (c *Client) rotateOwed(ctx context.Context, s *session, sid e2ecrypto.Serve
 	if dev := s.myDevice(); dev == nil || c.selfRevokedKeys(sid, dev.ID) {
 		return
 	}
-	if owed, err := c.trust.RotationOwed(sid, ch); err != nil || head.Epoch > owed {
+	if owed, err := c.trust.RotationOwed(sid, ch); err != nil || !owed {
 		return
 	}
 	c.mu.Lock()
@@ -1632,6 +1650,9 @@ func (c *Client) commitBundle(ctx context.Context, s *session, sid e2ecrypto.Ser
 	got, ok, err := c.trust.Epoch(sid, chID, p.Epoch)
 	if err != nil || !ok || got.Hash != e2ecrypto.ChainHash(b.B) || got.Key == nil {
 		return fmt.Errorf("epoch %d was accepted but doesn't verify here", p.Epoch)
+	}
+	if err := c.trust.PayRotation(sid, chID, got.Boxed); err != nil {
+		return err
 	}
 	c.post(Update{Channels: true})
 	return nil

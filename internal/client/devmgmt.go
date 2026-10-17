@@ -311,10 +311,11 @@ func (c *Client) RevokeDeviceOpts(ctx context.Context, dev e2ecrypto.DevID, o Re
 		}
 	}
 	// Other clients judge which epochs the revoked device may hold by the
-	// server's seqs; this one must not need to. Every current epoch is owed
-	// a rotation (marked before the revoke, so a crash can't skip it, and
-	// again after, for any epoch made meanwhile) until a newer one exists:
-	// sends here rotate first, and the e2e worker keeps trying.
+	// server's seqs; this one must not need to. Every channel owes a
+	// rotation (recorded before the revoke, so a crash can't skip it) until
+	// we commit an epoch of our own without the device: anyone else's newer
+	// epoch may have reached it by key.share. Sends here rotate first, and
+	// the e2e worker keeps trying.
 	// Held through the revoke so the e2e worker neither uses keys a --self
 	// revoke retires nor rotates in between (the rotations below are ours).
 	c.e2eMu.Lock()
@@ -324,7 +325,7 @@ func (c *Client) RevokeDeviceOpts(ctx context.Context, dev e2ecrypto.DevID, o Re
 			c.e2eMu.Unlock()
 		}
 	}()
-	if err := c.oweRotationsLocked(sid, me); err != nil {
+	if err := c.oweRotationsLocked(sid, me, dev); err != nil {
 		return 0, err
 	}
 	raw, err := s.call(ctx, proto.OpDeviceRevoke, proto.DeviceRevokeArgs{Revoke: proto.Signed(rev)}, nil)
@@ -337,7 +338,7 @@ func (c *Client) RevokeDeviceOpts(ctx context.Context, dev e2ecrypto.DevID, o Re
 	if err := storeRevoke(c.db, proto.Signed(rev), res.Seq); err != nil {
 		return 0, err
 	}
-	if err := c.oweRotationsLocked(sid, me); err != nil {
+	if err := c.oweRotationsLocked(sid, me, dev); err != nil {
 		return 0, err
 	}
 	if self {
@@ -389,23 +390,17 @@ func (c *Client) RevokeDeviceOpts(ctx context.Context, dev e2ecrypto.DevID, o Re
 	return rotated, nil
 }
 
-// oweRotationsLocked marks the current verified epoch of every encrypted
-// channel we're in as owed a rotation (trust.OweRotation). Caller holds
-// e2eMu.
-func (c *Client) oweRotationsLocked(sid e2ecrypto.ServerID, me uint64) error {
+// oweRotationsLocked records that every encrypted channel we're in owes a
+// rotation away from revoked device dev (trust.OweRotation): paid only by
+// an epoch we commit ourselves. Caller holds e2eMu.
+func (c *Client) oweRotationsLocked(sid e2ecrypto.ServerID, me uint64, dev e2ecrypto.DevID) error {
 	chans, err := c.e2eChannels(sid, me)
 	if err != nil {
 		return err
 	}
 	for _, ch := range chans {
-		head, ok, err := c.trust.ChainHead(sid, ch.ID)
-		if err != nil {
+		if err := c.trust.OweRotation(sid, ch.ID, dev); err != nil {
 			return err
-		}
-		if ok {
-			if err := c.trust.OweRotation(sid, ch.ID, head.Epoch); err != nil {
-				return err
-			}
 		}
 	}
 	return nil

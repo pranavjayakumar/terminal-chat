@@ -759,10 +759,11 @@ func (c *Client) sealEntry(ctx context.Context, s *session, e outboxEntry, prev 
 // error counts as stale: rotating needlessly is cheap, sealing to a
 // revoked device is not. A revoke whose seq is unknown counts only through
 // the boxes (only a lying server leaves it out, and it could as well
-// withhold the revoke). An epoch this device owes a rotation for (it
-// revoked a device then, OweRotation) is stale whatever the seqs say.
+// withhold the revoke). In a channel this device owes a rotation (it
+// revoked a device, OweRotation) every epoch is stale until it commits its
+// own, whatever the seqs say.
 func (c *Client) revokedStale(sid e2ecrypto.ServerID, ch uint64, ep trust.Epoch) bool {
-	if owed, err := c.trust.RotationOwed(sid, ch); err != nil || ep.Epoch <= owed {
+	if owed, err := c.trust.RotationOwed(sid, ch); err != nil || owed {
 		return true
 	}
 	for _, id := range ep.Boxed {

@@ -246,11 +246,15 @@ func TestRevokeSelfOwedRotationWithoutSends(t *testing.T) {
 	if _, err := alice.RevokeDeviceOpts(ctx, old.ID, client.RevokeOpts{Self: true}); err != nil {
 		t.Fatal(err)
 	}
-	if owed, err := alice.Trust().RotationOwed(sid, dm); err != nil || owed != 1 {
-		t.Fatalf("owed rotation %d, %v; want epoch 1", owed, err)
+	if owed, err := alice.Trust().RotationOwed(sid, dm); err != nil || !owed {
+		t.Fatalf("owed rotation %v, %v; want one", owed, err)
 	}
 	eventually(t, "alice's new device rotates the DM by itself", alice.e2eAt(dm, 2))
 	eventually(t, "bob follows", bob.e2eAt(dm, 2))
+	eventually(t, "our own epoch paid the owed rotation", func() bool {
+		owed, err := alice.Trust().RotationOwed(sid, dm)
+		return err == nil && !owed
+	})
 	if ep, _, _ := alice.Trust().Epoch(sid, dm, 2); slices.Contains(ep.Boxed, old.ID) {
 		t.Fatal("epoch 2 boxed the revoked keys")
 	}

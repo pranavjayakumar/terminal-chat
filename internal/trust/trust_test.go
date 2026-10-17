@@ -1423,19 +1423,29 @@ func TestRevokedAfter(t *testing.T) {
 
 func TestOweRotation(t *testing.T) {
 	s, _ := newStore(t)
-	check := func(sid e2ecrypto.ServerID, ch uint64, want uint32) {
+	check := func(sid e2ecrypto.ServerID, ch uint64, want bool) {
 		t.Helper()
 		if got, err := s.RotationOwed(sid, ch); err != nil || got != want {
-			t.Fatalf("RotationOwed(%d) = %d, %v; want %d", ch, got, err, want)
+			t.Fatalf("RotationOwed(%d) = %v, %v; want %v", ch, got, err, want)
 		}
 	}
-	check(sidA, 7, 0)
-	for _, e := range []uint32{3, 5, 4} {
-		if err := s.OweRotation(sidA, 7, e); err != nil {
+	d1, d2, d3 := device(t, bob).ID, device(t, bob).ID, device(t, bob).ID
+	check(sidA, 7, false)
+	for _, d := range []e2ecrypto.DevID{d1, d2, d1} {
+		if err := s.OweRotation(sidA, 7, d); err != nil {
 			t.Fatal(err)
 		}
 	}
-	check(sidA, 7, 5) // only raised
-	check(sidA, 8, 0)
-	check(sidB, 7, 0)
+	check(sidA, 7, true)
+	check(sidA, 8, false)
+	check(sidB, 7, false)
+	// An epoch of ours that still boxes d2 pays only d1.
+	if err := s.PayRotation(sidA, 7, []e2ecrypto.DevID{d2, d3}); err != nil {
+		t.Fatal(err)
+	}
+	check(sidA, 7, true)
+	if err := s.PayRotation(sidA, 7, []e2ecrypto.DevID{d3}); err != nil {
+		t.Fatal(err)
+	}
+	check(sidA, 7, false)
 }
