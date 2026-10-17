@@ -53,6 +53,43 @@ func TestUpdateReplacesAtomically(t *testing.T) {
 	}
 }
 
+// tc update keeps the flavor that's running: a voice build fetches
+// tc-voice_*, the default build tc_*, from the same signed checksums.txt.
+func TestUpdateKeepsVoiceFlavor(t *testing.T) {
+	srv := releasetest.New(t, "v0.4.0")
+	srv.Publish(t, "v0.4.0", map[string][]byte{"linux_amd64": []byte("PLAIN"), "tc-voice_linux_amd64": []byte("VOICE")})
+	for _, c := range []struct {
+		voice      bool
+		want, note string
+	}{{false, "PLAIN", ""}, {true, "VOICE", "(voice build)"}} {
+		exe := fakeInstall(t)
+		src := srv.Source()
+		src.Voice = c.voice
+		var out bytes.Buffer
+		if err := runUpdate(context.Background(), &out, src, exe, "v0.3.0", "linux", "amd64", false); err != nil {
+			t.Fatal(err)
+		}
+		if b, _ := os.ReadFile(exe); string(b) != c.want {
+			t.Fatalf("voice=%v installed %q", c.voice, b)
+		}
+		if !strings.Contains(out.String(), c.note) {
+			t.Fatalf("output: %s", out.String())
+		}
+	}
+	// A release without voice assets fails the voice build cleanly.
+	srv.Publish(t, "v0.4.0", map[string][]byte{"linux_amd64": []byte("PLAIN")})
+	exe := fakeInstall(t)
+	src := srv.Source()
+	src.Voice = true
+	err := runUpdate(context.Background(), &bytes.Buffer{}, src, exe, "v0.3.0", "linux", "amd64", false)
+	if err == nil || !strings.Contains(err.Error(), "tc-voice_linux_amd64.tar.gz") {
+		t.Fatalf("err = %v", err)
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "OLD" {
+		t.Fatalf("replaced: %q", b)
+	}
+}
+
 func TestUpdateChecksumMismatchRefuses(t *testing.T) {
 	srv := releasetest.New(t, "v0.3.0")
 	srv.Publish(t, "v0.3.0", map[string][]byte{"darwin_arm64": []byte("GOOD")})

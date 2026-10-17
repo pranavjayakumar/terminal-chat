@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/skailama/tc/internal/release"
+	"github.com/skailama/tc/internal/voice"
 )
 
 // cmdUpdate: tc update [--check].
@@ -30,7 +31,9 @@ func cmdUpdate(args []string) error {
 	defer cancel()
 	ctx, cancelT := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancelT()
-	return runUpdate(ctx, os.Stdout, release.NewSource(), exe, version, runtime.GOOS, runtime.GOARCH, *check)
+	src := release.NewSource()
+	src.Voice = voice.Available()
+	return runUpdate(ctx, os.Stdout, src, exe, version, runtime.GOOS, runtime.GOARCH, *check)
 }
 
 func runUpdate(ctx context.Context, out io.Writer, src *release.Source, exe, current, goos, goarch string, checkOnly bool) error {
@@ -68,7 +71,11 @@ func runUpdate(ctx context.Context, out io.Writer, src *release.Source, exe, cur
 	if err := writable(exe); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "Downloading tc %s for %s/%s…\n", latest, goos, goarch)
+	flavor := ""
+	if src.Voice {
+		flavor = " (voice build)"
+	}
+	fmt.Fprintf(out, "Downloading tc %s%s for %s/%s…\n", latest, flavor, goos, goarch)
 	bin, err := src.Fetch(ctx, latest, goos, goarch)
 	if err != nil {
 		return err

@@ -22,16 +22,21 @@ func TestReleaseWorkflowHardening(t *testing.T) {
 	if !strings.Contains(wf, "\npermissions: {}\n") {
 		t.Error("workflow-level permissions must be empty")
 	}
-	if !strings.Contains(build, "contents: read") || strings.Contains(build, "write") {
-		t.Error("build job must be read-only")
+	// Every job before publish (build, voice, sums) is read-only.
+	jobs := regexp.MustCompile(`(?m)^  [a-z-]+:$`).FindAllString(build[strings.Index(build, "\njobs:\n"):], -1)
+	if len(jobs) < 3 || strings.Count(build, "      contents: read\n") != len(jobs) || strings.Contains(build, "write") {
+		t.Errorf("jobs before publish %q must each be read-only", jobs)
 	}
-	if !strings.Contains(build, "persist-credentials: false") {
+	if strings.Count(build, "persist-credentials: false") != strings.Count(build, "actions/checkout@") {
 		t.Error("checkout must not persist the token")
+	}
+	if !strings.Contains(build, "tc-voice_linux_arm64") || !strings.Contains(build, "sha256sum -- *.tar.gz > checksums.txt") {
+		t.Error("checksums.txt must cover the voice builds")
 	}
 	if strings.Contains(build, "GH_TOKEN") || strings.Contains(build, "github.token") {
 		t.Error("build job must not see a token")
 	}
-	if !strings.Contains(publish, "contents: write") || !strings.Contains(publish, "needs: build") {
+	if !strings.Contains(publish, "contents: write") || !strings.Contains(publish, "needs: [build, voice, sums]") {
 		t.Error("publish job: contents: write after build")
 	}
 	if !strings.Contains(publish, "--draft") || strings.Contains(publish, "--latest") {

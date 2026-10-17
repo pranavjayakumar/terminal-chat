@@ -300,13 +300,42 @@ func (m *Model) statusText() string {
 	return m.status.State.String()
 }
 
-// statusLine is the notice (if any), then who is typing.
+// statusLine is an error notice (if any), our huddle (if any; just its
+// head while a notice shows), another notice, then who is typing. The parts
+// that matter most come first so truncation cuts the least important.
 func (m *Model) statusLine(w int) string {
 	var b strings.Builder
-	if m.notice != "" {
+	sep := func() {
+		if b.Len() > 0 {
+			b.WriteString(m.st.dim.Render(" · "))
+		}
+	}
+	head, roster := m.huddleHead(m.notice != "" || m.nt.ring.ch != 0 || w < 40)
+	// In a huddle its head (🎧 ● = our mic) comes first: a sticky error
+	// must never hide that we're broadcasting.
+	if m.hud.in && head != "" {
+		b.WriteString(head + roster)
+		head = ""
+	}
+	if r := m.ringLine(w < 70 || m.hud.in); r != "" { // time-critical: right after our mic
+		sep()
+		b.WriteString(m.st.noticeInfo.Render(r))
+	}
+	if m.notice != "" && m.noticeErr {
+		sep()
+		b.WriteString(m.st.noticeErr.Render("! " + m.notice))
+	}
+	if head != "" {
+		sep()
+		b.WriteString(head + roster)
+	}
+	if q := m.quietMark(); q != "" {
+		sep()
+		b.WriteString(m.st.dim.Render(q))
+	}
+	if m.notice != "" && !m.noticeErr {
+		sep()
 		switch {
-		case m.noticeErr:
-			b.WriteString(m.st.noticeErr.Render("! " + m.notice))
 		case m.noticeTTL == escWindow || m.noticeSticky || m.noticeDim:
 			b.WriteString(m.st.dim.Render(m.notice))
 		default:
@@ -332,7 +361,7 @@ func (m *Model) unreadSummary() string {
 		}
 		if v.Mention {
 			mentions++
-		} else {
+		} else if !m.muted(v.ID) {
 			unread += v.Unread
 		}
 	}
@@ -352,6 +381,13 @@ func (m *Model) headerLine(w int) string {
 		return left
 	}
 	sum := m.unreadSummary()
+	// No sidebar, so no 🎧n markers: say a huddle runs elsewhere.
+	if n := m.huddlesElsewhere(); n > 0 {
+		if sum != "" {
+			sum += " · "
+		}
+		sum += "🎧" + strconv.Itoa(n)
+	}
 	if sum == "" {
 		return left
 	}
@@ -395,6 +431,9 @@ func (m *Model) headerLeft(w int) string {
 	}
 	if n := len(v.Pins); n > 0 {
 		b.WriteString(m.st.dim.Render(" 📌 " + strconv.Itoa(n)))
+	}
+	if mm := m.muteMark(m.active); mm != "" {
+		b.WriteString(m.st.dim.Render(mm))
 	}
 	if v.Kind == proto.ChanDM {
 		if others := m.dmOthers(v); len(others) == 1 {
@@ -515,9 +554,11 @@ func (m *Model) sideEntry(v client.ChannelView, w int) string {
 		name = sanitize.Line(v.Name)
 	}
 	badge := ""
+	muted := m.muted(v.ID)
 	switch {
 	case v.Mention:
-		badge = "@"
+		badge = "@" // a muted channel still shows a direct mention
+	case muted:
 	case v.Unread > 99:
 		badge = "99+"
 	case v.Unread > 0:
@@ -529,19 +570,36 @@ func (m *Model) sideEntry(v client.ChannelView, w int) string {
 	if m.hasDraft(v.ID) {
 		draft = " ✎"
 	}
+	// 🎧n: a huddle is on there (docs/VOICE.md "UX"). Dropped before the
+	// name gets too short to read.
+	hud := m.huddleMarker(v.ID)
 	labelW := w - 1 - strWidth(draft)
 	if badge != "" {
 		labelW = w - strWidth(badge) - 2 - strWidth(draft)
 	}
+	if hud != "" && labelW-strWidth(hud)-strWidth(prefix) < 6 {
+		hud = " 🎧" // the count goes before the name gets unreadable
+	}
+	if hud != "" && labelW-strWidth(hud)-strWidth(prefix) >= 6 {
+		labelW -= strWidth(hud)
+	} else {
+		hud = ""
+	}
 	label := fit(truncate(prefix+name, labelW), labelW)
 	if v.ID == m.active {
-		return m.st.sideActive.Render(fit(label+draft+" "+badge, w-1))
+		return m.st.sideActive.Render(fit(label+hud+draft+" "+badge, w-1))
 	}
 	st := m.st.sideItem
-	if v.Unread > 0 || v.Mention {
+	switch {
+	case v.Mention || (v.Unread > 0 && !muted):
 		st = m.st.sideUnrd
+	case muted:
+		st = m.st.dim
 	}
 	out := st.Render(label)
+	if hud != "" {
+		out += m.st.dim.Render(hud)
+	}
 	if draft != "" {
 		out += m.st.dim.Render(draft)
 	}

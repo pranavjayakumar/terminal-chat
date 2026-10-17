@@ -41,8 +41,12 @@ type session struct {
 	done     chan struct{}
 	failOnce sync.Once
 	lastSend atomic.Int64
-	watchdog *time.Timer // fails the session when nothing is received for recvTimeout
-	timedOut atomic.Bool
+	// rosterMark is the PING sent right after sync: its PONG comes after
+	// every roster the server sends for the sync (it answers in order), so
+	// rosters before it are a baseline, never huddle starts.
+	rosterMark atomic.Int64
+	watchdog   *time.Timer // fails the session when nothing is received for recvTimeout
+	timedOut   atomic.Bool
 
 	mu      sync.Mutex
 	nextID  uint32
@@ -213,7 +217,7 @@ func handshake(conn transport.Conn, codec *proto.Codec, signer ssh.Signer, invit
 	if err != nil {
 		return proto.Welcome{}, err
 	}
-	hello := proto.Hello{Client: clientName, Caps: []string{proto.CapE2E, proto.CapKeyHint},
+	hello := proto.Hello{Client: clientName, Caps: []string{proto.CapE2E, proto.CapKeyHint, proto.CapVoice},
 		Auth: proto.Auth{Pubkey: signer.PublicKey().Marshal(), Sig: sig, Invite: invite, Name: name}}
 	if err := codec.Write(proto.THello, hello); err != nil {
 		return proto.Welcome{}, fmt.Errorf("sending hello: %w", err)
@@ -565,6 +569,9 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 	}
 	if err == nil {
 		c.checkDowngrade(s)
+		// Negative: never equal to a keepalive PING's unix-ms t.
+		s.rosterMark.Store(-1 - time.Now().UnixNano()&(1<<62-1))
+		_ = s.send(proto.TPing, proto.Ping{T: s.rosterMark.Load()})
 		online = true
 		if s.e2e() {
 			// Before publishing s: RefreshDevices reads it without waiting.
@@ -617,6 +624,7 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 	c.typing = map[uint64]map[uint64]time.Time{}
 	c.presence = map[uint64]Presence{}
 	c.mu.Unlock()
+	c.clearHuddles()
 	wg.Wait()
 	c.post(Update{Presence: true, Typing: typing})
 	return online, err
@@ -681,6 +689,11 @@ func (c *Client) readLoop(s *session) error {
 				return fmt.Errorf("applying snapshot: %w", err)
 			}
 			c.kickE2E()
+		case proto.TPong:
+			var p proto.Ping
+			if f.Decode(&p) == nil && p.T < 0 && p.T == s.rosterMark.Load() {
+				c.huddlesLive(time.Now())
+			}
 		case proto.TEphemeral:
 			var e proto.Ephemeral
 			if f.Decode(&e) == nil {

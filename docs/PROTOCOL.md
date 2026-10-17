@@ -15,7 +15,7 @@ form of this document; if they disagree, that is a bug.
 
 | Transport | Port | Use |
 |---|---|---|
-| QUIC (UDP) | 7443 | Primary. ALPN `tc/1`. Client opens **one bidirectional stream** for frames. Voice (v2) uses QUIC datagrams on the same connection. |
+| QUIC (UDP) | 7443 | Primary. ALPN `tc/1`. Client opens **one bidirectional stream** for frames. Voice (cap `voice1`, §14) uses QUIC datagrams on the same connection. |
 | TLS over TCP | 7443 | Fallback when UDP is blocked. ALPN `tc/1`. Same frames. |
 | HTTPS (TLS over TCP) | 7443 | Webhooks only (§12). ALPN `http/1.1` on the same TCP listener. |
 
@@ -60,7 +60,7 @@ The server key never rotates in v1; rotating means re-issuing invites.
 | 0x22 | SNAPSHOT | S→C | `{users?: [User], chans?: [Channel], msgs?: [Message], read?: {chan: seq}, groups?: [Group], devs?, revoked?, keys?}` (one part; `groups` §8, `devs`/`revoked` §13.2, `keys` §13.6) |
 | 0x30 | PING | both | `{t: i64}` |
 | 0x31 | PONG | both | `{t: i64}` (echo) |
-| 0x40 | VOICE | both | reserved for v2 (TCP fallback only; QUIC uses datagrams) |
+| 0x40 | VOICE | both | reserved (a possible TCP voice fallback; voice is QUIC datagrams only, §14.3) |
 | 0x7F | BYE | both | `{code: str, msg: str, keys?: [str]}` then close (`keys`: §4.1 key hint) |
 
 Effective caps = intersection of HELLO and WELCOME caps. Protocol version is the ALPN.
@@ -435,6 +435,7 @@ with `⏰ `, and then notify and count it as unread like a DM from someone else.
 |---|---|---|
 | `typing` | `{chan, user}` | C→S at most every 3 s while typing; dropped unless sender is a member; fan-out to members |
 | `presence` | `{user, state: "online"\|"away"\|"offline", status?: str}` | S→C on change; C→S sets own away/status |
+| `huddle` | `{chan, parts: [Part]}` | S→C only, cap `voice1` (§14.2) |
 
 The server overwrites `user` in every C→S EPHEMERAL with the authenticated user.
 
@@ -494,6 +495,9 @@ All sizes are UTF-8 bytes.
 - `search.q` ≤ 256 B; only the first 8 terms are used.
 - Presence updates: at most 1/s per session, and only broadcast when state or status changes.
 - Each session's unsent output is capped at 8 MiB (sync output excluded); beyond that → BYE `slow_consumer`.
+- `huddle.join` takes from the shared write-op bucket; `huddle.leave` doesn't. Datagrams have
+  their own per-session bucket (burst 100, refill 60/s). Voice limits (datagram size, relay queue,
+  huddle sizes) are in §14.
 - Keepalive: the client sends PING after 20 s without sending anything. Either
   side closes after 45 s without receiving a frame. QUIC `MaxIdleTimeout` = 60 s.
 - On QUIC, BYE is followed by `CloseWithError(0, code)`.
@@ -1316,3 +1320,124 @@ registered device (`not_found`), not revoked, of a current member
   ≤ verified head + 64, and under per-channel and global caps. An unverified
   bundle never changes the cached `Channel.epoch` (only the server's
   Channel object or a verified bundle does).
+
+## 14. Voice (cap `voice1`)
+
+Design, rationale and threat model: `docs/VOICE.md`. Everything here exists only in sessions
+whose effective caps include `voice1`: without it the server answers the ops with `unknown_op`,
+sends no `huddle` ephemerals and drops the session's datagrams. Clients advertise `voice1`
+whether or not their build can play audio (rosters are useful on their own).
+
+### 14.1 Ops
+
+| op | args | data |
+|---|---|---|
+| `huddle.join` | `{chan, dev?: bin16, stream?: bin16}` | `{src: u32}` |
+| `huddle.leave` | `{}` | `{}` |
+
+- **huddle.join** joins the channel's huddle, creating it if empty. Checks, in order: the
+  session is QUIC with datagrams negotiated (else `bad_request`, "voice needs UDP"); the channel
+  exists (`not_found`); the caller is a current member (`forbidden`). In an encrypted channel
+  `dev` and `stream` are required (`bad_request`) and `dev` must be a registered, non-revoked
+  device of the caller (`forbidden`); elsewhere both are ignored and not relayed. Joining
+  ends the caller's previous participation, if any, from any session of theirs (so a user is in
+  at most one huddle); rejoining the same huddle gives a new `src`. At most 16 participants per
+  huddle and 1024 huddles per server (`conflict`). `src` is non-zero and never reused while the
+  server runs (once the u32 space is spent, joins fail with `conflict` until a restart).
+- **huddle.leave** ends this session's participation; not being in a huddle is ok (no-op).
+- The server queues the `huddle` roster containing the new `src` before the RES. Clients should
+  still wait briefly (≤ 1 s) for a roster with their `src` before concluding they were dropped
+  while joining.
+- `huddle.join` counts as a write op for rate limits (§9). `huddle.leave` is exempt: refusing a
+  cleanup would leave a listener the client no longer plays to.
+- A participation also ends when its session closes; when the user stops being a member of the
+  channel (`chan.leave`, `chan.remove`) or is disabled; when its `dev` is revoked
+  (`device.revoke`); and when the channel becomes encrypted (`chan.encrypt`: everyone rejoins
+  with device keys). This happens in the same critical section that applies the event, and
+  datagrams already queued for an ended participation are discarded, so none is relayed to or
+  from it afterwards.
+
+### 14.2 Ephemeral `huddle`
+
+```
+EPHEMERAL {kind: "huddle", chan: u64, parts: [Part]}     S→C only
+Part = {user: u64, src: u32, dev?: bin16, stream?: bin16}
+```
+
+The full roster of `chan`'s huddle, in join order; `parts` absent or empty = the huddle ended
+(servers omit the key). Sent, only to sessions with `voice1`:
+- after every change, to every session of the channel's current members;
+- to the sessions of a user whose participation just ended and who is no longer a member: an
+  **empty** roster (they learn they're out, not who is still talking);
+- to a user who joins the channel (`chan.join`) while a huddle runs, right after that event;
+- after `sync`'s RES, one per live huddle in channels the user is a member of.
+
+`dev`/`stream` are present exactly in encrypted channels. C→S `huddle` ephemerals are ignored.
+
+The server queues the post-sync rosters before it reads the client's next frame, and answers a
+PING in order, so a client that sends a PING right after `sync`'s RES gets its PONG after every
+roster the sync brought: clients use this to tell "already running" (baseline, no ring) from
+"just started" (§14 notifications are client-side; no new fields).
+
+### 14.3 Datagrams
+
+Voice travels in QUIC datagrams (RFC 9221) on the session's QUIC connection; both peers enable
+datagram support. There is no voice over TLS-over-TCP (frame type 0x40 stays reserved).
+Byte layout (integers big-endian):
+
+```
+off len field
+0   1   kind   0x01 = audio (plaintext Opus), 0x02 = encrypted audio
+1   1   flags  bit 0 = last frame of a talk spurt; other bits 0 on send, ignored on receive
+2   4   src    the sender's src (huddle.join)
+6   4   seq    per participation, 0, 1, 2, … (one per 20 ms frame)
+--- kind 0x01:
+10  n   opus   one Opus packet (n ≥ 1)
+--- kind 0x02:
+10  4   epoch  the channel epoch whose K keys this frame
+14  4   ts     sender's Unix time, seconds
+18  n   ct     ChaCha20-Poly1305 ciphertext of one Opus packet, tag included (n ≥ 17)
+```
+
+- Total size ≤ 512 bytes; Opus packets are 20 ms, 48 kHz, mono.
+- Other `kind` values are reserved: servers drop them, receivers ignore them.
+- **Server relay**, per datagram from a session: drop it unless the session is in a huddle,
+  the header parses, `src` is the session's own, the kind is 0x02 in an encrypted channel and
+  0x01 otherwise, the size is within limits and the session's token bucket (burst 100, refill
+  60/s) has a token. Otherwise forward the **unchanged bytes** to every other participant of
+  that huddle (never back to the sender). Per receiving session at most 64 datagrams wait to
+  be sent; more are dropped, as are queued ones whose participation has ended. The server never
+  parses past byte 10.
+- **Encrypted frames** (kind 0x02), with `K` the channel's epoch key for `epoch` (§13.3),
+  `dev` and `stream` from the sender's `Part`:
+
+  ```
+  vk    = HKDF-SHA256(K, salt = none, info "tc-voice-v1" || server_id || u64be(chan) || u32be(epoch))
+  sk    = HKDF-SHA256(vk, salt = none, info "tc-voice-send-v1" || dev || stream)
+  nonce = 0x00000000 || u64be(seq)
+  ct    = ChaCha20-Poly1305-Seal(sk, nonce, opus, AD = datagram[0:18])
+  ```
+
+  **Whether a huddle is encrypted is the client's trust state's call** (§13 "Server identity
+  and downgrade"), never the server's `Channel.e2e` alone: a client sends kind 0x01 only in a
+  channel it has never known as encrypted and that isn't in alarm, and joins an encrypted one
+  only while it holds the current key (else it refuses: "voice waits for the channel's keys").
+  A participation whose channel changes encryption state ends.
+
+  **Senders** seal under the newest verified epoch, and only while it is fresh by §13.4's
+  sending rule (its roster is who they'd seal to now, no device revoked since may hold its K, no
+  rotation owed for their own revoke); clients check this about once a second, so a stale epoch
+  may still be used for ~1 s. When it isn't fresh, they stop sending, rotate as a text send
+  would (§13.4), and resume under the new epoch. A short silence during a rotation is expected.
+
+  **Receivers** MUST drop a frame unless: its kind matches the channel (no plaintext in
+  encrypted channels); `src` is in the roster; for kind 0x02: `epoch` is the newest epoch the
+  receiver verified, or the one before it but only within 10 s of the receiver seeing the head
+  move to the newer one (never on first sight, e.g. at join); every user in that epoch's roster
+  is still a live member and no device revoked since may hold its K (frame keys are
+  group-symmetric, so anyone holding K could speak as any member); the sender's user is in that
+  epoch's roster **and** a current member; `dev` is a verified, non-revoked device of that user;
+  the AEAD opens; then `|ts − now| ≤ 60 s` (checked after opening); `seq` passes a 64-frame
+  sliding replay window kept per `src` for the receiver's whole participation (roster changes
+  don't reset it). The window advances only on frames that open.
+

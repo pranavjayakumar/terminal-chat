@@ -64,12 +64,13 @@ var e2eOps = map[string]bool{
 
 func (s *Server) dispatch(ctx context.Context, sess *session, op string, args proto.Raw) (any, error) {
 	u := sess.user
-	if e2eOps[op] && !sess.e2e {
+	if e2eOps[op] && !sess.e2e || voiceOps[op] && !sess.voice {
 		return nil, proto.Errf(proto.ErrUnknownOp, "")
 	}
 	s.mu.Lock()
 	disabled := s.disabled[u.ID]
-	limited := writeOps[op] && !s.allowWrite(u.ID)
+	// huddle.leave is exempt: refusing a cleanup would leave a ghost listener.
+	limited := (writeOps[op] || op == proto.OpHuddleJoin) && !s.allowWrite(u.ID)
 	s.mu.Unlock()
 	if disabled {
 		return nil, proto.Errf(proto.ErrUnauthorized, "account disabled")
@@ -78,6 +79,10 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 		return nil, proto.Errf(proto.ErrRateLimited, "slow down")
 	}
 	switch op {
+	case proto.OpHuddleJoin:
+		return withArgs(args, func(a proto.HuddleJoinArgs) (any, error) { return s.opHuddleJoin(ctx, sess, a) })
+	case proto.OpHuddleLeave:
+		return s.opHuddleLeave(sess)
 	case proto.OpSend:
 		return withArgs(args, func(a proto.SendArgs) (any, error) { return s.opSend(ctx, u, a) })
 	case proto.OpEdit:

@@ -112,7 +112,7 @@ func TestHerdrArgv(t *testing.T) {
 	n.Wait()
 	got := readArgv(t, log)
 	body := clean(hostile, maxBody)
-	want := []string{"notification", "show", "#general · bob", "--body", body, "--sound", "request"}
+	want := []string{"notification", "show", "#general · bob", "--body=" + body, "--sound", "request"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("argv\n got %q\nwant %q", got, want)
 	}
@@ -130,7 +130,7 @@ func TestOSAScriptArgv(t *testing.T) {
 	n.Notify(hostile, "body\nmore")
 	n.Wait()
 	got := readArgv(t, log)
-	want := []string{"-e", osaScript, "--", clean(hostile, maxTitle), "body more"}
+	want := []string{"-e", osaScript, "--", clean(hostile, maxTitle), "body more", "Glass"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("argv\n got %q\nwant %q", got, want)
 	}
@@ -155,7 +155,7 @@ func TestNotifySendArgv(t *testing.T) {
 	n.Notify("-x title", hostile)
 	n.Wait()
 	got := readArgv(t, log)
-	want := []string{"--app-name=tc", "--", "-x title", clean(hostile, maxBody)}
+	want := []string{"--app-name=tc", "--category=im.received", "--hint=string:sound-name:message-new-instant", "--", "-x title", clean(hostile, maxBody)}
 	if !slices.Equal(got, want) {
 		t.Fatalf("argv\n got %q\nwant %q", got, want)
 	}

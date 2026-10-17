@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,8 +28,32 @@ const (
 	OSAScript = "osascript"   // macOS
 	NotifySnd = "notify-send" // Linux
 	Bell      = "bell"
+	Terminal  = "terminal" // OSC 9/777/99 to the terminal (osc.go)
 	Off       = "off"
 )
+
+// Cue is a notification's sound class (docs/research/NOTIFICATIONS-2026-10.md
+// §2.3). The sound itself comes from the backend that shows the popup —
+// herdr, Notification Center, the freedesktop server, the terminal — from
+// fixed tables, never from user text: one event, one sound.
+type Cue uint8
+
+const (
+	CueNone    Cue = iota // a silent popup
+	CueMessage            // soft: any message in a level-all channel
+	CueMention            // DMs, mentions, highlights, replies, reminders
+	CueRing               // someone started a huddle in a DM
+	CueHuddle             // a channel huddle started (level all)
+)
+
+// Note is one notification. Tag groups a channel's notifications where
+// the backend can replace the previous one (notify-send); it must be
+// short ASCII the caller made (e.g. "tc-12"), never remote text.
+type Note struct {
+	Title, Body string
+	Cue         Cue
+	Tag         string
+}
 
 const (
 	execTimeout = 2 * time.Second
@@ -67,6 +92,7 @@ func pick(e Env) string {
 		return Bell
 	}
 	inHerdr := e.Getenv("HERDR_ENV") == "1" && has("herdr")
+	overSSH := e.Getenv("SSH_CONNECTION") != "" || e.Getenv("SSH_TTY") != ""
 	switch strings.ToLower(strings.TrimSpace(e.Getenv("TC_NOTIFY"))) {
 	case "off", "none", "0":
 		return Off
@@ -81,9 +107,19 @@ func pick(e Env) string {
 			return b
 		}
 		return bell()
+	case "terminal":
+		if oscDialect(e) != 0 {
+			return Terminal
+		}
+		return bell()
 	}
 	if inHerdr {
-		return Herdr
+		return Herdr // herdr owns delivery: never OSC inside it
+	}
+	// Over SSH the OS notifier would fire on the remote machine; the
+	// terminal's own notifications show up where the user is.
+	if overSSH && oscDialect(e) != 0 {
+		return Terminal
 	}
 	if b := osBackend(); b != "" {
 		return b
@@ -93,51 +129,104 @@ func pick(e Env) string {
 
 // Notifier shows notifications. At most one is in flight; while one is,
 // further calls are dropped (the caller already rate-limits, so this only
-// matters when a backend hangs).
+// matters when a backend hangs). A ring has its own slot, so a hung
+// message popup can't swallow it.
 type Notifier struct {
-	backend string
-	bell    io.Writer
-	timeout time.Duration
-	busy    atomic.Bool
-	wg      sync.WaitGroup
+	backend  string
+	dialect  int  // OSC dialect for Terminal
+	tmux     bool // wrap OSC for tmux passthrough
+	bell     io.Writer
+	bellMu   sync.Mutex // one terminal write at a time
+	timeout  time.Duration
+	busy     atomic.Bool
+	busyRing atomic.Bool
+	seq      atomic.Uint32 // OSC 99 notification ids
+	wg       sync.WaitGroup
 }
 
-// New picks a backend from e. bell receives "\a" for the bell backend; it
-// should be the terminal.
+// New picks a backend from e. bell receives "\a" for the bell backend and
+// the OSC sequences for the terminal backend; it should be the terminal.
 func New(e Env, bell io.Writer) *Notifier {
-	return &Notifier{backend: pick(e), bell: bell, timeout: execTimeout}
+	return &Notifier{backend: pick(e), dialect: oscDialect(e), tmux: e.Getenv("TMUX") != "",
+		bell: bell, timeout: execTimeout}
 }
 
 // Backend is the backend in use.
 func (n *Notifier) Backend() string { return n.backend }
 
-// Notify shows title/body asynchronously. It reports whether the
-// notification was started (false: off, or another one is still running).
+// Dialect names the OSC dialect the terminal backend uses ("" if none).
+func (n *Notifier) Dialect() string {
+	if n == nil || n.dialect == 0 {
+		return ""
+	}
+	return "OSC " + strconv.Itoa(n.dialect)
+}
+
+// Notify shows title/body with the mention sound.
 func (n *Notifier) Notify(title, body string) bool {
+	return n.Send(Note{Title: title, Body: body, Cue: CueMention})
+}
+
+// Send shows nt asynchronously. It reports whether the notification was
+// started (false: off, or another one is still running).
+func (n *Notifier) Send(nt Note) bool {
 	if n == nil || n.backend == Off {
 		return false
 	}
-	if !n.busy.CompareAndSwap(false, true) {
+	slot := &n.busy
+	if nt.Cue == CueRing {
+		slot = &n.busyRing
+	}
+	if !slot.CompareAndSwap(false, true) {
 		return false
 	}
-	title, body = clean(title, maxTitle), clean(body, maxBody)
-	if title == "" {
-		title = "tc"
+	nt.Title, nt.Body = clean(nt.Title, maxTitle), clean(nt.Body, maxBody)
+	if nt.Title == "" {
+		nt.Title = "tc"
+	}
+	if !validTag(nt.Tag) {
+		nt.Tag = ""
 	}
 	n.wg.Add(1)
 	go func() {
 		defer n.wg.Done()
-		defer n.busy.Store(false)
-		if n.backend == Bell {
-			if n.bell != nil {
-				_, _ = n.bell.Write([]byte("\a"))
+		defer slot.Store(false)
+		switch n.backend {
+		case Bell:
+			if nt.Cue != CueNone { // sounds off: a bell is nothing but a sound
+				n.write([]byte("\a"))
 			}
+			return
+		case Terminal:
+			n.write(oscSeq(n.dialect, nt.Title, nt.Body, nt.Cue, n.tmux, n.seq.Add(1)))
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), n.timeout)
 		defer cancel()
-		_ = run(ctx, n.argv(title, body))
+		_ = run(ctx, n.argv(nt))
 	}()
+	return true
+}
+
+func (n *Notifier) write(b []byte) {
+	if n.bell == nil || len(b) == 0 {
+		return
+	}
+	n.bellMu.Lock()
+	defer n.bellMu.Unlock()
+	_, _ = n.bell.Write(b) // one Write per sequence (between frames)
+}
+
+// validTag accepts what notify-send hints may carry: short [a-z0-9-].
+func validTag(s string) bool {
+	if len(s) > 32 {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+			return false
+		}
+	}
 	return true
 }
 
@@ -148,23 +237,55 @@ func (n *Notifier) Wait() {
 	}
 }
 
-// osaScript reads the text from argv so it is never parsed as AppleScript.
-const osaScript = "on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run"
+// osaScript reads the text from argv so it is never parsed as AppleScript;
+// a third item, from macSound, names the sound.
+const osaScript = "on run argv\nif (count of argv) > 2 then\ndisplay notification (item 2 of argv) with title (item 1 of argv) sound name (item 3 of argv)\nelse\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend if\nend run"
 
-func (n *Notifier) argv(title, body string) []string {
+// Sound tables (§2.3). Only these constants ever reach a sound argument.
+var (
+	herdrSound = map[Cue]string{CueNone: "none", CueMessage: "none", CueMention: "request", CueRing: "request", CueHuddle: "done"}
+	// /System/Library/Sounds
+	macSound = map[Cue]string{CueMessage: "Tink", CueMention: "Glass", CueRing: "Submarine", CueHuddle: "Pop"}
+	// freedesktop sound naming spec
+	xdgSound = map[Cue]string{CueMessage: "message-new-instant", CueMention: "message-new-instant", CueRing: "phone-incoming-call", CueHuddle: "service-login"}
+)
+
+func (n *Notifier) argv(nt Note) []string {
+	title, body := nt.Title, nt.Body
 	switch n.backend {
 	case Herdr:
 		// herdr takes the positional first and options after it.
 		a := []string{"herdr", "notification", "show", title}
 		if body != "" {
-			a = append(a, "--body", body)
+			a = append(a, "--body="+body) // one element: a body like "-1" can't read as a flag
 		}
-		return append(a, "--sound", "request")
+		return append(a, "--sound", herdrSound[nt.Cue])
 	case OSAScript:
 		// "--" so a title starting with "-" isn't an osascript option.
-		return []string{"osascript", "-e", osaScript, "--", title, body}
+		a := []string{"osascript", "-e", osaScript, "--", title, body}
+		if s := macSound[nt.Cue]; s != "" {
+			a = append(a, s)
+		}
+		return a
 	case NotifySnd:
-		return []string{"notify-send", "--app-name=tc", "--", title, body}
+		a := []string{"notify-send", "--app-name=tc"}
+		switch nt.Cue {
+		case CueRing:
+			a = append(a, "--category=call.incoming", "--urgency=critical")
+		case CueHuddle:
+			a = append(a, "--category=call")
+		default:
+			a = append(a, "--category=im.received")
+		}
+		if s := xdgSound[nt.Cue]; s != "" {
+			a = append(a, "--hint=string:sound-name:"+s)
+		} else {
+			a = append(a, "--hint=boolean:suppress-sound:true")
+		}
+		if nt.Tag != "" { // a channel's newer popup replaces its older one
+			a = append(a, "--hint=string:x-dunst-stack-tag:"+nt.Tag, "--hint=string:x-canonical-private-synchronous:"+nt.Tag)
+		}
+		return append(a, "--", title, body)
 	}
 	return nil
 }

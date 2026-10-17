@@ -202,6 +202,8 @@ type Ephemeral struct {
 	// Epoch and Dev are key.need's (§13.7): the device lacking K for Epoch.
 	Epoch uint32 `msgpack:"epoch,omitempty"`
 	Dev   []byte `msgpack:"dev,omitempty"`
+	// Parts is a huddle's roster (§14.2); absent = the huddle ended.
+	Parts []Part `msgpack:"parts,omitempty"`
 }
 
 type Snapshot struct {

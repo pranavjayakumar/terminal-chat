@@ -57,7 +57,9 @@ func (p *pane) open() bool { return p.ch != 0 }
 
 // Model is the Bubble Tea model.
 type Model struct {
-	opened bool // a channel has been opened; stops the first-start auto-open
+	hud    huddleUI // voice huddles (huddle.go)
+	nt     notifyUI // notification levels, rings (notifypolicy.go)
+	opened bool     // a channel has been opened; stops the first-start auto-open
 	c      Backend
 	ctx    context.Context
 	st     *styles
@@ -211,6 +213,7 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 	m.input = newInput(st)
 	m.line = newLine(st)
 	m.loadDrafts()
+	m.refreshPrefs()
 	m.reloadAll()
 	if ch := m.defaultChannel(); ch != 0 {
 		m.openChannel(ch)
@@ -723,6 +726,14 @@ func (m *Model) copyCmd(text string) tea.Cmd {
 // Update handles one message.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	_, cmd := m.update(msg)
+	if m.active != m.hud.seenActive {
+		m.hud.seenActive = m.active
+		m.refreshHuddle()
+	}
+	m.checkRing()
+	if t := m.schedulePrefsTick(); t != nil {
+		cmd = tea.Batch(cmd, t)
+	}
 	m.syncDraft()
 	m.updatePlaceholder()
 	if t := m.draftTick(); t != nil {
@@ -738,6 +749,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if cmd, ok := m.huddleMsg(msg); ok {
+		return m, cmd
+	}
 	switch msg := msg.(type) {
 	case noticeExpireMsg:
 		if msg.gen == m.noticeGen {
@@ -772,6 +786,12 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case notifyFlushMsg:
 		return m, m.flushNote(msg)
+	case ringMsg:
+		return m, m.ringMsg(msg)
+	case prefsTickMsg:
+		return m, m.prefsTick(msg)
+	case notifyTestMsg:
+		return m, m.notifyTestNext()
 	case badgeMsg:
 		return m, m.reportBadge(msg)
 	case awayTickMsg:
@@ -803,10 +823,19 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.focused = false
 		return m, nil
 	case updateMsg:
-		return m, tea.Batch(m.applyUpdate(client.Update(msg)), m.waitUpdate())
+		if msg.Prefs || msg.Reset {
+			m.refreshPrefs()
+		}
+		if msg.Huddle || msg.Reset || msg.Channels {
+			m.refreshHuddle()
+		}
+		return m, tea.Batch(m.applyUpdate(client.Update(msg)), m.huddleStarted(msg.HuddleStarted), m.waitUpdate())
 	case updatesClosedMsg:
 		return m, nil
 	case errMsg:
+		if msg.what == "huddle" && m.nt.answering {
+			m.stopRing(true) // answering failed: let the error show
+		}
 		m.setErr(msg.what, msg.err)
 		return m, nil
 	case infoMsg:
@@ -988,6 +1017,11 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 	if key != kEsc {
 		m.escAt = time.Time{}
 	}
+	if key == kTalk {
+		if cmd, ok := m.talkKey(); ok {
+			return cmd
+		}
+	}
 
 	switch m.mode {
 	case modeSwitcher:
@@ -1092,6 +1126,15 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 	case key == kPgDown:
 		return m.scrollBy(m.focus(), -max(m.dims().bodyH-1, 1))
 	case key == kEsc:
+		// One Esc backs out one thing: an open mic first (we're
+		// broadcasting), then a ring, then the usual chain.
+		if m.micOff() {
+			return nil
+		}
+		if m.nt.ring.ch != 0 {
+			m.stopRing(true) // dismissed
+			return nil
+		}
 		switch {
 		case m.editing != 0:
 			m.cancelEdit()

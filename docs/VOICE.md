@@ -1,0 +1,232 @@
+# Voice huddles design (M5)
+
+Status: **draft r1** (target release v0.4.0). Wire format: PROTOCOL.md §14 (cap `voice1`).
+
+## Goals / non-goals
+
+- Drop-in voice per channel (public, private, DM): `/huddle` joins the channel's huddle,
+  `/leave-huddle` leaves. No ringing, no scheduling, no "call" object.
+- Low latency over flaky networks: unreliable QUIC datagrams on the existing connection, Opus
+  with in-band FEC, an adaptive jitter buffer. Mouth-to-ear target < 200 ms on a decent link.
+- Voice in an encrypted channel (`Channel.e2e`) is end-to-end encrypted with keys derived from
+  the channel's epoch key; the server relays bytes it cannot decrypt.
+- The default `tc` stays a static `CGO_ENABLED=0` binary. Audio needs C (libopus, an audio
+  device layer), so it lives behind the build tag `voice`; everything else (server relay,
+  protocol, huddle state, TUI indicator) is pure Go and always built.
+- Non-goals for v1: video, screen share, recording, server-side mixing, voice over the
+  TCP fallback, PSTN, more than 16 people in one huddle, per-sender signatures on frames.
+
+## Huddle model
+
+- One huddle per channel, implicit: it exists while at least one person is in it.
+- Joining needs current membership of the channel (the server's `members` map, same check as
+  typing). Losing membership (`chan.leave`, `chan.remove`, `user.disable`), a revoked device and
+  the channel becoming encrypted drop you at once.
+- A **session** (one connection = one device) is in at most one huddle. A **user** is in at
+  most one huddle: joining from another session or channel moves them (the old participation
+  ends, the old session sees itself leave). This matches Slack: you can't be in two calls.
+- The server assigns each participation a `src` (u32, unique on the server while it lives,
+  never 0, never reused within a server process) that tags its datagrams.
+- Huddle state is **ephemeral** (never stored): a server restart ends every huddle and clients
+  rejoin by hand. State travels as EPHEMERAL `huddle {chan, parts}` (§14.2) to the channel's
+  members on every change, and once per huddle right after `sync` (like presence).
+- Who's talking is a client-side fact (frames arriving from a `src` in the last ~300 ms). The
+  server never sends "speaking" events: it would be a second, laggier source of the same truth.
+- Mute is client-side too (a muted client sends nothing). There is no mute op in v1: whether
+  someone is talking is visible from their frames, which is all a listener needs.
+
+## Transport
+
+- **QUIC datagrams (RFC 9221)** on the same QUIC connection as the frame stream. Both sides set
+  `EnableDatagrams`; it's a transport parameter, so old peers simply don't get datagrams.
+- **TCP fallback: no voice in v1.** A reliable stream turns loss into head-of-line stalls (a
+  dropped packet freezes every following frame for an RTO), which is worse than silence, and it
+  would share the 8 MiB session queue with chat. `huddle.join` on a TCP session fails with
+  `bad_request` "voice needs UDP"; the TUI says "huddle needs UDP — your network blocks it".
+  TCP sessions still see huddle rosters, so you know a huddle is happening. Frame type 0x40
+  stays reserved for a possible framed fallback later.
+- Datagrams carry no stream ids or acks. Loss is concealed by Opus (FEC + PLC), never
+  retransmitted.
+- quic-go's `SendDatagram` blocks when its 32-entry send queue is full (congestion). The server
+  therefore never sends from the reading goroutine: each receiving session has a small bounded
+  channel (64 datagrams ≈ 1.3 s at one speaker) drained by a writer goroutine; full → drop.
+  One slow listener can't slow anyone else.
+
+## Codec
+
+- Opus, 48 kHz mono, 20 ms frames (960 samples), `OPUS_APPLICATION_VOIP`.
+- 24 kbit/s VBR (≈ 60 B/frame), in-band FEC on with expected loss 10 %, complexity 5 (cheap on
+  laptops). DTX off: push-to-talk already gates silence, and DTX's skipped frames would look like
+  loss to the jitter buffer.
+- Push-to-talk default: nothing is captured or sent while the key isn't held.
+- The datagram limit (512 B, §14.3) leaves room for 120 ms-worth or a 128 kbit/s frame; v1 only
+  ever sends 20 ms frames.
+
+## Jitter buffer (per remote `src`)
+
+- Frames are ordered by `seq`. Playout starts after a target delay (initial 60 ms), adapted
+  between 40 and 200 ms from the observed inter-arrival jitter (RFC 3550 estimator, target ≈
+  3 × jitter + 20 ms, re-evaluated at talk-spurt starts). Mid-spurt, a frame that arrives just
+  behind the playout point grows the delay by one frame (one concealed slot) instead of being
+  lost every time.
+- Missing frame at playout: if `seq+1` is buffered, decode its FEC data; else Opus PLC; after 5
+  consecutive missing frames the stream goes silent and the buffer resets.
+- Late frames (behind the playout point) are dropped. A flag bit marks the last frame of a
+  talk spurt so the buffer can drain cleanly on push-to-talk release.
+- Remote streams are mixed (summed with clipping) **on the client** into the playback device.
+
+## Server: SFU relay
+
+- The server forwards; it never decodes, mixes or transcodes, and the datagram payload is
+  opaque to it (and ciphertext in encrypted channels).
+- For each datagram from a session: parse the fixed header (§14.3); drop unless the session is
+  in a huddle, `src` equals the session's assigned `src`, the kind matches the channel (only
+  encrypted kinds in an e2e channel), the size is within limits and the session's token bucket
+  has a token. Then queue the **identical bytes** to every other participant's session.
+- Nothing is buffered or logged per frame. Counters only (relayed, dropped by reason).
+- Cost: with push-to-talk usually 1 speaker → N-1 sends. Worst case 16 open mics → 240
+  datagrams per 20 ms; the per-sender rate limit bounds it.
+
+## E2E for voice (encrypted channels)
+
+Keys come from the channel's newest **verified** epoch key `K` (§13.3); nothing new is sealed
+or distributed.
+
+```
+vk    = HKDF-SHA256(K, info "tc-voice-v1" || server_id || chan || epoch)          32 B
+sk    = HKDF-SHA256(vk, info "tc-voice-send-v1" || dev(16) || stream(16))         32 B, per sender stream
+nonce = 0x00000000 || u64be(seq)                                                    12 B
+ct    = ChaCha20-Poly1305(sk, nonce, opus_frame, AD = header)                      header = bytes 0..18
+```
+
+- `dev` is the sender's device id, `stream` 16 random bytes the sender picks on every
+  `huddle.join` and announces in it; the server relays both in `parts`. Per-sender keys mean two
+  senders never share a (key, nonce) even if a malicious member copies someone's `stream`.
+- `seq` starts at 0 and increases by one per frame; a stream stops at 2³² − 1 (≈ 2.7 years).
+- The header (kind, flags, src, seq, epoch, ts) is the AD, so the server can't alter any of it.
+- **Replay**: per stream, a 64-frame sliding window over `seq` (DTLS-style) drops duplicates and
+  frames older than the window. **Cross-session replay** (the server re-announcing an old
+  `stream` and replaying a recording): every encrypted header carries `ts`, the sender's Unix
+  time in seconds, inside the AD; receivers drop frames whose `ts` is more than 60 s from their
+  own clock. This needs clocks within a minute (NTP). Rejections are counted per reason in the
+  engine (`voice.Stats`); 25 or more clock-skew drops within one second raise a sticky TUI
+  warning, once per participation (the ts check runs after the AEAD opens, so only authentic
+  frames count).
+- **Encrypted or not is decided by the client's trust state** (`E2EStatus`), never by the
+  server's `Channel.e2e` flag alone: plaintext only in a channel never known as encrypted and
+  not in alarm. A channel in alarm, or without a verified epoch we hold K for, refuses voice
+  ("voice waits for the channel's keys"). Encryption changing mid-huddle ends the huddle.
+- **Senders** seal only under a *fresh* head epoch, by the text path's rule (§13.4): its roster
+  is who we'd seal to now and it boxed no device revoked since. Rotation in tc is lazy (the next
+  sender rotates), so voice does what a text send does: at join, and whenever a once-a-second
+  check finds the epoch stale (a member left, a device was revoked, an alarm), sending pauses,
+  the client rotates via the same code path, and resumes under the new epoch. A removed member
+  or a stolen device therefore hears at most ~1 s more, even if a malicious server keeps
+  relaying to them.
+- **Which keys a receiver accepts**: frames under the newest epoch it verified, or the one
+  before it only within 10 s of seeing the head move (never on first sight, e.g. at join), so a
+  rotation mid-sentence doesn't cut audio. Because frame keys are group-symmetric (anyone with
+  K can speak as any roster member), an epoch is refused outright when someone outside the
+  channel may hold its K: a roster user who is no longer a live member, a device revoked since
+  (or a rotation we owe for our own revoke) — the text path's `revokedStale` rule. A malicious
+  server refusing the rotation therefore gets silence, not an ex-member's forged voice. Within
+  an accepted epoch: senders in its roster who are also current members, with `dev` a verified,
+  non-revoked device of that user (trust store). The window is re-checked before cached keys
+  are used. `ts` is checked after the AEAD opens. Anything else is dropped and counted;
+  plaintext kinds in an e2e channel are always dropped (downgrade).
+
+Public channels: voice is protected hop by hop (QUIC/TLS 1.3) but the **server can hear it**,
+exactly like public-channel text. The TUI marks encrypted huddles with the lock it already uses.
+
+## Limits
+
+| What | Limit |
+|---|---|
+| participants per huddle | 16 (`huddle.join` → `conflict`) |
+| concurrent huddles per server | 1024 (`conflict`; a user is in at most one, so this is ~users) |
+| datagram size | ≤ 512 B including the header; larger dropped |
+| per-session send rate | token bucket burst 100, refill 60/s (50/s nominal); excess dropped |
+| `huddle.join` | counts as a write op for rate limits (§9); `huddle.leave` is exempt |
+| per-receiver relay queue | 64 datagrams; full → drop newest |
+
+## UX (TUI + herdr)
+
+- `/huddle` — join the current channel's huddle (or start it). In a huddle, the status line
+  starts with `🎧 ● 🔒#chan · bob* carol` — `●` (red) that our mic is on, `🔒` an encrypted
+  channel, `*` who's talking right now; we're not listed. This head always comes first, before
+  any error notice, so an open mic is never hidden. Viewing a channel whose huddle you're not in
+  shows `🎧 3 in huddle — /huddle`. The sidebar marks every channel with a huddle going with a
+  dim `🎧n` (n people) before the unread badge (the count, then the marker, is dropped before the
+  name gets too short); without a sidebar (narrow panes) the header adds `🎧n` = huddles
+  running in other channels.
+- **Talk key `ctrl+t`** (bound only while in a huddle; unbound otherwise).
+  Terminals don't report key-up, so: press starts talking; if key-repeats follow (you're
+  holding it) talking stops 120–250 ms after the last repeat (3× the measured repeat gap) —
+  push-to-talk. If no repeat arrives within 800 ms (longer than X11's 660 ms initial delay), the
+  press was a tap and the mic latches open until the next tap — open mic.
+- `/talk` and `/mute` open and close the mic where ctrl+t never arrives (Zellij) or key-repeat
+  is off. Esc on an empty input closes an open mic.
+- Not talking = muted. `/leave-huddle` leaves.
+- Builds without voice: `/huddle` says "this tc build has no voice: reinstall with install.sh
+  --voice"; the roster indicator still works.
+- Repeated clock-skew drops (25+ authentic frames a second outside ±60 s) show a sticky
+  "clock skew: some huddle audio dropped — check NTP on both machines", once per participation.
+- herdr: while you're in a huddle the pane's metadata title starts `tc · 🎧` (`tc · 🎧●` with an
+  open mic), followed by the unread summary, so you can see which pane holds the call.
+
+## Audio I/O library
+
+Choice: **miniaudio via `github.com/gen2brain/malgo`** for capture/playback, **libopus via a
+~100-line cgo wrapper** in `internal/voice`.
+
+- miniaudio is a single C file vendored inside malgo: no system package for audio I/O on either
+  OS. CoreAudio on macOS; on Linux it `dlopen`s PulseAudio/PipeWire-pulse or ALSA at runtime, so
+  the binary doesn't hard-link them. Full-duplex, per-callback low latency, MIT-0/public domain.
+- PortAudio needs a system library on both OSes (not installed via brew here), adds a link
+  dependency, and has no advantage for two mono streams.
+- libopus (BSD) is the reference codec; there is no production pure-Go Opus encoder. We wrap
+  only what we use (`opus_encoder_create/ctl/encode`, `opus_decoder_create/decode`), avoiding a
+  binding dependency (`hraban/opus` also wants libopusfile).
+- Pure-Go-only alternatives (e.g. a Go Opus decoder) don't encode, and a raw PCM fallback would
+  be 768 kbit/s; not worth it.
+
+## Builds and releases
+
+- `go build ./...` (default, `CGO_ENABLED=0`) → `internal/voice` compiles its stub
+  (`voice_stub.go`, `//go:build !voice`): `Available() == false`, every call returns
+  `ErrNoVoice`.
+- `make build-voice` → `CGO_ENABLED=1 go build -tags voice`, needs `pkg-config opus`
+  (macOS: `brew install opus`; Debian/Ubuntu: `libopus-dev`).
+- Releases ship a second artifact per target, `tc-voice_<os>_<arch>.tar.gz` (binary named
+  `tc`), built by `scripts/build-voice.sh` on native runners (macos-14 builds darwin arm64 and,
+  with `clang -arch x86_64`, amd64; ubuntu-22.04 and ubuntu-22.04-arm build Linux). libopus
+  1.5.2 is built from the pinned, sha256-checked xiph.org tarball and linked **statically**; the
+  script fails if the binary links libopus dynamically. Runtime dependencies: macOS — system
+  frameworks only; Linux — glibc ≥ 2.35 (libc/libm/libdl/libpthread) plus the audio stack
+  miniaudio `dlopen`s (PulseAudio, PipeWire-pulse or ALSA). It is listed in the same SSHSIG-
+  signed `checksums.txt`. `install.sh --voice` (or `TC_VOICE=1`) installs it; `tc update`
+  keeps the flavor that's running (`voice.Available()`, fixed by the build tag), and
+  `tc version` prints `(voice)` for it. CI builds and tests `-tags voice` on Ubuntu and macOS
+  and runs the static release build for the runner's target on every push.
+
+## Threat model
+
+Attackers: a malicious or compromised server; a network attacker; a malicious channel member;
+a removed member; a hostile client spamming datagrams.
+
+| Threat | Mitigation |
+|---|---|
+| Network attacker reads/injects audio | QUIC (TLS 1.3, pinned SPKI) on every hop. |
+| Server listens to an encrypted channel's huddle | Frames are ChaCha20-Poly1305 under keys from `K_epoch`, which the server never has. |
+| Server alters, splices or relabels frames | Header is AEAD AD; per-sender key binds `dev`+`stream`; `dev` must be a verified device of the named user, so relabeling breaks decryption. |
+| Server replays frames within a session | 64-frame replay window per `src`, kept for the whole participation (a roster that drops and re-adds a `src` can't reset it). |
+| Server replays an old recording later | `ts` in the AD, ±60 s acceptance; window per stream. Within 60 s of recording a replay into a *new* stream is possible (accepted risk, documented). |
+| Server downgrades an e2e huddle to plaintext | The client decides encryption from its sticky trust state, not the server's flag; refuses in alarm; ends the huddle if encryption changes. Receivers drop plaintext kinds in e2e channels. |
+| Removed member / stolen (revoked) device keeps listening | Senders only seal under a fresh epoch and rotate first when it's stale (checked at join and every second), so the old `K` decrypts at most ~1 s more (plus ≤ 2 s of cached keys). Honest servers also drop them at once and discard their queued datagrams, to and from them. |
+| Ex-member / revoked device injects audio under an old epoch | Receivers refuse any epoch whose K someone outside the channel may hold (roster user no longer a member, device revoked since, rotation owed), whoever the frame claims to be from, so a server that blocks the rotation gets silence. The previous epoch is accepted only 10 s after the head moves, never on first sight, and only if it passes the same test. |
+| Alarm raised mid-huddle | Sending pauses while the channel isn't `E2EOK`. |
+| **Malicious member impersonates another member's voice** | **Not prevented in v1.** Any roster member can derive any sender's `sk` (group-symmetric, like SFrame with a shared key). Text messages are signed per message; per-frame Ed25519 would add 64 B × 50/s = 25.6 kbit/s. Future: per-sender keys sealed to the roster with signed announcements. |
+| Metadata | The server sees who is in which huddle, when, and frame sizes/timing (talk patterns; VBR sizes can leak some content). VBR leaks more than CBR; CBR is a possible opt-in later. |
+| Datagram flood / amplification | Only huddle participants can send; per-session token bucket; fixed max size; relay fan-out ≤ 15; bounded per-receiver queues with drop. A client can't make the server send to non-participants. |
+| Hostile datagram parser input | Fixed-layout header parsed with bounds checks, fuzzed (`FuzzParseDatagram`); the server never touches payloads. |
+| Audio-device privacy | Mic is opened only while in a huddle and (push-to-talk) only captured while talking; leaving closes the device. |

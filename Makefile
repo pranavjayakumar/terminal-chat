@@ -1,10 +1,22 @@
-.PHONY: build test test-malicious fuzz lint dev clean release-sign
+.PHONY: build build-voice release-voice test test-voice test-malicious fuzz lint dev clean release-sign
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
 build:
 	CGO_ENABLED=0 GOTOOLCHAIN=local go build -trimpath -ldflags "$(LDFLAGS)" -o bin/tc ./cmd/tc
+
+# Voice huddles need cgo + libopus (docs/VOICE.md): brew install opus /
+# apt install libopus-dev. The default build above stays static and CGO-free.
+build-voice:
+	CGO_ENABLED=1 GOTOOLCHAIN=local go build -tags voice -trimpath -ldflags "$(LDFLAGS)" -o bin/tc-voice ./cmd/tc
+
+# The release flavor: static libopus from a pinned tarball → dist/tc-voice_<os>_<arch>.tar.gz.
+release-voice:
+	sh scripts/build-voice.sh $$(go env GOOS) $$(go env GOARCH) $(VERSION) dist
+
+test-voice:
+	CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -tags voice ./internal/voice/
 
 test: test-malicious
 	GOTOOLCHAIN=local go test -race ./...
@@ -18,8 +30,8 @@ test-malicious:
 # longer run. Crashers land in testdata/fuzz/ and then run as regression tests.
 FUZZTIME ?= 30s
 FUZZ := \
-	proto:FuzzDecode proto:FuzzDevices proto:FuzzKeyOps proto:FuzzParseLogin \
-	sanitize:FuzzSanitize \
+	proto:FuzzDecode proto:FuzzDevices proto:FuzzKeyOps proto:FuzzParseLogin proto:FuzzParseDatagram voice:FuzzJitter \
+	sanitize:FuzzSanitize notify:FuzzOSCSeq \
 	e2ecrypto:FuzzParseEnc e2ecrypto:FuzzDecrypt e2ecrypto:FuzzUnpad e2ecrypto:FuzzOpenBoxes \
 	identity:FuzzDeviceCert identity:FuzzKeyEndorse identity:FuzzDeviceRevoke identity:FuzzEpochBundle identity:FuzzInviteKey \
 	client:FuzzPlain client:FuzzKeyShare client:FuzzGitHubKeys

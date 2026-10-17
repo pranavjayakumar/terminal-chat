@@ -34,3 +34,20 @@ type Listener interface {
 
 // ExporterLabel is the TLS exporter label for auth channel binding.
 const ExporterLabel = "EXPORTER-tc-auth"
+
+// DatagramConn carries unreliable datagrams (voice, PROTOCOL.md §14.3).
+type DatagramConn interface {
+	// SendDatagram may block briefly while the QUIC send queue is full.
+	SendDatagram([]byte) error
+	ReceiveDatagram(ctx context.Context) ([]byte, error)
+}
+
+// Datagrams returns c's datagram side when c is QUIC and the peer
+// negotiated datagram support.
+func Datagrams(c Conn) (DatagramConn, bool) {
+	q, ok := c.(*quicConn)
+	if !ok || !q.datagramsOK() {
+		return nil, false
+	}
+	return q, true
+}

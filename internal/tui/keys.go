@@ -33,6 +33,7 @@ const (
 	kSelPin     = "p"
 	kSelView    = "v"
 	kConfirmYes = "y"
+	kTalk       = "ctrl+t" // only inside a voice huddle (huddle.go)
 )
 
 // minSidebarCols is the narrowest terminal the sidebar can be forced into.
@@ -102,6 +103,14 @@ var helpLines = [][2]string{
 	{"/webhook name", "webhook here; copies curl"},
 	{"/webhooks", "list webhooks"},
 	{"/webhook-delete id", "delete a webhook"},
+	{"/huddle", "join this channel's voice huddle (voice build)"},
+	{"  Ctrl-T", "in a huddle: hold to talk, tap to keep the mic open"},
+	{"/talk, /mute", "in a huddle: open / close the mic (when Ctrl-T doesn't work); Esc closes an open mic"},
+	{"/leave-huddle", "leave the huddle"},
+	{"/notify LEVEL [#ch] [for 2h]", "all · mentions · off (muted, dimmed) · default"},
+	{"/notify", "settings; also: global LEVEL, content full|name|none, quiet 22:00-08:00, test"},
+	{"/dnd [2h|until 9am|off]", "do not disturb: no popups, sounds or rings"},
+	{"/sounds [CUE] on|off", "cues: mention message ring huddle join mic; /sounds volume N"},
 	{"//text", "send text starting with /"},
 }
 

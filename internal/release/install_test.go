@@ -256,6 +256,52 @@ func TestInstallInviteIsNotEvaluated(t *testing.T) {
 	}
 }
 
+// --voice (or TC_VOICE=1) installs tc-voice_<os>_<arch> from the same
+// signed checksums.txt, in any argument order; without it the default build.
+func TestInstallVoice(t *testing.T) {
+	srv := releasetest.New(t, "v0.4.0")
+	bins := map[string][]byte{}
+	for _, oa := range []string{"linux_amd64", "linux_arm64", "darwin_amd64", "darwin_arm64"} {
+		bins[oa] = stubTC(oa + "@v0.4.0")
+		bins["tc-voice_"+oa] = stubTC("voice-" + oa + "@v0.4.0")
+	}
+	srv.Publish(t, "v0.4.0", bins)
+	for _, c := range []struct {
+		name string
+		o    installOpts
+		want string
+	}{
+		{"flag first", installOpts{unameS: "Linux", unameM: "aarch64", args: []string{"--voice", installInvite}}, "voice-linux_arm64"},
+		{"flag last piped", installOpts{unameS: "Darwin", unameM: "arm64", args: []string{installInvite, "--voice"}, piped: true}, "voice-darwin_arm64"},
+		{"env", installOpts{unameS: "Darwin", unameM: "x86_64", args: []string{installInvite}, env: []string{"TC_VOICE=1"}}, "voice-darwin_amd64"},
+		{"default", installOpts{unameS: "Linux", unameM: "x86_64", args: []string{installInvite}}, "linux_amd64"},
+	} {
+		r := runInstall(t, srv, c.o)
+		if r.err != nil {
+			t.Fatalf("%s: %v\n%s", c.name, r.err, r.stderr)
+		}
+		if got := r.stubLog(t); len(got) == 0 || got[0] != c.want+"@v0.4.0" {
+			t.Fatalf("%s: ran %q", c.name, got)
+		}
+		if voice := strings.HasPrefix(c.want, "voice-"); voice != strings.Contains(r.stderr, "(voice build)") {
+			t.Fatalf("%s: stderr:\n%s", c.name, r.stderr)
+		}
+	}
+	// A release without the voice build: clear failure, nothing installed.
+	publishAll(t, srv, "v0.4.0")
+	r := runInstall(t, srv, installOpts{unameS: "Linux", unameM: "x86_64", args: []string{"--voice"}})
+	if r.err == nil || !strings.Contains(r.stderr, "tc-voice_linux_amd64.tar.gz") {
+		t.Fatalf("missing voice asset: %v\n%s", r.err, r.stderr)
+	}
+	if _, err := os.Stat(filepath.Join(r.dir, "tc")); err == nil {
+		t.Fatal("installed anyway")
+	}
+	r = runInstall(t, srv, installOpts{unameS: "Linux", unameM: "x86_64", args: []string{"--voice", "--voice", installInvite, installInvite}})
+	if r.err == nil || !strings.Contains(r.stderr, "usage") {
+		t.Fatalf("two invites: %v\n%s", r.err, r.stderr)
+	}
+}
+
 func TestInstallFailsClearly(t *testing.T) {
 	srv := releasetest.New(t, "v0.4.0")
 	publishAll(t, srv, "v0.4.0")

@@ -263,3 +263,6 @@ func (c *Client) unreadReminders(ch, me uint64) int {
 		AND substr(m.body, 1, ?) = ?`, ch, me, utf8.RuneCountInString(proto.RemindPrefix), proto.RemindPrefix).Scan(&n)
 	return n
 }
+
+// ParseClock is parseClock for the UI (/dnd until 9am).
+func ParseClock(s string) (h, m int, ok bool) { return parseClock(s) }

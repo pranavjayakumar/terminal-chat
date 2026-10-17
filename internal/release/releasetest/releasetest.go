@@ -181,6 +181,9 @@ func (s *Server) Publish(t testing.TB, tag string, bins map[string][]byte) {
 	var sums strings.Builder
 	for osArch, bin := range bins {
 		name := "tc_" + osArch + ".tar.gz"
+		if strings.HasPrefix(osArch, "tc-voice_") { // the voice build's asset
+			name = osArch + ".tar.gz"
+		}
 		arc := Tarball(bin)
 		s.Put(tag, name, arc)
 		fmt.Fprintf(&sums, "%x  %s\n", sha256.Sum256(arc), name)

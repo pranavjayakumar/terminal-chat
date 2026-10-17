@@ -20,7 +20,7 @@ import (
 // Notifier shows a desktop notification without blocking
 // (*notify.Notifier). It may drop it.
 type Notifier interface {
-	Notify(title, body string) bool
+	Send(n notify.Note) bool
 }
 
 // Herdr is the part of the herdr CLI the UI uses (*notify.HerdrCLI).
@@ -63,30 +63,21 @@ type (
 // ---- notifications ----
 
 // pendingNote is a channel's coalescing window: the first message notifies
-// at once, later ones within notifyWindow are counted and summarized when
-// the window closes.
+// at once, later ones within the window are counted and summarized when
+// it closes. The strongest cue in the window wins.
 type pendingNote struct {
 	gen         int
 	n           int // messages not yet notified
 	title, body string
 	group       string // title for a summary
+	cue         notify.Cue
+	kind        noteKind // the strongest in the window
 }
 
+// shouldNotify is the mention-class trigger (DMs, mentions, highlights,
+// reminders, replies in my threads) for a message that passes eligible.
 func (m *Model) shouldNotify(x proto.Message) bool {
-	// Bots (webhooks) never notify: their text is from outside tc.
-	if x.Deleted || m.users[x.Author].Bot {
-		return false
-	}
-	if x.Chan == m.active && m.focused {
-		return false
-	}
-	if x.Author == m.me.ID {
-		// My own messages don't notify, except a reminder the server
-		// posted in my notes: that is the point of it.
-		return m.isReminder(x)
-	}
-	v, ok := m.chanView(x.Chan)
-	return (ok && v.Kind == proto.ChanDM) || m.concernsMe(x.Body)
+	return m.eligible(x) && m.mentionClass(x)
 }
 
 // noteText is the notification for x: "#chan · alice" or "alice (DM)",
@@ -121,32 +112,62 @@ func (m *Model) notifyFor(news []client.Message) tea.Cmd {
 		return nil
 	}
 	var cmds []tea.Cmd
+	now := m.now()
 	for _, x := range news {
 		// Text that isn't verifiably its author's (inserted by the server,
 		// invalid) never notifies.
-		if x.Sec.Trusted() && m.shouldNotify(x.Message) {
-			cmds = append(cmds, m.queueNote(x.Message))
+		if !x.Sec.Trusted() || !m.eligible(x.Message) {
+			continue
+		}
+		kind, window := noteMessage, allWindow
+		if m.mentionClass(x.Message) {
+			kind, window = noteMention, notifyWindow
+		}
+		if popup, cue := decide(m.nt.prefs, now, x.Chan, kind); popup {
+			cmds = append(cmds, m.queueNote(x.Message, kind, cue, window))
 		}
 	}
 	return tea.Batch(cmds...)
 }
 
-func (m *Model) queueNote(x proto.Message) tea.Cmd {
+func (m *Model) queueNote(x proto.Message, kind noteKind, cue notify.Cue, window time.Duration) tea.Cmd {
 	title, body, group := m.noteText(x)
+	if p := m.notes[x.Chan]; p != nil && kind == noteMention && p.kind < noteMention {
+		// A mention never waits out a level-all channel's 30 s window: it
+		// opens its own (the soft messages before it are folded in).
+		delete(m.notes, x.Chan)
+	}
 	if p := m.notes[x.Chan]; p != nil {
 		p.n++
 		p.title, p.body, p.group = title, body, group
+		if cueRank(cue) > cueRank(p.cue) {
+			p.cue = cue
+		}
+		p.kind = max(p.kind, kind)
 		return nil
 	}
 	m.noteGen++
-	p := &pendingNote{gen: m.noteGen, title: title, body: body, group: group}
+	p := &pendingNote{gen: m.noteGen, title: title, body: body, group: group, cue: cue, kind: kind}
 	m.notes[x.Chan] = p
 	if m.now().Sub(m.lastNotify) >= notifyEvery {
-		m.fire(title, body)
+		m.fire(x.Chan, title, body, 1, cue)
 	} else {
 		p.n = 1 // over the global cap: say it when the window closes
 	}
-	return m.noteTimer(x.Chan, p.gen, notifyWindow)
+	return m.noteTimer(x.Chan, p.gen, window)
+}
+
+// cueRank orders cues so a mention in a window of soft messages wins.
+func cueRank(c notify.Cue) int {
+	switch c {
+	case notify.CueMention:
+		return 3
+	case notify.CueMessage:
+		return 2
+	case notify.CueNone:
+		return 1
+	}
+	return 0
 }
 
 func (m *Model) noteTimer(ch uint64, gen int, d time.Duration) tea.Cmd {
@@ -166,17 +187,23 @@ func (m *Model) flushNote(msg notifyFlushMsg) tea.Cmd {
 		return m.noteTimer(msg.ch, msg.gen, wait)
 	}
 	delete(m.notes, msg.ch)
+	// Settings may have changed while it waited (muted, DND).
+	popup, cue := decide(m.nt.prefs, m.now(), msg.ch, p.kind)
+	if !popup {
+		return nil
+	}
 	if p.n == 1 {
-		m.fire(p.title, p.body)
+		m.fire(msg.ch, p.title, p.body, 1, cue)
 	} else {
-		m.fire(p.group, strconv.Itoa(p.n)+" new messages")
+		m.fire(msg.ch, p.group, strconv.Itoa(p.n)+" new messages", p.n, cue)
 	}
 	return nil
 }
 
-func (m *Model) fire(title, body string) {
+func (m *Model) fire(ch uint64, title, body string, n int, cue notify.Cue) {
 	m.lastNotify = m.now()
-	m.opt.Notifier.Notify(title, body)
+	title, body = m.private(title, body, n)
+	m.opt.Notifier.Send(notify.Note{Title: title, Body: body, Cue: cue, Tag: noteTag(ch)})
 }
 
 // seen drops pending notifications for a channel the user is now looking at.
@@ -189,7 +216,18 @@ func (m *Model) seen(ch uint64) {
 // ---- herdr unread badge ----
 
 func (m *Model) badgeText() string {
-	if s := m.unreadSummary(); s != "" {
+	s := m.unreadSummary()
+	if m.hud.in { // in a huddle: the pane shows it even with nothing unread
+		h := "tc · 🎧"
+		if m.hud.talking && m.hud.talk == talkLatched {
+			h += "●" // open mic, even while another pane has focus
+		}
+		if s == "" {
+			return h
+		}
+		return h + " · " + s
+	}
+	if s != "" {
 		return "tc · " + s
 	}
 	return ""

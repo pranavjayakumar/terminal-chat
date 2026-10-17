@@ -5,6 +5,7 @@
 //	<base>/latest                      → redirects to <base>/tag/<tag>
 //	<base>/download/<tag>/checksums.txt  sha256sum format
 //	<base>/download/<tag>/tc_<os>_<arch>.tar.gz  holds the tc binary
+//	<base>/download/<tag>/tc-voice_<os>_<arch>.tar.gz  the voice build (cgo, -tags voice)
 //
 // <base> is $TC_RELEASE_BASE (tests point it at a local server). Every URL,
 // the base and each redirect, must be https; plain http is allowed only to
@@ -63,6 +64,9 @@ type Source struct {
 	// Signers is the allowed_signers text release signatures are checked
 	// against; "" means the embedded AllowedSigners.
 	Signers string
+	// Voice fetches the voice build (tc-voice_*), so tc update keeps the
+	// flavor that is running.
+	Voice bool
 }
 
 func (s *Source) signers() string {
@@ -196,6 +200,12 @@ func (s *Source) get(ctx context.Context, tag, name string, limit int64) ([]byte
 // AssetName is the release asset for an OS/arch, e.g. tc_linux_amd64.tar.gz.
 func AssetName(goos, goarch string) string { return "tc_" + goos + "_" + goarch + ".tar.gz" }
 
+// VoiceAssetName is the voice build's asset, e.g. tc-voice_linux_amd64.tar.gz.
+// Its tarball holds a binary named tc too, so either replaces the other.
+func VoiceAssetName(goos, goarch string) string {
+	return "tc-voice_" + goos + "_" + goarch + ".tar.gz"
+}
+
 // Supported reports whether releases include goos/goarch.
 func Supported(goos, goarch string) bool {
 	return (goos == "linux" || goos == "darwin") && (goarch == "amd64" || goarch == "arm64")
@@ -232,6 +242,9 @@ func (s *Source) Fetch(ctx context.Context, tag, goos, goarch string) ([]byte, e
 		return nil, err
 	}
 	asset := AssetName(goos, goarch)
+	if s.Voice {
+		asset = VoiceAssetName(goos, goarch)
+	}
 	sums, err := s.get(ctx, tag, "checksums.txt", maxSmallDoc)
 	if err != nil {
 		return nil, err

@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"context"
 	"crypto/tls"
 	"net"
 	"sync"
@@ -22,6 +23,16 @@ func (c *quicConn) Close() error         { return c.CloseWithCode("") }
 func (c *quicConn) Exporter() ([]byte, error) {
 	cs := c.conn.ConnectionState().TLS
 	return cs.ExportKeyingMaterial(ExporterLabel, nil, 32)
+}
+
+func (c *quicConn) SendDatagram(b []byte) error { return c.conn.SendDatagram(b) }
+
+func (c *quicConn) ReceiveDatagram(ctx context.Context) ([]byte, error) {
+	return c.conn.ReceiveDatagram(ctx)
+}
+
+func (c *quicConn) datagramsOK() bool {
+	return c.conn.ConnectionState().SupportsDatagrams.Remote
 }
 
 func (c *quicConn) CloseWithCode(code string) error {
