@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -165,6 +166,10 @@ func errText(err error) string {
 	return sanitize.Line(msg)
 }
 
+// revokeNoticeTTL keeps the revoke result (with its SSH-key advice) up
+// longer than a plain info line.
+const revokeNoticeTTL = 10 * time.Second
+
 func (m *Model) gotDevices(msg devicesMsg) tea.Cmd {
 	s := &m.devs
 	if r := msg.revoked; r != nil {
@@ -172,13 +177,16 @@ func (m *Model) gotDevices(msg devicesMsg) tea.Cmd {
 		if r.err != nil {
 			m.setErr("revoke", r.err)
 		} else {
-			// Caveat first (same as `tc devices revoke`): the status line
-			// truncates from the right and this is the part people miss.
-			t := "✓ revoked device " + r.short + " · doesn't remove an SSH key: a device holding it can register again"
+			// The revoke doesn't remove an SSH key; say what does. That
+			// advice outranks the channel count when the line is short.
+			t := "✓ revoked device " + r.short
+			advice := " · had your SSH key? an admin must disable your account"
 			if r.rotated > 0 {
-				t += fmt.Sprintf(" · new keys in %d encrypted %s", r.rotated, plural(r.rotated, "channel", "channels"))
+				if n := fmt.Sprintf(" — new keys in %d encrypted %s", r.rotated, plural(r.rotated, "channel", "channels")); strWidth(t+n+advice) <= m.w {
+					t += n
+				}
 			}
-			m.setInfo(t)
+			m.setNotice(t+advice, false, false, revokeNoticeTTL)
 		}
 		if m.mode == modeDevices && s.user == msg.user {
 			s.loading = true
@@ -345,6 +353,13 @@ func (m *Model) deviceRows(w int) []string {
 		default:
 			tags = append(tags, "active")
 		}
+		if d.Former {
+			old := "old id of this device"
+			if w < 50 {
+				old = "old id"
+			}
+			tags = append([]string{old}, tags...)
+		}
 		if !d.Verified {
 			tags = append(tags, "unverified")
 		}
@@ -368,25 +383,33 @@ func (m *Model) deviceRows(w int) []string {
 }
 
 // devicesNotice says which devices were just revoked or newly appeared for
-// us (Update.Revoked, Update.NewOwn): this device's revoke first, then
-// ours, then other people's. It doesn't hide an error notice unless this
-// device was revoked.
+// us (Update.Revoked, Update.NewOwn): this device's revoke first (by its
+// current id, or a former one when it was revoked while offline and has
+// re-registered already), then ours, then other people's. It doesn't hide
+// an error notice unless this device was revoked.
 func (m *Model) devicesNotice(revoked, newOwn []client.DeviceRef) {
 	if len(revoked) == 0 && len(newOwn) == 0 {
 		return
 	}
 	var this e2ecrypto.DevID
+	var former []e2ecrypto.DevID
 	for _, d := range m.c.Devices(m.me.ID) {
-		if d.This {
+		switch {
+		case d.This:
 			this = d.ID
+		case d.Former:
+			former = append(former, d.ID)
 		}
 	}
 	var mine, others []client.DeviceRef
 	thisGone := false
+	var formerGone *client.DeviceRef
 	for _, r := range revoked {
 		switch {
 		case r.User == m.me.ID && r.Dev == this:
 			thisGone = true
+		case r.User == m.me.ID && slices.Contains(former, r.Dev):
+			formerGone = &r
 		case r.User == m.me.ID:
 			mine = append(mine, r)
 		default:
@@ -402,6 +425,13 @@ func (m *Model) devicesNotice(revoked, newOwn []client.DeviceRef) {
 	switch {
 	case thisGone:
 		m.setNotice("this device was revoked — it re-registers with new keys when it reconnects", true, false, 0)
+	case formerGone != nil && len(newOwn) > 0:
+		// The new device is the news that matters; it goes first.
+		m.setNotice(fmt.Sprintf("new device of yours: %s%s — not you? /devices to revoke it · this device re-registered (was %s)",
+			newOwn[0].Short(), more(len(newOwn)), formerGone.Short()), true, false, 0)
+	case formerGone != nil:
+		m.setNotice(fmt.Sprintf("this device re-registered — /devices (was %s)%s",
+			formerGone.Short(), more(1+len(mine))), true, false, 0)
 	case len(mine) > 0:
 		m.setNotice(fmt.Sprintf("your device %s was revoked%s — /devices", mine[0].Short(), more(len(mine))), true, false, 0)
 	case len(newOwn) > 0:
