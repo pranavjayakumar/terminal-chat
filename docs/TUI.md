@@ -116,27 +116,30 @@ Unknown command → inline error, input kept.
   and refreshed from the server in the background (the title says `· refreshing…`, or `· cached (…)`
   when the refresh failed): `* ab12cd34  this device  added 2026-10-01`, then `active`,
   `revoked 2026-10-17` and `unverified` (a cert no pinned key of the user signed: only the server's
-  claim) rows; `this device's old keys` marks an id this device had before it was revoked and
-  re-registered. The signing key's fingerprint is added only when it fits whole. ↑/↓ (k/j), PgUp/PgDn,
-  Home/End move, `r` refreshes, Esc, `q` or Enter closes. Another user's list is read-only.
+  claim) rows. `old id of this device, …` (`old id, …` under 50 columns) prefixes a verified id with
+  the keys this device had before it was revoked and re-registered. The signing key's fingerprint is
+  added only when it fits whole. ↑/↓ (k/j), PgUp/PgDn, Home/End move, `r` refreshes, Esc, `q` or
+  Enter closes. Another user's list is read-only.
 - In your own list, `d` on an active, verified device that isn't this one puts the question in the
   title, in red (`revoke device ab12cd34 for good? y: revoke · any other key: cancel`; under 60 columns
   `revoke ab12cd34? y: yes · other: no`). Unlike the trust overlays, any key other than `y` cancels
-  ("not revoked"). `y` revokes it (notice `✓ revoked device ab12cd34 — new keys in N encrypted
-  channels · if it had your SSH key, ask an admin to disable your account`: a revoke doesn't remove
-  an SSH key, see docs/E2E.md "Stolen device") and the list refreshes. `d` on this device, a revoked or an unverified one says why not
-  instead. The overlay ignores keys except Esc for 500 ms after opening, like the trust overlays.
+  ("not revoked"). `y` revokes it and the list refreshes. The notice (10 s) is `✓ revoked device
+  ab12cd34 — new keys in N encrypted channels · had your SSH key? an admin must disable your account`,
+  without the channel count when the line is too narrow: a revoke doesn't remove an SSH key (docs/E2E.md
+  "Stolen device"). `d` on this device, a revoked or an unverified one says why not instead. The
+  overlay ignores keys except Esc for 500 ms after opening, like the trust overlays.
 - **`/device-revoke id`** (any unique prefix of the id `/devices` shows) opens the list with that
   device's question already up. Revoking this device is only possible from the CLI
   (`tc devices revoke id --self`).
 - Notices: when a verified revoke of a device this client already trusted arrives — in red `this device
-  was revoked — it re-registers with new keys when it reconnects` (or, when it was revoked while offline
-  and has re-registered already, `this device was revoked (as ab12cd34) and re-registered with new keys
-  — not you? /devices`, naming any new device of yours that appeared meanwhile in the same line), or
-  `your device ab12cd34 was revoked — /devices`; otherwise `@bob revoked a device (ab12cd34) — encrypted channels get a new key before the
-  next message` (not over an error notice). A newly verified device of yours shows in red `new device of
-  yours: ab12cd34 — not you? /devices to revoke it`. Several at once add `(+N more)`. Nothing is
-  announced on a first sync (before any device of yours is verified).
+  was revoked — it re-registers with new keys when it reconnects`; when it was revoked while offline
+  and has re-registered already, `this device re-registered — /devices (was ab12cd34)`, or, if a new
+  device of yours appeared meanwhile, `new device of yours: dd34ef56 — not you? /devices to revoke it ·
+  this device re-registered (was ab12cd34)`; `your device ab12cd34 was revoked — /devices`; otherwise
+  `@bob revoked a device (ab12cd34) — encrypted channels get a new key before the next message` (not
+  over an error notice). A newly verified device of yours shows in red `new device of yours: ab12cd34 —
+  not you? /devices to revoke it`. Several at once add `(+N more)`. Nothing is announced on a first
+  sync (before any device of yours is verified).
 
 ## Behavior
 

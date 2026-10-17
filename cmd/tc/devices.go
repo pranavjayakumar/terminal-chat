@@ -166,14 +166,13 @@ func printDevices(out io.Writer, ds []client.DeviceInfo, name string, mine bool)
 		switch {
 		case d.This && !d.Revoked:
 			state = "this device"
-		case d.Former && d.Revoked:
-			state = "this device's old keys, revoked"
-		case d.Former:
-			state = "this device's old keys"
 		case d.Revoked && !d.RevokedAt.IsZero():
 			state = "revoked " + d.RevokedAt.Format("2006-01-02 15:04")
 		case d.Revoked:
 			state = "revoked"
+		}
+		if d.Former {
+			state = "old id of this device, " + state
 		}
 		if !d.Verified {
 			state += " (unverified: the server's claim)"

@@ -81,7 +81,7 @@ func (c *Client) Devices(user uint64) []DeviceInfo {
 		return nil
 	}
 	var this e2ecrypto.DevID
-	var former []e2ecrypto.DevID
+	var former []formerDev
 	haveThis := false
 	if user == c.Me().ID {
 		this, haveThis = c.ourDev(c.db)
@@ -102,7 +102,8 @@ func (c *Client) Devices(user uint64) []DeviceInfo {
 		seen[dc.Dev] = true
 		d := DeviceInfo{ID: dc.Dev, User: user, Created: time.UnixMilli(dc.Created), Verified: v != nil,
 			This: haveThis && dc.Dev == this}
-		d.Former = !d.This && slices.Contains(former, dc.Dev)
+		// Only a verified row: the server's claim alone mustn't look like ours.
+		d.Former = !d.This && v != nil && isFormer(former, dc.Dev, dc.X25519, dc.Ed25519)
 		if pk, err := ssh.ParsePublicKey(dc.SSH); err == nil {
 			d.KeyFP = ssh.FingerprintSHA256(pk)
 		}

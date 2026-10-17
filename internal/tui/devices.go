@@ -166,6 +166,10 @@ func errText(err error) string {
 	return sanitize.Line(msg)
 }
 
+// revokeNoticeTTL keeps the revoke result (with its SSH-key advice) up
+// longer than a plain info line.
+const revokeNoticeTTL = 10 * time.Second
+
 func (m *Model) gotDevices(msg devicesMsg) tea.Cmd {
 	s := &m.devs
 	if r := msg.revoked; r != nil {
@@ -173,13 +177,16 @@ func (m *Model) gotDevices(msg devicesMsg) tea.Cmd {
 		if r.err != nil {
 			m.setErr("revoke", r.err)
 		} else {
+			// The revoke doesn't remove an SSH key; say what does. That
+			// advice outranks the channel count when the line is short.
 			t := "✓ revoked device " + r.short
+			advice := " · had your SSH key? an admin must disable your account"
 			if r.rotated > 0 {
-				t += fmt.Sprintf(" — new keys in %d encrypted %s", r.rotated, plural(r.rotated, "channel", "channels"))
+				if n := fmt.Sprintf(" — new keys in %d encrypted %s", r.rotated, plural(r.rotated, "channel", "channels")); strWidth(t+n+advice) <= m.w {
+					t += n
+				}
 			}
-			// The revoke doesn't remove an SSH key; say what does.
-			t += " · if it had your SSH key, ask an admin to disable your account"
-			m.setInfo(t)
+			m.setNotice(t+advice, false, false, revokeNoticeTTL)
 		}
 		if m.mode == modeDevices && s.user == msg.user {
 			s.loading = true
@@ -339,14 +346,19 @@ func (m *Model) deviceRows(w int) []string {
 		switch {
 		case d.This && !d.Revoked:
 			tags = append(tags, "this device")
-		case d.Former:
-			tags = append(tags, "this device's old keys")
 		case d.Revoked && !d.RevokedAt.IsZero():
 			tags = append(tags, "revoked "+d.RevokedAt.Local().Format("2006-01-02"))
 		case d.Revoked:
 			tags = append(tags, "revoked")
 		default:
 			tags = append(tags, "active")
+		}
+		if d.Former {
+			old := "old id of this device"
+			if w < 50 {
+				old = "old id"
+			}
+			tags = append([]string{old}, tags...)
 		}
 		if !d.Verified {
 			tags = append(tags, "unverified")
@@ -413,11 +425,12 @@ func (m *Model) devicesNotice(revoked, newOwn []client.DeviceRef) {
 	case thisGone:
 		m.setNotice("this device was revoked — it re-registers with new keys when it reconnects", true, false, 0)
 	case formerGone != nil && len(newOwn) > 0:
-		m.setNotice(fmt.Sprintf("this device was revoked (as %s) and re-registered; new device of yours: %s%s — not you? /devices",
-			formerGone.Short(), newOwn[0].Short(), more(len(newOwn))), true, false, 0)
+		// The new device is the news that matters; it goes first.
+		m.setNotice(fmt.Sprintf("new device of yours: %s%s — not you? /devices to revoke it · this device re-registered (was %s)",
+			newOwn[0].Short(), more(len(newOwn)), formerGone.Short()), true, false, 0)
 	case formerGone != nil:
-		m.setNotice(fmt.Sprintf("this device was revoked (as %s) and re-registered with new keys — not you? /devices",
-			formerGone.Short()), true, false, 0)
+		m.setNotice(fmt.Sprintf("this device re-registered — /devices (was %s)%s",
+			formerGone.Short(), more(1+len(mine))), true, false, 0)
 	case len(mine) > 0:
 		m.setNotice(fmt.Sprintf("your device %s was revoked%s — /devices", mine[0].Short(), more(len(mine))), true, false, 0)
 	case len(newOwn) > 0:

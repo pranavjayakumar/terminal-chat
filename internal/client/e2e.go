@@ -214,17 +214,33 @@ func (c *Client) ourDev(q dbtx) (e2ecrypto.DevID, bool) {
 	return k.ID, true
 }
 
-// formerDevs are the ids this client had as user me before it retired
-// their keys (revoked, or replaced): earlier identities of this device.
-func (c *Client) formerDevs(sid e2ecrypto.ServerID, me uint64) []e2ecrypto.DevID {
+// formerDev is an earlier identity of this device: an id with the public
+// keys it had before this client retired them (revoked, or replaced).
+type formerDev struct {
+	id      e2ecrypto.DevID
+	x25519  [32]byte
+	ed25519 []byte
+}
+
+// formerDevs are this client's earlier identities as user me.
+func (c *Client) formerDevs(sid e2ecrypto.ServerID, me uint64) []formerDev {
 	arch, _ := c.trust.ArchivedDeviceKeys(sid)
-	var out []e2ecrypto.DevID
+	var out []formerDev
 	for _, a := range arch {
 		if a.User == me {
-			out = append(out, a.Keys.ID)
+			out = append(out, formerDev{a.Keys.ID, a.Keys.X25519Pub, a.Keys.Ed25519Pub})
 		}
 	}
 	return out
+}
+
+// isFormer reports whether a device cert's id and keys are one of ours from
+// before. The keys must match too: ids are chosen by the device and public,
+// so a thief with our SSH key could certify its own keys under an old id.
+func isFormer(former []formerDev, id e2ecrypto.DevID, x25519 [32]byte, ed25519 []byte) bool {
+	return slices.ContainsFunc(former, func(f formerDev) bool {
+		return f.id == id && f.x25519 == x25519 && bytes.Equal(f.ed25519, ed25519)
+	})
 }
 
 // cachedMaxEpoch is the highest epoch among ch's cached, unverified bundles.
@@ -558,7 +574,7 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 		}
 		if ts.PutDevice(sid, d) == nil {
 			changed = true
-			if announceOwn && !had && d.User == me && d.ID != thisDev && !slices.Contains(former, d.ID) {
+			if announceOwn && !had && d.User == me && d.ID != thisDev && !isFormer(former, d.ID, d.X25519, d.Ed25519[:]) {
 				newOwn = append(newOwn, DeviceRef{User: me, Dev: d.ID})
 			}
 		}
