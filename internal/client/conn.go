@@ -219,6 +219,17 @@ func handshake(conn transport.Conn, codec *proto.Codec, signer ssh.Signer, invit
 
 const stableSession = 10 * time.Second
 
+// v020Retry reports whether an invite_invalid without a key hint is worth
+// a second signature as a plain login, for a v0.2.0 server that checks the
+// invite before the key. It can't tell server versions apart, so it costs
+// a dead invite one extra signature against current servers; not with a
+// security key (a touch each), and not for a key-bound invite refusing
+// this key (the join loop moves on to the next key instead). Matching the
+// msg text is only for frozen v0.2.0 servers; nothing new keys on msg.
+func v020Retry(bye *ByeError, signer ssh.Signer) bool {
+	return !strings.HasPrefix(signer.PublicKey().Type(), "sk-") && !strings.Contains(bye.Msg, "other SSH keys")
+}
+
 // Login redeems an invite (new user or new key for an existing user), or
 // with a tokenless tc://host:port#pin logs in a key already registered,
 // then writes home/config.json and starts a fresh cache. keyPath is an
@@ -241,7 +252,7 @@ func Login(ctx context.Context, home, invite, name, keyPath string) (proto.User,
 		switch {
 		case bye.Code == proto.ByeKeyExists:
 			w, err = loginOnce(ctx, inv, signer, "", "")
-		case bye.Code == proto.ByeInviteInvalid && len(bye.Keys) == 0:
+		case bye.Code == proto.ByeInviteInvalid && len(bye.Keys) == 0 && v020Retry(bye, signer):
 			// A v0.2.0 server checks the invite before the key, so a join
 			// retried after a lost WELCOME gets invite_invalid there.
 			if w2, err2 := loginOnce(ctx, inv, signer, "", ""); err2 == nil {

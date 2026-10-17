@@ -276,7 +276,8 @@ func runJoin(ctx context.Context, env joinEnv, code, name, keyPath string) error
 			}
 			keys = append(keys[:i+1], next)
 		case bye.Code == proto.ByeInviteInvalid && strings.Contains(bye.Msg, "other SSH keys"):
-			// An older server without key_hint: try the next key (nothing spent).
+			// A v0.2.0 server (no key_hint): try the next key, nothing spent.
+			// Keying on msg is only for those frozen servers.
 		case bye.Code == proto.ByeAuthFailed && loginOnly:
 			// Not this key's account: try the next.
 		default:
@@ -298,11 +299,19 @@ func runJoin(ctx context.Context, env joinEnv, code, name, keyPath string) error
 		fmt.Fprintf(env.out, "No SSH key found, so tc made one just for itself: %s\n", generated)
 		fmt.Fprintln(env.out, "It has no passphrase: anyone who can read that file can chat as you. (Prefer your own key? tc join --key ~/.ssh/id_ed25519.)")
 	}
-	if !loginOnly && u.Name != name {
-		fmt.Fprintf(env.out, "Note: you're signed in as %s, the account %s belongs to.\n", sanitize.Line(u.Name), sanitize.Line(used.Describe()))
+	if !loginOnly && (u.Name != name || preexisting(u, time.Now())) {
+		fmt.Fprintf(env.out, "Note: %s already has an account, so you're signed in as %s and the invite was not used (it grants nothing to an existing key).\n",
+			sanitize.Line(used.Describe()), sanitize.Line(u.Name))
 	}
 	printJoinTips(env, u)
 	return nil
+}
+
+// preexisting reports whether u was created well before this join, i.e. a
+// registered key logged in and the invite was ignored (§4). A join retried
+// after a lost WELCOME finds a minutes-old account and says nothing.
+func preexisting(u proto.User, now time.Time) bool {
+	return u.Created > 0 && now.Sub(time.UnixMilli(u.Created)) > 15*time.Minute
 }
 
 // maxBlindKeys is how many keys runJoin offers without a key hint.

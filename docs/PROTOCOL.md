@@ -93,9 +93,12 @@ Auth = {pubkey: bin, sig: bin, invite?: str, name?: str}
 - Without `invite`: log in an existing key.
 - With `invite` (+ `name` for a new user): redeem an invite (§4.1).
 - A key that is already registered always logs in, as the user it belongs to, whatever
-  `invite`/`name` come with it; the invite is not looked at and stays unspent (BYE `revoked`
+  `invite`/`name` come with it; the invite is not checked, applied or spent (BYE `revoked`
   if that user is disabled). The key alone already proves who this is, and so a join retried
-  after a lost WELCOME, or an invite code reused on a second computer, signs in. (Servers
+  after a lost WELCOME, or an invite code reused on a second computer, signs in. An admin or
+  add-key invite grants nothing to such a key (it doesn't become admin or move to the
+  invite's user), and an unknown or garbage `invite` gets the same WELCOME, so this is no
+  oracle for invite validity. Clients should say when the invite went unused. (Servers
   through v0.2.0 checked the invite first, answering `invite_invalid` for a spent, expired or
   key-bound invite and `key_exists` otherwise; clients retry either as a plain login.)
 - Clients give a second computer the server as `tc://<host>:<port>#<pin>` (an invite code

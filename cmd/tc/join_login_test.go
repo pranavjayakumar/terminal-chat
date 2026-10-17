@@ -202,3 +202,26 @@ func TestLoginBlindKeyCap(t *testing.T) {
 		t.Fatalf("err %v, %d attempts", err, len(f.calls))
 	}
 }
+
+// An invite used with a key that already has an account logs in to that
+// account and grants nothing (an admin invite doesn't make it admin), so
+// join says the invite wasn't used; a retry minutes after a lost WELCOME
+// doesn't.
+func TestJoinSaysInviteUnusedForExistingKey(t *testing.T) {
+	for _, tc := range []struct {
+		age  time.Duration
+		note bool
+	}{{time.Hour, true}, {time.Minute, false}} {
+		env, _, out := testJoinEnv(t, noRead{t}, false)
+		writeKey(t, filepath.Join(env.sshDir, "id_ed25519"))
+		env.login = func(context.Context, string, string, string, string) (proto.User, error) {
+			return proto.User{ID: 7, Name: "ada", Created: time.Now().Add(-tc.age).UnixMilli()}, nil
+		}
+		if err := runJoin(context.Background(), env, testInvite, "ada", ""); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(out.String(), "the invite was not used"); got != tc.note {
+			t.Fatalf("age %v: note %v\n%s", tc.age, got, out)
+		}
+	}
+}

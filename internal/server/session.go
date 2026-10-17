@@ -150,11 +150,13 @@ var errBye = errors.New("bye")
 // refusing fp stores the fingerprints it accepts in *hint (if non-nil).
 func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp string, hint *[]string) (proto.User, string, string) {
 	var user proto.User
+	var hintFPs []string
 	byeCode, byeMsg := "", ""
 	fail := func(code, msg string) error { byeCode, byeMsg = code, msg; return errBye }
 
 	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
 		now := s.now()
+		hintFPs = nil // in case the transaction is ever retried
 		var admin bool
 		var target sql.NullInt64
 		var expires, uses int64
@@ -171,9 +173,7 @@ func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp str
 		if msg, fps, err := s.redeemCheck(ctx, tx, stored, createdBy, target.Valid, fp); err != nil {
 			return nil, err
 		} else if msg != "" {
-			if hint != nil {
-				*hint = fps
-			}
+			hintFPs = fps
 			return nil, fail(proto.ByeInviteInvalid, msg)
 		}
 		// Registered since handshake looked (a concurrent redemption).
@@ -235,6 +235,9 @@ func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp str
 		return evs, nil
 	})
 	if byeCode != "" {
+		if hint != nil && byeCode == proto.ByeInviteInvalid {
+			*hint = hintFPs
+		}
 		return proto.User{}, byeCode, byeMsg
 	}
 	if err != nil {

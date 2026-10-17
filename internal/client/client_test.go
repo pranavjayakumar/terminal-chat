@@ -1186,3 +1186,19 @@ func TestBotMessagesNeverMention(t *testing.T) {
 		t.Errorf("general after bob = %+v", g)
 	}
 }
+
+// The v0.2.0 plain-login fallback re-signs only where it can help: not for
+// a key-bound invite refusing this key (the join loop moves on).
+func TestV020Retry(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	s, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !v020Retry(&ByeError{Code: proto.ByeInviteInvalid, Msg: "invite is invalid, used or expired"}, s) {
+		t.Fatal("spent invite: no retry")
+	}
+	if v020Retry(&ByeError{Code: proto.ByeInviteInvalid, Msg: "this invite is for other SSH keys; join with one of them (tc join --key path)"}, s) {
+		t.Fatal("key-bound mismatch: retried")
+	}
+}
