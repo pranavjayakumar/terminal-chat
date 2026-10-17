@@ -97,10 +97,11 @@ The handshake must complete within 30 s (hardware keys may wait for a touch).
 
 ### 4.1 Invites
 
-Created by an admin (`/invite [uses] [ttl]`, `tc invite`, op `invite.create`), by a member
-when the server allows it (below), or on the server host
-(`tc server invite [--uses N] [--ttl 24h] [--admin]`). An invite allows `uses`
-redemptions (1–100, default 1) until it expires (`ttl` 1 minute–30 days, default 7 days).
+Created by an admin (`/invite [uses] [ttl] [--key github:<login>]`, `tc invite`, op
+`invite.create`), by a member when the server allows it (below), or on the server host
+(`tc server invite [--uses N] [--ttl 24h] [--admin] [--key github:<login>]`). An invite allows `uses`
+redemptions (1–100, default 1) until it expires (`ttl` 1 minute–30 days, default 7 days);
+it is live while `expires > now`, everywhere (redemption, list, revoke, the member cap).
 Redemption decrements the remaining uses — conditionally (`uses > 0`), in the same
 transaction that creates the user/key, so concurrent redemptions of an N-use invite
 produce exactly N users. A redemption that fails (`name_taken`, `key_exists`, reserved
@@ -117,7 +118,7 @@ reveals a usable token. `invite.list` returns only invites that can still be red
 redemption either completed before it or fails with `invite_invalid`.
 
 **Member invites** (cap `member_invites`, advertised only while the server runs with
-`tc server --member-invites=true`, the default). Members may then use `invite.create`,
+`tc server --member-invites=true`, the default). Members (not bots) may then use `invite.create`,
 `invite.list` and `invite.revoke` within tighter limits; admins are unaffected:
 - `invite.create` makes a new-user invite that never grants admin, or an add-key invite for
   the member's own account (`user` = self; anyone else → `forbidden`). `uses` 1–10, `ttl`
@@ -126,7 +127,8 @@ redemption either completed before it or fails with `invite_invalid`.
   insert are one serialized transaction, so concurrent creates can't exceed it. Spent,
   expired and revoked invites free their slot.
 - `invite.list` returns only the caller's own invites; `invite.revoke` of anyone else's id
-  → `not_found` (indistinguishable from no such invite).
+  → `not_found` (indistinguishable from no such invite). Admins may revoke any open
+  (unused, unexpired) invite by id, including members' invites hidden while the setting is off.
 - While the setting is off, members get `forbidden` for all three ops (the v0.2.0
   behaviour), and invites members made earlier are neither listed nor redeemable
   (`invite_invalid`); they come back, if unexpired, when it is turned on again.
@@ -145,15 +147,21 @@ stored):
 - Key-bound invites are single-use (`uses` > 1 → `bad_request`). They may be new-user,
   add-key or (server host) admin invites, made by admins or (with `member_invites`) members.
 - `key_src` is a label shown by `invite.list`: empty or `github:<login>`, `login` matching
-  `^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`; it needs `keys`.
+  `^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`; it needs `keys`. It is the creator's claim, not
+  checked by the server: informational only.
 - **Where keys come from:** the creator's client resolves `--key github:<login>` by
   fetching `https://github.com/<login>.keys` itself (HTTPS only, same-origin redirects only,
-  15 s timeout, body capped at 256 KiB), keeps the keys that pass the rules above (at most
-  32), and refuses to create the invite if none remain. The server never makes outbound
+  15 s timeout, a body over 256 KiB is an error), keeps the keys that pass the rules above,
+  and refuses to create the invite if none remain or more than 32 do. The server never makes outbound
   requests; it only validates what it is sent. Trusting GitHub's answer is the creator's
   decision, made at creation time.
 - Clients MUST NOT send `keys` to a server without `key_invites`: an older server ignores
-  unknown fields and would mint an unbound invite.
+  unknown fields and would mint an unbound invite. A reply without `keys` means the server
+  didn't bind it; clients refuse that invite (and try to revoke it).
+- Servers store key-bound and member invites under a hash an older server never looks up
+  (`SHA-256("tc-invite-v2\0" || token)` instead of `SHA-256(token)`), so after a downgrade
+  they are unusable rather than unbound; the `id` is the first 12 hex digits of whichever
+  hash the invite is stored under. Invites expired for over 24 hours are deleted.
 
 Clients show an invite as the code and as the install command
 `curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/<ref>/install.sh | sh -s -- '<code>'`,
@@ -213,9 +221,9 @@ session **before** the RES. The `seq` in a RES is informational: clients advance
 | `chan.topic` | `{chan, topic: str}` | `{seq}` |
 | `dm.open` | `{users: [u64]}` (0–7 others; 0 = your private notes) | `{chan: Channel}` |
 | `users.list` | `{}` | `{users: [User]}` |
-| `invite.create` | `{user?: u64, uses?: int, ttl_ms?: i64, keys?: [bin], key_src?: str}` (admin; `uses` 1–100, `ttl_ms` 60 000–30 days, else `bad_request`; `uses` > 1 with `user` or `keys` → `bad_request`; members with cap `member_invites`: `uses` 1–10, `ttl_ms` ≤ 7 days, `user` only self, ≤ 5 live → `conflict`) | `{code: str, uses?: int, expires?: i64, keys?: int}` (cap `team_invites` for `uses`/`ttl_ms`, cap `key_invites` for `keys`/`key_src`, §4.1) |
+| `invite.create` | `{user?: u64, uses?: int, ttl_ms?: i64, keys?: [bin], key_src?: str}` (admin; `uses` 1–100, `ttl_ms` 60 000–30 days, else `bad_request`; `uses` > 1 with `user` or `keys` → `bad_request`; members with cap `member_invites`: `uses` 1–10, `ttl_ms` ≤ 7 days, `user` only self else `forbidden`, ≤ 5 live else `conflict`) | `{code: str, uses?: int, expires?: i64, keys?: int}` (cap `team_invites` for `uses`/`ttl_ms`, cap `key_invites` for `keys`/`key_src`, §4.1) |
 | `invite.list` | `{}` (admin: all; member with cap `member_invites`: own only) | `{invites: [{id: str, kind: "user"\|"admin"\|"key", user?: u64, uses_left: int, expires: i64, created: i64, created_by: u64, keys?: int, key_src?: str}]}` — live invites only, soonest to expire first; `created_by` 0 = made on the server host; `keys` = how many SSH keys it is bound to; never the token (cap `invite_manage`, §4.1) |
-| `invite.revoke` | `{id: str}` (admin; member with cap `member_invites`: own only, others' → `not_found`; 12 lowercase hex, else `bad_request`) | `{}` — no live invite with that id → `not_found`; an id matching two invites → `conflict` (cap `invite_manage`) |
+| `invite.revoke` | `{id: str}` (admin; member with cap `member_invites`: own only, others' → `not_found`; 12 lowercase hex, else `bad_request`) | `{}` — no open (unused, unexpired) invite with that id → `not_found`; an id matching two invites → `conflict` (cap `invite_manage`) |
 | `user.disable` | `{user}` (admin) | `{}` — closes their sessions with BYE `revoked` |
 | `user.update` | `{display: str}` (self) | `{seq}` — emits `user.update`; unchanged → `{seq: 0}` |
 | `hook.create` | `{chan, name}` | `{id: u64, name: str, url: str, pin: str}` (cap `hooks`, §12) |
