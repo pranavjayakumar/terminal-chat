@@ -763,7 +763,7 @@ epoch's stored state (nothing changed), a rotation is refused if the
 channel's last rotation was < 2 s ago (whoever made it) or the caller's last
 rotation of this channel was < 10 s ago. When it differs (a member joined,
 left or was disabled, or one of their devices was registered or revoked),
-neither cap applies; nor when a device of a current member was revoked
+neither cap applies; nor when a device of a current non-disabled member was revoked
 after the current epoch's `key.epoch` (registered and revoked since, it
 leaves the state as it was, yet may hold K by `key.share`). The comparison is with the server's record, not with
 what the current bundle boxed, so never-boxed devices don't exempt
@@ -818,8 +818,12 @@ non-disabled members, it boxes a revoked device, or a device of a roster
 user was revoked after the bundle's `key.epoch` seq (that device may hold
 K without a box: it got it via `key.share`, §13.7). A newly registered
 device doesn't make it stale (it gets K via `key.share`). Clients judge
-the last rule by the revoke's seq; a revoke whose seq they don't know
-counts only through the boxes.
+the last rule by seqs (a stolen device colluding with the server can
+misorder them; the revoking client therefore rotates every encrypted
+channel it is in right after its own revoke, §13.2): a revoke whose seq
+they don't know counts only through the boxes, and for an epoch whose
+seq they don't know every revoke with a known seq counts (the rotation
+gives the new epoch a known seq).
 
 Creating encrypted channels: `chan.create {…, e2e: true}` requires `e2e1`
 and `private: true` (else `bad_request`). `dm.open` creates a new DM with
@@ -918,7 +922,8 @@ current bundle is stale as far as it can tell: there is none yet (epoch 1:
 only the creator, or any DM member), its roster isn't the current
 non-disabled members, or a device the client now knows to be revoked may
 hold its K: one it boxed, or any device of a roster user revoked after its
-`key.epoch` (clients don't rely on the server's `stale_epoch` for that). Once the channel has a verified epoch, the roster of
+`key.epoch` (clients don't rely on the server's `stale_epoch` for devices
+they know of). Once the channel has a verified epoch, the roster of
 a new bundle (and who a sender seals to) is only the members the verified
 head's roster includes: a verified epoch is signed by a previous-roster
 member, while the member list is the server's word, so a user who appears

@@ -645,8 +645,10 @@ func revokedSince(ctx context.Context, q querier, ch, seq uint64) (bool, error) 
 	return hit, err
 }
 
-const revokedSinceQuery = `SELECT EXISTS (SELECT 1 FROM membership m JOIN devices d ON d.user = m.user
-		WHERE m.chan = ? AND m.leave_seq IS NULL AND d.revoked IS NOT NULL AND d.revoked_seq > ?)`
+// (Members as in rosterQuery: not disabled.)
+const revokedSinceQuery = `SELECT EXISTS (SELECT 1 FROM membership m JOIN users u ON u.id = m.user
+		JOIN devices d ON d.user = m.user
+		WHERE m.chan = ? AND m.leave_seq IS NULL AND u.disabled = 0 AND d.revoked IS NOT NULL AND d.revoked_seq > ?)`
 
 // errHookE2E: webhooks can't post into encrypted channels (their text
 // comes from outside, and only members' devices can encrypt).

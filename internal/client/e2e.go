@@ -261,8 +261,8 @@ func (c *Client) e2eLoop(ctx context.Context, s *session, signer ssh.Signer) {
 	c.mu.Lock()
 	clear(c.probed) // a fetch that failed on the last connection is tried again
 	c.mu.Unlock()
-	// A failure is retried on the next connection, or when RevokeDevice
-	// asks (devRetry); meanwhile e2eSession reports it (devErr).
+	// A failure is retried every timing.keyNeed, on the next connection, or
+	// when RevokeDevice asks (devRetry); meanwhile e2eSession reports it.
 	c.tryDevice(ctx, s, signer)
 	t := time.NewTicker(c.timing.keyNeed)
 	defer t.Stop()
@@ -282,10 +282,39 @@ func (c *Client) e2eLoop(ctx context.Context, s *session, signer ssh.Signer) {
 			case <-c.e2eKick:
 				wait = false
 			case <-t.C:
+				if c.retryDue(s, sid) {
+					c.tryDevice(ctx, s, signer)
+				}
 				wait = false
 			}
 		}
 	}
+}
+
+// retryDue reports whether the e2e worker should try registering this
+// device again on its tick: never once registered or with no registrations
+// left; with too many devices only after one of ours was revoked since the
+// last try (each try signs with the SSH key, which may ask for a touch);
+// otherwise (a transient failure) yes.
+func (c *Client) retryDue(s *session, sid e2ecrypto.ServerID) bool {
+	err := s.deviceErr()
+	switch {
+	case err == nil || errors.Is(err, ErrNoRegistrations):
+		return false
+	case errors.Is(err, ErrTooManyDevices):
+		n := 0
+		devs, _ := c.trust.Devices(sid, c.Me().ID)
+		for _, d := range devs {
+			if d.Revoked {
+				n++
+			}
+		}
+		if n == s.revokedSeen {
+			return false
+		}
+		s.revokedSeen = n
+	}
+	return true
 }
 
 // myDevice is this session's device keys (nil until ensureDevice loaded them).

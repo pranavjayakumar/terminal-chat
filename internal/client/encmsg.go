@@ -780,18 +780,27 @@ func (c *Client) sealWith(ctx context.Context, s *session, chID uint64, prev []b
 	}
 	wait := time.NewTimer(c.timing.devWait)
 	defer wait.Stop()
-	select {
-	case <-s.devReady:
-	case <-s.devTried:
-		if err := s.deviceErr(); err != nil {
-			return nil, failErr{sanitize.Line(err.Error())}
+	tried := s.devTried
+	for waiting := true; waiting; {
+		select {
+		case <-s.devReady:
+			waiting = false
+		case <-tried:
+			// Fail at once only for what no retry on this connection fixes
+			// by itself; anything else (a dropped connection, a busy
+			// server) waits like before.
+			if err := s.deviceErr(); errors.Is(err, ErrTooManyDevices) || errors.Is(err, ErrNoRegistrations) {
+				return nil, failErr{sanitize.Line(err.Error())}
+			}
+			tried = nil
+			waiting = !s.registered()
+		case <-s.done:
+			return nil, ErrOffline
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-wait.C:
+			return nil, failErr{"this device isn't registered for encryption yet"}
 		}
-	case <-s.done:
-		return nil, ErrOffline
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-wait.C:
-		return nil, failErr{"this device isn't registered for encryption yet"}
 	}
 	dev := s.myDevice()
 	if dev == nil {

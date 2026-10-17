@@ -344,12 +344,10 @@ func (c *Client) RevokeDeviceOpts(ctx context.Context, dev e2ecrypto.DevID, o Re
 		if ctx.Err() != nil {
 			break
 		}
-		head, ok, err := c.trust.ChainHead(sid, ch.ID)
-		if err != nil || !ok {
-			continue
-		}
-		ep, ok, err := c.trust.Epoch(sid, ch.ID, head.Epoch)
-		if err != nil || !ok || !c.revokedStale(sid, ep) {
+		// Every current epoch of ours predates the revoke we just made, and
+		// the revoked device (ours) may hold its key: rotate them all
+		// rather than trust the server's seqs (revokedStale) to say which.
+		if _, ok, err := c.trust.ChainHead(sid, ch.ID); err != nil || !ok {
 			continue
 		}
 		if c.rotateLocked(ctx, s, sid, ch.ID) == nil {

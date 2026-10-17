@@ -183,10 +183,10 @@ func TestDevicesStaleSanitized(t *testing.T) {
 func TestDevicesUnregisteredNotice(t *testing.T) {
 	m, f := newTestModelFake(t, 80, 24)
 	devFake(f)
-	f.dv.devErr = fmt.Errorf("%w: %w (8 active)\x1b]0;x\x07", client.ErrDeviceNotRegistered, client.ErrTooManyDevices)
+	f.dv.devErr = fmt.Errorf("%w: server said no\x1b]0;x\x07", client.ErrDeviceNotRegistered)
 	runInput(t, m, "/devices")
 	v := checkView(t, m, "unregistered")
-	if strings.Contains(v, "\x1b]0;") || !strings.Contains(ansi.Strip(v), "isn't registered for encryption") || !m.noticeErr {
+	if strings.Contains(v, "\x1b]0;") || !strings.Contains(ansi.Strip(v), "not registered for encryption") || !m.noticeErr {
 		t.Fatalf("no notice:\n%s", ansi.Strip(v))
 	}
 	m.clearNotice()
@@ -194,6 +194,35 @@ func TestDevicesUnregisteredNotice(t *testing.T) {
 	runInput(t, m, "/devices @bob")
 	if m.notice != "" {
 		t.Fatalf("notice in bob's list: %q", m.notice)
+	}
+
+	// Narrow: the cause stays visible.
+	m, f = newTestModelFake(t, 40, 12)
+	devFake(f)
+	f.dv.devErr = fmt.Errorf("%w: %w", client.ErrDeviceNotRegistered, client.ErrTooManyDevices)
+	runInput(t, m, "/devices")
+	if v := ansi.Strip(checkView(t, m, "unregistered narrow")); !strings.Contains(v, "too many devices") {
+		t.Fatalf("cause cut off:\n%s", v)
+	}
+
+	// A failed revoke's error isn't replaced by the refresh after it.
+	pastDevTypeAhead(m)
+	f.dv.revokeErr = errors.New("forbidden")
+	press(m, "down", "d", "y")
+	if !strings.Contains(m.notice, "forbidden") {
+		t.Fatalf("revoke error replaced: %q", m.notice)
+	}
+	// A revoke that went through keeps its ✓ (and says we're still waiting).
+	f.dv.revokeErr = nil
+	m.clearNotice()
+	press(m, "d", "y")
+	if !strings.Contains(m.notice, "✓ revoked") || !strings.Contains(m.notice, "isn't registered yet") {
+		t.Fatalf("after revoke: %q", m.notice)
+	}
+	f.dv.devErr = nil
+	press(m, "r")
+	if strings.Contains(m.notice, "not registered") {
+		t.Fatalf("registered now, still warned: %q", m.notice)
 	}
 }
 

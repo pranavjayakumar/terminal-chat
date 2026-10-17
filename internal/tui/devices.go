@@ -34,6 +34,8 @@ type devicesState struct {
 	// busy: a revoke is in flight. It survives closing and reopening the
 	// overlay, so the same device can't be revoked twice meanwhile.
 	busy bool
+	// afterRevoke: the pending refresh follows a revoke (gotDevices).
+	afterRevoke bool
 }
 
 // devicesMsg delivers a refreshed list (err: shown cached instead) or the
@@ -176,10 +178,13 @@ func (m *Model) gotDevices(msg devicesMsg) tea.Cmd {
 			if r.rotated > 0 {
 				t += fmt.Sprintf(" — new keys in %d encrypted %s", r.rotated, plural(r.rotated, "channel", "channels"))
 			}
+			if m.c.DeviceError() != nil {
+				t += " · this device isn't registered yet (retrying)"
+			}
 			m.setInfo(t)
 		}
 		if m.mode == modeDevices && s.user == msg.user {
-			s.loading = true
+			s.loading, s.afterRevoke = true, true
 			return m.refreshDevices(msg.user)
 		}
 		return nil
@@ -196,13 +201,26 @@ func (m *Model) gotDevices(msg devicesMsg) tea.Cmd {
 		m.devPick(s.pendPick, s.pendAsk)
 	}
 	s.pendPick, s.pendAsk = e2ecrypto.DevID{}, false
-	if s.user == m.me.ID {
-		// E.g. too many devices: the list is where to fix it.
-		if err := m.c.DeviceError(); err != nil {
-			m.setErr("", err)
-		}
+	afterRevoke := s.afterRevoke
+	s.afterRevoke = false
+	// E.g. too many devices: the list is where to fix it. Not over another
+	// error (a failed revoke's), nor right after a revoke, whose result
+	// the cause may be stale against (the client retries on its own).
+	if err := m.c.DeviceError(); err != nil && s.user == m.me.ID && !afterRevoke && !(m.noticeErr && m.notice != "") {
+		m.setNotice(devErrText(err), true, false, 0)
 	}
 	return nil
+}
+
+// devErrText is DeviceError for the one-line notice: cause first.
+func devErrText(err error) string {
+	switch {
+	case errors.Is(err, client.ErrTooManyDevices):
+		return "not registered: too many devices — d to revoke one"
+	case errors.Is(err, client.ErrNoRegistrations):
+		return "not registered: no device registrations left"
+	}
+	return "not registered for encryption: " + errText(err)
 }
 
 func (m *Model) devicesKey(key string) tea.Cmd {
