@@ -1,4 +1,4 @@
-.PHONY: build build-voice test test-voice test-malicious fuzz lint dev clean release-sign
+.PHONY: build build-voice release-voice test test-voice test-malicious fuzz lint dev clean release-sign
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
@@ -10,6 +10,10 @@ build:
 # apt install libopus-dev. The default build above stays static and CGO-free.
 build-voice:
 	CGO_ENABLED=1 GOTOOLCHAIN=local go build -tags voice -trimpath -ldflags "$(LDFLAGS)" -o bin/tc-voice ./cmd/tc
+
+# The release flavor: static libopus from a pinned tarball → dist/tc-voice_<os>_<arch>.tar.gz.
+release-voice:
+	sh scripts/build-voice.sh $$(go env GOOS) $$(go env GOARCH) $(VERSION) dist
 
 test-voice:
 	CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -tags voice ./internal/voice/

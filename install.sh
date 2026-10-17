@@ -7,6 +7,9 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/install.sh | sh -s -- 'tc://…'
 #
+# --voice (or TC_VOICE=1) installs the voice build (tc-voice_<os>_<arch>,
+# voice huddles; Linux needs glibc 2.35+). tc update keeps whichever is installed.
+#
 # Environment: TC_VERSION (e.g. v0.2.0), TC_INSTALL_DIR, TC_RELEASE_BASE
 # (default https://github.com/pranavjayakumar/terminal-chat/releases; must be
 # https, or http only to localhost/127.0.0.1/[::1]).
@@ -131,16 +134,17 @@ main() {
 	need uname
 
 	invite=""
-	if [ "$#" -gt 1 ]; then
-		die "usage: install.sh ['tc://invite']"
-	fi
-	if [ "$#" -eq 1 ]; then
-		invite=$1
-		case "$invite" in
-		tc://*) ;;
-		*) die "the argument should be an invite starting with tc:// (got something else)" ;;
+	voice=${TC_VOICE:-}
+	for a in "$@"; do
+		case "$a" in
+		--voice) voice=1 ;;
+		tc://*)
+			[ -z "$invite" ] || die "usage: install.sh [--voice] ['tc://invite']"
+			invite=$a
+			;;
+		*) die "the argument should be an invite starting with tc:// (got something else); usage: install.sh [--voice] ['tc://invite']" ;;
 		esac
-	fi
+	done
 
 	base=${TC_RELEASE_BASE:-https://github.com/pranavjayakumar/terminal-chat/releases}
 	base=${base%/}
@@ -160,11 +164,17 @@ main() {
 	valid_tag "$tag" || die "bad version '$tag'"
 
 	asset="tc_${os}_${arch}.tar.gz"
+	flavor=""
+	if [ "$voice" = 1 ]; then
+		# The voice build (huddles; cgo, libopus linked in). tc update keeps it.
+		asset="tc-voice_${os}_${arch}.tar.gz"
+		flavor=" (voice build)"
+	fi
 	tmp=$(mktemp -d 2>/dev/null || mktemp -d -t tc-install)
 	trap 'rm -rf "$tmp"' EXIT
 	trap 'exit 130' INT TERM
 
-	say "downloading tc $tag for $os/$arch"
+	say "downloading tc $tag$flavor for $os/$arch"
 	fetch -fsSL -o "$tmp/checksums.txt" "$base/download/$tag/checksums.txt" ||
 		die "can't download checksums.txt for $tag"
 	verify_sig "$tmp"
@@ -192,7 +202,7 @@ main() {
 		rm -f "$new"
 		die "can't install to $dir/tc"
 	}
-	say "installed $dir/tc ($tag)"
+	say "installed $dir/tc ($tag$flavor)"
 
 	case ":${PATH:-}:" in
 	*":$dir:"*)

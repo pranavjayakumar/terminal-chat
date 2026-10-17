@@ -69,8 +69,6 @@ jobs:
             } > "build/$name/README.txt"
             tar -C "build/$name" -czf "dist/$name.tar.gz" tc README.txt
           done
-          (cd dist && sha256sum -- *.tar.gz > checksums.txt)
-          cat dist/checksums.txt
           ls -l dist
 
       - name: Smoke test the linux/amd64 build
@@ -80,8 +78,113 @@ jobs:
           set -eu
           mkdir smoke && tar -C smoke -xzf dist/tc_linux_amd64.tar.gz
           ./smoke/tc version | grep -F "$TAG"
-          (cd dist && sha256sum -c checksums.txt)
 
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-default
+          path: dist/
+          if-no-files-found: error
+
+  # The voice flavor (docs/VOICE.md): cgo, -tags voice, libopus built from a
+  # pinned xiph.org tarball and linked statically (scripts/build-voice.sh).
+  # Native runners: cgo doesn't cross-compile to Linux arm64 here, and the
+  # macOS runner builds both arches with clang -arch. ubuntu-22.04 keeps the
+  # glibc floor at 2.35.
+  voice:
+    needs: build # only for a tag that passed the checks above
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: macos-14
+            targets: darwin/arm64 darwin/amd64
+          - runner: ubuntu-22.04
+            targets: linux/amd64
+          - runner: ubuntu-22.04-arm
+            targets: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.25"
+
+      - name: Build tools
+        run: |
+          set -eu
+          if [ "$(uname -s)" = Darwin ]; then
+            command -v pkg-config >/dev/null || brew install pkgconf
+          else
+            sudo apt-get update -q && sudo apt-get install -yq --no-install-recommends pkg-config build-essential
+          fi
+
+      - name: Build
+        env:
+          TAG: ${{ github.ref_name }}
+          TARGETS: ${{ matrix.targets }}
+        run: |
+          set -eu
+          for target in $TARGETS; do
+            sh scripts/build-voice.sh "${target%/*}" "${target#*/}" "$TAG" dist
+          done
+
+      - name: Smoke test
+        env:
+          TAG: ${{ github.ref_name }}
+          TARGETS: ${{ matrix.targets }}
+        run: |
+          set -eu
+          for target in $TARGETS; do
+            name="tc-voice_${target%/*}_${target#*/}"
+            mkdir -p "smoke/$name" && tar -C "smoke/$name" -xzf "dist/$name.tar.gz"
+            case "$target" in
+            darwin/amd64)
+              if arch -x86_64 /usr/bin/true 2>/dev/null; then
+                arch -x86_64 "./smoke/$name/tc" version | grep -F "$TAG (voice)"
+              else
+                file "./smoke/$name/tc" | grep -F x86_64
+              fi ;;
+            *) "./smoke/$name/tc" version | grep -F "$TAG (voice)" ;;
+            esac
+          done
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-voice-${{ matrix.runner }}
+          path: dist/
+          if-no-files-found: error
+
+  # One checksums.txt over every tarball, so the maintainer's SSHSIG
+  # signature (make release-sign) covers the voice builds too.
+  sums:
+    needs: [build, voice]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          set -eu
+          cd dist
+          n=0
+          for f in tc_darwin_amd64 tc_darwin_arm64 tc_linux_amd64 tc_linux_arm64 \
+            tc-voice_darwin_amd64 tc-voice_darwin_arm64 tc-voice_linux_amd64 tc-voice_linux_arm64; do
+            test -f "$f.tar.gz" || { echo "missing $f.tar.gz" >&2; exit 1; }
+            n=$((n + 1))
+          done
+          test "$(ls -- *.tar.gz | wc -l)" -eq "$n" || { ls -l; echo "unexpected files" >&2; exit 1; }
+          sha256sum -- *.tar.gz > checksums.txt
+          sha256sum -c checksums.txt
+          cat checksums.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist
@@ -89,7 +192,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: build
+    needs: [build, voice, sums]
     runs-on: ubuntu-latest
     environment: release # add required reviewers in the repo settings
     permissions:

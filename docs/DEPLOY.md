@@ -112,7 +112,12 @@ allowed signers compiled into `internal/release/signers.go` and embedded in `ins
    hold `REPLACE_WITH_MAINTAINER_KEY` refuse to update, and such an `install.sh` refuses to install.
 2. Tag a commit that is on `main`: `git tag v0.2.0 && git push origin v0.2.0`. The workflow
    rejects anything but `vX.Y.Z` and commits not on `origin/main`, runs the tests, builds, and
-   creates a draft release with the tarballs and `checksums.txt`.
+   creates a draft release with the tarballs and `checksums.txt`. There are eight tarballs:
+   `tc_<os>_<arch>` (static, `CGO_ENABLED=0`) and the voice flavor `tc-voice_<os>_<arch>`
+   (`-tags voice`, libopus 1.5.2 built from a checksummed xiph.org tarball and linked
+   statically by `scripts/build-voice.sh` on native runners: macos-14 for both darwin arches,
+   ubuntu-22.04 and ubuntu-22.04-arm for Linux, so Linux voice builds need glibc ≥ 2.35).
+   One `checksums.txt` covers all eight, so one signature covers the voice builds too.
 3. `make release-sign TAG=v0.2.0 KEY=~/.ssh/id_ed25519` downloads the draft's assets, checks
    them against `checksums.txt`, signs it (`ssh-keygen -Y sign -n tc-release`), checks the
    signature exactly as `tc update` will, uploads `checksums.txt.sig` and publishes the release

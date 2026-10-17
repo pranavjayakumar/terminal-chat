@@ -182,13 +182,17 @@ Choice: **miniaudio via `github.com/gen2brain/malgo`** for capture/playback, **l
   `ErrNoVoice`.
 - `make build-voice` → `CGO_ENABLED=1 go build -tags voice`, needs `pkg-config opus`
   (macOS: `brew install opus`; Debian/Ubuntu: `libopus-dev`).
-- Release plan (not in this PR; release.yml is owned by the coordinator): build a second
-  artifact `tc-voice_<os>_<arch>` on native runners (macos-14 arm64, macos-13 amd64,
-  ubuntu-24.04 amd64 and arm64), linking libopus **statically** (`libopus.a`) so the only
-  runtime dependencies are libc and the dlopen'd audio stack. It's listed in the same SSHSIG-
-  signed `checksums.txt`. `tc update` keeps the flavor: a voice build downloads `tc-voice_*`.
-  The default `tc` artifact and `install.sh` behavior are unchanged; `install.sh --voice` picks
-  the voice artifact.
+- Releases ship a second artifact per target, `tc-voice_<os>_<arch>.tar.gz` (binary named
+  `tc`), built by `scripts/build-voice.sh` on native runners (macos-14 builds darwin arm64 and,
+  with `clang -arch x86_64`, amd64; ubuntu-22.04 and ubuntu-22.04-arm build Linux). libopus
+  1.5.2 is built from the pinned, sha256-checked xiph.org tarball and linked **statically**; the
+  script fails if the binary links libopus dynamically. Runtime dependencies: macOS — system
+  frameworks only; Linux — glibc ≥ 2.35 (libc/libm/libdl/libpthread) plus the audio stack
+  miniaudio `dlopen`s (PulseAudio, PipeWire-pulse or ALSA). It is listed in the same SSHSIG-
+  signed `checksums.txt`. `install.sh --voice` (or `TC_VOICE=1`) installs it; `tc update`
+  keeps the flavor that's running (`voice.Available()`, fixed by the build tag), and
+  `tc version` prints `(voice)` for it. CI builds and tests `-tags voice` on Ubuntu and macOS
+  and runs the static release build for the runner's target on every push.
 
 ## Threat model
 

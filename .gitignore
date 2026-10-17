@@ -5,3 +5,4 @@ dev-data/
 /tmp/
 .DS_Store
 .claude/worktrees/
+/dist/

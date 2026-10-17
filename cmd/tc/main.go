@@ -7,6 +7,7 @@ import (
 
 	"github.com/skailama/tc/internal/sanitize"
 	"github.com/skailama/tc/internal/server"
+	"github.com/skailama/tc/internal/voice"
 )
 
 var version = "dev"
@@ -54,7 +55,11 @@ func main() {
 	case "update":
 		err = cmdUpdate(args)
 	case "version", "--version", "-v":
-		fmt.Println("tc", version)
+		if voice.Available() {
+			fmt.Println("tc", version, "(voice)")
+		} else {
+			fmt.Println("tc", version)
+		}
 	case "help", "--help", "-h":
 		fmt.Print(usage)
 	default:
