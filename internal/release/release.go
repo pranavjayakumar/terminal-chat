@@ -421,6 +421,13 @@ func Executable() (string, error) {
 	return exe, nil
 }
 
+// IsHomebrew reports whether exe (a symlink-resolved path, see Executable)
+// lives in a Homebrew Cellar, where brew owns upgrades and a self-replace
+// would leave its receipts and checksums stale.
+func IsHomebrew(exe string) bool {
+	return strings.Contains(filepath.ToSlash(exe), "/Cellar/")
+}
+
 // ---- background update check ----
 
 // CheckFile is the cache of the last update check in TC_HOME.

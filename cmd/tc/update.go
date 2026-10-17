@@ -39,6 +39,14 @@ func runUpdate(ctx context.Context, out io.Writer, src *release.Source, exe, cur
 		return err
 	}
 	newer := release.Newer(latest, current)
+	if release.IsHomebrew(exe) {
+		if newer {
+			fmt.Fprintf(out, "tc %s is available (you have %s). tc was installed with Homebrew: run `brew upgrade tc`.\n", latest, current)
+		} else {
+			fmt.Fprintf(out, "tc %s is up to date (installed with Homebrew; upgrade with `brew upgrade tc`).\n", current)
+		}
+		return nil
+	}
 	if checkOnly {
 		switch {
 		case newer:
