@@ -39,13 +39,23 @@ func readMemberInvites(data string) bool {
 // memberInvitesSetting is the value to run with: --member-invites when given,
 // else what the server last ran with, so a restart without the flag does not
 // silently turn member invites back on after an admin disabled them.
-func memberInvitesSetting(fs *flag.FlagSet, data string, flagVal bool) bool {
-	set := false
-	fs.Visit(func(f *flag.Flag) { set = set || f.Name == "member-invites" })
-	if set {
-		return flagVal
+func memberInvitesSetting(o *optBool, data string) bool {
+	if o.set {
+		return o.val
 	}
 	return readMemberInvites(data)
+}
+
+// optBool is a bool flag that knows whether it was given. Its String is
+// always empty so -h does not print a misleading "(default true)".
+type optBool struct{ set, val bool }
+
+func (o *optBool) String() string   { return "" }
+func (o *optBool) IsBoolFlag() bool { return true }
+func (o *optBool) Set(v string) error {
+	b, err := strconv.ParseBool(v)
+	o.set, o.val = true, b
+	return err
 }
 
 func cmdServer(args []string) error {
@@ -56,10 +66,12 @@ func cmdServer(args []string) error {
 	data := fs.String("data", defaultDataDir(), "data directory (database, TLS key)")
 	listen := fs.String("listen", ":7443", "listen address (UDP for QUIC and TCP)")
 	public := fs.String("public", "", "host:port clients use to reach this server (saved for invites)")
-	memberInvites := fs.Bool("member-invites", true, fmt.Sprintf("let members invite people; unset keeps the last setting (never admins; at most %d live invites, %d uses, 7 days each)",
+	var mi optBool
+	fs.Var(&mi, "member-invites", fmt.Sprintf("let members invite people (never admins; at most %d live invites, %d uses, 7 days each); without the flag, keeps the last setting, on for a new server",
 		proto.MaxMemberInvites, proto.MaxMemberInviteUses))
 	fs.Parse(args)
-	*memberInvites = memberInvitesSetting(fs, *data, *memberInvites)
+	memberInvites := new(bool)
+	*memberInvites = memberInvitesSetting(&mi, *data)
 
 	if *public != "" {
 		if err := server.ValidPublicAddr(*public); err != nil {

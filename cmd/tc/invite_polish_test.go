@@ -15,7 +15,7 @@ func TestParseInviteCmdErrors(t *testing.T) {
 		t.Fatalf("3d: %+v %v", c, err)
 	}
 	for args, want := range map[string]string{
-		"--ttl 45d":   "days must be 1-30",
+		"--ttl 45d":   "days must be a whole number 1-30",
 		"--ttl bogus": "ttl",
 		"--admin":     "-admin",
 		"extra":       `unexpected argument "extra"`,

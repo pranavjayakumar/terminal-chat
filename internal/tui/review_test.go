@@ -187,9 +187,13 @@ func (context0Err) Error() string { return "boom" }
 func TestSelectModeNav(t *testing.T) {
 	m := newTestModel(t, 80, 24)
 	run(m, m.handleKey(keyMsg("up")))
-	if v := checkView(t, m, "select"); !strings.Contains(v, "r retry · d discard · y copy · Esc") {
+	if v := checkView(t, m, "select"); !strings.Contains(v, "r retry · d discard · v view · y copy · Esc") {
 		t.Fatalf("failed message should offer retry/discard:\n%s", v)
 	}
+	m.Update(tea.WindowSizeMsg{Width: 200, Height: 24}) // wide: the long form
+	defer m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.Update(tea.WindowSizeMsg{Width: 200, Height: 24}) // wide: the long form
+	defer m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	// Another person's message: no edit or delete; pin and view are offered.
 	m.main.sel = 0
 	m.updatePlaceholder()
@@ -333,5 +337,19 @@ func TestSearchJump(t *testing.T) {
 	run(m, m.jumpTo(proto.Message{ID: 5, Chan: 10, Author: 2, Body: "ancient"}))
 	if !strings.Contains(m.notice, "older message — scroll up to find it") {
 		t.Fatalf("notice %q", m.notice)
+	}
+}
+
+// The select footer keeps Esc visible at narrow widths.
+func TestSelectFooterCompactKeepsEsc(t *testing.T) {
+	for _, w := range []int{40, 30} {
+		m := newTestModel(t, w, 14)
+		run(m, m.handleKey(keyMsg("up")))
+		plain := checkView(t, m, "select narrow")
+		rows := strings.Split(strings.TrimRight(plain, "\n"), "\n")
+		last := rows[len(rows)-1]
+		if !strings.Contains(last, "Esc") || !strings.Contains(last, "r") {
+			t.Errorf("%d cols: footer %q", w, last)
+		}
 	}
 }

@@ -153,11 +153,10 @@ func inviteErr(err error, what, id string) error {
 	}
 	switch pe.Code {
 	case proto.ErrForbidden:
-		msg := "only admins can " + what + " on this server"
 		if pe.Msg != "" {
-			msg += " (" + pe.Msg + ")"
+			return errors.New(pe.Msg + " (only admins can " + what + " on this server)")
 		}
-		return errors.New(msg)
+		return errors.New("only admins can " + what + " on this server")
 	case proto.ErrNotFound:
 		if id != "" {
 			return fmt.Errorf("no open invite %s of yours (see tc invite --list)", id)

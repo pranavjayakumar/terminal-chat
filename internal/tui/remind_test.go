@@ -260,17 +260,19 @@ func TestReminderCountsAsUnreadInTheSidebar(t *testing.T) {
 	}
 }
 
-// In an encrypted channel the reminder is still set, just without the link back.
-func TestRemindInEncryptedChannelDropsLink(t *testing.T) {
+// Encrypted channels refuse (the server stores reminders in the clear), say
+// why, and keep the typed command.
+func TestRemindInEncryptedChannelRefuses(t *testing.T) {
 	m, f := newTestModelFake(t, 100, 24)
 	newClock(m)
-	f.remindEnc = true
 	m.openChannel(20)
-	runInput(t, m, "/remind 1h ask bob")
-	if len(f.reminded) != 1 || f.reminded[0].ch != 0 || f.reminded[0].text != "ask bob" {
-		t.Fatalf("reminded %+v", f.reminded)
+	m.e2e[20] = client.E2EStatus{State: client.E2EOK}
+	m.input.SetValue("/remind 1h ask bob")
+	run(m, m.submit())
+	if len(f.reminded) != 0 || !m.noticeErr || !strings.Contains(m.notice, "stored unencrypted") {
+		t.Fatalf("reminded %+v notice %q", f.reminded, m.notice)
 	}
-	if m.noticeErr || !strings.Contains(m.notice, "no link back") {
-		t.Fatalf("notice %q err %v", m.notice, m.noticeErr)
+	if m.input.Value() != "/remind 1h ask bob" {
+		t.Fatalf("input lost: %q", m.input.Value())
 	}
 }

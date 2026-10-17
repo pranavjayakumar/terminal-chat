@@ -60,7 +60,7 @@ func TestInviteCommandCopiesOneLiner(t *testing.T) {
 		t.Fatalf("one-liner not copied via OSC 52: %q", out)
 	}
 	// The full code is on screen (not truncated) even in a narrow pane.
-	if m.mode != modeViewer || !strings.Contains(m.notice, "15 uses") {
+	if m.mode != modeViewer || !strings.Contains(checkView(t, m, "invite"), "15 uses") {
 		t.Fatalf("mode %v notice %q", m.mode, m.notice)
 	}
 	for _, sz := range [][2]int{{100, 30}, {40, 12}, {20, 6}} {
@@ -294,8 +294,8 @@ func TestInviteKeyCommand(t *testing.T) {
 	if !f.called("ghinvite carol 72h0m0s") {
 		t.Fatalf("calls %v", f.calls)
 	}
-	if m.noticeErr || !strings.Contains(m.notice, "invite created · for github:carol only (2 keys) · 1 use") {
-		t.Fatalf("notice %q", m.notice)
+	if v := checkView(t, m, "key invite"); m.noticeErr || !strings.Contains(v, "invite created · for github:carol only (2 keys) · 1 use") {
+		t.Fatalf("notice %q view:\n%s", m.notice, v)
 	}
 	m.viewerKey(kEsc)
 	if !strings.Contains(m.opt.Out.(*syncBuf).String(), "]52;c;") {
@@ -360,13 +360,57 @@ func TestOSC52TmuxPassthrough(t *testing.T) {
 }
 
 func TestClipNeverClaimsWithoutAttempt(t *testing.T) {
-	if how, _ := clip(Options{}, "x"); how != "" {
+	ctx := context.Background()
+	if how, _ := clip(ctx, Options{}, "x"); how != "" {
 		t.Fatalf("how %q with no route", how)
 	}
 	var b syncBuf
 	called := false
-	how, _ := clip(Options{Out: &b, ExtCopy: func(string) error { called = true; return nil }}, "x")
+	ext := func(context.Context, string) error { called = true; return nil }
+	how, _ := clip(ctx, Options{Out: &b, ExtCopy: ext}, "x")
 	if how != "system" || !called {
 		t.Fatalf("how %q called %v", how, called)
+	}
+	// Over SSH the tool would reach the remote clipboard: terminal only.
+	called = false
+	how, _ = clip(ctx, Options{Out: &b, ExtCopy: ext, SSH: true}, "x")
+	if how != "terminal" || called {
+		t.Fatalf("ssh: how %q called %v", how, called)
+	}
+}
+
+// Narrow panes: the whole code and the command are readable (wrapped, with
+// shell continuations), copy result first.
+func TestInviteViewWrapsNarrow(t *testing.T) {
+	m, _ := newTestModelFake(t, 40, 20)
+	m.opt.Version = "v0.2.0"
+	m.input.SetValue("/invite")
+	run(m, m.submit())
+	if m.mode != modeViewer {
+		t.Fatal("no invite view")
+	}
+	plain := checkView(t, m, "invite 40")
+	code := "tc://chat.example.com:7443/abcdefghijklmnopqrstuvwxyz#Pin-_x"
+	rows := m.view.lines
+	if !strings.Contains(rows[0], "clipboard") {
+		t.Errorf("copy result not first:\n%s", plain)
+	}
+	// Unfold like sh: backslash-newline vanishes, adjacent quotes join.
+	i := 0
+	for rows[i] != "install command:" {
+		i++
+	}
+	cmd := strings.Join(rows[i+1:], "\n")
+	cmd = strings.ReplaceAll(strings.ReplaceAll(cmd, "\\\n", ""), "''", "")
+	cmd = strings.ReplaceAll(cmd, "\n", "")
+	if want := "curl -fsSL " + proto.InstallScriptURL("v0.2.0") + " | sh -s -- '" + code + "'"; strings.Join(strings.Fields(cmd), " ") != want && cmd != want {
+		t.Errorf("unfolded command differs:\n%q\n%q", cmd, want)
+	}
+	if !strings.Contains(plain, " \\") || !strings.Contains(plain, "y copy") {
+		t.Errorf("missing continuations or hint:\n%s", plain)
+	}
+	for _, sz := range [][2]int{{40, 12}, {30, 10}, {24, 8}} {
+		m.Update(tea.WindowSizeMsg{Width: sz[0], Height: sz[1]})
+		checkView(t, m, "invite narrow")
 	}
 }

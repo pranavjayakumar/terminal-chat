@@ -127,28 +127,38 @@ func (m *Model) selectFooter() string {
 	if !ok {
 		return "Esc leaves select mode"
 	}
-	if sel.Failed != "" {
-		return "r retry · d discard · y copy · Esc"
-	}
 	var keys []string
-	live := sel.ID != 0 && !sel.Deleted
-	mine := sel.Author == m.me.ID
-	if mine && live && sel.Sec.Trusted() {
-		keys = append(keys, "e edit")
-	}
-	if mine && live {
-		keys = append(keys, "d delete")
-	}
-	if live {
-		keys = append(keys, "r thread", "+ react")
-		if sel.Pinned {
-			keys = append(keys, "p unpin")
-		} else {
-			keys = append(keys, "p pin")
+	if sel.Failed != "" {
+		keys = []string{"r retry", "d discard", "v view", "y copy"}
+	} else {
+		live := sel.ID != 0 && !sel.Deleted
+		mine := sel.Author == m.me.ID
+		if mine && live && sel.Sec.Trusted() {
+			keys = append(keys, "e edit")
 		}
+		if mine && live {
+			keys = append(keys, "d delete")
+		}
+		if live {
+			keys = append(keys, "r thread", "+ react")
+			if sel.Pinned {
+				keys = append(keys, "p unpin")
+			} else {
+				keys = append(keys, "p pin")
+			}
+		}
+		keys = append(keys, "v view", "y copy")
 	}
-	keys = append(keys, "v view", "y copy", "Esc")
-	return strings.Join(keys, " · ")
+	full := strings.Join(keys, " · ") + " · Esc"
+	if strWidth(full) < m.dims().mainW-1 {
+		return full
+	}
+	// Narrow: just the key letters, Esc last so leaving is always visible.
+	letters := make([]string, len(keys))
+	for i, k := range keys {
+		letters[i], _, _ = strings.Cut(k, " ")
+	}
+	return strings.Join(letters, " ") + " · Esc"
 }
 
 func (m *Model) updatePlaceholder() {

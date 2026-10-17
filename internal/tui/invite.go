@@ -85,11 +85,10 @@ func keyArg(args []string) (login string, rest []string, err error) {
 func inviteErr(err error, what string) error {
 	var pe *proto.Error
 	if errors.As(err, &pe) && pe.Code == proto.ErrForbidden {
-		msg := "only admins can " + what + " on this server"
 		if pe.Msg != "" {
-			msg += " (" + pe.Msg + ")"
+			return errors.New(pe.Msg + " (only admins can " + what + " on this server)")
 		}
-		return errors.New(msg)
+		return errors.New("only admins can " + what + " on this server")
 	}
 	return err
 }
@@ -150,7 +149,7 @@ func (m *Model) inviteCommand(args []string) (tea.Cmd, error) {
 		if err != nil {
 			return nil, err
 		}
-		how, cerr := clip(opt, line)
+		how, cerr := clip(ctx, opt, line)
 		// What matters first: narrow panes cut the notice from the right.
 		parts := []string{"invite created"}
 		if inv.Keys > 0 {
@@ -178,21 +177,95 @@ type inviteShownMsg struct {
 }
 
 func (m *Model) showInvite(s inviteShownMsg) {
-	copied := "NOT copied (no clipboard route worked): select the text below"
+	copied := "NOT copied: select the text below"
 	switch s.how {
 	case "system":
-		copied = "install command copied to the clipboard"
+		copied = "copied to the clipboard"
 	case "terminal":
-		copied = "install command sent to the terminal clipboard (OSC 52); if paste is empty, select it below"
+		copied = "sent to terminal clipboard"
 	}
 	m.view = viewer{
 		title: "invite",
-		lines: []string{s.summary, "", copied, "", "code:", s.code, "", "install command:", s.line},
+		build: func(w int) []string { return inviteLines(s, copied, w) },
 		copy:  s.line,
 		back:  modeNormal,
 	}
 	m.mode = modeViewer
-	m.setInfo(s.summary)
+	m.setInfo("invite created")
+}
+
+// inviteLines lays the invite out for width w: copy result first, then the
+// summary, the code in chunks, and the install command broken at spaces with
+// backslash continuations so pasting several rows still runs in sh.
+func inviteLines(s inviteShownMsg, copied string, w int) []string {
+	w = max(w, 8)
+	out := wrapWords(copied, w)
+	out = append(out, "")
+	out = append(out, wrapWords(s.summary, w)...)
+	out = append(out, "", "code:")
+	for r := []rune(s.code); len(r) > 0; {
+		n := min(len(r), w)
+		out = append(out, string(r[:n]))
+		r = r[n:]
+	}
+	out = append(out, "", "install command:")
+	return append(out, wrapShell(s.line, w)...)
+}
+
+// wrapShell breaks a shell command into rows of at most w columns that still
+// run when pasted together: a backslash-newline is removed by sh even inside
+// a word, and a quoted word is cut as adjacent quoted pieces.
+func wrapShell(line string, w int) []string {
+	var out []string
+	row := ""
+	flush := func() { out = append(out, row+" \\"); row = "" }
+	for _, tok := range strings.Fields(line) {
+		if row != "" && len(row)+1+len(tok)+2 <= w {
+			row += " " + tok
+			continue
+		}
+		if row != "" {
+			flush()
+		}
+		if len(tok)+2 <= w {
+			row = tok
+			continue
+		}
+		quoted := len(tok) >= 2 && tok[0] == '\'' && tok[len(tok)-1] == '\''
+		body, q, size := tok, "", w-1
+		if quoted {
+			body, q, size = tok[1:len(tok)-1], "'", w-3
+		}
+		size = max(size, 1)
+		for len(body) > size {
+			out = append(out, q+body[:size]+q+"\\")
+			body = body[size:]
+		}
+		row = q + body + q
+	}
+	if row != "" {
+		out = append(out, row)
+	}
+	return out
+}
+
+// wrapWords breaks text at spaces into rows of at most w columns (a longer
+// word stays whole).
+func wrapWords(text string, w int) []string {
+	var out []string
+	row := ""
+	for _, tok := range strings.Fields(text) {
+		switch {
+		case row == "":
+			row = tok
+		case strWidth(row)+1+strWidth(tok) <= w:
+			row += " " + tok
+		default:
+			out = append(out, row)
+			row = tok
+		}
+	}
+	return append(out, row)
 }
 
 // InviteBackend is implemented by backends that can list and revoke

@@ -16,8 +16,9 @@ type viewer struct {
 	title string
 	lines []string
 	x, y  int
-	copy  string // what y copies; "": the lines
-	back  mode   // where Esc returns
+	copy  string               // what y copies; "": the lines
+	back  mode                 // where Esc returns
+	build func(w int) []string // re-lays lines out for the width; nil: static
 }
 
 const viewerStep = 8
@@ -74,9 +75,13 @@ func (m *Model) viewerKey(key string) {
 
 func (m *Model) viewerLines(w, h int) []string {
 	v := m.view
+	if v.build != nil {
+		v.lines = v.build(w)
+		m.view.lines = v.lines
+	}
 	hint := "←/→ ↑/↓ scroll · y copy · Esc closes"
 	if w < 50 {
-		hint = "Esc closes"
+		hint = "y copy · Esc"
 	}
 	out := []string{fit(m.st.overlayTitle.Render(truncate(v.title+" — "+hint, w)), w)}
 	rows := h - 1

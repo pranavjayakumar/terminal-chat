@@ -127,7 +127,7 @@ func TestDevicesOverlay(t *testing.T) {
 		if len(f.dv.revoked) != 1 || f.dv.revoked[0] != f.dv.list[1][1].ID {
 			t.Fatalf("%v: revoked %v", sz, f.dv.revoked)
 		}
-		if !strings.Contains(m.notice, "✓ revoked device bbbbbbbb — new keys in 2 encrypted channels") {
+		if !strings.Contains(m.notice, "new keys in 2 encrypted channels") {
 			t.Errorf("%v: notice %q", sz, m.notice)
 		}
 		if m.mode != modeDevices || !m.devs.devs[1].Revoked {

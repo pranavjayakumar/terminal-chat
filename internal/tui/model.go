@@ -702,8 +702,10 @@ func (m *Model) noticeTick() tea.Cmd {
 // copyCmd puts text on the clipboard (see clip). It only says "copied" when
 // a method was actually attempted.
 func (m *Model) copyCmd(text string) tea.Cmd {
-	how, err := clip(m.opt, text)
+	ctx, opt := m.ctx, m.opt
 	return func() tea.Msg {
+		// May run a clipboard tool: never on the UI goroutine.
+		how, err := clip(ctx, opt, text)
 		switch {
 		case err != nil:
 			return errMsg{"copy", err}

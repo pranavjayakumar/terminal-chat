@@ -172,12 +172,12 @@ func (m *Model) gotDevices(msg devicesMsg) tea.Cmd {
 		if r.err != nil {
 			m.setErr("revoke", r.err)
 		} else {
-			t := "✓ revoked device " + r.short
+			// Caveat first (same as `tc devices revoke`): the status line
+			// truncates from the right and this is the part people miss.
+			t := "✓ revoked device " + r.short + " · doesn't remove an SSH key: a device holding it can register again"
 			if r.rotated > 0 {
-				t += fmt.Sprintf(" — new keys in %d encrypted %s", r.rotated, plural(r.rotated, "channel", "channels"))
+				t += fmt.Sprintf(" · new keys in %d encrypted %s", r.rotated, plural(r.rotated, "channel", "channels"))
 			}
-			// Same caveat as `tc devices revoke`: revoking is not removing the key.
-			t += " · this doesn't remove an SSH key; a device holding it can register again"
 			m.setInfo(t)
 		}
 		if m.mode == modeDevices && s.user == msg.user {

@@ -31,23 +31,21 @@ func (m *Model) remindCommand(c command) (cmd tea.Cmd, ok bool, err error) {
 			return nil, true, err
 		}
 		ch := m.active
+		if _, enc := m.e2e[ch]; enc {
+			// The server stores reminder text in the clear (docs/E2E.md).
+			// Returned here so the typed command stays in the input.
+			return nil, true, errors.New("reminders are stored unencrypted on the server; set it from #notes or a plain channel")
+		}
 		if v, found := m.chanView(ch); found && v.Kind == proto.ChanDM && len(v.Members) == 1 {
 			ch = 0 // my own notes: "(from …)" would only say where it lands
 		}
 		now := m.now()
 		return m.callThen("remind", func(ctx context.Context) (tea.Msg, error) {
 			id, err := be.Remind(ctx, at, text, ch)
-			note := ""
-			if errors.Is(err, client.ErrRemindEncrypted) {
-				// The link back is only a label; the server must not learn
-				// which encrypted channel it came from, so drop it.
-				id, err = be.Remind(ctx, at, text, 0)
-				note = " (no link back: this channel is encrypted)"
-			}
 			if err != nil {
 				return nil, err
 			}
-			return infoMsg(fmt.Sprintf("reminder %d set for %s%s", id, client.FormatReminderTime(at.UnixMilli(), now), note)), nil
+			return infoMsg(fmt.Sprintf("reminder %d set for %s", id, client.FormatReminderTime(at.UnixMilli(), now))), nil
 		}), true, nil
 	case "reminders":
 		titles := make(map[uint64]string, len(m.chans))
