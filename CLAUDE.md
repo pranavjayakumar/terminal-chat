@@ -91,7 +91,7 @@ Local two-user test: `make dev`, then in two panes
 
 - **M0** scaffold, spec, agents, CI  ✓
 - **M1** core text chat: server, auth, channels, DMs, sync, reconnect, TUI  ✓
-- **M2** herdr, notifications, webhooks, display names, `tc notify`, activity view (docs/ROADMAP.md)  ← in progress
+- **M2** herdr, notifications, webhooks, display names, `tc notify`, activity view (docs/ROADMAP.md)  ✓
 - **M3** end-to-end encryption for DMs + private channels (docs/E2E.md)  ✓ (steps 1–12)
 - **M4** zero-setup onboarding: install-command invites, `tc join`, `tc update`, signed releases  ✓
 - **M5** voice huddles (QUIC datagrams, Opus)
