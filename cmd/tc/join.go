@@ -11,8 +11,11 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/identity"
@@ -66,19 +69,43 @@ func gitUserName() string {
 	return strings.TrimSpace(string(b))
 }
 
-// cmdJoin: tc join [<invite>] [--name you] [--key path] (also `tc login`).
+// cmdJoin: tc join|login [<invite>|tc://host:port#pin] [--name you] [--key path].
 // Without an argument the invite comes from $TC_INVITE, which (unlike argv)
-// other local users can't read in ps; install.sh passes it that way.
+// other local users can't read in ps; install.sh passes it that way. With
+// neither, it prints this computer's server line for use on another one.
 func cmdJoin(args []string) error {
-	invite, name, key, err := parseJoinArgs(args, os.Getenv(inviteEnv))
+	envInvite := os.Getenv(inviteEnv)
 	// Not passed on to anything tc runs (git, ssh-agent).
 	os.Unsetenv(inviteEnv)
+	if len(args) == 0 && strings.TrimSpace(envInvite) == "" {
+		return showLogin(os.Stdout, client.DefaultHome())
+	}
+	invite, name, key, err := parseJoinArgs(args, envInvite)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := signalContext()
 	defer cancel()
 	return runJoin(ctx, osJoinEnv(), invite, name, key)
+}
+
+// showLogin prints the tokenless server line (tc://host:port#pin) of the
+// account in home: what `tc login` takes on a second computer.
+func showLogin(out io.Writer, home string) error {
+	c, err := client.Open(home)
+	if err != nil {
+		return errUsage
+	}
+	cfg := c.Config()
+	c.Close()
+	line := proto.FormatServer(cfg.Addr, cfg.Pin)
+	if !proto.ShellSafe(line) {
+		return fmt.Errorf("the saved server address in %s isn't printable", home)
+	}
+	fmt.Fprintf(out, "This computer is signed in as %s to:\n\n  %s\n\n", sanitize.Line(cfg.Name), line)
+	fmt.Fprintf(out, "On another computer that has the same SSH key (in ssh-agent or ~/.ssh), run:\n\n  tc login '%s'\n\n", line)
+	fmt.Fprintln(out, "With a different key there, ask an admin for an invite that adds a key to your account.")
+	return nil
 }
 
 // inviteEnv holds the invite for `tc join` with no argument.
@@ -90,7 +117,7 @@ func parseJoinArgs(args []string, envInvite string) (invite, name, key string, e
 	fs := flag.NewFlagSet("join", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&name, "name", "", "your user name (default: from git config user.name or $USER)")
-	fs.StringVar(&key, "key", "", "SSH private key (default: ssh-agent ed25519, then ~/.ssh/id_ed25519, else a new tc key)")
+	fs.StringVar(&key, "key", "", "SSH key: a private key file, or a .pub whose private half is in ssh-agent (default: try every agent key and ~/.ssh/id_*)")
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		invite, args = args[0], args[1:]
 	}
@@ -115,18 +142,65 @@ func parseJoinArgs(args []string, envInvite string) (invite, name, key string, e
 	return invite, name, key, nil
 }
 
-func runJoin(ctx context.Context, env joinEnv, invite, name, keyPath string) error {
-	inv, err := proto.ParseInvite(invite)
+// joinKey is one key runJoin may try.
+type joinKey struct {
+	identity.Candidate
+	tcKey bool // TC_HOME/id_ed25519, made by an earlier join
+}
+
+func (k joinKey) announce(env joinEnv) {
+	switch {
+	case k.tcKey:
+		fmt.Fprintf(env.out, "Using tc's SSH key %s\n", k.Path)
+	case k.Path == "":
+		fmt.Fprintf(env.out, "Using your ssh-agent key (%s)\n", identity.Fingerprint(k.Pub))
+	default:
+		fmt.Fprintf(env.out, "Using SSH key %s\n", k.Path)
+	}
+}
+
+// runJoin redeems an invite, or (code without a token) logs in a key that
+// is already registered. Without --key it tries the candidate keys in
+// order. A key-bound invite never costs a guess per key: the server says
+// which fingerprints it accepts (key_hint) and nothing is spent until the
+// right key is used. A key that is already registered logs in whatever
+// the invite, so retrying an interrupted join works.
+func runJoin(ctx context.Context, env joinEnv, code, name, keyPath string) error {
+	inv, err := proto.ParseLogin(code)
 	if err != nil {
 		return err
 	}
-	keyPath, err = chooseKey(env, keyPath)
+	loginOnly := inv.Token == ""
+	keys, all, err := joinKeys(env, keyPath)
 	if err != nil {
 		return err
 	}
+	generated := ""
+	if len(keys) == 0 {
+		if loginOnly {
+			return noKeyError(all, nil)
+		}
+		p := filepath.Join(env.home, "id_ed25519")
+		s, err := identity.GenerateKey(p)
+		if err != nil {
+			return err
+		}
+		generated = p
+		keys = []joinKey{{Candidate: identity.Candidate{Pub: s.PublicKey(), Signer: s, Path: p}}}
+	}
+	// A generated key no server knows yet is worthless; don't leave it.
+	keep := false
+	defer func() {
+		if generated != "" && !keep {
+			os.Remove(generated)
+			os.Remove(generated + ".pub")
+		}
+	}()
 
 	in := bufio.NewReader(env.in)
-	if name == "" {
+	if loginOnly {
+		name = ""
+	} else if name == "" {
 		def := defaultJoinName(env.gitName(), env.user)
 		if name, err = askName(env, in, def); err != nil {
 			return err
@@ -137,66 +211,201 @@ func runJoin(ctx context.Context, env joinEnv, invite, name, keyPath string) err
 
 	lctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	fmt.Fprintf(env.out, "Joining %s as %s…\n", sanitize.Line(inv.Addr), name)
-	u, err := env.login(lctx, env.home, invite, name, keyPath)
-	var bye *client.ByeError
-	// The one retry: a taken name doesn't spend the invite (PROTOCOL.md §4.1).
-	if errors.As(err, &bye) && bye.Code == proto.ByeNameTaken && env.tty {
-		fmt.Fprintf(env.out, "The name %s is taken.\n", name)
-		if name, err = askName(env, in, ""); err != nil {
+	if loginOnly {
+		fmt.Fprintf(env.out, "Logging in to %s…\n", sanitize.Line(inv.Addr))
+	} else {
+		fmt.Fprintf(env.out, "Joining %s as %s…\n", sanitize.Line(inv.Addr), name)
+	}
+	var u proto.User
+	var used joinKey
+	hinted := false
+	var lastErr error
+	for i := 0; i < len(keys); i++ {
+		k := keys[i]
+		if generated == "" {
+			k.announce(env)
+		}
+		u, err = env.login(lctx, env.home, code, name, k.Spec())
+		var bye *client.ByeError
+		// The one name retry: a taken name doesn't spend the invite (§4.1).
+		if errors.As(err, &bye) && bye.Code == proto.ByeNameTaken && env.tty {
+			fmt.Fprintf(env.out, "The name %s is taken.\n", name)
+			if name, err = askName(env, in, ""); err != nil {
+				return err
+			}
+			u, err = env.login(lctx, env.home, code, name, k.Spec())
+		}
+		if errors.As(err, &bye) && bye.Code == proto.ByeNameTaken {
+			return fmt.Errorf("the name %s is taken; run again with --name another-name", name)
+		}
+		if err == nil {
+			used = k
+			break
+		}
+		lastErr = err
+		if !errors.As(err, &bye) {
 			return err
 		}
-		u, err = env.login(lctx, env.home, invite, name, keyPath)
+		switch {
+		case bye.Code == proto.ByeInviteInvalid && len(bye.Keys) > 0:
+			// Key-bound, and the server said which keys: jump straight to ours.
+			if hinted {
+				return err
+			}
+			hinted = true
+			next, ok, herr := hintedKey(bye.Keys, all, keys[:i+1])
+			if herr != nil {
+				return herr
+			}
+			if !ok {
+				return keyBoundError(bye.Keys, all, keyPath)
+			}
+			keys = append(keys[:i+1], next)
+		case bye.Code == proto.ByeInviteInvalid && strings.Contains(bye.Msg, "other SSH keys"):
+			// An older server without key_hint: try the next key (nothing spent).
+		case bye.Code == proto.ByeAuthFailed && loginOnly:
+			// Not this key's account: try the next.
+		default:
+			return err
+		}
 	}
-	if errors.As(err, &bye) && bye.Code == proto.ByeNameTaken {
-		return fmt.Errorf("the name %s is taken; run again with --name another-name", name)
+	if u.ID == 0 {
+		if loginOnly {
+			return noKeyError(all, lastErr)
+		}
+		var bye *client.ByeError
+		if errors.As(lastErr, &bye) && bye.Code == proto.ByeInviteInvalid && keyPath == "" {
+			return keyBoundError(nil, all, keyPath)
+		}
+		return lastErr
 	}
-	if err != nil {
-		return err
+	if generated != "" {
+		keep = true
+		fmt.Fprintf(env.out, "No SSH key found, so tc made one just for itself: %s\n", generated)
+		fmt.Fprintln(env.out, "It has no passphrase: anyone who can read that file can chat as you. (Prefer your own key? tc join --key ~/.ssh/id_ed25519.)")
+	}
+	if !loginOnly && u.Name != name {
+		fmt.Fprintf(env.out, "Note: you're signed in as %s, the account %s belongs to.\n", sanitize.Line(u.Name), sanitize.Line(used.Describe()))
 	}
 	printJoinTips(env, u)
 	return nil
 }
 
-// chooseKey picks the login key and says which: the given --key, else the
-// first ed25519 key in ssh-agent, else ~/.ssh/id_ed25519, else a tc-only key
-// in TC_HOME (generated once, reused after). "" means "ask the agent".
-func chooseKey(env joinEnv, keyPath string) (string, error) {
+// joinKeys returns the keys to try, in order, and every candidate found
+// (including ones that can't sign here, for error messages). --key gives
+// exactly one. Otherwise: ed25519 keys first (agent, then ~/.ssh), then
+// the others (ECDSA, RSA, security keys), then tc's own key from an
+// earlier join.
+func joinKeys(env joinEnv, keyPath string) (try, all []joinKey, err error) {
 	if keyPath != "" {
-		if _, err := identity.Load(keyPath); err != nil {
-			return "", err
+		s, err := identity.Load(keyPath)
+		if err != nil {
+			return nil, nil, err
 		}
-		fmt.Fprintf(env.out, "Using SSH key %s\n", keyPath)
-		return keyPath, nil
+		k := joinKey{Candidate: identity.Candidate{Pub: s.PublicKey(), Signer: s, Path: keyPath}}
+		return []joinKey{k}, []joinKey{k}, nil
 	}
-	if pk, ok := identity.AgentED25519(); ok {
-		fmt.Fprintf(env.out, "Using your ssh-agent key (%s)\n", identity.Fingerprint(pk))
-		return "", nil
-	}
-	if env.sshDir != "" {
-		p := filepath.Join(env.sshDir, "id_ed25519")
-		if _, err := os.Stat(p); err == nil {
-			if _, err := identity.Load(p); err != nil {
-				return "", err // e.g. passphrase-protected: the message says ssh-add
-			}
-			fmt.Fprintf(env.out, "Using SSH key %s\n", p)
-			return p, nil
-		}
+	for _, c := range identity.Candidates(env.sshDir) {
+		all = append(all, joinKey{Candidate: c})
 	}
 	p := filepath.Join(env.home, "id_ed25519")
 	if _, err := os.Stat(p); err == nil {
-		if _, err := identity.Load(p); err != nil {
-			return "", err
+		s, err := identity.Load(p)
+		if err != nil {
+			return nil, nil, err
 		}
-		fmt.Fprintf(env.out, "Using tc's SSH key %s\n", p)
-		return p, nil
+		dup := false
+		for _, k := range all {
+			dup = dup || identity.Fingerprint(k.Pub) == identity.Fingerprint(s.PublicKey())
+		}
+		if !dup {
+			all = append(all, joinKey{Candidate: identity.Candidate{Pub: s.PublicKey(), Signer: s, Path: p}, tcKey: true})
+		}
 	}
-	if _, err := identity.GenerateKey(p); err != nil {
-		return "", err
+	for _, ed := range []bool{true, false} {
+		for _, k := range all {
+			if k.Signer != nil && !k.tcKey && (k.Pub.Type() == ssh.KeyAlgoED25519) == ed {
+				try = append(try, k)
+			}
+		}
 	}
-	fmt.Fprintf(env.out, "No SSH key found, so tc made one just for itself: %s\n", p)
-	fmt.Fprintln(env.out, "It has no passphrase: anyone who can read that file can chat as you. (Prefer your own key? tc join --key ~/.ssh/id_ed25519.)")
-	return p, nil
+	for _, k := range all {
+		if k.tcKey {
+			try = append(try, k)
+		}
+	}
+	return try, all, nil
+}
+
+// hintedKey finds the candidate whose fingerprint the invite accepts and
+// that wasn't tried yet. A match that can't sign here (a locked key file)
+// is an error that says how to unlock it.
+func hintedKey(fps []string, all, tried []joinKey) (joinKey, bool, error) {
+	for _, k := range all {
+		if !slices.Contains(fps, identity.Fingerprint(k.Pub)) {
+			continue
+		}
+		if slices.ContainsFunc(tried, func(t joinKey) bool { return identity.Fingerprint(t.Pub) == identity.Fingerprint(k.Pub) }) {
+			continue
+		}
+		if k.Signer == nil {
+			return joinKey{}, false, fmt.Errorf("this invite is for your key %s, but tc can't use it: %w", k.Describe(), k.Err)
+		}
+		return k, true, nil
+	}
+	return joinKey{}, false, nil
+}
+
+// keyBoundError explains a key-bound invite none of our keys can redeem.
+func keyBoundError(fps []string, all []joinKey, keyPath string) error {
+	var b strings.Builder
+	b.WriteString("this invite only works with particular SSH keys, and ")
+	if keyPath != "" {
+		fmt.Fprintf(&b, "%s isn't one of them", keyPath)
+	} else {
+		b.WriteString("none of yours is one of them")
+	}
+	if len(fps) > 0 {
+		b.WriteString("\n  it accepts: " + strings.Join(sanitizeAll(fps), ", "))
+	}
+	writeTried(&b, all)
+	b.WriteString("\n  if the key is elsewhere (another computer, a hardware key, a password manager), load it into ssh-agent or pass --key path/to/key(.pub); otherwise ask for a new invite")
+	return errors.New(b.String())
+}
+
+// noKeyError explains a tc login with no registered key.
+func noKeyError(all []joinKey, last error) error {
+	var b strings.Builder
+	b.WriteString("none of your SSH keys has an account on this server")
+	if len(all) == 0 {
+		b.WriteString(" (no keys found in ssh-agent or ~/.ssh)")
+	}
+	writeTried(&b, all)
+	b.WriteString("\n  tc login needs the key you joined with: load it into ssh-agent (ssh-add) or pass --key path; with a new key, ask an admin for an invite that adds it to your account")
+	if last != nil {
+		var bye *client.ByeError
+		if !errors.As(last, &bye) || bye.Code != proto.ByeAuthFailed {
+			b.WriteString("\n  last error: " + last.Error())
+		}
+	}
+	return errors.New(b.String())
+}
+
+func writeTried(b *strings.Builder, all []joinKey) {
+	for _, k := range all {
+		fmt.Fprintf(b, "\n  - %s (%s)", sanitize.Line(k.Describe()), identity.Fingerprint(k.Pub))
+		if k.Err != nil {
+			fmt.Fprintf(b, ": %s", sanitize.Line(k.Err.Error()))
+		}
+	}
+}
+
+func sanitizeAll(ss []string) []string {
+	out := make([]string, len(ss))
+	for i, s := range ss {
+		out[i] = sanitize.Line(s)
+	}
+	return out
 }
 
 // defaultJoinName is the first word of git's user.name, else $USER, made

@@ -15,7 +15,10 @@ const usage = `tc — terminal team chat
 
   tc                         open chat
   tc join <invite> [--name you] [--key ~/.ssh/id_ed25519]   (or the invite in $TC_INVITE)
-                             join a team (tc login is the same)
+                             join a team (--key may be a .pub held in ssh-agent)
+  tc login tc://host:port#pin [--key path]
+                             sign in on another computer with the same SSH key
+  tc login                   show this computer's tc://host:port#pin
   tc send <#chan|@user> [message...]   (reads stdin if no message)
   tc send <#chan|@user> --file path[:start[-end]] [--context N] [message...]
   tc tail <#chan>            stream a channel

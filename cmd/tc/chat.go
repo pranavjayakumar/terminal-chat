@@ -12,7 +12,8 @@ import (
 func cmdChat() error {
 	c, err := client.Open(client.DefaultHome())
 	if errors.Is(err, client.ErrNotLoggedIn) {
-		fmt.Fprint(os.Stderr, "Not logged in. Ask an admin for an invite, then:\n\n  tc join <invite>\n\n")
+		fmt.Fprint(os.Stderr, "Not logged in. Ask an admin for an invite, then:\n\n  tc join <invite>\n\n"+
+			"Already in the team on another computer? Run tc login there to see its server line, then here:\n\n  tc login 'tc://host:port#pin'\n\n")
 		return nil
 	}
 	if err != nil {
