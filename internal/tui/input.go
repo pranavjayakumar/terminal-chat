@@ -284,23 +284,40 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 			return openChanMsg{}, be.Leave(ctx, ch)
 		}), nil
 	case "create":
-		if err := need(1, "/create #name [--private]"); err != nil {
+		const usage = "/create #name [--private [--plaintext]]"
+		if err := need(1, usage); err != nil {
 			return nil, err
 		}
 		var name string
-		private := false
+		private, plaintext := false, false
 		for _, a := range c.args {
 			switch {
 			case a == "--private":
 				private = true
+			case a == "--plaintext":
+				plaintext = true
 			case name == "":
 				name = strings.TrimPrefix(a, "#")
 			default:
-				return nil, errors.New("usage: /create #name [--private]")
+				return nil, errors.New("usage: " + usage)
 			}
+		}
+		if plaintext && !private {
+			return nil, errors.New("--plaintext goes with --private (public channels are never encrypted)")
 		}
 		if !proto.ValidName(name) {
 			return nil, errors.New("channel names are 1-32 of a-z 0-9 _ - (lowercase)")
+		}
+		// Private channels are end-to-end encrypted unless asked otherwise
+		// (--plaintext: e.g. for webhooks, which can't post into encrypted ones).
+		if private && !plaintext {
+			return m.callThen("create", func(ctx context.Context) (tea.Msg, error) {
+				ch, err := be.CreateEncryptedChannel(ctx, name, "")
+				if pe := (*proto.Error)(nil); errors.As(err, &pe) && pe.Code == proto.ErrBadRequest && strings.Contains(pe.Msg, "e2e1") {
+					err = errors.New("this server can't encrypt channels; /create #" + name + " --private --plaintext makes an unencrypted one")
+				}
+				return openChanMsg{ch.ID}, err
+			}), nil
 		}
 		return m.callThen("create", func(ctx context.Context) (tea.Msg, error) {
 			ch, err := be.CreateChannel(ctx, name, private, "")
@@ -459,6 +476,9 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 		return cmd, err
 	}
 	if cmd, ok, err := m.devicesCommand(c); ok {
+		return cmd, err
+	}
+	if cmd, ok, err := m.disableCommand(c); ok {
 		return cmd, err
 	}
 	return nil, fmt.Errorf("unknown command /%s", sanitize.Line(c.name))

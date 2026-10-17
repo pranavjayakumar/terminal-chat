@@ -119,7 +119,9 @@ func cmdSend(args []string) error {
 	target := args[0]
 	fs.Parse(args[1:])
 
-	body := strings.Join(fs.Args(), " ")
+	// Like piped input: `tc send '#ci' "$(make 2>&1)"` often carries colors,
+	// which the server would reject as control characters.
+	body := sanitize.StripANSI(strings.Join(fs.Args(), " "))
 	if *file != "" {
 		if *ctxLines < 0 {
 			return errors.New("--context must be 0 or more")
@@ -141,21 +143,7 @@ func cmdSend(args []string) error {
 
 	ctx, cancel := signalContext()
 	defer cancel()
-	c, err := connected(ctx)
-	if err != nil {
-		return err
-	}
-	defer c.Close()
-	ch, err := resolve(ctx, c, target)
-	if err != nil {
-		return err
-	}
-	if err := c.Send(ch, body, 0); err != nil {
-		return err
-	}
-	fctx, fcancel := context.WithTimeout(ctx, 20*time.Second)
-	defer fcancel()
-	return c.Flush(fctx)
+	return postTo(ctx, target, body)
 }
 
 // pipedBody prepares stdin for sending: strips terminal control sequences
