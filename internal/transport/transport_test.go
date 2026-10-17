@@ -49,7 +49,14 @@ func testCtx(t *testing.T) context.Context {
 func connect(t *testing.T, ln Listener, pin string, dial dialFunc) (client, server Conn) {
 	t.Helper()
 	ctx := testCtx(t)
+	// One retry with a fresh socket: on macOS a loopback QUIC dial can get
+	// an ephemeral port another socket holds on 127.0.0.1, which then
+	// receives the server's replies (see transporttest.Dial).
 	client, err := dial(ctx, ln.Addr().String(), pin)
+	if err != nil {
+		t.Logf("dial: %v (retrying)", err)
+		client, err = dial(testCtx(t), ln.Addr().String(), pin)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
