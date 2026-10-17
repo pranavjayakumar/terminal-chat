@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -24,6 +25,25 @@ type huddleFake struct {
 	talks    []bool
 	speaking map[uint64]bool
 	joinErr  error
+	warn     error
+}
+
+func (h *huddleFake) Huddles() map[uint64]int {
+	h.hmu.Lock()
+	defer h.hmu.Unlock()
+	out := map[uint64]int{}
+	for ch, r := range h.rosters {
+		if len(r) > 0 {
+			out[ch] = len(r)
+		}
+	}
+	return out
+}
+
+func (h *huddleFake) HuddleWarning() error {
+	h.hmu.Lock()
+	defer h.hmu.Unlock()
+	return h.warn
 }
 
 func (h *huddleFake) Huddle(ch uint64) []uint64 {
@@ -244,5 +264,72 @@ func TestHuddleViewFits(t *testing.T) {
 		ctrlT(m)
 		h.update(m)
 		checkView(t, m, "huddle with long names")
+	}
+}
+
+var _ HuddleBackend = (*client.Client)(nil)
+
+// The sidebar marks channels with a huddle going (🎧 + count) and drops
+// the mark before squeezing the name; every frame still fits.
+func TestHuddleSidebarMarker(t *testing.T) {
+	for _, sz := range [][2]int{{120, 30}, {100, 24}, {60, 15}, {40, 12}} {
+		m, h := newHuddleModel(t, sz[0], sz[1])
+		h.rosters[11] = []uint64{2, 3}
+		h.rosters[20] = []uint64{2}
+		h.update(m)
+		v := checkView(t, m, "sidebar huddle marker")
+		if m.sidebarShown() && sz[0] >= 100 {
+			if !regexp.MustCompile(`backend +🎧2`).MatchString(v) || !regexp.MustCompile(`bob +🎧1`).MatchString(v) {
+				t.Fatalf("%dx%d: no marker:\n%s", sz[0], sz[1], v)
+			}
+		}
+		h.rosters[11] = nil
+		h.update(m)
+		if v := checkView(t, m, "huddle ended"); strings.Contains(v, "backend 🎧") {
+			t.Fatalf("marker after the huddle ended:\n%s", v)
+		}
+	}
+}
+
+// herdr's pane badge shows 🎧 while we're in a huddle, unread or not.
+func TestHuddleHerdrBadge(t *testing.T) {
+	m, h := newHuddleModel(t, 100, 24)
+	before := m.badgeText()
+	runInput(t, m, "/huddle")
+	h.update(m)
+	got := m.badgeText()
+	if !strings.HasPrefix(got, "tc · 🎧") || (before != "" && got != "tc · 🎧 · "+strings.TrimPrefix(before, "tc · ")) {
+		t.Fatalf("badge %q (before %q)", got, before)
+	}
+	runInput(t, m, "/leave-huddle")
+	if got := m.badgeText(); got != before {
+		t.Fatalf("badge after leaving %q, want %q", got, before)
+	}
+}
+
+// Repeated clock-skew drops show one sticky warning per participation.
+func TestHuddleClockSkewWarning(t *testing.T) {
+	m, h := newHuddleModel(t, 60, 15)
+	runInput(t, m, "/huddle")
+	m.clearNotice()
+	h.warn = client.ErrClockSkew
+	h.update(m)
+	v := checkView(t, m, "skew warning")
+	if !m.noticeErr || !strings.Contains(m.notice, "clock") || !strings.Contains(v, "clock") {
+		t.Fatalf("notice %q\n%s", m.notice, v)
+	}
+	m.clearNotice()
+	h.update(m)
+	if m.notice != "" {
+		t.Fatalf("warning repeated: %q", m.notice)
+	}
+	runInput(t, m, "/leave-huddle")
+	h.warn = nil // a new participation starts clean
+	runInput(t, m, "/huddle")
+	h.warn = client.ErrClockSkew
+	m.clearNotice()
+	h.update(m)
+	if !strings.Contains(m.notice, "clock") {
+		t.Fatal("no warning in the next huddle")
 	}
 }

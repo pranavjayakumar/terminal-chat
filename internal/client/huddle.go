@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/skailama/tc/internal/e2ecrypto"
@@ -33,6 +34,7 @@ type huddleState struct {
 	rosters  map[uint64][]proto.Part // chan → roster, as the server last said
 	cur      *participation
 	platform func() (voice.Platform, error) // nil = voice.Native (tests inject)
+	skew     atomic.Int64                   // ns added to the voice engine's clock (tests)
 	// gen moves on every join attempt and leave, so a join that finishes
 	// after a newer join or a leave tears itself down instead of
 	// replacing (and leaking) what's current.
@@ -46,6 +48,28 @@ type participation struct {
 	vs     *voice.Session
 	keys   *huddleKeys // nil in plaintext channels
 	cancel context.CancelFunc
+	// skewed: frames kept failing the ±60 s ts check (under hud.mu); the
+	// UI warns once per participation.
+	skewed bool
+}
+
+// skewWarnAfter is how many frames dropped for clock skew within one
+// check (about half a second of one speaker) mean a peer's clock is more
+// than a minute off, not a stray replay.
+const skewWarnAfter = 25
+
+// ErrClockSkew is the HuddleWarning for repeated clock-skew drops.
+var ErrClockSkew = errors.New("some huddle audio is dropped: a clock is over a minute off — check the time (NTP) on both machines")
+
+// HuddleWarning is a problem with the current huddle the user should know
+// about (nil if none); the client posts Update{Huddle} when it appears.
+func (c *Client) HuddleWarning() error {
+	c.hud.mu.Lock()
+	defer c.hud.mu.Unlock()
+	if p := c.hud.cur; p != nil && p.skewed {
+		return ErrClockSkew
+	}
+	return nil
 }
 
 // Huddle lists the users in ch's huddle, in join order.
@@ -58,6 +82,10 @@ func (c *Client) Huddle(ch uint64) []uint64 {
 	}
 	return out
 }
+
+// SetVoiceClockSkew shifts the voice engine's clock by d (tests: a peer
+// whose clock is off).
+func (c *Client) SetVoiceClockSkew(d time.Duration) { c.hud.skew.Store(int64(d)) }
 
 // Huddles maps each channel with a live huddle to its size.
 func (c *Client) Huddles() map[uint64]int {
@@ -168,7 +196,8 @@ func (c *Client) JoinHuddle(ctx context.Context, ch uint64) error {
 		return err
 	}
 	rctx, cancel := context.WithCancel(c.ctx)
-	cfg := voice.Config{Src: res.Src, Enc: enc, Send: nonBlocking(rctx, dg)}
+	cfg := voice.Config{Src: res.Src, Enc: enc, Send: nonBlocking(rctx, dg),
+		Now: func() time.Time { return time.Now().Add(time.Duration(c.hud.skew.Load())) }}
 	if keys != nil {
 		cfg.Keys = keys
 	}
@@ -254,6 +283,7 @@ func (c *Client) watchHuddle(ctx context.Context, p *participation) {
 	defer t.Stop()
 	var last map[uint64]bool
 	var checked time.Time
+	var skew uint64
 	for {
 		select {
 		case <-p.sess.done: // the server ends our participation with the connection
@@ -268,6 +298,17 @@ func (c *Client) watchHuddle(ctx context.Context, p *participation) {
 			}
 			if now.Sub(checked) >= checkEvery {
 				checked = now
+				n := p.vs.Stats().Skew
+				if n-skew >= skewWarnAfter {
+					c.hud.mu.Lock()
+					warn := !p.skewed
+					p.skewed = true
+					c.hud.mu.Unlock()
+					if warn {
+						c.post(Update{Huddle: true})
+					}
+				}
+				skew = n
 				if !c.huddleStillValid(ctx, p) {
 					c.LeaveHuddle()
 					return

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +27,11 @@ type HuddleBackend interface {
 	SetTalking(on bool)
 	Talking() bool
 	Speaking() map[uint64]bool
+	// Huddles counts people per channel huddle (the sidebar's 🎧 marker).
+	Huddles() map[uint64]int
+	// HuddleWarning is a problem with our huddle worth telling the user
+	// (repeated clock-skew drops), or nil.
+	HuddleWarning() error
 }
 
 // Talk-key timing. Terminals report presses, not releases: a held key
@@ -66,6 +72,8 @@ type huddleUI struct {
 	speaking map[uint64]bool
 	talking  bool
 	here     int // people in the open channel's huddle, when we're not in it
+	counts   map[uint64]int
+	warned   error // the HuddleWarning already shown
 	// seenActive is the channel here was computed for.
 	seenActive uint64
 }
@@ -89,14 +97,29 @@ func (m *Model) refreshHuddle() {
 	h := &m.hud
 	h.cur, h.in = hb.InHuddle()
 	h.roster, h.speaking, h.talking, h.here = nil, nil, false, 0
+	h.counts = hb.Huddles()
 	if h.in {
 		h.roster = hb.Huddle(h.cur)
 		h.speaking = hb.Speaking()
 		h.talking = hb.Talking()
+		if w := hb.HuddleWarning(); w != nil && !errors.Is(w, h.warned) {
+			h.warned = w
+			m.setNotice(w.Error(), true, true, 0)
+		}
 	} else {
 		h.talk = talkOff
+		h.warned = nil
 		h.here = len(hb.Huddle(m.active))
 	}
+}
+
+// huddleMarker is the sidebar's mark for a channel with a huddle going:
+// 🎧 and how many are in it ("" when none).
+func (m *Model) huddleMarker(ch uint64) string {
+	if n := m.hud.counts[ch]; n > 0 {
+		return " 🎧" + strconv.Itoa(n)
+	}
+	return ""
 }
 
 func (m *Model) huddleCommand(c command) (tea.Cmd, bool, error) {

@@ -109,7 +109,8 @@ ct    = ChaCha20-Poly1305(sk, nonce, opus_frame, AD = header)                   
   `stream` and replaying a recording): every encrypted header carries `ts`, the sender's Unix
   time in seconds, inside the AD; receivers drop frames whose `ts` is more than 60 s from their
   own clock. This needs clocks within a minute (NTP). Rejections are counted per reason in the
-  engine (`voice.Stats`); a TUI warning for repeated clock-skew drops is a follow-up.
+  engine (`voice.Stats`); 25 or more clock-skew drops within one second raise a sticky TUI
+  warning, once per participation ("a clock is over a minute off — check the time (NTP)").
 - **Encrypted or not is decided by the client's trust state** (`E2EStatus`), never by the
   server's `Channel.e2e` flag alone: plaintext only in a channel never known as encrypted and
   not in alarm. A channel in alarm, or without a verified epoch we hold K for, refuses voice
@@ -147,7 +148,8 @@ exactly like public-channel text. The TUI marks encrypted huddles with the lock 
 - `/huddle` — join the current channel's huddle (or start it). In a huddle, the status line
   starts with `🎧 #chan · bo* cy alice🎙` — `*` marks who's talking right now, `🎙` that our mic
   is on, and `🔒` precedes encrypted channels. Viewing a channel whose huddle you're not in shows
-  `🎧 3 in huddle — /huddle`. (A sidebar marker is a follow-up.)
+  `🎧 3 in huddle — /huddle`. The sidebar marks every channel with a huddle going with a dim
+  `🎧n` (n people) before the unread badge; it's dropped before the name gets too short.
 - **Talk key `ctrl+t`** (bound only while in a huddle; unbound otherwise).
   Terminals don't report key-up, so: press starts talking; if key-repeats follow (you're
   holding it) talking stops 600 ms after the last repeat — push-to-talk. If no repeat arrives
@@ -156,8 +158,8 @@ exactly like public-channel text. The TUI marks encrypted huddles with the lock 
 - Not talking = muted. `/leave-huddle` leaves.
 - Builds without voice: `/huddle` explains "this tc build has no voice — install the voice
   build (see docs/VOICE.md)"; the roster indicator still works.
-- herdr (follow-up, not in this PR): the pane's metadata badge gets `🎧` while you're in a
-  huddle; no notifications for huddle starts in v1 (could be noisy; owner decision).
+- herdr: while you're in a huddle the pane's metadata title starts `tc · 🎧` (followed by the
+  unread summary, if any), so you can see which pane holds the call.
 
 ## Audio I/O library
 

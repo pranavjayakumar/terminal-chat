@@ -189,7 +189,14 @@ func (m *Model) seen(ch uint64) {
 // ---- herdr unread badge ----
 
 func (m *Model) badgeText() string {
-	if s := m.unreadSummary(); s != "" {
+	s := m.unreadSummary()
+	if m.hud.in { // in a huddle: the pane shows it even with nothing unread
+		if s == "" {
+			return "tc · 🎧"
+		}
+		return "tc · 🎧 · " + s
+	}
+	if s != "" {
 		return "tc · " + s
 	}
 	return ""

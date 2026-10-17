@@ -188,6 +188,18 @@ func TestHuddleEncryptedDM(t *testing.T) {
 	if st.Key+st.Auth+st.BadFrame != 0 {
 		t.Fatalf("encrypted frames rejected: %+v", st)
 	}
+	if alice.HuddleWarning() != nil {
+		t.Fatalf("warning with good clocks: %v", alice.HuddleWarning())
+	}
+
+	// bob's clock runs 2 minutes fast: alice drops his frames (ts check)
+	// and, once it's clearly not a stray replay, warns once.
+	bob.SetVoiceClockSkew(2 * time.Minute)
+	talk(fb, []*fakeAudio{fa}, 42, 80)
+	eventually(t, "clock-skew warning", func() bool { return errors.Is(alice.HuddleWarning(), client.ErrClockSkew) })
+	if bob.HuddleWarning() != nil {
+		t.Fatal("the sender warned")
+	}
 	if sp := alice.Speaking(); !sp[bob.Me().ID] {
 		// Speaking is measured against the clock; the drain loop may have
 		// outlasted 300 ms, so only require the frames above.

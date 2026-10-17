@@ -542,19 +542,30 @@ func (m *Model) sideEntry(v client.ChannelView, w int) string {
 	if m.hasDraft(v.ID) {
 		draft = " ✎"
 	}
+	// 🎧n: a huddle is on there (docs/VOICE.md "UX"). Dropped before the
+	// name gets too short to read.
+	hud := m.huddleMarker(v.ID)
 	labelW := w - 1 - strWidth(draft)
 	if badge != "" {
 		labelW = w - strWidth(badge) - 2 - strWidth(draft)
 	}
+	if hud != "" && labelW-strWidth(hud) >= 6 {
+		labelW -= strWidth(hud)
+	} else {
+		hud = ""
+	}
 	label := fit(truncate(prefix+name, labelW), labelW)
 	if v.ID == m.active {
-		return m.st.sideActive.Render(fit(label+draft+" "+badge, w-1))
+		return m.st.sideActive.Render(fit(label+hud+draft+" "+badge, w-1))
 	}
 	st := m.st.sideItem
 	if v.Unread > 0 || v.Mention {
 		st = m.st.sideUnrd
 	}
 	out := st.Render(label)
+	if hud != "" {
+		out += m.st.dim.Render(hud)
+	}
 	if draft != "" {
 		out += m.st.dim.Render(draft)
 	}
