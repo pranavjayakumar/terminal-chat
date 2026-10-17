@@ -296,19 +296,26 @@ func (m *Model) statusText() string {
 	return m.status.State.String()
 }
 
-// statusLine is our huddle (if any), the notice (if any), then who is typing.
+// statusLine is an error notice (if any), our huddle (if any; just its
+// head while a notice shows), another notice, then who is typing. The parts
+// that matter most come first so truncation cuts the least important.
 func (m *Model) statusLine(w int) string {
 	var b strings.Builder
-	if t := m.huddleText(); t != "" {
-		b.WriteString(t)
-		if m.notice != "" {
+	sep := func() {
+		if b.Len() > 0 {
 			b.WriteString(m.st.dim.Render(" · "))
 		}
 	}
-	if m.notice != "" {
+	if m.notice != "" && m.noticeErr {
+		b.WriteString(m.st.noticeErr.Render("! " + m.notice))
+	}
+	if head, roster := m.huddleHead(m.notice != ""); head != "" {
+		sep()
+		b.WriteString(head + roster)
+	}
+	if m.notice != "" && !m.noticeErr {
+		sep()
 		switch {
-		case m.noticeErr:
-			b.WriteString(m.st.noticeErr.Render("! " + m.notice))
 		case m.noticeTTL == escWindow || m.noticeSticky || m.noticeDim:
 			b.WriteString(m.st.dim.Render(m.notice))
 		default:

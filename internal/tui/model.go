@@ -705,6 +705,10 @@ func (m *Model) copyCmd(text string) tea.Cmd {
 // Update handles one message.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	_, cmd := m.update(msg)
+	if m.active != m.hud.seenActive {
+		m.hud.seenActive = m.active
+		m.refreshHuddle()
+	}
 	m.syncDraft()
 	m.updatePlaceholder()
 	if t := m.draftTick(); t != nil {
@@ -786,7 +790,10 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.focused = false
 		return m, nil
 	case updateMsg:
-		return m, tea.Batch(m.applyUpdate(client.Update(msg)), m.waitUpdate(), m.huddleTick())
+		if msg.Huddle || msg.Reset || msg.Channels {
+			m.refreshHuddle()
+		}
+		return m, tea.Batch(m.applyUpdate(client.Update(msg)), m.waitUpdate())
 	case updatesClosedMsg:
 		return m, nil
 	case errMsg:

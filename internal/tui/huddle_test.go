@@ -2,12 +2,15 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/voice"
 )
 
@@ -27,16 +30,6 @@ func (h *huddleFake) Huddle(ch uint64) []uint64 {
 	h.hmu.Lock()
 	defer h.hmu.Unlock()
 	return h.rosters[ch]
-}
-
-func (h *huddleFake) Huddles() map[uint64]int {
-	h.hmu.Lock()
-	defer h.hmu.Unlock()
-	out := map[uint64]int{}
-	for ch, r := range h.rosters {
-		out[ch] = len(r)
-	}
-	return out
 }
 
 func (h *huddleFake) InHuddle() (uint64, bool) {
@@ -103,14 +96,21 @@ func TestHuddleCommandWithoutSupport(t *testing.T) {
 	}
 }
 
+// update tells the model the backend changed, as the client would.
+func (h *huddleFake) update(m *Model) {
+	m.Update(updateMsg(client.Update{Huddle: true}))
+}
+
 func TestHuddleJoinTalkLeave(t *testing.T) {
 	m, h := newHuddleModel(t, 100, 24)
+	clk := newClock(m)
 	// ctrl+t outside a huddle does nothing voice-related.
 	ctrlT(m)
 	if len(h.talks) != 0 {
 		t.Fatal("ctrl+t talked outside a huddle")
 	}
 	h.rosters[m.active] = []uint64{2}
+	h.update(m)
 	if v := checkView(t, m, "huddle elsewhere"); !strings.Contains(v, "🎧 1 in huddle — /huddle") {
 		t.Fatalf("live huddle not shown:\n%s", v)
 	}
@@ -120,8 +120,9 @@ func TestHuddleJoinTalkLeave(t *testing.T) {
 		t.Fatalf("not joined: %v %v (notice %q)", ch, in, m.notice)
 	}
 	h.speaking = map[uint64]bool{2: true}
-	v := checkView(t, m, "in huddle")
-	if !strings.Contains(v, "🎧 #general · bob* alice") {
+	m.clearNotice()
+	h.update(m)
+	if v := checkView(t, m, "in huddle"); !strings.Contains(v, "🎧 #general · bob*") {
 		t.Fatalf("status line:\n%s", v)
 	}
 	runInput(t, m, "/huddle")
@@ -129,7 +130,8 @@ func TestHuddleJoinTalkLeave(t *testing.T) {
 		t.Fatalf("rejoin notice %q", m.notice)
 	}
 
-	// Tap: talking starts, and with no key-repeat it latches open.
+	// Tap: talking starts; no repeat within firstRepeatWait latches it.
+	clk.add(time.Second)
 	ctrlT(m)
 	if !h.Talking() {
 		t.Fatal("tap didn't start talking")
@@ -138,26 +140,57 @@ func TestHuddleJoinTalkLeave(t *testing.T) {
 	if !h.Talking() || m.hud.talk != talkLatched {
 		t.Fatalf("tap should latch: talking=%v mode=%v", h.Talking(), m.hud.talk)
 	}
-	if v := checkView(t, m, "talking"); !strings.Contains(v, "alice🎙") {
+	m.clearNotice()
+	if v := checkView(t, m, "talking"); !strings.Contains(v, "🎧 ● #general") {
 		t.Fatalf("own mic not shown:\n%s", v)
 	}
+	clk.add(time.Second)
 	ctrlT(m)
 	if h.Talking() {
 		t.Fatal("second tap didn't mute")
 	}
 
-	// Hold: key-repeats keep talking; it stops after the last one.
+	// Hold with a slow (X11, 660 ms) initial repeat delay, then fast repeats.
+	clk.add(time.Second)
 	ctrlT(m)
-	first := m.hud.talkGen
-	ctrlT(m)
-	ctrlT(m)
-	m.Update(talkCheckMsg{first}) // superseded by the repeats
+	clk.add(660 * time.Millisecond)
+	ctrlT(m) // first repeat: still talking, now holding
+	if !h.Talking() || m.hud.talk != talkHolding {
+		t.Fatalf("slow first repeat: talking=%v mode=%v", h.Talking(), m.hud.talk)
+	}
+	for range 5 {
+		clk.add(33 * time.Millisecond)
+		first := m.hud.talkGen
+		ctrlT(m)
+		m.Update(talkCheckMsg{first}) // superseded by the newer press
+	}
 	if !h.Talking() {
 		t.Fatal("stale check stopped talking mid-hold")
 	}
-	m.Update(talkCheckMsg{m.hud.talkGen})
+	m.Update(talkCheckMsg{m.hud.talkGen}) // released
 	if h.Talking() || m.hud.talk != talkOff {
 		t.Fatal("release didn't stop talking")
+	}
+
+	// A repeat that lands on a latched mic (hold detected late) keeps talking.
+	clk.add(time.Second)
+	ctrlT(m)
+	m.Update(talkCheckMsg{m.hud.talkGen}) // latched
+	clk.add(30 * time.Millisecond)
+	ctrlT(m)
+	if !h.Talking() || m.hud.talk != talkHolding {
+		t.Fatalf("repeat after latch: talking=%v mode=%v", h.Talking(), m.hud.talk)
+	}
+	m.Update(talkCheckMsg{m.hud.talkGen})
+
+	// /talk and /mute work where ctrl+t can't.
+	runInput(t, m, "/talk")
+	if !h.Talking() {
+		t.Fatal("/talk")
+	}
+	runInput(t, m, "/mute")
+	if h.Talking() {
+		t.Fatal("/mute")
 	}
 
 	runInput(t, m, "/leave-huddle")
@@ -167,6 +200,10 @@ func TestHuddleJoinTalkLeave(t *testing.T) {
 	runInput(t, m, "/leave-huddle")
 	if !m.noticeErr || !strings.Contains(m.notice, "not in a huddle") {
 		t.Fatalf("notice %q", m.notice)
+	}
+	runInput(t, m, "/talk")
+	if !m.noticeErr {
+		t.Fatal("/talk outside a huddle should fail")
 	}
 }
 
@@ -179,6 +216,25 @@ func TestHuddleJoinErrorShown(t *testing.T) {
 	}
 }
 
+// At 40 columns, joined last with the mic latched: the mic marker and an
+// error notice must both survive truncation.
+func TestHuddleNarrowKeepsMicAndErrors(t *testing.T) {
+	m, h := newHuddleModel(t, 40, 12)
+	h.rosters[m.active] = []uint64{2, 3, 4}
+	runInput(t, m, "/huddle")
+	runInput(t, m, "/talk")
+	m.clearNotice()
+	h.update(m)
+	if v := checkView(t, m, "narrow talking"); !strings.Contains(v, "🎧 ●") {
+		t.Fatalf("mic marker lost at 40 cols:\n%s", v)
+	}
+	m.setErr("send", errors.New("offline"))
+	v := checkView(t, m, "narrow error")
+	if !strings.Contains(v, "! send") || !strings.Contains(v, "🎧 ●") {
+		t.Fatalf("error or mic lost at 40 cols:\n%s", v)
+	}
+}
+
 func TestHuddleViewFits(t *testing.T) {
 	for _, sz := range [][2]int{{40, 12}, {60, 15}, {120, 40}} {
 		m, h := newHuddleModel(t, sz[0], sz[1])
@@ -186,6 +242,7 @@ func TestHuddleViewFits(t *testing.T) {
 		h.rosters[m.active] = []uint64{1, 2, 3, 4}
 		h.speaking = map[uint64]bool{4: true}
 		ctrlT(m)
+		h.update(m)
 		checkView(t, m, "huddle with long names")
 	}
 }
