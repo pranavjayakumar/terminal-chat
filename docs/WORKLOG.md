@@ -32,3 +32,4 @@ The current resume point always lives in [STATUS.md](STATUS.md) → "Handoff".
 - 11:34 · Resumed. Docs cleanup (M2 ✓ in CLAUDE.md, release tags in STATUS) · Claude · chore/docs-cleanup
 - 11:34 · Parallel run started (Claude subagents, worktrees, board in scratchpad COORDINATION.md): fix42 (#42), invites (member + github-key invites), devices (revoke UX), brew (tap from repo) → v0.3.0; voice (M5) → v0.4.0; pm (feature research) and p2p (serverless research) reports, no code
 - 14:46 · Scratchpad wiped on session restart (boards lost). Saved agent work: pushed fix/join-flow (mid-merge), fix/device-revoke-gaps (+WIP test), fix/test-flakes. Open work moved to issues #54 #55 #56; STATUS handoff rewritten
+- 17:07 · All v0.3.0 fixes merged: #51 #53 #58 #60 #61 (B5 owed-rotation hardening after protocol review). README/ONBOARDING updated for v0.3.0
