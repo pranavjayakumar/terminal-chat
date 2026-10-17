@@ -188,10 +188,15 @@ func runJoin(ctx context.Context, env joinEnv, code, name, keyPath string) error
 		generated = p
 		keys = []joinKey{{Candidate: identity.Candidate{Pub: s.PublicKey(), Signer: s, Path: p}}}
 	}
-	// A generated key no server knows yet is worthless; don't leave it.
+	// A generated key the server refused is worthless; don't leave it. On
+	// any other failure (timeout, lost WELCOME) the server may have
+	// registered it, and a retry needs it.
 	keep := false
+	var lastErr error
 	defer func() {
-		if generated != "" && !keep {
+		var bye *client.ByeError
+		refused := errors.As(lastErr, &bye) && bye.Code != proto.ByeKeyExists
+		if generated != "" && !keep && refused {
 			os.Remove(generated)
 			os.Remove(generated + ".pub")
 		}
@@ -219,9 +224,18 @@ func runJoin(ctx context.Context, env joinEnv, code, name, keyPath string) error
 	var u proto.User
 	var used joinKey
 	hinted := false
-	var lastErr error
+	blind := 0
 	for i := 0; i < len(keys); i++ {
 		k := keys[i]
+		// Keys not picked by the server's hint are offered blind: cap them,
+		// and leave security keys (a touch each) to --key or the hint, so a
+		// hostile server can't harvest every key or train prompt approval.
+		if !hinted {
+			if blind > 0 && (blind >= maxBlindKeys || strings.HasPrefix(k.Pub.Type(), "sk-")) {
+				continue
+			}
+			blind++
+		}
 		if generated == "" {
 			k.announce(env)
 		}
@@ -238,11 +252,11 @@ func runJoin(ctx context.Context, env joinEnv, code, name, keyPath string) error
 		if errors.As(err, &bye) && bye.Code == proto.ByeNameTaken {
 			return fmt.Errorf("the name %s is taken; run again with --name another-name", name)
 		}
+		lastErr = err
 		if err == nil {
 			used = k
 			break
 		}
-		lastErr = err
 		if !errors.As(err, &bye) {
 			return err
 		}
@@ -290,6 +304,9 @@ func runJoin(ctx context.Context, env joinEnv, code, name, keyPath string) error
 	printJoinTips(env, u)
 	return nil
 }
+
+// maxBlindKeys is how many keys runJoin offers without a key hint.
+const maxBlindKeys = 3
 
 // joinKeys returns the keys to try, in order, and every candidate found
 // (including ones that can't sign here, for error messages). --key gives
@@ -366,6 +383,7 @@ func keyBoundError(fps []string, all []joinKey, keyPath string) error {
 		b.WriteString("none of yours is one of them")
 	}
 	if len(fps) > 0 {
+		fps = fps[:min(len(fps), proto.MaxInviteKeys)]
 		b.WriteString("\n  it accepts: " + strings.Join(sanitizeAll(fps), ", "))
 	}
 	writeTried(&b, all)

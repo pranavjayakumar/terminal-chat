@@ -96,7 +96,8 @@ Auth = {pubkey: bin, sig: bin, invite?: str, name?: str}
   `invite`/`name` come with it; the invite is not looked at and stays unspent (BYE `revoked`
   if that user is disabled). The key alone already proves who this is, and so a join retried
   after a lost WELCOME, or an invite code reused on a second computer, signs in. (Servers
-  through v0.2.0 answered BYE `key_exists` instead; clients retry such a BYE as a plain login.)
+  through v0.2.0 checked the invite first, answering `invite_invalid` for a spent, expired or
+  key-bound invite and `key_exists` otherwise; clients retry either as a plain login.)
 - Clients give a second computer the server as `tc://<host>:<port>#<pin>` (an invite code
   without the token): `tc login` with it sends a HELLO without `invite`.
 
@@ -155,7 +156,8 @@ signing with each (hardware keys and password-manager agents prompt per signatur
 only sent for a live (unexpired, unspent, creator still allowed) key-bound invite and a
 HELLO whose signature verified; the fingerprints are of public keys the invitee published or
 handed over, so a token holder learns nothing secret. Without `key_hint` the BYE is as
-before (servers ignore unknown HELLO caps; clients ignore unknown BYE fields).
+before (servers ignore unknown HELLO caps; clients ignore unknown BYE fields). `key_hint` is
+a request cap in HELLO only; servers don't echo it in WELCOME.
 Rules (else `bad_request`, nothing stored):
 - 1–32 keys, each at most 4096 bytes, canonically encoded, of a type tc logs in with:
   ed25519, ECDSA (nistp256/384/521), their `sk-` security-key forms, or RSA of
@@ -189,6 +191,9 @@ The code is single-quoted; a code containing any byte outside `[A-Za-z0-9:/#.\-_
 ```
 tc://<host>:<port>/<token>#<pin>
 ```
+
+A server line without the token, `tc://<host>:<port>#<pin>` (an empty path, `/#`, too), is
+a client-side form for `tc login` (§4); it is not an invite, and invite parsers reject it.
 
 `token` = 16 random bytes, lowercase base32 without padding, compared in
 constant time. `pin` = base64url (no padding) SHA-256 SPKI pin.

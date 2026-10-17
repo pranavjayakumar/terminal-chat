@@ -237,8 +237,17 @@ func Login(ctx context.Context, home, invite, name, keyPath string) (proto.User,
 	}
 	w, err := loginOnce(ctx, inv, signer, inv.Token, name)
 	var bye *ByeError
-	if errors.As(err, &bye) && bye.Code == proto.ByeKeyExists && inv.Token != "" {
-		w, err = loginOnce(ctx, inv, signer, "", "")
+	if errors.As(err, &bye) && inv.Token != "" {
+		switch {
+		case bye.Code == proto.ByeKeyExists:
+			w, err = loginOnce(ctx, inv, signer, "", "")
+		case bye.Code == proto.ByeInviteInvalid && len(bye.Keys) == 0:
+			// A v0.2.0 server checks the invite before the key, so a join
+			// retried after a lost WELCOME gets invite_invalid there.
+			if w2, err2 := loginOnce(ctx, inv, signer, "", ""); err2 == nil {
+				w, err = w2, nil
+			}
+		}
 	}
 	if err != nil {
 		return proto.User{}, err

@@ -183,3 +183,22 @@ func TestJoinPinsAgentKey(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// Without a key hint, tc login offers at most maxBlindKeys keys: a hostile
+// server answering auth_failed to everything can't collect every key.
+func TestLoginBlindKeyCap(t *testing.T) {
+	env, f, _ := testJoinEnv(t, noRead{t}, false)
+	var keys []any
+	for range 6 {
+		_, k, _ := ed25519.GenerateKey(rand.Reader)
+		keys = append(keys, k)
+	}
+	serveAgent(t, keys...)
+	for range 6 {
+		f.errs = append(f.errs, &client.ByeError{Code: proto.ByeAuthFailed})
+	}
+	err := runJoin(context.Background(), env, "tc://127.0.0.1:7443#pin", "", "")
+	if err == nil || len(f.calls) != maxBlindKeys {
+		t.Fatalf("err %v, %d attempts", err, len(f.calls))
+	}
+}

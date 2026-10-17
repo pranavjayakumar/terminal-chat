@@ -178,7 +178,7 @@ func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp str
 		}
 		// Registered since handshake looked (a concurrent redemption).
 		if _, err := userByKey(ctx, tx, fp); err == nil {
-			return nil, fail(proto.ByeKeyExists, "this key is already registered; log in with it: tc login tc://host:port#pin")
+			return nil, fail(proto.ByeKeyExists, "this key is already registered; log in without an invite (tc login)")
 		}
 		// Conditional so a use can never be spent twice, whatever serializes
 		// the callers; the rest of the transaction rolls back with it.

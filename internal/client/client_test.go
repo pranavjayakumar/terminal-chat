@@ -431,6 +431,14 @@ func TestLoginAndSnapshot(t *testing.T) {
 func TestLoginBadInvite(t *testing.T) {
 	testEnv(t)
 	fs := newFakeServer(t)
+	// A v0.2.0 server answers invite_invalid to a spent invite even when
+	// the key is registered (a join retried after a lost WELCOME), so
+	// Login retries as a plain login...
+	if u, err := Login(context.Background(), t.TempDir(), proto.FormatInvite(fs.addr(), "bad", fs.pin), "x", writeKey(t)); err != nil || u.ID != users[0].ID {
+		t.Fatalf("plain-login fallback: %+v %v", u, err)
+	}
+	// ...and reports the invite error when that fails too.
+	fs.bye.Store(proto.ByeAuthFailed)
 	_, err := Login(context.Background(), t.TempDir(), proto.FormatInvite(fs.addr(), "bad", fs.pin), "x", writeKey(t))
 	var bye *ByeError
 	if !errors.As(err, &bye) || bye.Code != proto.ByeInviteInvalid {

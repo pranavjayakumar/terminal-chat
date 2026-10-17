@@ -134,7 +134,7 @@ func FormatInvite(addr, token, pin string) string {
 func ParseInvite(code string) (Invite, error) {
 	inv, err := ParseLogin(code)
 	if err == nil && inv.Token == "" {
-		err = errors.New("invite is missing token or pin")
+		return Invite{}, errors.New("invite is missing token or pin")
 	}
 	return inv, err
 }
