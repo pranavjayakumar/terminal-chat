@@ -88,6 +88,10 @@ func cmdServer(args []string) error {
 	defer stop()
 
 	slog.Info("tc server listening", "addr", ln.Addr().String(), "public", pub, "pin", srv.Pin(), "data", *data)
+	if *memberInvites {
+		slog.Info("members can invite people (never admins; --member-invites=false turns it off)",
+			"live_per_member", proto.MaxMemberInvites, "max_uses", proto.MaxMemberInviteUses)
+	}
 	if strings.HasPrefix(pub, "localhost:") {
 		slog.Warn("invites point at localhost; pass --public host:port so teammates can connect")
 	}

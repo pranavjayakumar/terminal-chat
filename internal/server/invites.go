@@ -23,7 +23,19 @@ CREATE TABLE IF NOT EXISTS invite_keys (
 	fp TEXT NOT NULL,
 	PRIMARY KEY (token, fp)
 );
+CREATE INDEX IF NOT EXISTS invites_created_by ON invites(created_by);
 `
+
+// boundTokenHash is what key-bound and member invites are stored under
+// instead of tokenHash: a server from before key_invites/member_invites
+// (after a downgrade) looks invites up by tokenHash only, so it can't
+// redeem them without the binding or creator checks it doesn't know.
+func boundTokenHash(token string) string { return tokenHash("tc-invite-v2\x00" + token) }
+
+// inviteGrace is how long spent-by-time invites are kept before
+// CreateInviteOpts deletes them, so expired rows don't pile up (a member
+// can churn short-lived invites without hitting the live cap).
+const inviteGrace = 24 * time.Hour
 
 // liveInvite is the SQL condition for an invite (i, its creator c LEFT
 // JOINed from users) that can still be redeemed at ?1 while member invites
@@ -141,9 +153,16 @@ func (s *Server) CreateInviteOpts(ctx context.Context, o InviteOpts) (proto.Invi
 	token := strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw))
 	now := s.now()
 	expires := now + o.TTL.Milliseconds()
+	stored := tokenHash(token)
+	if len(fps) > 0 || o.Member {
+		stored = boundTokenHash(token)
+	}
 	// Serialized with redemption, revocation and user.disable, so the member
 	// cap can't be raced past and a disabled member can't slip one in.
 	_, err = s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM invites WHERE expires <= ?`, now-inviteGrace.Milliseconds()); err != nil {
+			return nil, err
+		}
 		if o.Member {
 			var n int
 			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM invites
@@ -162,11 +181,11 @@ func (s *Server) CreateInviteOpts(ctx context.Context, o InviteOpts) (proto.Invi
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO invites (token, admin, user, created, expires, uses, created_by, key_src) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			tokenHash(token), o.Admin, nullable(o.User), now, expires, o.Uses, o.CreatedBy, o.KeySrc); err != nil {
+			stored, o.Admin, nullable(o.User), now, expires, o.Uses, o.CreatedBy, o.KeySrc); err != nil {
 			return nil, fmt.Errorf("creating invite: %w", err)
 		}
 		for _, fp := range fps {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO invite_keys (token, fp) VALUES (?, ?)`, tokenHash(token), fp); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO invite_keys (token, fp) VALUES (?, ?)`, stored, fp); err != nil {
 				return nil, fmt.Errorf("binding invite keys: %w", err)
 			}
 		}

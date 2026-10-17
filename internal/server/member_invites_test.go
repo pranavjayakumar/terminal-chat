@@ -43,7 +43,20 @@ func listInvites(c *tclient) []proto.InviteInfo {
 	return res.Invites
 }
 
-func inviteID(inv proto.Invite) string { return tokenHash(inv.Token)[:proto.InviteIDLen] }
+// inviteID is the id invite.list shows for inv: the first digits of the
+// hash it is stored under (boundTokenHash for member and key-bound invites).
+func (ts *testServer) inviteID(inv proto.Invite) string {
+	return ts.storedHash(inv)[:proto.InviteIDLen]
+}
+
+func (ts *testServer) storedHash(inv proto.Invite) string {
+	var n int
+	ts.st.db.QueryRow(`SELECT COUNT(*) FROM invites WHERE token = ?`, boundTokenHash(inv.Token)).Scan(&n)
+	if n > 0 {
+		return boundTokenHash(inv.Token)
+	}
+	return tokenHash(inv.Token)
+}
 
 // A member creates user invites within the member limits; the joiner is a
 // plain member. Members never mint admin or someone else's add-key invite.
@@ -93,7 +106,7 @@ func TestMemberInvites(t *testing.T) {
 
 			// list: bob sees only his; the admin sees everyone's.
 			mine := listInvites(bob)
-			if len(mine) != 1 || mine[0].ID != inviteID(team) || mine[0].CreatedBy != bob.user.ID || mine[0].UsesLeft != proto.MaxMemberInviteUses-1 {
+			if len(mine) != 1 || mine[0].ID != ts.inviteID(team) || mine[0].CreatedBy != bob.user.ID || mine[0].UsesLeft != proto.MaxMemberInviteUses-1 {
 				t.Fatalf("bob's list %+v", mine)
 			}
 			for _, inv := range mine {
@@ -105,17 +118,17 @@ func TestMemberInvites(t *testing.T) {
 				t.Fatalf("admin's list %+v", all)
 			}
 			// revoke: someone else's id is not_found (and stays live).
-			bob.fail(proto.OpInviteRevoke, proto.InviteRevokeArgs{ID: inviteID(adminInv)}, proto.ErrNotFound)
+			bob.fail(proto.OpInviteRevoke, proto.InviteRevokeArgs{ID: ts.inviteID(adminInv)}, proto.ErrNotFound)
 			if len(listInvites(admin)) != 2 {
 				t.Fatal("bob revoked the admin's invite")
 			}
-			bob.ok(proto.OpInviteRevoke, proto.InviteRevokeArgs{ID: inviteID(team)}, nil)
+			bob.ok(proto.OpInviteRevoke, proto.InviteRevokeArgs{ID: ts.inviteID(team)}, nil)
 			if _, bye := ts.connect(t, newKey(t), team.Token, "dave"); bye != proto.ByeInviteInvalid {
 				t.Fatalf("revoked member invite: %q", bye)
 			}
 			// The admin can revoke a member's invite.
 			_, again := createInvite(t, bob, proto.InviteCreateArgs{})
-			admin.ok(proto.OpInviteRevoke, proto.InviteRevokeArgs{ID: inviteID(again)}, nil)
+			admin.ok(proto.OpInviteRevoke, proto.InviteRevokeArgs{ID: ts.inviteID(again)}, nil)
 		})
 	}
 }
@@ -139,10 +152,10 @@ func TestMemberInviteCap(t *testing.T) {
 	_, inv := createInvite(t, bob, proto.InviteCreateArgs{})
 	bob.fail(proto.OpInviteCreate, proto.InviteCreateArgs{}, proto.ErrConflict)
 	// Expiry frees one.
-	ts.st.db.Exec(`UPDATE invites SET expires = ? WHERE token = ?`, ts.now()-1, tokenHash(inv.Token))
+	ts.st.db.Exec(`UPDATE invites SET expires = ? WHERE token = ?`, ts.now()-1, ts.storedHash(inv))
 	_, inv = createInvite(t, bob, proto.InviteCreateArgs{})
 	// Revoking frees one.
-	bob.ok(proto.OpInviteRevoke, proto.InviteRevokeArgs{ID: inviteID(inv)}, nil)
+	bob.ok(proto.OpInviteRevoke, proto.InviteRevokeArgs{ID: ts.inviteID(inv)}, nil)
 	createInvite(t, bob, proto.InviteCreateArgs{})
 	bob.fail(proto.OpInviteCreate, proto.InviteCreateArgs{}, proto.ErrConflict)
 	// The cap is per member, and admins have none.
@@ -218,7 +231,7 @@ func TestMemberInvitesTurnedOff(t *testing.T) {
 		t.Fatalf("admin invite while off: %q", bye)
 	}
 	invs, _ := off.ListInvites(context.Background())
-	if len(invs) != 1 || invs[0].ID != inviteID(adminInv) {
+	if len(invs) != 1 || invs[0].ID != off.inviteID(adminInv) {
 		t.Fatalf("listed while off: %+v", invs)
 	}
 	off.stop()
@@ -249,7 +262,7 @@ func TestDisableDeletesInvites(t *testing.T) {
 			t.Fatalf("invite of a disabled user redeemed: %q", bye)
 		}
 	}
-	if invs := listInvites(root); len(invs) != 1 || invs[0].ID != inviteID(rootInv) {
+	if invs := listInvites(root); len(invs) != 1 || invs[0].ID != ts.inviteID(rootInv) {
 		t.Fatalf("listed %+v", invs)
 	}
 	var n int
@@ -402,5 +415,54 @@ func TestHostKeyBoundAdminInvite(t *testing.T) {
 	}
 	if _, err := ts.CreateInviteOpts(context.Background(), InviteOpts{Uses: 3, Keys: [][]byte{k.PublicKey().Marshal()}}); err == nil {
 		t.Fatal("multi-use key invite accepted")
+	}
+}
+
+// Key-bound and member invites aren't stored under the plain token hash,
+// so a pre-key_invites server (after a downgrade), which looks invites up
+// by tokenHash alone, can't redeem them unbound. Plain invites keep it.
+func TestBoundInvitesHiddenFromOldServers(t *testing.T) {
+	ts := memberServer(t, "tcp")
+	admin := ts.register(t, "admin", true)
+	admin.syncFresh()
+	bob := ts.register(t, "bob", false)
+	bob.syncFresh()
+	_, plain := createInvite(t, admin, proto.InviteCreateArgs{Uses: 2})
+	_, bound := createInvite(t, admin, proto.InviteCreateArgs{Keys: [][]byte{newKey(t).PublicKey().Marshal()}})
+	_, member := createInvite(t, bob, proto.InviteCreateArgs{})
+	oldLookup := func(inv proto.Invite) bool {
+		var n int
+		ts.st.db.QueryRow(`SELECT COUNT(*) FROM invites WHERE token = ?`, tokenHash(inv.Token)).Scan(&n)
+		return n == 1
+	}
+	if !oldLookup(plain) || oldLookup(bound) || oldLookup(member) {
+		t.Fatalf("old-server lookups: plain %v bound %v member %v", oldLookup(plain), oldLookup(bound), oldLookup(member))
+	}
+	// This server still redeems all of them.
+	if _, bye := ts.connect(t, newKey(t), member.Token, "m1"); bye != "" {
+		t.Fatalf("member invite: %q", bye)
+	}
+	if _, bye := ts.connect(t, newKey(t), plain.Token, "p1"); bye != "" {
+		t.Fatalf("plain invite: %q", bye)
+	}
+}
+
+// Invites expired for over a day are deleted (with their keys) when the
+// next one is created, so short-lived invites can't pile up.
+func TestExpiredInvitesCollected(t *testing.T) {
+	ts := memberServer(t, "tcp")
+	bob := ts.register(t, "bob", false)
+	bob.syncFresh()
+	_, old := createInvite(t, bob, proto.InviteCreateArgs{Keys: [][]byte{newKey(t).PublicKey().Marshal()}})
+	_, recent := createInvite(t, bob, proto.InviteCreateArgs{})
+	ts.st.db.Exec(`UPDATE invites SET expires = ? WHERE token = ?`, ts.now()-inviteGrace.Milliseconds()-1, ts.storedHash(old))
+	ts.st.db.Exec(`UPDATE invites SET expires = ? WHERE token = ?`, ts.now()-1, ts.storedHash(recent))
+	createInvite(t, bob, proto.InviteCreateArgs{})
+	var invs, keys, kept int
+	ts.st.db.QueryRow(`SELECT COUNT(*) FROM invites WHERE token = ?`, boundTokenHash(old.Token)).Scan(&invs)
+	ts.st.db.QueryRow(`SELECT COUNT(*) FROM invite_keys`).Scan(&keys)
+	ts.st.db.QueryRow(`SELECT COUNT(*) FROM invites WHERE token = ?`, boundTokenHash(recent.Token)).Scan(&kept)
+	if invs != 0 || keys != 0 || kept != 1 {
+		t.Fatalf("after collection: old %d keys %d recent %d", invs, keys, kept)
 	}
 }
