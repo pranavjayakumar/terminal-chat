@@ -39,6 +39,12 @@ type huddleState struct {
 	// after a newer join or a leave tears itself down instead of
 	// replacing (and leaking) what's current.
 	gen uint64
+	// Rosters are a baseline (never a "start") until liveAt, which is
+	// zero until a sync completes and then a moment after it (the server
+	// sends every live roster right after sync), and for a channel we
+	// just joined (joinedAt).
+	liveAt   time.Time
+	joinedAt map[uint64]time.Time
 }
 
 type participation struct {
@@ -51,6 +57,86 @@ type participation struct {
 	// skewed: frames kept failing the ±60 s ts check (under hud.mu); the
 	// UI warns once per participation.
 	skewed bool
+
+	cueMu    sync.Mutex
+	started  time.Time
+	others   map[uint64]bool // users in the roster besides us, last time
+	lastJoin time.Time
+	lastMic  time.Time
+	micOn    bool
+}
+
+// In-huddle cue rules (NOTIFICATIONS-2026-10.md §2.5 rule 6).
+const (
+	cueSettle      = 2 * time.Second // no join/leave cues right after our own join
+	cueCoalesce    = time.Second     // one join (or leave) cue per second
+	cueMicDebounce = 150 * time.Millisecond
+	cueMaxRoster   = 8 // bigger huddles get no join/leave cues
+)
+
+// rosterCues plays one join or leave cue for a roster change, if wanted.
+func (c *Client) rosterCues(p *participation, parts []proto.Part) {
+	now := time.Now()
+	users := map[uint64]bool{}
+	for _, q := range parts {
+		if q.Src != p.src && q.User != c.Me().ID {
+			users[q.User] = true
+		}
+	}
+	p.cueMu.Lock()
+	joined, left := 0, 0
+	for u := range users {
+		if !p.others[u] {
+			joined++
+		}
+	}
+	for u := range p.others {
+		if !users[u] {
+			left++
+		}
+	}
+	first := p.others == nil
+	p.others = users
+	var cue voice.Cue
+	switch {
+	case first || now.Sub(p.started) < cueSettle || len(parts) >= cueMaxRoster || now.Sub(p.lastJoin) < cueCoalesce:
+	case joined > 0:
+		cue = voice.CueJoin
+	case left > 0:
+		cue = voice.CueLeave
+	}
+	if cue != 0 {
+		p.lastJoin = now
+	}
+	p.cueMu.Unlock()
+	if cue != 0 {
+		if pr := c.NotifyPrefs(); pr.Sound("join") {
+			p.vs.PlayCue(cue, pr.Volume)
+		}
+	}
+}
+
+// micCue clicks when our mic opens or closes (debounced, so the ctrl+t
+// repeat heuristic can't chatter).
+func (c *Client) micCue(p *participation, on bool) {
+	now := time.Now()
+	p.cueMu.Lock()
+	play := on != p.micOn && now.Sub(p.lastMic) >= cueMicDebounce
+	p.micOn = on
+	if play {
+		p.lastMic = now
+	}
+	p.cueMu.Unlock()
+	if !play {
+		return
+	}
+	if pr := c.NotifyPrefs(); pr.Sound("mic") {
+		cue := voice.CueMicOff
+		if on {
+			cue = voice.CueMicOn
+		}
+		p.vs.PlayCue(cue, pr.Volume)
+	}
 }
 
 // skewWarnAfter is how many frames dropped for clock skew within one
@@ -213,7 +299,7 @@ func (c *Client) JoinHuddle(ctx context.Context, ch uint64) error {
 		_ = s.fire(proto.OpHuddleLeave, struct{}{})
 		return err
 	}
-	p := &participation{ch: ch, src: res.Src, sess: s, vs: vs, keys: keys, cancel: cancel}
+	p := &participation{ch: ch, src: res.Src, sess: s, vs: vs, keys: keys, cancel: cancel, started: time.Now()}
 	// The roster with our src comes before the RES (§14.1); allow a little
 	// slack before calling ourselves dropped.
 	for i := 0; i < 20 && !c.rosterHas(ch, res.Src); i++ {
@@ -408,6 +494,7 @@ func (c *Client) SetTalking(on bool) {
 	c.hud.mu.Unlock()
 	if p != nil {
 		p.vs.SetTalking(on)
+		c.micCue(p, on)
 	}
 }
 
@@ -441,6 +528,32 @@ func (c *Client) VoiceStats() (voice.Stats, bool) {
 	return p.vs.Stats(), true
 }
 
+// HuddleStart is a huddle someone started while we were online.
+type HuddleStart struct {
+	Chan, By uint64
+}
+
+// baselineFor is how long after a sync or chan.join rosters are taken as
+// what was already there.
+const baselineFor = 2 * time.Second
+
+// huddlesLive starts treating new rosters as starts, baselineFor after a
+// completed sync; huddlesOffline stops it until the next one.
+func (c *Client) huddlesLive(now time.Time) {
+	c.hud.mu.Lock()
+	c.hud.liveAt = now.Add(baselineFor)
+	c.hud.mu.Unlock()
+}
+
+func (c *Client) huddleBaseline(ch uint64) {
+	c.hud.mu.Lock()
+	if c.hud.joinedAt == nil {
+		c.hud.joinedAt = map[uint64]time.Time{}
+	}
+	c.hud.joinedAt[ch] = time.Now()
+	c.hud.mu.Unlock()
+}
+
 // huddleEphemeral applies a roster (§14.2).
 func (c *Client) huddleEphemeral(e proto.Ephemeral) {
 	if e.Chan == 0 {
@@ -455,10 +568,17 @@ func (c *Client) huddleEphemeral(e proto.Ephemeral) {
 	if c.hud.rosters == nil {
 		c.hud.rosters = map[uint64][]proto.Part{}
 	}
+	had := len(c.hud.rosters[e.Chan]) > 0
+	var start []HuddleStart
 	if len(parts) == 0 || !ok || !cv.Member {
 		delete(c.hud.rosters, e.Chan)
 	} else {
 		c.hud.rosters[e.Chan] = parts
+		now := time.Now()
+		live := !c.hud.liveAt.IsZero() && now.After(c.hud.liveAt) && now.Sub(c.hud.joinedAt[e.Chan]) > baselineFor
+		if !had && live && parts[0].User != c.Me().ID {
+			start = []HuddleStart{{Chan: e.Chan, By: parts[0].User}}
+		}
 	}
 	p := c.hud.cur
 	c.hud.mu.Unlock()
@@ -469,7 +589,7 @@ func (c *Client) huddleEphemeral(e proto.Ephemeral) {
 			c.applyRoster(p, parts)
 		}
 	}
-	c.post(Update{Huddle: true})
+	c.post(Update{Huddle: true, HuddleStarted: start})
 }
 
 func (c *Client) applyRoster(p *participation, parts []proto.Part) {
@@ -483,6 +603,7 @@ func (c *Client) applyRoster(p *participation, parts []proto.Part) {
 		p.keys.setParts(parts)
 	}
 	_ = p.vs.SetRoster(m)
+	c.rosterCues(p, parts)
 }
 
 // clearHuddles forgets rosters when the connection drops (the server
@@ -491,6 +612,7 @@ func (c *Client) clearHuddles() {
 	c.hud.mu.Lock()
 	had := len(c.hud.rosters) > 0
 	c.hud.rosters = nil
+	c.hud.liveAt = time.Time{} // the next sync's rosters are a baseline
 	c.hud.mu.Unlock()
 	if had {
 		c.post(Update{Huddle: true})

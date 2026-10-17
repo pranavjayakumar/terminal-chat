@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS reacts (
 	msg INTEGER NOT NULL, actor INTEGER NOT NULL, emoji TEXT NOT NULL, time INTEGER NOT NULL,
 	PRIMARY KEY (msg, actor, emoji));
 CREATE INDEX IF NOT EXISTS reacts_time ON reacts (time);
-` + pinsSchema + groupsSchema
+` + pinsSchema + groupsSchema + notifyPrefsSchema
 
 // dbtx is the subset of *sql.DB / *sql.Tx the cache helpers need.
 type dbtx interface {
@@ -189,7 +189,7 @@ func resetCache(q dbtx, serverID []byte) error {
 		return err
 	}
 	if len(old) > 0 && !bytes.Equal(old, serverID) {
-		for _, t := range []string{"drafts", "reacts"} {
+		for _, t := range []string{"drafts", "reacts", "notify_prefs"} {
 			if _, err := q.Exec(`DELETE FROM ` + t); err != nil {
 				return err
 			}
@@ -443,7 +443,7 @@ func matchOutbox(q dbtx, m proto.Message) error {
 
 // wipe empties the whole cache, outbox included (new login).
 func wipe(q dbtx) error {
-	for _, t := range []string{"meta", "users", "chans", "msgs", "rencs", "reads", "outbox", "devices", "device_endorse", "device_revokes", "drafts", "highlights", "reacts", "epochs", "key_shares", "pins", "groups"} {
+	for _, t := range []string{"meta", "users", "chans", "msgs", "rencs", "reads", "outbox", "devices", "device_endorse", "device_revokes", "drafts", "highlights", "reacts", "epochs", "key_shares", "pins", "groups", "notify_prefs"} {
 		if _, err := q.Exec(`DELETE FROM ` + t); err != nil {
 			return err
 		}

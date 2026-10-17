@@ -565,6 +565,7 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 	}
 	if err == nil {
 		c.checkDowngrade(s)
+		c.huddlesLive(time.Now())
 		online = true
 		if s.e2e() {
 			// Before publishing s: RefreshDevices reads it without waiting.

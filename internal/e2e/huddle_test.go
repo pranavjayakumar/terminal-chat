@@ -69,6 +69,12 @@ func (f *fakeAudio) tick(v int16) int16 {
 
 func huddlers(t *testing.T, transport string, names ...string) []*user {
 	t.Helper()
+	_, _, us := huddlersSrv(t, transport, names...)
+	return us
+}
+
+func huddlersSrv(t *testing.T, transport string, names ...string) (*srv, string, []*user) {
+	t.Helper()
 	t.Setenv("SSH_AUTH_SOCK", "")
 	t.Setenv("TC_TRANSPORT", transport)
 	s, addr := startServer(t, t.TempDir(), "127.0.0.1:0")
@@ -84,7 +90,7 @@ func huddlers(t *testing.T, transport string, names ...string) []*user {
 		}
 		return true
 	})
-	return us
+	return s, addr, us
 }
 
 // loginQUIC is login with retries: a QUIC handshake on a loaded CI runner

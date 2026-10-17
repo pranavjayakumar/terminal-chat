@@ -399,6 +399,7 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 			if _, err := tx.Exec(`DELETE FROM removed WHERE chan = ?`, ev.Chan); err != nil {
 				return err
 			}
+			c.huddleBaseline(ev.Chan) // the roster that follows isn't a start
 		}
 		if d.Chan.ID != 0 {
 			if !slices.Contains(d.Chan.Members, d.User) {

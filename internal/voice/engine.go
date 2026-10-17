@@ -103,6 +103,7 @@ type Engine struct {
 	stats Stats
 	mix   []int32
 	pcm   []int16
+	cue   []int32 // queued cue samples (cues.go), mixed into playout
 }
 
 func NewEngine(cfg Config) (*Engine, error) {
@@ -320,6 +321,13 @@ func (e *Engine) Playout() []int16 {
 		for i := range min(n, FrameSamples) {
 			e.mix[i] += int32(e.pcm[i])
 		}
+	}
+	if len(e.cue) > 0 {
+		k := min(len(e.cue), FrameSamples)
+		for i := range k {
+			e.mix[i] += e.cue[i]
+		}
+		e.cue = append(e.cue[:0], e.cue[k:]...)
 	}
 	out := make([]int16, FrameSamples)
 	for i, v := range e.mix {
