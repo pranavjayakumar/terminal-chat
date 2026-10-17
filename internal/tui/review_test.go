@@ -187,9 +187,27 @@ func (context0Err) Error() string { return "boom" }
 func TestSelectModeNav(t *testing.T) {
 	m := newTestModel(t, 80, 24)
 	run(m, m.handleKey(keyMsg("up")))
-	if v := checkView(t, m, "select"); !strings.Contains(v, "e edit · d delete · r thread · + react · y copy · Esc") {
-		t.Fatalf("no select hint:\n%s", v)
+	if v := checkView(t, m, "select"); !strings.Contains(v, "r retry · d discard · y copy · Esc") {
+		t.Fatalf("failed message should offer retry/discard:\n%s", v)
 	}
+	// Another person's message: no edit or delete; pin and view are offered.
+	m.main.sel = 0
+	m.updatePlaceholder()
+	if h := m.input.Placeholder; strings.Contains(h, "edit") || strings.Contains(h, "delete") ||
+		!strings.Contains(h, "p pin") || !strings.Contains(h, "v view") || !strings.Contains(h, "r thread") {
+		t.Fatalf("footer for another person's message: %q", h)
+	}
+	// My own sent message: edit and delete.
+	for i, x := range m.main.msgs {
+		if x.Author == m.me.ID && x.ID != 0 && x.Failed == "" {
+			m.main.sel = i
+		}
+	}
+	m.updatePlaceholder()
+	if h := m.input.Placeholder; !strings.Contains(h, "e edit") || !strings.Contains(h, "d delete") {
+		t.Fatalf("footer for my message: %q", h)
+	}
+	m.main.sel = len(m.main.msgs) - 1
 	last := m.main.sel
 	run(m, m.handleKey(keyMsg("pgup")))
 	if m.main.sel >= last-3 {
