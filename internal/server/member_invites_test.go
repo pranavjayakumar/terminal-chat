@@ -59,7 +59,8 @@ func (ts *testServer) storedHash(inv proto.Invite) string {
 }
 
 // A member creates user invites within the member limits; the joiner is a
-// plain member. Members never mint admin or someone else's add-key invite.
+// plain member. Members never mint admin or add-key invites, not even for
+// themselves (B1: a stolen key must not be able to add a second one).
 func TestMemberInvites(t *testing.T) {
 	for _, kind := range transports {
 		t.Run(kind, func(t *testing.T) {
@@ -78,9 +79,12 @@ func TestMemberInvites(t *testing.T) {
 			bob.fail(proto.OpInviteCreate, proto.InviteCreateArgs{Uses: proto.MaxMemberInviteUses + 1}, proto.ErrBadRequest)
 			bob.fail(proto.OpInviteCreate, proto.InviteCreateArgs{TTLMs: (proto.MaxMemberInviteTTL + time.Minute).Milliseconds()}, proto.ErrBadRequest)
 			bob.fail(proto.OpInviteCreate, proto.InviteCreateArgs{Uses: -1}, proto.ErrBadRequest)
-			// Add-key: only for themselves.
+			// Add-key: admins only, whoever it is for.
 			bob.fail(proto.OpInviteCreate, proto.InviteCreateArgs{User: admin.user.ID}, proto.ErrForbidden)
 			bob.fail(proto.OpInviteCreate, proto.InviteCreateArgs{User: 9999}, proto.ErrForbidden)
+			bob.fail(proto.OpInviteCreate, proto.InviteCreateArgs{User: bob.user.ID}, proto.ErrForbidden)
+			bob.fail(proto.OpInviteCreate, proto.InviteCreateArgs{User: bob.user.ID,
+				Keys: [][]byte{newKey(t).PublicKey().Marshal()}}, proto.ErrForbidden)
 
 			res, team := createInvite(t, bob, proto.InviteCreateArgs{Uses: proto.MaxMemberInviteUses, TTLMs: proto.MaxMemberInviteTTL.Milliseconds()})
 			if res.Uses != proto.MaxMemberInviteUses {
@@ -97,11 +101,11 @@ func TestMemberInvites(t *testing.T) {
 				t.Fatal("a member's invite made an admin")
 			}
 
-			// Self add-key invite works and counts toward the cap.
-			_, selfKey := createInvite(t, bob, proto.InviteCreateArgs{User: bob.user.ID})
+			// An admin can still add a key to bob's account.
+			_, addKey := createInvite(t, admin, proto.InviteCreateArgs{User: bob.user.ID})
 			newLaptop := newKey(t)
-			if c, bye := ts.connect(t, newLaptop, selfKey.Token, ""); bye != "" || c.user.ID != bob.user.ID {
-				t.Fatalf("self add-key: %q", bye)
+			if c, bye := ts.connect(t, newLaptop, addKey.Token, ""); bye != "" || c.user.ID != bob.user.ID {
+				t.Fatalf("admin add-key: %q", bye)
 			}
 
 			// list: bob sees only his; the admin sees everyone's.
@@ -129,6 +133,45 @@ func TestMemberInvites(t *testing.T) {
 			// The admin can revoke a member's invite.
 			_, again := createInvite(t, bob, proto.InviteCreateArgs{})
 			admin.ok(proto.OpInviteRevoke, proto.InviteRevokeArgs{ID: ts.inviteID(again)}, nil)
+		})
+	}
+}
+
+// A member's own add-key invite minted before they were admin-only (an
+// unreleased build allowed it) is neither listed nor redeemable, so the fix covers
+// invites already handed out too.
+func TestMemberAddKeyInviteFromBefore(t *testing.T) {
+	for _, kind := range transports {
+		t.Run(kind, func(t *testing.T) {
+			ts := memberServer(t, kind)
+			admin := ts.register(t, "admin", true)
+			admin.syncFresh()
+			bob := ts.register(t, "bob", false)
+			bob.syncFresh()
+			if _, err := ts.CreateInviteOpts(context.Background(), InviteOpts{CreatedBy: bob.user.ID, Member: true,
+				User: bob.user.ID}); err == nil {
+				t.Fatal("CreateInviteOpts made a member add-key invite")
+			}
+			token := "legacyaddkeyinvitetoken"
+			if _, err := ts.st.db.Exec(`INSERT INTO invites (token, admin, user, created, expires, uses, created_by)
+				VALUES (?, 0, ?, ?, ?, 1, ?)`, boundTokenHash(token), bob.user.ID, ts.now(), ts.now()+time.Hour.Milliseconds(),
+				bob.user.ID); err != nil {
+				t.Fatal(err)
+			}
+			if l := listInvites(bob); len(l) != 0 {
+				t.Fatalf("bob's list %+v", l)
+			}
+			if l := listInvites(admin); len(l) != 0 {
+				t.Fatalf("admin's list %+v", l)
+			}
+			if _, bye := ts.connect(t, newKey(t), token, ""); bye != proto.ByeInviteInvalid {
+				t.Fatalf("member add-key redeemed: %q", bye)
+			}
+			var n int
+			ts.st.db.QueryRow(`SELECT COUNT(*) FROM keys WHERE user = ?`, bob.user.ID).Scan(&n)
+			if n != 1 {
+				t.Fatalf("bob has %d keys", n)
+			}
 		})
 	}
 }
