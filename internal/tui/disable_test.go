@@ -110,6 +110,20 @@ func TestDisableErrors(t *testing.T) {
 		}
 	}
 
+	// One at a time: a second /disable while one runs is refused.
+	runInput(t, m, "/disable @bob")
+	pastDisableTypeAhead(m)
+	m.dis.busy.Store(true) // as if the first one's request were in flight
+	press(m, "y")
+	if m.notice != "a disable is still running" || disableCalls(f) != 0 {
+		t.Errorf("y while busy: notice %q calls %v", m.notice, f.calls)
+	}
+	runInput(t, m, "/disable @bob")
+	if m.mode != modeNormal || !strings.Contains(m.notice, "still running") {
+		t.Errorf("/disable while busy: mode %v notice %q", m.mode, m.notice)
+	}
+	m.dis.busy.Store(false)
+
 	// Members can't.
 	m2, f2 := newTestModelFake(t, 80, 24)
 	runInput(t, m2, "/disable @bob")

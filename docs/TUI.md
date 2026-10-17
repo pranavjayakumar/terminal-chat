@@ -142,14 +142,16 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
 ## Disabling an account (admins)
 
 - **`/disable @user`** shuts an account out for good, e.g. after its SSH key or a laptop holding it was
-  stolen. The question takes over the body, its first line in red (`disable @eve for good? y: disable ·
-  any other key: cancel`; under 60 columns `disable @eve? y: yes · other: no`), followed by what it
-  does: every session signed out now, none of their keys can sign in again, their unused invites and
-  webhooks deleted, encrypted channels they were in re-keyed; it can't be undone. A background notice
+  stolen. The question takes over the body: two red lines first, so they survive any size
+  (`disable @eve for good?` and `y: disable · any other key: cancel`, under 40 columns `y: yes · other:
+  no`), then `It can't be undone.` and what it does: every session signed out now, none of their keys
+  can sign in again, their unused invites and webhooks deleted, encrypted channels they were in
+  re-keyed; to let them back in, invite them as a new account (new key and name). A background notice
   can't replace the question. Keys in the first 500 ms are ignored (Esc still cancels); `y` disables
-  (notice `✓ disabled @eve — signed out everywhere; none of their keys can sign in`), any other key
-  cancels (`not disabled`). Members get `only admins can disable users`; yourself, an unknown or an
-  already disabled user is an inline error with the input kept. From a shell: `tc users disable @eve`.
+  (`disabling @eve…`, then `✓ disabled @eve — signed out everywhere; none of their keys can sign in`),
+  any other key cancels (`not disabled`). One disable runs at a time (`a disable is still running`).
+  Members get `only admins can disable users`; yourself, an unknown or an already disabled user is an
+  inline error with the input kept. From a shell: `tc users disable @eve`.
 
 ## Behavior
 

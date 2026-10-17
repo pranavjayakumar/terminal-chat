@@ -313,7 +313,7 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 		if private && !plaintext {
 			return m.callThen("create", func(ctx context.Context) (tea.Msg, error) {
 				ch, err := be.CreateEncryptedChannel(ctx, name, "")
-				if err != nil && strings.Contains(err.Error(), "e2e1") {
+				if pe := (*proto.Error)(nil); errors.As(err, &pe) && pe.Code == proto.ErrBadRequest && strings.Contains(pe.Msg, "e2e1") {
 					err = errors.New("this server can't encrypt channels; /create #" + name + " --private --plaintext makes an unencrypted one")
 				}
 				return openChanMsg{ch.ID}, err
