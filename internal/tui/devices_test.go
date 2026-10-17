@@ -221,16 +221,16 @@ func TestDeviceRevokeCommand(t *testing.T) {
 func TestDeviceRevokedNotice(t *testing.T) {
 	m, f := newTestModelFake(t, 80, 24)
 	devFake(f)
-	run(m, m.applyUpdate(client.Update{Revoked: []client.DeviceRevoked{{User: 2, Dev: f.dv.list[2][0].ID}}}))
+	run(m, m.applyUpdate(client.Update{Revoked: []client.DeviceRef{{User: 2, Dev: f.dv.list[2][0].ID}}}))
 	if m.noticeErr || !strings.Contains(m.notice, "@bob revoked a device (22222222)") {
 		t.Fatalf("notice %q", m.notice)
 	}
 	checkView(t, m, "notice")
-	run(m, m.applyUpdate(client.Update{Revoked: []client.DeviceRevoked{{User: 1, Dev: f.dv.list[1][1].ID}}}))
+	run(m, m.applyUpdate(client.Update{Revoked: []client.DeviceRef{{User: 1, Dev: f.dv.list[1][1].ID}}}))
 	if !strings.Contains(m.notice, "your device bbbbbbbb was revoked") {
 		t.Fatalf("notice %q", m.notice)
 	}
-	run(m, m.applyUpdate(client.Update{Revoked: []client.DeviceRevoked{{User: 1, Dev: f.dv.list[1][0].ID}}}))
+	run(m, m.applyUpdate(client.Update{Revoked: []client.DeviceRef{{User: 1, Dev: f.dv.list[1][0].ID}}}))
 	if !m.noticeErr || !strings.Contains(m.notice, "this device was revoked") {
 		t.Fatalf("notice %q", m.notice)
 	}

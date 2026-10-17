@@ -296,7 +296,7 @@ func (m *Model) deviceRows(w int) []string {
 }
 
 // revokedNotice says which devices were just revoked (Update.Revoked).
-func (m *Model) revokedNotice(rs []client.DeviceRevoked) {
+func (m *Model) revokedNotice(rs []client.DeviceRef) {
 	if len(rs) == 0 {
 		return
 	}

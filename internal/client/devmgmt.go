@@ -35,14 +35,14 @@ var (
 	ErrNoDevice = errors.New("no such device")
 )
 
-// DeviceRevoked names a device that was just revoked (Update.Revoked).
-type DeviceRevoked struct {
+// DeviceRef names a device (Update.Revoked, Update.NewOwn).
+type DeviceRef struct {
 	User uint64
 	Dev  e2ecrypto.DevID
 }
 
 // Short is the device's id as shown to people.
-func (d DeviceRevoked) Short() string { return ShortDevID(d.Dev) }
+func (d DeviceRef) Short() string { return ShortDevID(d.Dev) }
 
 // ShortDevID is the first 8 hex digits of a device id: what tc shows and
 // what `tc devices revoke` accepts (any unique prefix works).
@@ -161,6 +161,19 @@ func (c *Client) FindDevice(user uint64, prefix string) (DeviceInfo, error) {
 			hit = append(hit, d)
 		}
 	}
+	if len(hit) > 1 {
+		// A server can invent unverified look-alikes of a real device's
+		// short id; they mustn't block naming the real one.
+		var v []DeviceInfo
+		for _, d := range hit {
+			if d.Verified {
+				v = append(v, d)
+			}
+		}
+		if len(v) == 1 {
+			hit = v
+		}
+	}
 	switch len(hit) {
 	case 0:
 		return DeviceInfo{}, ErrNoDevice
@@ -260,10 +273,15 @@ func (c *Client) RevokeDevice(ctx context.Context, dev e2ecrypto.DevID, allowSel
 		return 0, err
 	}
 	if self {
-		// Our keys are dead; the next connection retires them and registers
-		// a new device (ensureDevice).
+		// Our keys are dead: retire them now (we signed the revoke, so we
+		// needn't wait for the server to list it) and reconnect, which
+		// registers the new keys (ensureDevice).
+		keys, err := c.trust.RetireDeviceKeys(sid, me, dev)
+		if err == nil {
+			c.myDev.Store(&keys.ID)
+		}
 		s.fail()
-		return 0, nil
+		return 0, err
 	}
 
 	c.e2eMu.Lock()

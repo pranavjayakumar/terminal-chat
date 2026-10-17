@@ -19,7 +19,8 @@ func TestDeviceRevokeNotice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	notices := make(chan DeviceRevoked, 8)
+	notices := make(chan DeviceRef, 8)
+	newOwn := make(chan DeviceRef, 8)
 	d := newEncDMWith(t, proto.Snapshot{
 		Devs:        []proto.Device{{Cert: cp.cert}},
 		Revoked:     []proto.Signed{proto.Signed(old)},
@@ -29,6 +30,9 @@ func TestDeviceRevokeNotice(t *testing.T) {
 			for u := range c.Updates() {
 				for _, r := range u.Revoked {
 					notices <- r
+				}
+				for _, r := range u.NewOwn {
+					newOwn <- r
 				}
 			}
 		}()
@@ -57,12 +61,32 @@ func TestDeviceRevokeNotice(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 	}
 
+	select {
+	case r := <-newOwn:
+		t.Fatalf("own device announced on first sync: %+v", r)
+	default:
+	}
+	signer, err := identity.Load(d.c.cfg.KeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	laptop := newPeer(t, alice, signer)
+	d.f.event(proto.KDeviceNew, 0, alice, proto.Device{Cert: laptop.cert})
+	select {
+	case r := <-newOwn:
+		if r.User != alice || r.Dev != laptop.dev.ID {
+			t.Fatalf("new own device %+v", r)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a new device of mine wasn't announced")
+	}
+
 	bd := d.c.Devices(bob)
 	if len(bd) != 1 || !bd[0].Revoked || !bd[0].Verified || bd[0].This || bd[0].RevokedAt.IsZero() {
 		t.Fatalf("bob's devices: %+v", bd)
 	}
 	md := d.c.Devices(alice)
-	if len(md) != 1 || !md[0].This || md[0].ID != d.me.ID {
+	if len(md) != 2 || !md[0].This || md[0].ID != d.me.ID || md[1].ID != laptop.dev.ID {
 		t.Fatalf("my devices: %+v", md)
 	}
 	if got, err := d.c.FindDevice(bob, hex.EncodeToString(d.b1.dev.ID[:])); err != nil || got.ID != d.b1.dev.ID {

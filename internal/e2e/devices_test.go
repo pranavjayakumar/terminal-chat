@@ -149,6 +149,73 @@ func secondDevice(t *testing.T, u *user) *user {
 	return d
 }
 
+// --self: a device revokes itself, retires its keys at once, reconnects and
+// registers as a new device; its sibling sees the old one revoked, the new
+// one active, and is told a new device of its user appeared. (So a revoked
+// device that still holds the SSH key comes back: device revoke alone is no
+// defense against a stolen SSH key.)
+func TestRevokeSelfReRegisters(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	t.Setenv("TC_TRANSPORT", "tcp")
+	s, addr := startServer(t, t.TempDir(), "127.0.0.1:0")
+	alice := login(t, s, addr, "alice", true)
+	laptop := secondDevice(t, alice)
+	eventually(t, "online", func() bool { return alice.online() && laptop.online() })
+	sid := alice.sid(t)
+	a := alice.Me().ID
+	eventually(t, "both devices verified", func() bool {
+		return alice.verifiedDevices(sid, a) == 2 && laptop.verifiedDevices(sid, a) == 2
+	})
+	newOwn := make(chan client.DeviceRef, 8)
+	go func() {
+		for u := range alice.Updates() {
+			for _, r := range u.NewOwn {
+				newOwn <- r
+			}
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	old, err := laptop.Trust().DeviceKeys(sid, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := laptop.RevokeDevice(ctx, old.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	cur, err := laptop.Trust().DeviceKeys(sid, a)
+	if err != nil || cur.ID == old.ID {
+		t.Fatalf("keys not retired at once: %v", err)
+	}
+	eventually(t, "laptop back online as a new device", func() bool {
+		d, ok, _ := laptop.Trust().Device(sid, cur.ID)
+		return laptop.online() && ok && !d.Revoked
+	})
+	eventually(t, "alice sees old revoked, new active", func() bool {
+		var oldRev, newOK bool
+		for _, d := range alice.Devices(a) {
+			oldRev = oldRev || (d.ID == old.ID && d.Revoked)
+			newOK = newOK || (d.ID == cur.ID && !d.Revoked && d.Verified)
+		}
+		return oldRev && newOK
+	})
+	// (The laptop's first device may have been announced too, if alice
+	// verified herself before it registered.)
+	for timeout := time.After(10 * time.Second); ; {
+		select {
+		case r := <-newOwn:
+			if r.Dev == cur.ID {
+				return
+			}
+			if r.Dev != old.ID {
+				t.Fatalf("announced %+v", r)
+			}
+		case <-timeout:
+			t.Fatal("alice wasn't told about her new device")
+		}
+	}
+}
+
 // "I lost my laptop": alice has two devices and revokes one from the
 // other. Her encrypted DM with bob gets a new epoch without it at once, the
 // revoked device can't read anything sent afterwards, her remaining device
@@ -206,7 +273,7 @@ func TestRevokeLostDevice(t *testing.T) {
 		eventually(t, "both of alice's devices read bob", func() bool { sec, ok := u.sec(dm.ID, "before"); return ok && sec == client.SecE2E })
 	}
 
-	notices := make(chan client.DeviceRevoked, 4)
+	notices := make(chan client.DeviceRef, 4)
 	go func() {
 		for u := range bob.Updates() {
 			for _, r := range u.Revoked {
