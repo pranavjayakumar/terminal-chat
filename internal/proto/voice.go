@@ -20,7 +20,7 @@ const (
 // Huddle limits (§14.1, §14.3).
 const (
 	MaxHuddleParts  = 16
-	MaxHuddles      = 64
+	MaxHuddles      = 1024
 	MaxDatagram     = 512
 	VoiceStreamSize = 16
 )

@@ -22,6 +22,12 @@ const (
 	dgPerSecond = 60
 )
 
+// dgItem is a datagram queued for one participation.
+type dgItem struct {
+	b  []byte
+	to *participant
+}
+
 // voiceOps exist only in sessions that negotiated proto.CapVoice.
 var voiceOps = map[string]bool{proto.OpHuddleJoin: true, proto.OpHuddleLeave: true}
 
@@ -112,9 +118,19 @@ func (s *Server) broadcastHuddlesLocked(c changed) {
 		if err != nil {
 			continue
 		}
+		// Someone who just lost access learns only that they're out, not
+		// who is still talking (§14.2).
+		gone, err := proto.Marshal(proto.Ephemeral{Kind: proto.EphHuddle, Chan: ch})
+		if err != nil {
+			continue
+		}
 		for sess := range s.sessions {
-			if sess.voice && (s.members[ch][sess.user.ID] || extra[sess.user.ID]) {
+			switch {
+			case !sess.voice:
+			case s.members[ch][sess.user.ID]:
 				sess.pushLive(outFrame{t: proto.TEphemeral, payload: payload})
+			case extra[sess.user.ID]:
+				sess.pushLive(outFrame{t: proto.TEphemeral, payload: gone})
 			}
 		}
 	}
@@ -125,6 +141,17 @@ func (s *Server) opHuddleJoin(ctx context.Context, sess *session, a proto.Huddle
 		return nil, proto.Errf(proto.ErrBadRequest, "voice needs UDP")
 	}
 	u := sess.user.ID
+	// Honest-server device check outside the hub lock; a revoke that races
+	// it ends the participation through huddleEventLocked.
+	devOK := false
+	if len(a.Dev) == 16 {
+		var one int
+		err := s.st.db.QueryRowContext(ctx, `SELECT 1 FROM devices WHERE dev = ? AND user = ? AND revoked IS NULL`, a.Dev, u).Scan(&one)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		devOK = err == nil
+	}
 	// Under Server.mu, membership and the e2e flag can't change underneath.
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -147,13 +174,8 @@ func (s *Server) opHuddleJoin(ctx context.Context, sess *session, a proto.Huddle
 		if len(dev) != 16 || len(stream) != proto.VoiceStreamSize {
 			return nil, proto.Errf(proto.ErrBadRequest, "encrypted huddles need dev and stream")
 		}
-		var one int
-		err := s.st.db.QueryRowContext(ctx, `SELECT 1 FROM devices WHERE dev = ? AND user = ? AND revoked IS NULL`, dev, u).Scan(&one)
-		if errors.Is(err, sql.ErrNoRows) {
+		if !devOK {
 			return nil, errForbidden
-		}
-		if err != nil {
-			return nil, err
 		}
 		dev, stream = slices.Clone(dev), slices.Clone(stream)
 	} else {
@@ -191,10 +213,11 @@ func (s *Server) opHuddleJoin(ctx context.Context, sess *session, a proto.Huddle
 		h = &huddle{ch: a.Chan, enc: enc}
 		hs.byChan[a.Chan] = h
 	}
-	hs.nextSrc++
-	if hs.nextSrc == 0 {
-		hs.nextSrc = 1
+	if hs.nextSrc == ^uint32(0) {
+		hs.mu.Unlock()
+		return nil, proto.Errf(proto.ErrConflict, "out of huddle ids until the server restarts")
 	}
+	hs.nextSrc++
 	p := &participant{sess: sess, src: hs.nextSrc, dev: dev, stream: stream, h: h}
 	h.parts = append(h.parts, p)
 	hs.bySess[sess] = p
@@ -260,6 +283,17 @@ func (s *Server) huddleEventLocked(ev proto.Event) {
 		s.broadcastHuddlesLocked(s.hud.dropWhere(func(p *participant) bool {
 			return p.h.ch == ev.Chan && !p.h.enc
 		}))
+	case proto.KDeviceRevoke:
+		// The revoked device's participation ends at once (receivers would
+		// drop its frames anyway, once their key cache expires).
+		s.broadcastHuddlesLocked(s.hud.dropWhere(func(p *participant) bool {
+			if p.dev == nil {
+				return false
+			}
+			var revoked bool
+			err := s.st.db.QueryRow(`SELECT revoked IS NOT NULL FROM devices WHERE dev = ?`, p.dev).Scan(&revoked)
+			return err == nil && revoked
+		}))
 	case proto.KUserUpdate:
 		var u proto.User
 		if proto.Unmarshal(ev.Data, &u) != nil || !u.Disabled {
@@ -310,14 +344,22 @@ func (s *Server) sendHuddles(sess *session) {
 // ends or the session closes.
 func (sess *session) startDatagrams(ctx context.Context, dg transport.DatagramConn) {
 	sess.dg = dg
-	sess.dgOut = make(chan []byte, dgQueueLen)
+	sess.dgOut = make(chan dgItem, dgQueueLen)
+	hs := sess.srv.hud
 	go func() {
 		for {
 			select {
-			case b := <-sess.dgOut:
-				// Errors are a closing connection or a datagram that no longer
-				// fits the path MTU; voice just loses that frame.
-				_ = dg.SendDatagram(b)
+			case it := <-sess.dgOut:
+				// Queued for a participation that has since ended (left,
+				// removed, revoked): never deliver it (§14.1).
+				hs.mu.RLock()
+				live := hs.bySess[sess] == it.to
+				hs.mu.RUnlock()
+				if live {
+					// Errors are a closing connection or a datagram that no
+					// longer fits the path MTU; voice just loses that frame.
+					_ = dg.SendDatagram(it.b)
+				}
 			case <-sess.done:
 				return
 			}
@@ -356,7 +398,7 @@ func (s *Server) relay(sess *session, b []byte) {
 			continue
 		}
 		select {
-		case q.sess.dgOut <- b:
+		case q.sess.dgOut <- dgItem{b, q}:
 			hs.relayed.Add(1)
 		default:
 			hs.dropped.Add(1)

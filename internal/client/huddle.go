@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/transport"
+	"github.com/skailama/tc/internal/trust"
 	"github.com/skailama/tc/internal/voice"
 )
 
@@ -119,14 +121,22 @@ func (c *Client) JoinHuddle(ctx context.Context, ch uint64) error {
 	if !ok || !cv.Member {
 		return errors.New("not a member of that channel")
 	}
+	// Whether voice is encrypted is our trust state's call, never the
+	// server's channel flag alone: plaintext only where the channel is
+	// provably not encrypted (no sticky flag, no alarm).
+	st := c.E2EStatus(ch)
+	enc := st.State != E2EOff
+	if enc && st.State != E2EOK {
+		return ErrVoiceKeys
+	}
 	c.LeaveHuddle()
 
 	args := proto.HuddleJoinArgs{Chan: ch}
 	var keys *huddleKeys
-	if cv.E2E {
+	if enc {
 		sid, ok := c.cacheServerID()
 		dev := s.myDevice()
-		if !ok || dev == nil || c.E2EStatus(ch).State != E2EOK {
+		if !ok || dev == nil {
 			return ErrVoiceKeys
 		}
 		keys = &huddleKeys{c: c, sid: sid, ch: ch, me: c.Me().ID, dev: dev.ID, parts: map[uint32]proto.Part{},
@@ -134,25 +144,32 @@ func (c *Client) JoinHuddle(ctx context.Context, ch uint64) error {
 		if _, err := rand.Read(keys.stream[:]); err != nil {
 			return err
 		}
-		if _, _, ok := keys.Send(); !ok {
-			return ErrVoiceKeys
+		// Catch up and rotate first if the current epoch is stale (a member
+		// left, a device was revoked), exactly as a text send would.
+		if err := keys.refresh(ctx, s); err != nil {
+			return err
 		}
 		args.Dev, args.Stream = dev.ID[:], keys.stream[:]
 	}
-	var res proto.HuddleJoinRes
-	if err := c.call(ctx, proto.OpHuddleJoin, args, &res, nil); err != nil {
+	raw, err := s.call(ctx, proto.OpHuddleJoin, args, nil)
+	if err != nil {
 		return err
 	}
-	cfg := voice.Config{Src: res.Src, Enc: cv.E2E, Send: dg.SendDatagram}
+	var res proto.HuddleJoinRes
+	if err := proto.Unmarshal(raw, &res); err != nil {
+		return err
+	}
+	rctx, cancel := context.WithCancel(c.ctx)
+	cfg := voice.Config{Src: res.Src, Enc: enc, Send: nonBlocking(rctx, dg)}
 	if keys != nil {
 		cfg.Keys = keys
 	}
 	vs, err := voice.Start(cfg, plat)
 	if err != nil {
-		_ = c.call(ctx, proto.OpHuddleLeave, struct{}{}, nil, nil)
+		cancel()
+		_ = s.fire(proto.OpHuddleLeave, struct{}{})
 		return err
 	}
-	rctx, cancel := context.WithCancel(c.ctx)
 	p := &participation{ch: ch, src: res.Src, sess: s, vs: vs, keys: keys, cancel: cancel}
 	c.hud.mu.Lock()
 	c.hud.cur = p
@@ -168,15 +185,102 @@ func (c *Client) JoinHuddle(ctx context.Context, ch uint64) error {
 			vs.Receive(b)
 		}
 	}()
-	go func() {
-		select {
-		case <-s.done: // the server ends our participation with the connection
-			c.endHuddle(p)
-		case <-rctx.Done():
-		}
-	}()
+	go c.watchHuddle(rctx, p)
 	c.post(Update{Huddle: true})
 	return nil
+}
+
+// sendQueue bounds frames waiting for the network: SendDatagram can block
+// while QUIC is congested, and the audio thread must never wait on it.
+const sendQueue = 16
+
+func nonBlocking(ctx context.Context, dg transport.DatagramConn) func([]byte) error {
+	q := make(chan []byte, sendQueue)
+	go func() {
+		for {
+			select {
+			case b := <-q:
+				_ = dg.SendDatagram(b)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return func(b []byte) error {
+		select {
+		case q <- b:
+			return nil
+		default:
+			return errors.New("voice: send queue full")
+		}
+	}
+}
+
+const (
+	watchEvery = 100 * time.Millisecond
+	checkEvery = time.Second
+)
+
+// watchHuddle ends p with its connection, re-checks encryption state (a
+// channel that changed encryption, an alarm, a stale epoch) and tells the
+// UI when the set of people talking changes, so the UI needn't poll.
+func (c *Client) watchHuddle(ctx context.Context, p *participation) {
+	t := time.NewTicker(watchEvery)
+	defer t.Stop()
+	var last map[uint64]bool
+	var checked time.Time
+	for {
+		select {
+		case <-p.sess.done: // the server ends our participation with the connection
+			c.endHuddle(p)
+			return
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			if sp := p.vs.Speaking(); !maps.Equal(sp, last) {
+				last = sp
+				c.post(Update{Huddle: true})
+			}
+			if now.Sub(checked) >= checkEvery {
+				checked = now
+				if !c.huddleStillValid(ctx, p) {
+					c.LeaveHuddle()
+					return
+				}
+			}
+		}
+	}
+}
+
+// huddleStillValid reports whether p may go on; for encrypted huddles it
+// blocks sending while the epoch is stale and rotates in the background.
+func (c *Client) huddleStillValid(ctx context.Context, p *participation) bool {
+	st := c.E2EStatus(p.ch)
+	if (st.State != E2EOff) != (p.keys != nil) {
+		return false // encryption changed under us: never keep sending plaintext
+	}
+	if p.keys == nil {
+		return true
+	}
+	if st.State == E2EOK && p.keys.fresh() {
+		return true
+	}
+	k := p.keys
+	k.mu.Lock()
+	k.blocked = true
+	busy := k.refreshing
+	k.refreshing = true
+	k.mu.Unlock()
+	if !busy {
+		go func() {
+			ok := k.refresh(ctx, p.sess) == nil && c.E2EStatus(p.ch).State == E2EOK
+			k.mu.Lock()
+			k.refreshing = false
+			k.blocked = !ok
+			k.mu.Unlock()
+		}()
+	}
+	return true
 }
 
 // LeaveHuddle leaves the current huddle, if any, and closes the audio device.
@@ -324,6 +428,68 @@ type huddleKeys struct {
 	cache  map[[2]uint32]cachedKey // (src, epoch); src 0 = our sender
 	headEp uint32
 	headAt time.Time
+	// grace is until when frames under the epoch before the head are
+	// still accepted: briefly after the head moves, never indefinitely,
+	// so an ex-member holding the old K can't keep injecting audio.
+	grace   time.Time
+	blocked    bool // sending paused: the epoch is stale or the channel in alarm
+	refreshing bool // a background refresh is running
+}
+
+// prevEpochGrace is how long after we see a new head the previous epoch's
+// frames are still accepted (senders switch as soon as they verify it).
+const prevEpochGrace = 10 * time.Second
+
+func (k *huddleKeys) block(on bool) {
+	k.mu.Lock()
+	k.blocked = on
+	k.mu.Unlock()
+}
+
+// refresh catches up on the channel's chain and rotates when the current
+// epoch is stale, exactly as a text send does (sealWith), then forgets
+// cached keys so the next frame uses the fresh head.
+func (k *huddleKeys) refresh(ctx context.Context, s *session) error {
+	_, err := k.c.sealWith(ctx, s, k.ch, nil, func(e2ecrypto.ServerID, *e2ecrypto.DeviceKeys, trust.Epoch) ([]byte, error) {
+		return nil, nil
+	})
+	if err != nil {
+		return err
+	}
+	k.mu.Lock()
+	k.headAt = time.Time{}
+	clear(k.cache)
+	k.mu.Unlock()
+	if !k.fresh() {
+		return ErrVoiceKeys
+	}
+	return nil
+}
+
+// fresh reports whether the verified head may still be sealed to: we hold
+// its K, its roster is who we'd seal to now, and it boxed no device revoked
+// since (the text path's rule, so a removed member or a stolen device never
+// hears what is said next).
+func (k *huddleKeys) fresh() bool {
+	h, ok, err := k.c.trust.ChainHead(k.sid, k.ch)
+	if err != nil || !ok {
+		return false
+	}
+	ep, ok, err := k.c.trust.Epoch(k.sid, k.ch, h.Epoch)
+	if err != nil || !ok || ep.Key == nil {
+		return false
+	}
+	ch, ok, err := getChan(k.c.db, k.ch)
+	if err != nil || !ok {
+		return false
+	}
+	return slices.Equal(ep.Roster, k.c.rosterNow(ch)) && !k.c.boxedRevoked(k.sid, ep)
+}
+
+// member reports whether user is a current member of the channel.
+func (k *huddleKeys) member(user uint64) bool {
+	ch, ok, err := getChan(k.c.db, k.ch)
+	return err == nil && ok && slices.Contains(k.c.liveMembers(ch), user)
 }
 
 func (k *huddleKeys) setParts(parts []proto.Part) {
@@ -375,12 +541,21 @@ func (k *huddleKeys) head() (uint32, bool) {
 		return 0, false
 	}
 	k.mu.Lock()
+	if h.Epoch != k.headEp {
+		k.grace = time.Now().Add(prevEpochGrace)
+	}
 	k.headEp, k.headAt = h.Epoch, time.Now()
 	k.mu.Unlock()
 	return h.Epoch, true
 }
 
 func (k *huddleKeys) Send() (uint32, *e2ecrypto.VoiceSender, bool) {
+	k.mu.Lock()
+	blocked := k.blocked
+	k.mu.Unlock()
+	if blocked {
+		return 0, nil, false
+	}
 	head, ok := k.head()
 	if !ok {
 		return 0, nil, false
@@ -412,7 +587,14 @@ func (k *huddleKeys) Recv(src, epoch uint32) (*e2ecrypto.VoiceSender, bool) {
 	}
 	k.mu.Lock()
 	p, ok := k.parts[src]
+	inGrace := time.Now().Before(k.grace)
 	k.mu.Unlock()
+	if epoch != head && !inGrace {
+		return nil, false
+	}
+	if !ok || !k.member(p.User) {
+		return nil, false
+	}
 	if !ok || len(p.Dev) != e2ecrypto.IDSize || len(p.Stream) != e2ecrypto.VoiceStreamSize {
 		return nil, false
 	}

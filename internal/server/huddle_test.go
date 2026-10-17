@@ -258,10 +258,11 @@ func TestHuddleMembership(t *testing.T) {
 		t.Fatalf("sync roster %v", got)
 	}
 
-	// Leaving the channel drops b from the huddle at once; b is told too.
+	// Leaving the channel drops b from the huddle at once; b is told it's
+	// out (an empty roster), not who is still talking.
 	b.rosterIs(ch, a.user.ID, b.user.ID)
 	b.ok(proto.OpChanLeave, proto.ChanArgs{Chan: ch}, nil)
-	b.rosterIs(ch, a.user.ID)
+	b.rosterIs(ch)
 	a.rosterIs(ch, a.user.ID)
 	b.sendDg(b.frame(0, "gone"))
 	if got := a.drain(200 * time.Millisecond); len(got) != 0 {
@@ -349,6 +350,19 @@ func TestHuddleEncrypted(t *testing.T) {
 	got := b.drain(300 * time.Millisecond)
 	if len(got) != 1 || !bytes.Equal(got[0], enc) {
 		t.Fatalf("encrypted huddle relayed %x", got)
+	}
+
+	// Revoking a device ends its participation at once.
+	a.ok(proto.OpDeviceRevoke, proto.DeviceRevokeArgs{Revoke: revokeBySSH(t, a.signer, ts.sid(), a.user.ID, da.ID)}, nil)
+	b.rosterIs(ch, b.user.ID)
+	a.sendDg(proto.Datagram{Kind: proto.DgAudioEnc, Src: a.src, Seq: 1, Epoch: 1, TS: 1, Payload: make([]byte, 40)}.Marshal())
+	if got := b.drain(200 * time.Millisecond); len(got) != 0 {
+		t.Fatal("revoked device's frame relayed")
+	}
+
+	// huddle.leave is never rate limited (a refused cleanup leaves a ghost).
+	for range 80 {
+		b.ok(proto.OpHuddleLeave, struct{}{}, nil)
 	}
 
 	// Public channel: dev/stream are dropped, never relayed.

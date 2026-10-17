@@ -269,12 +269,13 @@ func TestEngineEncrypted(t *testing.T) {
 	keys.dev[3] = e2ecrypto.DevID{3}
 	forge("relabel", func(g []byte) []byte { g[5] = 3; return g }, auth)
 
-	// A recording replayed later (fresh stream window) fails the ts check.
-	b.SetRoster(map[uint32]uint64{2: 20})
-	b.SetRoster(map[uint32]uint64{1: 10, 2: 20})
+	// A frame recorded now but delivered two minutes later (never seen, so
+	// the window can't catch it) fails the ts check.
+	a.Capture(frameOf(6))
+	late := w.got[len(w.got)-1]
 	c.t = c.t.Add(2 * time.Minute)
 	before := b.Stats().Skew
-	b.Receive(w.got[1])
+	b.Receive(late)
 	if b.Stats().Skew != before+1 {
 		t.Fatal("old recording accepted")
 	}
@@ -325,4 +326,20 @@ func equal(a, b []int16) bool {
 		}
 	}
 	return true
+}
+
+// A roster that drops and re-adds a src must not reset its replay window
+// (protocol-guardian/security review: server-driven replay).
+func TestEngineReplayAcrossRosterChange(t *testing.T) {
+	keys := newKeys()
+	a, b, w, _ := newPair(t, true, keys)
+	a.SetTalking(true)
+	a.Capture(frameOf(1))
+	b.Receive(w.got[0])
+	b.SetRoster(map[uint32]uint64{2: 20})
+	b.SetRoster(map[uint32]uint64{1: 10, 2: 20})
+	b.Receive(w.got[0])
+	if s := b.Stats(); s.Received != 1 || s.Replay != 1 {
+		t.Fatalf("replay after roster churn accepted: %+v", s)
+	}
 }

@@ -20,6 +20,8 @@ const (
 
 	// tsSkew is how far an encrypted frame's ts may be from our clock.
 	tsSkew = 60 * time.Second
+	// maxWins bounds remembered replay windows (srcs seen this participation).
+	maxWins = 4096
 	// speakingFor is how long after its last audible frame a stream counts as talking.
 	speakingFor = 300 * time.Millisecond
 )
@@ -67,7 +69,7 @@ type Config struct {
 
 type stream struct {
 	user    uint64
-	win     window
+	win     *window // outlives the stream: see Engine.wins
 	jit     *jitter
 	dec     Decoder
 	audible time.Time // last frame that played
@@ -94,6 +96,10 @@ type Engine struct {
 
 	mu      sync.Mutex
 	streams map[uint32]*stream
+	// wins keeps every src's replay window for the whole participation, so
+	// a roster that drops and re-adds a src can't reset it and let the
+	// server replay that stream's recent frames (bounded by maxWins).
+	wins map[uint32]*window
 	stats   Stats
 	mix     []int32
 	pcm     []int16
@@ -111,7 +117,7 @@ func NewEngine(cfg Config) (*Engine, error) {
 		return nil, err
 	}
 	return &Engine{
-		cfg: cfg, enc: enc, streams: map[uint32]*stream{},
+		cfg: cfg, enc: enc, streams: map[uint32]*stream{}, wins: map[uint32]*window{},
 		opusBuf: make([]byte, maxOpus), mix: make([]int32, FrameSamples), pcm: make([]int16, FrameSamples),
 	}, nil
 }
@@ -159,7 +165,20 @@ func (e *Engine) SetRoster(parts map[uint32]uint64) error {
 		if err != nil {
 			return err
 		}
-		e.streams[src] = &stream{user: user, jit: newJitter(), dec: dec}
+		w := e.wins[src]
+		if w == nil {
+			if len(e.wins) >= maxWins {
+				// srcs only grow: forget the oldest.
+				oldest := src
+				for s := range e.wins {
+					oldest = min(oldest, s)
+				}
+				delete(e.wins, oldest)
+			}
+			w = &window{}
+			e.wins[src] = w
+		}
+		e.streams[src] = &stream{user: user, win: w, jit: newJitter(), dec: dec}
 	}
 	return nil
 }

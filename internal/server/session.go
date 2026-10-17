@@ -53,7 +53,7 @@ type session struct {
 	voice        bool // both sides advertised proto.CapVoice
 	// Voice datagrams (huddle.go); dg is nil unless voice over QUIC.
 	dg       transport.DatagramConn
-	dgOut    chan []byte
+	dgOut    chan dgItem
 	dgBucket bucket // only the datagram reader goroutine touches it
 	lastTyping   map[uint64]time.Time
 	lastKeyNeed  map[uint64]time.Time // under srv.mu
