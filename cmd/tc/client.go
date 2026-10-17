@@ -32,6 +32,8 @@ func runClient(cmd string, args []string) error {
 		return cmdNotify(args)
 	case "verify":
 		return cmdVerify(args)
+	case "invite":
+		return cmdInvite(args)
 	}
 	return errUsage
 }

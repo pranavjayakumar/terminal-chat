@@ -23,8 +23,10 @@ const usage = `tc — terminal team chat
                              run a command, then post ✓/✗, time and output tail
   tc verify @user [--github login]
                              compare safety numbers (or GitHub keys) to verify someone
-  tc server [--listen :7443] [--public host:port] [--data dir]
-  tc server invite [--uses N] [--ttl 72h] [--admin] [--raw]
+  tc invite [--uses N] [--ttl 72h] [--key github:user] [--raw]   (or --list, --revoke ID)
+                             invite someone (admins; members if the server allows)
+  tc server [--listen :7443] [--public host:port] [--data dir] [--member-invites=false]
+  tc server invite [--uses N] [--ttl 72h] [--admin] [--key github:user] [--raw]
   tc update [--check]        install the latest release (or just check)
   tc version
 `

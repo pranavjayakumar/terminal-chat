@@ -11,10 +11,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
 	"github.com/skailama/tc/internal/server"
@@ -22,6 +24,16 @@ import (
 )
 
 const publicAddrFile = "public_addr"
+
+// memberInvitesFile records `tc server --member-invites` so `tc server
+// invite --list` (a separate process) applies the same rule.
+const memberInvitesFile = "member_invites"
+
+// readMemberInvites is the setting the server last ran with (default on).
+func readMemberInvites(data string) bool {
+	b, err := os.ReadFile(filepath.Join(data, memberInvitesFile))
+	return err != nil || strings.TrimSpace(string(b)) != "false"
+}
 
 func cmdServer(args []string) error {
 	if len(args) > 0 && args[0] == "invite" {
@@ -31,6 +43,8 @@ func cmdServer(args []string) error {
 	data := fs.String("data", defaultDataDir(), "data directory (database, TLS key)")
 	listen := fs.String("listen", ":7443", "listen address (UDP for QUIC and TCP)")
 	public := fs.String("public", "", "host:port clients use to reach this server (saved for invites)")
+	memberInvites := fs.Bool("member-invites", true, fmt.Sprintf("let members invite people (never admins; at most %d live invites, %d uses, 7 days each)",
+		proto.MaxMemberInvites, proto.MaxMemberInviteUses))
 	fs.Parse(args)
 
 	if *public != "" {
@@ -55,7 +69,13 @@ func cmdServer(args []string) error {
 	if server.TamperBuild {
 		return errors.New("this tc binary was built with -tags tctamper (malicious-server test hooks); refusing to run a server")
 	}
-	srv, err := server.New(server.Config{DataDir: *data, PublicAddr: pub})
+	if err := os.MkdirAll(*data, 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(*data, memberInvitesFile), []byte(strconv.FormatBool(*memberInvites)), 0o600); err != nil {
+		return err
+	}
+	srv, err := server.New(server.Config{DataDir: *data, PublicAddr: pub, MemberInvites: *memberInvites})
 	if err != nil {
 		return err
 	}
@@ -89,6 +109,7 @@ type serverInviteCmd struct {
 	raw    bool
 	list   bool   // --list: show open invites instead
 	revoke string // --revoke ID
+	key    string // --key github:<login>: GitHub login whose keys bind the invite
 }
 
 func parseServerInvite(args []string) (serverInviteCmd, error) {
@@ -101,6 +122,7 @@ func parseServerInvite(args []string) (serverInviteCmd, error) {
 	fs.BoolVar(&c.raw, "raw", false, "print only the tc:// code")
 	fs.BoolVar(&c.list, "list", false, "list open invites (ids, kind, uses left, expiry, creator); tokens are never shown")
 	fs.StringVar(&c.revoke, "revoke", "", "make the invite with this id (from --list) unusable at once")
+	key := fs.String("key", "", "github:<login>: only someone holding one of that GitHub account's SSH keys can use the invite (single use)")
 	if err := fs.Parse(args); err != nil {
 		return c, errUsage
 	}
@@ -113,7 +135,7 @@ func parseServerInvite(args []string) (serverInviteCmd, error) {
 		if c.list && set["revoke"] {
 			return c, errors.New("use --list or --revoke, not both")
 		}
-		for _, f := range []string{"admin", "uses", "ttl", "raw"} {
+		for _, f := range []string{"admin", "uses", "ttl", "raw", "key"} {
 			if set[f] {
 				return c, fmt.Errorf("--%s doesn't go with --list or --revoke", f)
 			}
@@ -123,6 +145,16 @@ func parseServerInvite(args []string) (serverInviteCmd, error) {
 			return c, fmt.Errorf("--revoke takes the %d-character id from --list", proto.InviteIDLen)
 		}
 		return c, nil
+	}
+	if set["key"] {
+		login, ok := proto.GitHubKeySpec(*key)
+		if !ok {
+			return c, errors.New("--key takes github:<login>, e.g. --key github:alice")
+		}
+		if c.opts.Uses != 1 {
+			return c, errors.New("--key invites are single-use: drop --uses")
+		}
+		c.key = login
 	}
 	if c.opts.Admin {
 		if c.opts.Uses != 1 {
@@ -142,20 +174,30 @@ func cmdServerInvite(args []string) error {
 	if err != nil {
 		return err
 	}
+	ctx, cancel := signalContext()
+	defer cancel()
+	if c.key != "" {
+		// Fetched here, on the host, before the database is opened: the
+		// server process itself never makes outbound requests.
+		keys, err := client.FetchGitHubInviteKeys(ctx, testGitHubBase, c.key)
+		if err != nil {
+			return err
+		}
+		c.opts.Keys, c.opts.KeySrc = keys, "github:"+c.key
+	}
 	srv, err := server.New(server.Config{DataDir: c.data, PublicAddr: readPublic(c.data, ":7443"),
-		Logger: slog.New(slog.DiscardHandler)})
+		Logger: slog.New(slog.DiscardHandler), MemberInvites: readMemberInvites(c.data)})
 	if err != nil {
 		return err
 	}
 	defer srv.Close()
-	ctx := context.Background()
 	switch {
 	case c.list:
 		invs, err := srv.ListInvites(ctx)
 		if err != nil {
 			return err
 		}
-		printInvites(os.Stdout, invs, func(id uint64) string { return srv.UserName(ctx, id) })
+		printInvites(os.Stdout, invs, func(id uint64) string { return srv.UserName(ctx, id) }, "tc server invite --revoke ID")
 		return nil
 	case c.revoke != "":
 		if err := srv.RevokeInvite(ctx, c.revoke); err != nil {
@@ -186,6 +228,9 @@ func printInvite(w io.Writer, inv proto.InviteRes, version string) {
 	if inv.Expires > 0 {
 		what += ", expires " + time.UnixMilli(inv.Expires).Format("Mon Jan 2 15:04 MST")
 	}
+	if inv.Keys > 0 {
+		what += ", only for the holder of " + plural(int(inv.Keys), "SSH key")
+	}
 	// The code embeds --public; refuse to print anything that isn't plain
 	// and shell-safe rather than a line that would do something else.
 	if !proto.ShellSafe(inv.Code) {
@@ -202,7 +247,7 @@ func printInvite(w io.Writer, inv proto.InviteRes, version string) {
 
 // printInvites is the --list table. Names come from the server's own
 // database but still pass through sanitize.Line.
-func printInvites(w io.Writer, invs []proto.InviteInfo, name func(uint64) string) {
+func printInvites(w io.Writer, invs []proto.InviteInfo, name func(uint64) string, revoke string) {
 	if len(invs) == 0 {
 		fmt.Fprintln(w, "No open invites.")
 		return
@@ -213,6 +258,9 @@ func printInvites(w io.Writer, invs []proto.InviteInfo, name func(uint64) string
 		if inv.Kind == proto.InviteKindKey {
 			kind = "key for " + who(inv.User, name)
 		}
+		if inv.Keys > 0 {
+			kind += " (" + boundTo(inv) + ")"
+		}
 		by := "server host"
 		if inv.CreatedBy != 0 {
 			by = who(inv.CreatedBy, name)
@@ -220,7 +268,23 @@ func printInvites(w io.Writer, invs []proto.InviteInfo, name func(uint64) string
 		fmt.Fprintf(w, "%-12s  %-14s  %9d  %-17s  %s\n", sanitize.Line(inv.ID), kind, inv.UsesLeft,
 			time.UnixMilli(inv.Expires).Format("Jan 2 15:04 MST"), by)
 	}
-	fmt.Fprintln(w, "\nRevoke one with: tc server invite --revoke ID")
+	fmt.Fprintln(w, "\nRevoke one with: "+revoke)
+}
+
+// boundTo describes a key-bound invite's binding: "github:alice, 2 keys".
+func boundTo(inv proto.InviteInfo) string {
+	n := plural(int(inv.Keys), "key")
+	if inv.KeySrc != "" {
+		return sanitize.Line(inv.KeySrc) + ", " + n
+	}
+	return n
+}
+
+func plural(n int, what string) string {
+	if n == 1 {
+		return "1 " + what
+	}
+	return fmt.Sprintf("%d %ss", n, what)
 }
 
 func who(id uint64, name func(uint64) string) string {
