@@ -25,8 +25,7 @@ OPUS_SHA256=65c1d2f78b9f2fb20082c38cbe47c951ad5839345876e46941612ee87f9a7ce1
 root=$(cd "$(dirname "$0")/.." && pwd)
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
-work=${TMPDIR:-/tmp}/tc-voice-build.$$
-mkdir -p "$work"
+work=$(mktemp -d 2>/dev/null || mktemp -d -t tc-voice-build)
 trap 'rm -rf "$work"' EXIT
 
 sha256() {

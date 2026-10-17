@@ -255,11 +255,6 @@ func (e *Engine) Receive(b []byte) {
 	}
 	payload := d.Payload
 	if e.cfg.Enc {
-		ts := time.Unix(int64(d.TS), 0)
-		if ts.Before(now.Add(-tsSkew)) || ts.After(now.Add(tsSkew)) {
-			e.count(func(s *Stats) { s.Skew++ })
-			return
-		}
 		vs, ok := e.cfg.Keys.Recv(d.Src, d.Epoch)
 		if !ok {
 			e.count(func(s *Stats) { s.Key++ })
@@ -267,6 +262,13 @@ func (e *Engine) Receive(b []byte) {
 		}
 		if payload, err = vs.Open(d.Seq, b[:d.HeaderLen()], d.Payload); err != nil {
 			e.count(func(s *Stats) { s.Auth++ })
+			return
+		}
+		// ts is in the AD: checked only once authentic, so a forged ts
+		// can't raise the UI's clock-skew warning.
+		ts := time.Unix(int64(d.TS), 0)
+		if ts.Before(now.Add(-tsSkew)) || ts.After(now.Add(tsSkew)) {
+			e.count(func(s *Stats) { s.Skew++ })
 			return
 		}
 	} else {

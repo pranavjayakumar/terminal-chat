@@ -24,8 +24,8 @@ const (
 
 // dgItem is a datagram queued for one participation.
 type dgItem struct {
-	b  []byte
-	to *participant
+	b        []byte
+	from, to *participant
 }
 
 // voiceOps exist only in sessions that negotiated proto.CapVoice.
@@ -217,6 +217,10 @@ func (s *Server) opHuddleJoin(ctx context.Context, sess *session, a proto.Huddle
 		hs.mu.Unlock()
 		return nil, proto.Errf(proto.ErrConflict, "huddle is full")
 	}
+	if hs.nextSrc == ^uint32(0) {
+		hs.mu.Unlock()
+		return nil, proto.Errf(proto.ErrConflict, "out of huddle ids until the server restarts")
+	}
 	c := changed{}
 	for _, p := range hs.bySess {
 		if mine(p) {
@@ -226,10 +230,6 @@ func (s *Server) opHuddleJoin(ctx context.Context, sess *session, a proto.Huddle
 	if h = hs.byChan[a.Chan]; h == nil {
 		h = &huddle{ch: a.Chan, enc: enc}
 		hs.byChan[a.Chan] = h
-	}
-	if hs.nextSrc == ^uint32(0) {
-		hs.mu.Unlock()
-		return nil, proto.Errf(proto.ErrConflict, "out of huddle ids until the server restarts")
 	}
 	hs.nextSrc++
 	p := &participant{sess: sess, src: hs.nextSrc, dev: dev, stream: stream, h: h}
@@ -375,10 +375,10 @@ func (sess *session) startDatagrams(ctx context.Context, dg transport.DatagramCo
 		for {
 			select {
 			case it := <-sess.dgOut:
-				// Queued for a participation that has since ended (left,
-				// removed, revoked): never deliver it (§14.1).
+				// Queued for or from a participation that has since ended
+				// (left, removed, revoked): never deliver it (§14.1).
 				hs.mu.RLock()
-				live := hs.bySess[sess] == it.to
+				live := hs.bySess[sess] == it.to && hs.bySess[it.from.sess] == it.from
 				hs.mu.RUnlock()
 				if live {
 					// Errors are a closing connection or a datagram that no
@@ -423,7 +423,7 @@ func (s *Server) relay(sess *session, b []byte) {
 			continue
 		}
 		select {
-		case q.sess.dgOut <- dgItem{b, q}:
+		case q.sess.dgOut <- dgItem{b, p, q}:
 			hs.relayed.Add(1)
 		default:
 			hs.dropped.Add(1)

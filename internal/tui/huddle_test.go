@@ -11,6 +11,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/voice"
 )
@@ -278,14 +280,17 @@ func TestHuddleSidebarMarker(t *testing.T) {
 		h.rosters[20] = []uint64{2}
 		h.update(m)
 		v := checkView(t, m, "sidebar huddle marker")
+		if !m.sidebarShown() && !strings.Contains(ansi.Strip(v), "🎧2") {
+			t.Fatalf("%dx%d: no sidebar and no header hint of the 2 huddles:\n%s", sz[0], sz[1], v)
+		}
 		if m.sidebarShown() && sz[0] >= 100 {
-			if !regexp.MustCompile(`backend +🎧2`).MatchString(v) || !regexp.MustCompile(`bob +🎧1`).MatchString(v) {
+			if v := ansi.Strip(v); !regexp.MustCompile(`backend +🎧2`).MatchString(v) || !regexp.MustCompile(`bob +🎧1`).MatchString(v) {
 				t.Fatalf("%dx%d: no marker:\n%s", sz[0], sz[1], v)
 			}
 		}
 		h.rosters[11] = nil
 		h.update(m)
-		if v := checkView(t, m, "huddle ended"); strings.Contains(v, "backend 🎧") {
+		if v := checkView(t, m, "huddle ended"); regexp.MustCompile(`backend +🎧`).MatchString(ansi.Strip(v)) {
 			t.Fatalf("marker after the huddle ended:\n%s", v)
 		}
 	}
@@ -323,6 +328,16 @@ func TestHuddleClockSkewWarning(t *testing.T) {
 	if m.notice != "" {
 		t.Fatalf("warning repeated: %q", m.notice)
 	}
+	// Hopping straight to another huddle: its warning shows too.
+	m.active = 11
+	h.warn = nil
+	runInput(t, m, "/huddle")
+	h.warn = client.ErrClockSkew
+	m.clearNotice()
+	h.update(m)
+	if !strings.Contains(m.notice, "clock") {
+		t.Fatal("warning swallowed after hopping huddles")
+	}
 	runInput(t, m, "/leave-huddle")
 	h.warn = nil // a new participation starts clean
 	runInput(t, m, "/huddle")
@@ -331,5 +346,30 @@ func TestHuddleClockSkewWarning(t *testing.T) {
 	h.update(m)
 	if !strings.Contains(m.notice, "clock") {
 		t.Fatal("no warning in the next huddle")
+	}
+}
+
+// In a huddle the 🎧 ● head stays visible even behind a sticky error, Esc
+// closes an open mic, and herdr's title shows the open mic.
+func TestHuddleOpenMicVisible(t *testing.T) {
+	for _, w := range []int{20, 40, 80} {
+		m, h := newHuddleModel(t, w, 12)
+		runInput(t, m, "/huddle")
+		runInput(t, m, "/talk")
+		h.warn = client.ErrClockSkew
+		h.update(m)
+		if v := ansi.Strip(checkView(t, m, "open mic + error")); !strings.Contains(v, "🎧 ●") {
+			t.Fatalf("%d cols: open mic hidden:\n%s", w, v)
+		}
+		if got := m.badgeText(); !strings.HasPrefix(got, "tc · 🎧●") {
+			t.Fatalf("badge %q", got)
+		}
+		m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		if h.Talking() || !strings.Contains(m.notice, "mic off") {
+			t.Fatalf("Esc left the mic open (notice %q)", m.notice)
+		}
+		if got := m.badgeText(); strings.Contains(got, "●") {
+			t.Fatalf("badge %q after mic off", got)
+		}
 	}
 }

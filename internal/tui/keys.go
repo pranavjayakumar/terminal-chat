@@ -105,6 +105,7 @@ var helpLines = [][2]string{
 	{"/webhook-delete id", "delete a webhook"},
 	{"/huddle", "join this channel's voice huddle (voice build)"},
 	{"  Ctrl-T", "in a huddle: hold to talk, tap to keep the mic open"},
+	{"/talk, /mute", "in a huddle: open / close the mic (when Ctrl-T doesn't work); Esc closes an open mic"},
 	{"/leave-huddle", "leave the huddle"},
 	{"//text", "send text starting with /"},
 }

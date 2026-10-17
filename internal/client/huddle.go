@@ -59,7 +59,7 @@ type participation struct {
 const skewWarnAfter = 25
 
 // ErrClockSkew is the HuddleWarning for repeated clock-skew drops.
-var ErrClockSkew = errors.New("some huddle audio is dropped: a clock is over a minute off — check the time (NTP) on both machines")
+var ErrClockSkew = errors.New("clock skew: some huddle audio dropped — check NTP on both machines")
 
 // HuddleWarning is a problem with the current huddle the user should know
 // about (nil if none); the client posts Update{Huddle} when it appears.
@@ -81,6 +81,12 @@ func (c *Client) Huddle(ch uint64) []uint64 {
 		out = append(out, p.User)
 	}
 	return out
+}
+
+func (c *Client) rosterHas(ch uint64, src uint32) bool {
+	c.hud.mu.Lock()
+	defer c.hud.mu.Unlock()
+	return slices.ContainsFunc(c.hud.rosters[ch], func(q proto.Part) bool { return q.Src == src })
 }
 
 // SetVoiceClockSkew shifts the voice engine's clock by d (tests: a peer
@@ -208,6 +214,11 @@ func (c *Client) JoinHuddle(ctx context.Context, ch uint64) error {
 		return err
 	}
 	p := &participation{ch: ch, src: res.Src, sess: s, vs: vs, keys: keys, cancel: cancel}
+	// The roster with our src comes before the RES (§14.1); allow a little
+	// slack before calling ourselves dropped.
+	for i := 0; i < 20 && !c.rosterHas(ch, res.Src); i++ {
+		time.Sleep(50 * time.Millisecond)
+	}
 	c.hud.mu.Lock()
 	roster := c.hud.rosters[ch]
 	// The server sends our roster before the RES; anything since (we were
@@ -309,8 +320,12 @@ func (c *Client) watchHuddle(ctx context.Context, p *participation) {
 					}
 				}
 				skew = n
-				if !c.huddleStillValid(ctx, p) {
-					c.LeaveHuddle()
+				if !c.huddleStillValid(ctx, p) && ctx.Err() == nil {
+					// End p only: the user may have moved to another
+					// huddle while this check ran.
+					if c.endHuddle(p) {
+						_ = p.sess.fire(proto.OpHuddleLeave, struct{}{})
+					}
 					return
 				}
 			}
@@ -330,6 +345,13 @@ func (c *Client) huddleStillValid(ctx context.Context, p *participation) bool {
 	}
 	if st.State == E2EOK && p.keys.fresh() {
 		p.keys.prime()
+		// Fresh again some other way (our owed rotation paid by the e2e
+		// worker, someone else rotated) after a failed refresh: unmute.
+		p.keys.mu.Lock()
+		if !p.keys.refreshing {
+			p.keys.blocked = false
+		}
+		p.keys.mu.Unlock()
 		return true
 	}
 	k := p.keys
@@ -574,10 +596,7 @@ func (k *huddleKeys) prime() {
 	now := time.Now()
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if h.Epoch != k.headEp {
-		k.grace = now.Add(prevEpochGrace)
-	}
-	k.headEp, k.headAt = h.Epoch, now
+	k.moveHead(h.Epoch, now)
 	k.cache[[2]uint32{0, h.Epoch}] = cachedKey{s, now}
 }
 
@@ -622,6 +641,27 @@ func (k *huddleKeys) epochKey(epoch uint32, user uint64) (e2ecrypto.Key, bool) {
 	return vk, err == nil
 }
 
+// epochTrusted reports whether nobody outside the channel may hold the
+// epoch's K: everyone in its roster is still a live member and no device
+// revoked since may have it (revokedStale, the text path's rule).
+func (k *huddleKeys) epochTrusted(epoch uint32) bool {
+	ep, ok, err := k.c.trust.Epoch(k.sid, k.ch, epoch)
+	if err != nil || !ok {
+		return false
+	}
+	ch, ok, err := getChan(k.c.db, k.ch)
+	if err != nil || !ok {
+		return false
+	}
+	live := k.c.liveMembers(ch)
+	for _, u := range ep.Roster {
+		if !slices.Contains(live, u) {
+			return false
+		}
+	}
+	return !k.c.revokedStale(k.sid, k.ch, ep)
+}
+
 // head is the newest verified epoch, re-read at most every keyTTL: Send
 // runs on the audio thread 50 times a second.
 func (k *huddleKeys) head() (uint32, bool) {
@@ -636,12 +676,19 @@ func (k *huddleKeys) head() (uint32, bool) {
 		return 0, false
 	}
 	k.mu.Lock()
-	if h.Epoch != k.headEp {
-		k.grace = time.Now().Add(prevEpochGrace)
-	}
-	k.headEp, k.headAt = h.Epoch, time.Now()
+	k.moveHead(h.Epoch, time.Now())
 	k.mu.Unlock()
 	return h.Epoch, true
+}
+
+// moveHead records the head; the previous epoch's grace starts when we
+// see the head move, never on first sight (at join the rotation may be
+// long past). Caller holds k.mu.
+func (k *huddleKeys) moveHead(epoch uint32, now time.Time) {
+	if k.headEp != 0 && epoch != k.headEp {
+		k.grace = now.Add(prevEpochGrace)
+	}
+	k.headEp, k.headAt = epoch, now
 }
 
 func (k *huddleKeys) Send() (uint32, *e2ecrypto.VoiceSender, bool) {
@@ -671,22 +718,32 @@ func (k *huddleKeys) Send() (uint32, *e2ecrypto.VoiceSender, bool) {
 }
 
 func (k *huddleKeys) Recv(src, epoch uint32) (*e2ecrypto.VoiceSender, bool) {
-	if s, ok := k.cached([2]uint32{src, epoch}); ok {
-		return s, true
-	}
 	head, ok := k.head()
 	// The newest verified epoch and the one before, so a rotation
-	// mid-sentence doesn't cut anyone off (§14.3).
+	// mid-sentence doesn't cut anyone off (§14.3) — checked before the
+	// cache, so a cached key never outlives the window.
 	if !ok || epoch == 0 || epoch > head || head-epoch > 1 {
 		return nil, false
 	}
 	k.mu.Lock()
-	p, ok := k.parts[src]
 	inGrace := time.Now().Before(k.grace)
 	k.mu.Unlock()
 	if epoch != head && !inGrace {
 		return nil, false
 	}
+	if s, ok := k.cached([2]uint32{src, epoch}); ok {
+		return s, true
+	}
+	// Voice keys are group-symmetric: whoever holds K can speak as anyone
+	// in the roster. So an epoch someone who left or a revoked device may
+	// hold is refused whoever the frame claims to be from (a malicious
+	// server could refuse the rotation and relay their frames).
+	if !k.epochTrusted(epoch) {
+		return nil, false
+	}
+	k.mu.Lock()
+	p, ok := k.parts[src]
+	k.mu.Unlock()
 	if !ok || !k.member(p.User) {
 		return nil, false
 	}

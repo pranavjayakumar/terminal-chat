@@ -1124,7 +1124,9 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 			m.escAt = m.now()
 			m.setNotice("Esc again to clear draft", false, false, escWindow)
 		default:
-			m.clearNotice()
+			if !m.micOff() {
+				m.clearNotice()
+			}
 		}
 		return nil
 	case key == kEnter:

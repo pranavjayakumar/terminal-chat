@@ -191,10 +191,14 @@ func (m *Model) seen(ch uint64) {
 func (m *Model) badgeText() string {
 	s := m.unreadSummary()
 	if m.hud.in { // in a huddle: the pane shows it even with nothing unread
-		if s == "" {
-			return "tc · 🎧"
+		h := "tc · 🎧"
+		if m.hud.talking && m.hud.talk == talkLatched {
+			h += "●" // open mic, even while another pane has focus
 		}
-		return "tc · 🎧 · " + s
+		if s == "" {
+			return h
+		}
+		return h + " · " + s
 	}
 	if s != "" {
 		return "tc · " + s

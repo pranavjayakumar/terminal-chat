@@ -30,7 +30,8 @@ func TestHuddleKeysRevokeOwed(t *testing.T) {
 	k := &huddleKeys{c: d.c, sid: testSID(), ch: dm, me: alice, dev: d.me.ID,
 		parts: map[uint32]proto.Part{}, cache: map[[2]uint32]cachedKey{}}
 	var stream [e2ecrypto.VoiceStreamSize]byte
-	k.setParts([]proto.Part{{Src: 7, User: alice, Dev: laptop.dev.ID[:], Stream: stream[:]}})
+	k.setParts([]proto.Part{{Src: 7, User: alice, Dev: laptop.dev.ID[:], Stream: stream[:]},
+		{Src: 8, User: bob, Dev: d.b1.dev.ID[:], Stream: stream[:]}})
 	if !k.fresh() {
 		t.Fatal("epoch 1 not fresh before any revoke")
 	}
@@ -55,9 +56,15 @@ func TestHuddleKeysRevokeOwed(t *testing.T) {
 	if k.fresh() {
 		t.Fatal("voice may seal under epoch 1 while a rotation is owed")
 	}
-	k.setParts([]proto.Part{{Src: 7, User: alice, Dev: laptop.dev.ID[:], Stream: stream[:]}}) // drops cached keys
+	k.setParts([]proto.Part{{Src: 7, User: alice, Dev: laptop.dev.ID[:], Stream: stream[:]},
+		{Src: 8, User: bob, Dev: d.b1.dev.ID[:], Stream: stream[:]}}) // drops cached keys
 	if _, ok := k.Recv(7, 1); ok {
 		t.Fatal("frames from the revoked laptop accepted")
+	}
+	// The laptop holds K_1 and frame keys are group-symmetric: it could
+	// forge bob's frames, so nothing under epoch 1 is played any more.
+	if _, ok := k.Recv(8, 1); ok {
+		t.Fatal("frames under an epoch the revoked laptop holds accepted (forgeable as bob)")
 	}
 	d.c.mu.Lock()
 	s := d.c.sess

@@ -110,7 +110,8 @@ ct    = ChaCha20-Poly1305(sk, nonce, opus_frame, AD = header)                   
   time in seconds, inside the AD; receivers drop frames whose `ts` is more than 60 s from their
   own clock. This needs clocks within a minute (NTP). Rejections are counted per reason in the
   engine (`voice.Stats`); 25 or more clock-skew drops within one second raise a sticky TUI
-  warning, once per participation ("a clock is over a minute off — check the time (NTP)").
+  warning, once per participation (the ts check runs after the AEAD opens, so only authentic
+  frames count).
 - **Encrypted or not is decided by the client's trust state** (`E2EStatus`), never by the
   server's `Channel.e2e` flag alone: plaintext only in a channel never known as encrypted and
   not in alarm. A channel in alarm, or without a verified epoch we hold K for, refuses voice
@@ -123,11 +124,16 @@ ct    = ChaCha20-Poly1305(sk, nonce, opus_frame, AD = header)                   
   or a stolen device therefore hears at most ~1 s more, even if a malicious server keeps
   relaying to them.
 - **Which keys a receiver accepts**: frames under the newest epoch it verified, or the one
-  before it only within 10 s of first seeing the newer one (so a rotation mid-sentence doesn't
-  cut audio, but an ex-member holding the old K can't inject for long); from senders in that
-  epoch's roster who are also current members; with `dev` a verified, non-revoked device of the
-  user the roster names (trust store). Anything else is dropped and counted; plaintext kinds in
-  an e2e channel are always dropped (downgrade).
+  before it only within 10 s of seeing the head move (never on first sight, e.g. at join), so a
+  rotation mid-sentence doesn't cut audio. Because frame keys are group-symmetric (anyone with
+  K can speak as any roster member), an epoch is refused outright when someone outside the
+  channel may hold its K: a roster user who is no longer a live member, a device revoked since
+  (or a rotation we owe for our own revoke) — the text path's `revokedStale` rule. A malicious
+  server refusing the rotation therefore gets silence, not an ex-member's forged voice. Within
+  an accepted epoch: senders in its roster who are also current members, with `dev` a verified,
+  non-revoked device of that user (trust store). The window is re-checked before cached keys
+  are used. `ts` is checked after the AEAD opens. Anything else is dropped and counted;
+  plaintext kinds in an e2e channel are always dropped (downgrade).
 
 Public channels: voice is protected hop by hop (QUIC/TLS 1.3) but the **server can hear it**,
 exactly like public-channel text. The TUI marks encrypted huddles with the lock it already uses.
@@ -146,20 +152,27 @@ exactly like public-channel text. The TUI marks encrypted huddles with the lock 
 ## UX (TUI + herdr)
 
 - `/huddle` — join the current channel's huddle (or start it). In a huddle, the status line
-  starts with `🎧 #chan · bo* cy alice🎙` — `*` marks who's talking right now, `🎙` that our mic
-  is on, and `🔒` precedes encrypted channels. Viewing a channel whose huddle you're not in shows
-  `🎧 3 in huddle — /huddle`. The sidebar marks every channel with a huddle going with a dim
-  `🎧n` (n people) before the unread badge; it's dropped before the name gets too short.
+  starts with `🎧 ● 🔒#chan · bob* carol` — `●` (red) that our mic is on, `🔒` an encrypted
+  channel, `*` who's talking right now; we're not listed. This head always comes first, before
+  any error notice, so an open mic is never hidden. Viewing a channel whose huddle you're not in
+  shows `🎧 3 in huddle — /huddle`. The sidebar marks every channel with a huddle going with a
+  dim `🎧n` (n people) before the unread badge (the count, then the marker, is dropped before the
+  name gets too short); without a sidebar (narrow panes) the header adds `🎧n` = huddles
+  running in other channels.
 - **Talk key `ctrl+t`** (bound only while in a huddle; unbound otherwise).
   Terminals don't report key-up, so: press starts talking; if key-repeats follow (you're
-  holding it) talking stops 600 ms after the last repeat — push-to-talk. If no repeat arrives
-  (a tap), the mic latches open until the next tap — open mic. The 600 ms covers typical OS
-  initial repeat delays (macOS default ≈ 375–500 ms).
+  holding it) talking stops 120–250 ms after the last repeat (3× the measured repeat gap) —
+  push-to-talk. If no repeat arrives within 800 ms (longer than X11's 660 ms initial delay), the
+  press was a tap and the mic latches open until the next tap — open mic.
+- `/talk` and `/mute` open and close the mic where ctrl+t never arrives (Zellij) or key-repeat
+  is off. Esc on an empty input closes an open mic.
 - Not talking = muted. `/leave-huddle` leaves.
-- Builds without voice: `/huddle` explains "this tc build has no voice — install the voice
-  build (see docs/VOICE.md)"; the roster indicator still works.
-- herdr: while you're in a huddle the pane's metadata title starts `tc · 🎧` (followed by the
-  unread summary, if any), so you can see which pane holds the call.
+- Builds without voice: `/huddle` says "this tc build has no voice: reinstall with install.sh
+  --voice"; the roster indicator still works.
+- Repeated clock-skew drops (25+ authentic frames a second outside ±60 s) show a sticky
+  "clock skew: some huddle audio dropped — check NTP on both machines", once per participation.
+- herdr: while you're in a huddle the pane's metadata title starts `tc · 🎧` (`tc · 🎧●` with an
+  open mic), followed by the unread summary, so you can see which pane holds the call.
 
 ## Audio I/O library
 
@@ -209,8 +222,8 @@ a removed member; a hostile client spamming datagrams.
 | Server replays frames within a session | 64-frame replay window per `src`, kept for the whole participation (a roster that drops and re-adds a `src` can't reset it). |
 | Server replays an old recording later | `ts` in the AD, ±60 s acceptance; window per stream. Within 60 s of recording a replay into a *new* stream is possible (accepted risk, documented). |
 | Server downgrades an e2e huddle to plaintext | The client decides encryption from its sticky trust state, not the server's flag; refuses in alarm; ends the huddle if encryption changes. Receivers drop plaintext kinds in e2e channels. |
-| Removed member / stolen (revoked) device keeps listening | Senders only seal under a fresh epoch and rotate first when it's stale (checked at join and every second), so the old `K` decrypts at most ~1 s more. Honest servers also drop them at once and discard their queued datagrams. |
-| Ex-member injects audio under an old epoch | Previous epoch accepted only 10 s after the head moves, and only from current members. |
+| Removed member / stolen (revoked) device keeps listening | Senders only seal under a fresh epoch and rotate first when it's stale (checked at join and every second), so the old `K` decrypts at most ~1 s more (plus ≤ 2 s of cached keys). Honest servers also drop them at once and discard their queued datagrams, to and from them. |
+| Ex-member / revoked device injects audio under an old epoch | Receivers refuse any epoch whose K someone outside the channel may hold (roster user no longer a member, device revoked since, rotation owed), whoever the frame claims to be from, so a server that blocks the rotation gets silence. The previous epoch is accepted only 10 s after the head moves, never on first sight, and only if it passes the same test. |
 | Alarm raised mid-huddle | Sending pauses while the channel isn't `E2EOK`. |
 | **Malicious member impersonates another member's voice** | **Not prevented in v1.** Any roster member can derive any sender's `sk` (group-symmetric, like SFrame with a shared key). Text messages are signed per message; per-frame Ed25519 would add 64 B × 50/s = 25.6 kbit/s. Future: per-sender keys sealed to the roster with signed announcements. |
 | Metadata | The server sees who is in which huddle, when, and frame sizes/timing (talk patterns; VBR sizes can leak some content). VBR leaks more than CBR; CBR is a possible opt-in later. |

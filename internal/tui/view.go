@@ -310,10 +310,18 @@ func (m *Model) statusLine(w int) string {
 			b.WriteString(m.st.dim.Render(" · "))
 		}
 	}
+	head, roster := m.huddleHead(m.notice != "")
+	// In a huddle its head (🎧 ● = our mic) comes first: a sticky error
+	// must never hide that we're broadcasting.
+	if m.hud.in && head != "" {
+		b.WriteString(head + roster)
+		head = ""
+	}
 	if m.notice != "" && m.noticeErr {
+		sep()
 		b.WriteString(m.st.noticeErr.Render("! " + m.notice))
 	}
-	if head, roster := m.huddleHead(m.notice != ""); head != "" {
+	if head != "" {
 		sep()
 		b.WriteString(head + roster)
 	}
@@ -365,6 +373,13 @@ func (m *Model) headerLine(w int) string {
 		return left
 	}
 	sum := m.unreadSummary()
+	// No sidebar, so no 🎧n markers: say a huddle runs elsewhere.
+	if n := m.huddlesElsewhere(); n > 0 {
+		if sum != "" {
+			sum += " · "
+		}
+		sum += "🎧" + strconv.Itoa(n)
+	}
 	if sum == "" {
 		return left
 	}
@@ -549,7 +564,10 @@ func (m *Model) sideEntry(v client.ChannelView, w int) string {
 	if badge != "" {
 		labelW = w - strWidth(badge) - 2 - strWidth(draft)
 	}
-	if hud != "" && labelW-strWidth(hud) >= 6 {
+	if hud != "" && labelW-strWidth(hud)-strWidth(prefix) < 6 {
+		hud = " 🎧" // the count goes before the name gets unreadable
+	}
+	if hud != "" && labelW-strWidth(hud)-strWidth(prefix) >= 6 {
 		labelW -= strWidth(hud)
 	} else {
 		hud = ""

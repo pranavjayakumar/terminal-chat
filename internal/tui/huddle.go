@@ -113,6 +113,18 @@ func (m *Model) refreshHuddle() {
 	}
 }
 
+// huddlesElsewhere counts huddles in my channels other than the open one
+// (and the one I'm in).
+func (m *Model) huddlesElsewhere() int {
+	n := 0
+	for ch, k := range m.hud.counts {
+		if k > 0 && ch != m.active && !(m.hud.in && ch == m.hud.cur) {
+			n++
+		}
+	}
+	return n
+}
+
 // huddleMarker is the sidebar's mark for a channel with a huddle going:
 // 🎧 and how many are in it ("" when none).
 func (m *Model) huddleMarker(ch uint64) string {
@@ -172,6 +184,20 @@ func (m *Model) huddleCommand(c command) (tea.Cmd, bool, error) {
 	return m.callThen("huddle", func(ctx context.Context) (tea.Msg, error) {
 		return huddleJoinMsg{ch, prev}, hb.JoinHuddle(ctx, ch)
 	}), true, nil
+}
+
+// micOff closes an open (latched) mic; Esc on an empty input calls it.
+func (m *Model) micOff() bool {
+	hb, ok := m.huddleBackend()
+	if !ok || !m.hud.in || m.hud.talk != talkLatched {
+		return false
+	}
+	hb.SetTalking(false)
+	m.hud.talk = talkOff
+	m.refreshHuddle()
+	m.setNotice("mic off", false, false, 0)
+	m.noticeDim = true
+	return true
 }
 
 // talkKey handles ctrl+t; ok is false outside a huddle so the key keeps
@@ -239,6 +265,7 @@ func (m *Model) huddleMsg(msg tea.Msg) (tea.Cmd, bool) {
 		return nil, true
 	case huddleJoinMsg:
 		m.hud.talk = talkOff
+		m.hud.warned = nil // a new participation: its own warnings
 		m.refreshHuddle()
 		note := "in the huddle — hold ctrl+t to talk, tap for open mic (/talk, /mute)"
 		if msg.prev != 0 {
