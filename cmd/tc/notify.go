@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/skailama/tc/internal/sanitize"
 )
 
 // cmdNotify runs a command (output passes through untouched), then posts its
@@ -63,9 +65,13 @@ func cmdNotify(args []string) error {
 }
 
 func notifyBody(argv []string, code int, took time.Duration, tail string) string {
-	cmdline := strings.Join(argv, " ")
+	cmdline := sanitize.Line(sanitize.StripANSI(strings.Join(argv, " ")))
 	if len(cmdline) > 200 {
-		cmdline = cmdline[:200] + "…"
+		cut := 200
+		for cut > 0 && cmdline[cut]&0xC0 == 0x80 { // invalid UTF-8 would be rejected
+			cut--
+		}
+		cmdline = cmdline[:cut] + "…"
 	}
 	cmdline = strings.ReplaceAll(cmdline, "`", "'")
 	took = took.Round(time.Second)
@@ -93,12 +99,23 @@ func postTo(ctx context.Context, target, body string) error {
 	if err != nil {
 		return err
 	}
-	if err := c.Send(ch, body, 0); err != nil {
+	return sendWait(ctx, c, ch, body)
+}
+
+// sendWait queues body and waits for that message only: a row the server
+// rejected in an earlier run (still shown as failed in the TUI) must not
+// fail this one.
+func sendWait(ctx context.Context, c interface {
+	SendLocal(ch uint64, body string, thread uint64) (int64, error)
+	FlushLocal(ctx context.Context, ids ...int64) error
+}, ch uint64, body string) error {
+	id, err := c.SendLocal(ch, body, 0)
+	if err != nil {
 		return err
 	}
 	fctx, fcancel := context.WithTimeout(ctx, 20*time.Second)
 	defer fcancel()
-	return c.Flush(fctx)
+	return c.FlushLocal(fctx, id)
 }
 
 // tailBuffer keeps the last n lines written to it (bounded in bytes too).

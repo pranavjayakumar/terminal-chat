@@ -20,14 +20,22 @@ import (
 // shown as pending at once; it is sent when online and retried with the same
 // nonce until the server acknowledges it or rejects it for good.
 func (c *Client) Send(ch uint64, body string, thread uint64) error {
+	_, err := c.SendLocal(ch, body, thread)
+	return err
+}
+
+// SendLocal is Send that also returns the queued message's outbox id, so a
+// one-shot caller (tc send) can wait for exactly that message (FlushLocal)
+// instead of the whole outbox, which may hold rows rejected long ago.
+func (c *Client) SendLocal(ch uint64, body string, thread uint64) (int64, error) {
 	if ch == 0 || body == "" {
-		return errors.New("send: empty channel or body")
+		return 0, errors.New("send: empty channel or body")
 	}
 	if len(body) > proto.MaxBody {
-		return proto.Errf(proto.ErrTooLarge, "message is over 64 KiB")
+		return 0, proto.Errf(proto.ErrTooLarge, "message is over 64 KiB")
 	}
 	if err := c.sendAllowed(ch); err != nil {
-		return err
+		return 0, err
 	}
 	e := outboxEntry{nonce: make([]byte, 16), chan_: ch, thread: thread, body: body, time: time.Now().UnixMilli()}
 	rand.Read(e.nonce)
@@ -35,19 +43,20 @@ func (c *Client) Send(ch uint64, body string, thread uint64) error {
 		// The server can't check encrypted text (§10): receivers would
 		// reject it as invalid, so refuse it here.
 		if !validText(body) {
-			return proto.Errf(proto.ErrBadRequest, "message is empty or contains control characters")
+			return 0, proto.Errf(proto.ErrBadRequest, "message is empty or contains control characters")
 		}
 		// Encrypted once, here if we can (works offline), else by the outbox
 		// before the first send; retries send the same bytes.
 		e.encNonce = newEncNonce()
 		e.enc = c.sealOffline(e)
 	}
-	if _, err := c.db.Exec(`INSERT INTO outbox (nonce, chan, thread, body, time, enc, encnonce) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		e.nonce, ch, thread, body, e.time, e.enc, e.encNonce); err != nil {
-		return fmt.Errorf("queueing message: %w", err)
+	var id int64
+	if err := c.db.QueryRow(`INSERT INTO outbox (nonce, chan, thread, body, time, enc, encnonce) VALUES (?, ?, ?, ?, ?, ?, ?)
+		RETURNING id`, e.nonce, ch, thread, body, e.time, e.enc, e.encNonce).Scan(&id); err != nil {
+		return 0, fmt.Errorf("queueing message: %w", err)
 	}
 	c.outboxChanged(ch, nil)
-	return nil
+	return id, nil
 }
 
 // RetryFailed requeues a failed outbox message (same nonce). A failed send
@@ -111,6 +120,45 @@ func (c *Client) Flush(ctx context.Context) error {
 		if pending == 0 {
 			if failed > 0 {
 				return fmt.Errorf("%d message(s) not sent: %s", failed, reason.String)
+			}
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-changed:
+		}
+	}
+}
+
+// FlushLocal waits until each given outbox entry (SendLocal ids) was
+// delivered or rejected for good, and reports only on those: an older
+// rejected row (still listed as Failed in the TUI) doesn't fail this call.
+func (c *Client) FlushLocal(ctx context.Context, ids ...int64) error {
+	for {
+		c.obMu.Lock()
+		changed := c.obChanged
+		c.obMu.Unlock()
+		pending, failed, reason := 0, 0, ""
+		for _, id := range ids {
+			var f string
+			err := c.db.QueryRow(`SELECT failed FROM outbox WHERE id = ?`, id).Scan(&f)
+			switch {
+			case errors.Is(err, sql.ErrNoRows): // delivered: sentHook deleted it
+			case err != nil:
+				return err
+			case f == "":
+				pending++
+			default:
+				failed++
+				if reason == "" {
+					reason = f
+				}
+			}
+		}
+		if pending == 0 {
+			if failed > 0 {
+				return fmt.Errorf("%d message(s) not sent: %s", failed, reason)
 			}
 			return nil
 		}
