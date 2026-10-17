@@ -40,10 +40,10 @@ const inviteGrace = 24 * time.Hour
 // liveInvite is the SQL condition for an invite (i, its creator c LEFT
 // JOINed from users) that can still be redeemed at ?1 while member invites
 // are ?2: not used up or expired, and made by the server host, an enabled
-// admin, or (while member invites are on) an enabled member. redeem checks
-// the same rules in Go.
+// admin, or (while member invites are on) an enabled member, if it is a
+// new-user invite. redeem checks the same rules in Go.
 const liveInvite = `i.used = 0 AND i.uses > 0 AND i.expires > ?1 AND
-	(i.created_by = 0 OR (c.disabled = 0 AND (c.admin = 1 OR ?2)))`
+	(i.created_by = 0 OR (c.disabled = 0 AND (c.admin = 1 OR (?2 AND i.user IS NULL))))`
 
 // CreateInvite mints an invite code. admin makes a new-user invite that
 // grants admin; user != 0 makes an add-key invite for that user.
@@ -70,6 +70,12 @@ type InviteOpts struct {
 	Keys   [][]byte
 	KeySrc string
 }
+
+// errAddKeyAdminOnly: members may not mint add-key invites, not even for
+// themselves. A stolen SSH key could otherwise add a second login key of
+// the thief's (and endorse it), which outlives the device revoke and has
+// no per-key removal; only an admin can add a key (PROTOCOL.md §4.1).
+var errAddKeyAdminOnly = proto.Errf(proto.ErrForbidden, "only an admin can add an SSH key to an account")
 
 var errMemberInviteCap = proto.Errf(proto.ErrConflict,
 	fmt.Sprintf("you already have %d open invites; revoke one (/invites) first", proto.MaxMemberInvites))
@@ -130,8 +136,8 @@ func (s *Server) CreateInviteOpts(ctx context.Context, o InviteOpts) (proto.Invi
 		switch {
 		case o.CreatedBy == 0 || o.Admin:
 			return proto.InviteRes{}, errors.New("member invites are made by a member and never grant admin")
-		case o.User != 0 && o.User != o.CreatedBy:
-			return proto.InviteRes{}, errors.New("members can only add keys to their own account")
+		case o.User != 0:
+			return proto.InviteRes{}, errAddKeyAdminOnly
 		case o.Uses > proto.MaxMemberInviteUses:
 			return proto.InviteRes{}, fmt.Errorf("member invites allow at most %d uses", proto.MaxMemberInviteUses)
 		case o.TTL > proto.MaxMemberInviteTTL:
@@ -166,7 +172,7 @@ func (s *Server) CreateInviteOpts(ctx context.Context, o InviteOpts) (proto.Invi
 		if o.Member {
 			var n int
 			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM invites
-				WHERE created_by = ? AND used = 0 AND uses > 0 AND expires > ?`, o.CreatedBy, now).Scan(&n); err != nil {
+				WHERE created_by = ? AND user IS NULL AND used = 0 AND uses > 0 AND expires > ?`, o.CreatedBy, now).Scan(&n); err != nil {
 				return nil, err
 			}
 			if n >= proto.MaxMemberInvites {
@@ -287,13 +293,15 @@ func (s *Server) revokeInvite(ctx context.Context, id string, creator uint64) er
 
 // redeemCheck applies the invite rules that go beyond uses and expiry, in
 // redeem's transaction: the creator must still be allowed to invite (the
-// liveInvite rule), and a key-bound invite needs one of its keys (fp).
-// It returns a BYE message, or "" if the invite may be redeemed; for a key
-// mismatch also the fingerprints the invite accepts (the key_hint, §4.1).
-func (s *Server) redeemCheck(ctx context.Context, tx *sql.Tx, token string, createdBy uint64, fp string) (string, []string, error) {
+// liveInvite rule; an add-key invite needs an admin creator, which also
+// voids member add-key invites minted before they were admin-only), and a
+// key-bound invite needs one of its keys (fp). It returns a BYE message, or
+// "" if the invite may be redeemed; for a key mismatch also the fingerprints
+// the invite accepts (the key_hint, §4.1).
+func (s *Server) redeemCheck(ctx context.Context, tx *sql.Tx, token string, createdBy uint64, addKey bool, fp string) (string, []string, error) {
 	if createdBy != 0 {
 		c, err := getUser(ctx, tx, createdBy)
-		if err != nil || c.Disabled || (!c.Admin && !s.cfg.MemberInvites) {
+		if err != nil || c.Disabled || (!c.Admin && (addKey || !s.cfg.MemberInvites)) {
 			return "invite is invalid, used or expired", nil, nil
 		}
 	}
@@ -342,8 +350,8 @@ func (s *Server) opInviteCreate(ctx context.Context, u proto.User, a proto.Invit
 		return nil, errForbidden
 	}
 	member := !u.Admin
-	if member && a.User != 0 && a.User != u.ID {
-		return nil, errForbidden
+	if member && a.User != 0 {
+		return nil, errAddKeyAdminOnly
 	}
 	if a.User != 0 {
 		target, err := getUser(ctx, s.st.db, a.User)

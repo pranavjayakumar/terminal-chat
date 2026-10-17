@@ -36,6 +36,7 @@ const (
 	modeList
 	modeVerify
 	modeDevices // devices.go
+	modeDisable // disable.go
 )
 
 // pane is a scrollable message list: a channel (root 0) or a thread.
@@ -141,6 +142,7 @@ type Model struct {
 	hinted     map[uint64]bool     // channels that showed the "?" hint this run
 	verify     verifyState
 	devs       devicesState
+	dis        disableState
 	noticeDim  bool   // the notice is a quiet hint
 	newRelease string // newer release tag, shown in the sidebar title
 }
@@ -1002,6 +1004,8 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 		return nil
 	case modeDevices:
 		return m.devicesKey(key)
+	case modeDisable:
+		return m.disableKey(key)
 	case modeViewer:
 		if key == kSelCopy {
 			return m.copyCmd(strings.Join(m.view.lines, "\n"))

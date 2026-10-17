@@ -141,6 +141,13 @@ func openStore(path string) (*store, error) {
 		db.Close()
 		return nil, err
 	}
+	// users.list invited_by (PROTOCOL.md §5): who made the invite an account
+	// was created with; 0 = the server host, NULL = unknown (made before this
+	// column, or a webhook bot).
+	if err := addColumn(db, "users", "invited_by", "INTEGER"); err != nil {
+		db.Close()
+		return nil, err
+	}
 	// Key-bound invites (PROTOCOL.md §4.1).
 	if err := addColumn(db, "invites", "key_src", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		db.Close()
@@ -287,6 +294,25 @@ func scanUser(sc interface{ Scan(...any) error }) (proto.User, error) {
 
 func getUser(ctx context.Context, q querier, id uint64) (proto.User, error) {
 	return scanUser(q.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE id = ?`, id))
+}
+
+// invitedBy maps each user whose inviter is known to that inviter's id
+// (0: the server host).
+func invitedBy(ctx context.Context, q querier) (map[uint64]uint64, error) {
+	rows, err := q.QueryContext(ctx, `SELECT id, invited_by FROM users WHERE invited_by IS NOT NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[uint64]uint64{}
+	for rows.Next() {
+		var id, by uint64
+		if err := rows.Scan(&id, &by); err != nil {
+			return nil, err
+		}
+		out[id] = by
+	}
+	return out, rows.Err()
 }
 
 func listUsers(ctx context.Context, q querier) ([]proto.User, error) {

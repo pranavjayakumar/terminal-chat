@@ -31,6 +31,9 @@ const usage = `tc — terminal team chat
                              revoke a lost or stolen device
   tc invite [--uses N] [--ttl 72h] [--key github:user] [--raw]   (or --list, --revoke ID)
                              invite someone (admins; members if the server allows)
+  tc users                   list everyone (admins also see who invited whom)
+  tc users disable @user [--yes]
+                             (admin) shut an account out for good, e.g. after a stolen SSH key
   tc server [--listen :7443] [--public host:port] [--data dir] [--member-invites=false]
   tc server invite [--uses N] [--ttl 72h] [--admin] [--key github:user] [--raw]
   tc update [--check]        install the latest release (or just check)
