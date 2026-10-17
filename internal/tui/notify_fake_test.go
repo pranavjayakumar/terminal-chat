@@ -67,4 +67,3 @@ func (f *fakeClient) InMyThread(m proto.Message) bool {
 	defer f.mu.Unlock()
 	return f.myThreads[m.Thread]
 }
-

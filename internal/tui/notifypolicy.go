@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -50,8 +51,10 @@ const (
 	allWindow     = 30 * time.Second // coalescing for level-all channels
 	ringResend    = 10 * time.Second
 	ringFor       = 30 * time.Second
-	ringCooldown  = 5 * time.Minute // after a dismissed or unanswered ring
-	huddleNoteGap = 5 * time.Minute // channel huddle-start popups per channel
+	ringCooldown  = 5 * time.Minute  // after a dismissed or unanswered ring
+	ringRepeat    = 2 * time.Minute  // a DM rings at most this often, however a ring ended
+	ringEvery     = 10 * time.Second // across all DMs (a hostile server cycling DMs)
+	huddleNoteGap = 5 * time.Minute  // channel huddle-start popups per channel
 )
 
 // decide is the policy: whether ev pops up in ch at now, and its sound.
@@ -101,6 +104,11 @@ type notifyUI struct {
 	ring      ringState
 	ringGen   int
 	ringCool  map[uint64]time.Time
+	rangAt    map[uint64]time.Time // when each DM last rang
+	answering bool                 // /huddle sent for the ringing DM
+	prefsGen  int
+	prefsAt   time.Time // when the scheduled re-render tick fires
+	lastRing  time.Time
 	huddleAt  map[uint64]time.Time // last channel huddle-start popup
 	testQueue []notify.Cue
 }
@@ -137,6 +145,52 @@ func (m *Model) refreshPrefs() {
 		}
 	}
 	m.nt.prefs = p
+	// Said no to rings (DND, muted the DM): stop the one going.
+	if r := m.nt.ring; r.ch != 0 {
+		if popup, _ := decide(p, m.now(), r.ch, noteRing); !popup {
+			m.stopRing(false)
+		}
+	}
+}
+
+type prefsTickMsg struct{ gen int }
+
+// schedulePrefsTick re-renders once a minute while something time-bound is
+// showing (DND, a timed mute, quiet hours), so 🔕 marks and dimming don't
+// go stale in an idle pane.
+func (m *Model) schedulePrefsTick() tea.Cmd {
+	p, now := m.nt.prefs, m.now()
+	timed := p.DNDUntil > 0 || p.Quiet != ""
+	for _, c := range p.Chans {
+		timed = timed || c.Until > 0
+	}
+	if !timed || now.Before(m.nt.prefsAt) {
+		return nil
+	}
+	m.nt.prefsGen++
+	m.nt.prefsAt = now.Add(time.Minute)
+	gen := m.nt.prefsGen
+	return tea.Tick(time.Minute, func(time.Time) tea.Msg { return prefsTickMsg{gen} })
+}
+
+func (m *Model) prefsTick(msg prefsTickMsg) tea.Cmd {
+	if msg.gen == m.nt.prefsGen {
+		m.nt.prefsAt = time.Time{} // Update schedules the next one if still needed
+	}
+	return nil
+}
+
+// untilLabel is a time for "until …": 15:04 today, Mon 15:04 this week,
+// Jan 2 15:04 beyond.
+func (m *Model) untilLabel(ms int64) string {
+	t, now := time.UnixMilli(ms), m.now().Local()
+	switch {
+	case t.Year() == now.Year() && t.YearDay() == now.YearDay():
+		return t.Format("15:04")
+	case t.Sub(now) < 6*24*time.Hour:
+		return t.Format("Mon 15:04")
+	}
+	return t.Format("Jan 2 15:04")
 }
 
 // muted reports whether ch is at level off now (sidebar dims it).
@@ -202,9 +256,29 @@ func (m *Model) huddleStarted(starts []client.HuddleStart) tea.Cmd {
 		if !ok || !v.Member || m.users[s.By].Bot {
 			continue
 		}
+		// Rosters aren't end-to-end authenticated: only name a starter
+		// who is a live member (for a DM, someone in it besides us).
+		if s.By == m.me.ID || !slices.Contains(v.Members, s.By) || m.users[s.By].Disabled {
+			continue
+		}
 		who := m.r.userName(s.By)
 		if v.Kind == proto.ChanDM {
-			if m.nt.ring.ch != 0 || now.Before(m.nt.ringCool[s.Chan]) || (s.Chan == m.active && m.focused) {
+			// One ring per DM per ringRepeat however it ended (a peer
+			// flapping join/leave), one per ringEvery overall.
+			if now.Before(m.nt.ringCool[s.Chan]) || (s.Chan == m.active && m.focused) ||
+				now.Sub(m.nt.rangAt[s.Chan]) < ringRepeat || now.Sub(m.nt.lastRing) < ringEvery {
+				continue
+			}
+			if m.nt.ring.ch != 0 { // already ringing: a plain popup for the second
+				if popup, _ := decide(m.nt.prefs, now, s.Chan, noteRing); popup && now.Sub(m.lastNotify) >= notifyEvery {
+					if m.nt.rangAt == nil {
+						m.nt.rangAt = map[uint64]time.Time{}
+					}
+					m.nt.rangAt[s.Chan] = now
+					m.lastNotify = now
+					title, body := m.private("📞 "+who+" started a huddle", "/huddle in that DM to join", 1)
+					m.sendNote(notify.Note{Title: title, Body: body, Cue: notify.CueMention, Tag: noteTag(s.Chan)})
+				}
 				continue
 			}
 			if in, ok := m.hud.cur, m.hud.in; ok && in == s.Chan {
@@ -216,6 +290,10 @@ func (m *Model) huddleStarted(starts []client.HuddleStart) tea.Cmd {
 			}
 			m.nt.ringGen++
 			m.nt.ring = ringState{ch: s.Chan, by: s.By, gen: m.nt.ringGen, since: now}
+			if m.nt.rangAt == nil {
+				m.nt.rangAt = map[uint64]time.Time{}
+			}
+			m.nt.rangAt[s.Chan], m.nt.lastRing = now, now
 			m.sendRing(cue)
 			gen := m.nt.ringGen
 			cmds = append(cmds,
@@ -255,7 +333,7 @@ func (m *Model) sendRing(cue notify.Cue) {
 	if m.nt.prefs.Content == "none" {
 		title, body = "tc", "incoming huddle"
 	}
-	m.sendNote(notify.Note{Title: title, Body: body, Cue: cue, Tag: noteTag(r.ch)})
+	m.sendNote(notify.Note{Title: title, Body: body, Cue: cue, Tag: "tc-ring-" + strconv.FormatUint(r.ch, 10)})
 }
 
 func (m *Model) sendNote(n notify.Note) {
@@ -291,6 +369,7 @@ func (m *Model) stopRing(cool bool) {
 		m.nt.ringCool[m.nt.ring.ch] = m.now().Add(ringCooldown)
 	}
 	m.nt.ring = ringState{}
+	m.nt.answering = false
 }
 
 // checkRing stops the ring once it's answered (we joined, from any
@@ -325,13 +404,24 @@ func (m *Model) checkRing() {
 	}
 }
 
-// ringLine is the status-line prompt while ringing.
-func (m *Model) ringLine() string {
+// ringLine is the status-line prompt while ringing; compact (name cut,
+// just the command) when the line is narrow.
+func (m *Model) ringLine(compact bool) string {
 	r := m.nt.ring
 	if r.ch == 0 {
 		return ""
 	}
-	return "📞 " + m.r.userName(r.by) + " — /huddle to join · Esc dismiss"
+	who := m.r.userName(r.by)
+	if !client.VoiceAvailable() {
+		if compact {
+			return "📞 " + truncate(who, 12) + " · voice build"
+		}
+		return "📞 " + who + " started a huddle · needs the voice build · Esc dismiss"
+	}
+	if compact {
+		return "📞 " + truncate(who, 12) + " /huddle"
+	}
+	return "📞 " + who + " — /huddle to join · Esc dismiss"
 }
 
 // quietMark is the status line's DND / quiet-hours mark.
@@ -340,7 +430,7 @@ func (m *Model) quietMark() string {
 	p := m.nt.prefs
 	switch {
 	case p.DND(now):
-		return "🔕 " + time.UnixMilli(p.DNDUntil).Format("15:04")
+		return "🔕 dnd " + m.untilLabel(p.DNDUntil)
 	case p.InQuiet(now):
 		return "🔕 quiet"
 	}
@@ -355,7 +445,7 @@ func (m *Model) muteMark(ch uint64) string {
 		return ""
 	}
 	if c := p.Chans[ch]; over && c.Until > 0 {
-		return " 🔕 until " + time.UnixMilli(c.Until).Format("15:04")
+		return " 🔕 until " + m.untilLabel(c.Until)
 	}
 	return " 🔕"
 }
@@ -396,10 +486,10 @@ func (m *Model) notifyCommand(c command) (tea.Cmd, bool, error) {
 // ms expiry (0: none).
 func (m *Model) parseFor(args []string) (int64, error) {
 	if len(args) > 0 && (args[0] == "for" || args[0] == "until") {
+		if len(args) != 2 {
+			return 0, errors.New(args[0] + " what? (for 2h, until 09:00)")
+		}
 		if args[0] == "until" {
-			if len(args) != 2 {
-				return 0, errors.New("until HH:MM")
-			}
 			return m.untilClock(args[1])
 		}
 		args = args[1:]
@@ -419,12 +509,12 @@ func (m *Model) parseFor(args []string) (int64, error) {
 
 // untilClock is the next local HH:MM after now.
 func (m *Model) untilClock(s string) (int64, error) {
-	hm, err := time.Parse("15:04", s)
-	if err != nil {
-		return 0, fmt.Errorf("bad time %q (HH:MM)", sanitize.Line(s))
+	hh, mm, ok := client.ParseClock(s)
+	if !ok {
+		return 0, fmt.Errorf("bad time %q (like 09:00 or 9am)", sanitize.Line(s))
 	}
 	now := m.now().Local() // the user's clock
-	t := time.Date(now.Year(), now.Month(), now.Day(), hm.Hour(), hm.Minute(), 0, 0, now.Location())
+	t := time.Date(now.Year(), now.Month(), now.Day(), hh, mm, 0, 0, now.Location())
 	if !t.After(now) {
 		t = t.AddDate(0, 0, 1)
 	}
@@ -438,6 +528,9 @@ func (m *Model) notifyCmd(nb NotifyBackend, args []string) (tea.Cmd, error) {
 	}
 	switch strings.ToLower(args[0]) {
 	case "test":
+		if len(m.nt.testQueue) > 0 {
+			return nil, errors.New("a test is already running")
+		}
 		m.nt.testQueue = []notify.Cue{notify.CueMention, notify.CueMessage, notify.CueRing, notify.CueHuddle}
 		m.setInfo("sending 4 test notifications (mention, message, ring, huddle) — " + m.backendName())
 		return m.notifyTestNext(), nil
@@ -496,7 +589,7 @@ func (m *Model) notifyCmd(nb NotifyBackend, args []string) (tea.Cmd, error) {
 	if word != "default" {
 		l, err := client.ParseLevel(word)
 		if err != nil {
-			return nil, errors.New("/notify all|mentions|off|default [#chan] [for 2h] · global · content · quiet · test")
+			return nil, errors.New("usage: /notify all|mentions|off|default [#chan] [for 2h] (see ?)")
 		}
 		lvl = l
 	}
@@ -528,7 +621,7 @@ func (m *Model) notifyCmd(nb NotifyBackend, args []string) (tea.Cmd, error) {
 	}
 	msg := m.chanTitle(ch) + " notifies: " + what
 	if until != 0 {
-		msg += " until " + time.UnixMilli(until).Format("15:04")
+		msg += " until " + m.untilLabel(until)
 	}
 	m.setInfo(msg)
 	return nil, nil
@@ -573,11 +666,15 @@ func (m *Model) notifySummary() string {
 	}
 	dnd := "off"
 	if p.DND(now) {
-		dnd = "until " + time.UnixMilli(p.DNDUntil).Format("15:04")
+		dnd = "until " + m.untilLabel(p.DNDUntil)
 	}
 	sounds := "on"
 	if p.SoundOff {
 		sounds = "off"
+	}
+	if m.w < 80 { // narrow: the essentials, short
+		lvl, _ := p.Level(m.active, now)
+		return fmt.Sprintf("%s · dnd %s · sounds %s · ? for more", lvl, dnd, sounds)
 	}
 	fmt.Fprintf(&b, "default %s · content %s · quiet %s · dnd %s · via %s · sounds %s — this device", def, content, quiet, dnd, m.backendName(), sounds)
 	return b.String()
@@ -629,13 +726,16 @@ func (m *Model) dndCmd(nb NotifyBackend, args []string) error {
 	if until == 0 {
 		m.setInfo("do not disturb off")
 	} else {
-		m.setInfo("do not disturb until " + time.UnixMilli(until).Format("15:04") + ": no popups, sounds or rings")
+		m.setInfo("do not disturb until " + m.untilLabel(until) + ": no popups, sounds or rings")
 	}
 	return nil
 }
 
 func (m *Model) soundsCmd(nb NotifyBackend, args []string) error {
-	usage := errors.New("/sounds [on|off] · /sounds mention|message|ring|huddle|join|mic on|off · /sounds volume 0-100")
+	usage := errors.New("usage: /sounds [CUE] on|off, /sounds volume N (see ?)")
+	for i := range args {
+		args[i] = strings.ToLower(args[i])
+	}
 	set := func(k, v string) error { return nb.SetNotifySetting(k, v) }
 	switch {
 	case len(args) == 0:
@@ -651,6 +751,20 @@ func (m *Model) soundsCmd(nb NotifyBackend, args []string) error {
 		master := "on"
 		if p.SoundOff {
 			master = "off"
+		}
+		var off []string
+		for _, c := range client.SoundCues {
+			if !p.Sound(c) {
+				off = append(off, c)
+			}
+		}
+		if m.w < 80 {
+			s := "sounds " + master
+			if len(off) > 0 && !p.SoundOff {
+				s += " · off: " + strings.Join(off, " ")
+			}
+			m.setNotice(s, false, true, 0)
+			return nil
 		}
 		m.setNotice(fmt.Sprintf("sounds %s · %s · huddle cue volume %d", master, strings.Join(parts, " · "), p.Volume), false, true, 0)
 		return nil

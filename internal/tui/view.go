@@ -310,14 +310,14 @@ func (m *Model) statusLine(w int) string {
 			b.WriteString(m.st.dim.Render(" · "))
 		}
 	}
-	head, roster := m.huddleHead(m.notice != "")
+	head, roster := m.huddleHead(m.notice != "" || m.nt.ring.ch != 0 || w < 40)
 	// In a huddle its head (🎧 ● = our mic) comes first: a sticky error
 	// must never hide that we're broadcasting.
 	if m.hud.in && head != "" {
 		b.WriteString(head + roster)
 		head = ""
 	}
-	if r := m.ringLine(); r != "" { // a ring is time-critical: right after our mic
+	if r := m.ringLine(w < 70 || m.hud.in); r != "" { // time-critical: right after our mic
 		sep()
 		b.WriteString(m.st.noticeInfo.Render(r))
 	}

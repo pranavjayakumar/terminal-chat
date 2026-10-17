@@ -731,6 +731,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshHuddle()
 	}
 	m.checkRing()
+	if t := m.schedulePrefsTick(); t != nil {
+		cmd = tea.Batch(cmd, t)
+	}
 	m.syncDraft()
 	m.updatePlaceholder()
 	if t := m.draftTick(); t != nil {
@@ -785,6 +788,8 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.flushNote(msg)
 	case ringMsg:
 		return m, m.ringMsg(msg)
+	case prefsTickMsg:
+		return m, m.prefsTick(msg)
 	case notifyTestMsg:
 		return m, m.notifyTestNext()
 	case badgeMsg:
@@ -818,7 +823,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.focused = false
 		return m, nil
 	case updateMsg:
-		if msg.Channels || msg.Reset {
+		if msg.Prefs || msg.Reset {
 			m.refreshPrefs()
 		}
 		if msg.Huddle || msg.Reset || msg.Channels {
@@ -828,6 +833,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case updatesClosedMsg:
 		return m, nil
 	case errMsg:
+		if msg.what == "huddle" && m.nt.answering {
+			m.stopRing(true) // answering failed: let the error show
+		}
 		m.setErr(msg.what, msg.err)
 		return m, nil
 	case infoMsg:
@@ -1118,6 +1126,15 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 	case key == kPgDown:
 		return m.scrollBy(m.focus(), -max(m.dims().bodyH-1, 1))
 	case key == kEsc:
+		// One Esc backs out one thing: an open mic first (we're
+		// broadcasting), then a ring, then the usual chain.
+		if m.micOff() {
+			return nil
+		}
+		if m.nt.ring.ch != 0 {
+			m.stopRing(true) // dismissed
+			return nil
+		}
 		switch {
 		case m.editing != 0:
 			m.cancelEdit()
@@ -1134,13 +1151,7 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 			m.escAt = m.now()
 			m.setNotice("Esc again to clear draft", false, false, escWindow)
 		default:
-			switch {
-			case m.nt.ring.ch != 0:
-				m.stopRing(true) // dismissed
-			case m.micOff():
-			default:
-				m.clearNotice()
-			}
+			m.clearNotice()
 		}
 		return nil
 	case key == kEnter:

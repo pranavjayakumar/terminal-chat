@@ -316,17 +316,22 @@ and are not listed; they appear in the log as usual. Rows are kept for the newes
   for a timed mute). `/notify off for 2h` lapses back to the default.
 - **Huddles**: a huddle someone starts in a DM or group DM **rings**: one popup with the ring
   sound (sent again once after 10 s), and the status line shows `📞 alice — /huddle to join · Esc
-  dismiss` until you join (from any device), it ends, you open that DM, Esc, or 30 s; a dismissed
-  or unanswered ring keeps that DM quiet for 5 min. Never for rosters a sync or channel join
-  hands us (reconnects don't ring). Channel huddle starts are silent at `mentions` (the sidebar
+  dismiss` (compact `📞 alice /huddle` in narrow panes) until you join (from any device), it ends,
+  you open that DM, Esc, `/dnd`/mute, or 30 s. A DM rings at most once per 2 min however the ring
+  ended (a peer flapping join/leave), any DM at most once per 10 s, and a dismissed or unanswered
+  ring keeps that DM quiet for 5 min. A second DM huddle while one rings gets a plain popup. The
+  starter must be a member of the DM (rosters aren't end-to-end authenticated). Never for rosters
+  a sync or channel join hands us (reconnects don't ring), nor for a late roster that already has
+  several people. Esc closes an open mic first, then dismisses the ring. Channel huddle starts are silent at `mentions` (the sidebar
   `🎧n` shows them); at `all`, one popup per channel per 5 min.
 - **Privacy**: `/notify content full|name|none` (`TC_NOTIFY_CONTENT`): `name` shows who but not
   the text, `none` shows just `tc` / `new message`. Popups persist in the OS notification history
   (Notification Center, GNOME's tray): use `name` on shared machines.
-- **DND and quiet hours**: `/dnd [30m|2h|until 09:00|off]` (bare `/dnd` toggles 1 h) and
+- **DND and quiet hours**: `/dnd [30m|2h|until 9am|off]` (bare `/dnd` toggles 1 h) and
   `/notify quiet 22:00-08:00|off` (`TC_QUIET`, local time, may wrap midnight) silence popups,
   sounds and rings but not badges or the activity view; the status line shows a dim `🔕 09:00`
-  or `🔕 quiet`. Nothing is replayed afterwards.
+  or `🔕 quiet` (times beyond today show the day). Nothing is replayed afterwards. A mention in a
+  level-`all` channel never waits out its 30 s window.
 - **Commands**: `/notify` (current settings), `/notify all|mentions|off [#chan] [for 2h]`,
   `/notify default [#chan]`, `/notify global all|mentions|off`, `/notify content …`,
   `/notify quiet …`, `/notify test` (one sample per sound through the real backend, 2.5 s apart —

@@ -184,6 +184,9 @@ func (m *Model) huddleCommand(c command) (tea.Cmd, bool, error) {
 	if in {
 		prev = cur
 	}
+	if ch == m.nt.ring.ch {
+		m.nt.answering = true
+	}
 	return m.callThen("huddle", func(ctx context.Context) (tea.Msg, error) {
 		return huddleJoinMsg{ch, prev}, hb.JoinHuddle(ctx, ch)
 	}), true, nil

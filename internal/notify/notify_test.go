@@ -112,7 +112,7 @@ func TestHerdrArgv(t *testing.T) {
 	n.Wait()
 	got := readArgv(t, log)
 	body := clean(hostile, maxBody)
-	want := []string{"notification", "show", "#general · bob", "--body", body, "--sound", "request"}
+	want := []string{"notification", "show", "#general · bob", "--body=" + body, "--sound", "request"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("argv\n got %q\nwant %q", got, want)
 	}

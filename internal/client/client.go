@@ -409,6 +409,8 @@ type Update struct {
 	// HuddleStarted lists huddles that just started live (not the rosters
 	// a sync or chan.join hands us), by someone else: rings, popups.
 	HuddleStarted []HuddleStart
+	// Prefs: notification settings changed (notifyprefs.go).
+	Prefs bool
 	// Revoked lists verified devices that a verified revoke just retired
 	// (devmgmt.go), so the UI can say so. Never set on a first sync.
 	Revoked []DeviceRef
@@ -427,7 +429,7 @@ func (u *Update) msgs(ch uint64) {
 }
 
 func (u Update) empty() bool {
-	return !u.Status && !u.Channels && !u.Users && !u.Presence && !u.Reset && !u.Huddle && len(u.HuddleStarted) == 0 &&
+	return !u.Status && !u.Channels && !u.Users && !u.Presence && !u.Reset && !u.Huddle && !u.Prefs && len(u.HuddleStarted) == 0 &&
 		len(u.Msgs) == 0 && len(u.Typing) == 0 && len(u.New) == 0 && len(u.Failed) == 0 && len(u.Revoked) == 0 && len(u.NewOwn) == 0
 }
 
@@ -438,6 +440,7 @@ func (u Update) merge(v Update) Update {
 	u.Presence = u.Presence || v.Presence
 	u.Reset = u.Reset || v.Reset
 	u.Huddle = u.Huddle || v.Huddle
+	u.Prefs = u.Prefs || v.Prefs
 	u.HuddleStarted = append(u.HuddleStarted, v.HuddleStarted...)
 	if len(u.HuddleStarted) > maxNew {
 		u.HuddleStarted = append([]HuddleStart(nil), u.HuddleStarted[len(u.HuddleStarted)-maxNew:]...)

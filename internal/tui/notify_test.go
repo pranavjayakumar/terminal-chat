@@ -39,8 +39,12 @@ func TestDecideTable(t *testing.T) {
 		{"all mention", all, now, noteMention, true, notify.CueMention},
 		{"off mention", off, now, noteMention, false, notify.CueNone},
 		{"off ring", off, now, noteRing, false, notify.CueNone},
-		{"timed mute active", with(func(p *client.NotifyPrefs) { p.Chans[1] = client.ChanNotify{Level: client.LevelOff, Until: ms(time.Hour)} }), now, noteMention, false, notify.CueNone},
-		{"timed mute lapsed", with(func(p *client.NotifyPrefs) { p.Chans[1] = client.ChanNotify{Level: client.LevelOff, Until: ms(-time.Minute)} }), now, noteMention, true, notify.CueMention},
+		{"timed mute active", with(func(p *client.NotifyPrefs) {
+			p.Chans[1] = client.ChanNotify{Level: client.LevelOff, Until: ms(time.Hour)}
+		}), now, noteMention, false, notify.CueNone},
+		{"timed mute lapsed", with(func(p *client.NotifyPrefs) {
+			p.Chans[1] = client.ChanNotify{Level: client.LevelOff, Until: ms(-time.Minute)}
+		}), now, noteMention, true, notify.CueMention},
 		{"global all", with(func(p *client.NotifyPrefs) { p.Default = client.LevelAll }), now, noteMessage, true, notify.CueMessage},
 		{"global off, channel mentions", with(func(p *client.NotifyPrefs) {
 			p.Default = client.LevelOff
@@ -92,13 +96,14 @@ func TestNotifyLevels(t *testing.T) {
 	if n := lastNote(t, m); n.Cue != notify.CueMessage || n.Title != "#secret · carol" || n.Tag != "tc-13" {
 		t.Fatalf("level all: %+v", n)
 	}
-	gen := m.notes[13].gen
+	deliver(m, newMsg(404, 13, 3, "more chatter"))
+	if len(nt.got()) != 1 {
+		t.Fatal("level-all window didn't coalesce")
+	}
 	clk.add(5 * time.Second)
-	m.Update(notifyFlushMsg{ch: 13, gen: gen}) // a 5 s timer must not close a 30 s window early...
+	// A mention doesn't wait out the 30 s window.
 	deliver(m, newMsg(403, 13, 3, "hey @alice"))
-	clk.add(30 * time.Second)
-	m.Update(notifyFlushMsg{ch: 13, gen: gen})
-	if n := lastNote(t, m); n.Cue != notify.CueMention || !strings.Contains(n.Body, "hey @alice") && !strings.Contains(n.Body, "new messages") {
+	if n := lastNote(t, m); n.Cue != notify.CueMention || n.Body != "hey @alice" {
 		t.Fatalf("mention in an all window: %+v", n)
 	}
 
@@ -193,7 +198,7 @@ func TestNotifyDNDQuietSounds(t *testing.T) {
 	if len(notes(m).sent()) != 0 {
 		t.Fatal("notified during DND")
 	}
-	if v := ansi.Strip(checkView(t, m, "dnd mark")); !strings.Contains(v, "🔕 "+m.now().Add(2*time.Hour).Local().Format("15:04")) {
+	if v := ansi.Strip(checkView(t, m, "dnd mark")); !strings.Contains(v, "🔕 dnd "+m.now().Add(2*time.Hour).Local().Format("15:04")) {
 		t.Fatalf("no DND mark:\n%s", v)
 	}
 	runInput(t, m, "/dnd off")
@@ -256,8 +261,9 @@ func TestNotifyCommandsFit(t *testing.T) {
 		m, _ := newTestModelFake(t, sz[0], sz[1])
 		newClock(m)
 		runInput(t, m, "/notify")
-		if !strings.Contains(m.notice, "#general: mentions (default)") || !strings.Contains(m.notice, "this device") {
-			t.Fatalf("summary %q", m.notice)
+		if sz[0] >= 80 && (!strings.Contains(m.notice, "#general: mentions (default)") || !strings.Contains(m.notice, "this device")) ||
+			sz[0] < 80 && !strings.HasPrefix(m.notice, "mentions · dnd off") {
+			t.Fatalf("%d cols: summary %q", sz[0], m.notice)
 		}
 		checkView(t, m, "notify summary")
 		runInput(t, m, "/notify test")
@@ -300,7 +306,7 @@ func TestRingLifecycle(t *testing.T) {
 	if n.Cue != notify.CueRing || !strings.Contains(n.Title, "bob started a huddle") {
 		t.Fatalf("ring: %+v", n)
 	}
-	if v := ansi.Strip(checkView(t, m, "ringing")); !strings.Contains(v, "📞 bob — /huddle to join") {
+	if v := ansi.Strip(checkView(t, m, "ringing")); !strings.Contains(v, "📞 bob") {
 		t.Fatalf("no ring prompt:\n%s", v)
 	}
 	gen := m.nt.ring.gen
@@ -319,7 +325,7 @@ func TestRingLifecycle(t *testing.T) {
 	runInput(t, m, "/leave-huddle")
 
 	// Ends when the huddle ends.
-	clk.add(time.Minute)
+	clk.add(ringRepeat)
 	startHuddle(m, h, 20, 2)
 	h.hmu.Lock()
 	h.rosters[20] = nil
@@ -330,6 +336,7 @@ func TestRingLifecycle(t *testing.T) {
 	}
 
 	// Esc dismisses; the same DM doesn't ring again for a while.
+	clk.add(ringRepeat)
 	startHuddle(m, h, 20, 2)
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if m.nt.ring.ch != 0 {
@@ -423,3 +430,69 @@ func TestRingFits(t *testing.T) {
 	}
 }
 
+// A peer (or server) flapping a DM huddle rings once; a starter who isn't
+// in the DM never rings (rosters aren't end-to-end authenticated).
+func TestRingFlapAndFakeCaller(t *testing.T) {
+	m, h := newHuddleModel(t, 80, 24)
+	clk := newClock(m)
+	for range 100 {
+		startHuddle(m, h, 20, 2)
+		h.hmu.Lock()
+		h.rosters[20] = nil
+		h.hmu.Unlock()
+		h.update(m)
+		clk.add(500 * time.Millisecond)
+	}
+	if n := len(notes(m).sent()); n != 1 {
+		t.Fatalf("%d rings from a flapping huddle", n)
+	}
+	clk.add(time.Hour)
+	startHuddle(m, h, 20, 3) // carol isn't in the DM with bob
+	if n := len(notes(m).sent()); n != 1 || m.nt.ring.ch != 0 {
+		t.Fatalf("a non-member's start rang (%d)", n)
+	}
+}
+
+// Esc closes an open mic before it dismisses a ring; the ring prompt
+// shows even in narrow panes; /notify off for (no duration) is an error.
+func TestEscMicBeforeRing(t *testing.T) {
+	m, h := newHuddleModel(t, 40, 12)
+	newClock(m)
+	runInput(t, m, "/huddle")
+	runInput(t, m, "/talk")
+	startHuddle(m, h, 20, 2)
+	if v := ansi.Strip(checkView(t, m, "narrow ring")); !strings.Contains(v, "📞") || !strings.Contains(v, "🎧 ●") {
+		t.Fatalf("ring or mic hidden:\n%s", v)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if h.Talking() || m.nt.ring.ch == 0 {
+		t.Fatalf("first Esc: talking=%v ring=%d", h.Talking(), m.nt.ring.ch)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.nt.ring.ch != 0 {
+		t.Fatal("second Esc didn't dismiss the ring")
+	}
+	runInput(t, m, "/notify off for")
+	if !m.noticeErr || m.muted(10) {
+		t.Fatalf("'/notify off for' muted forever (notice %q)", m.notice)
+	}
+	runInput(t, m, "/sounds OFF")
+	if m.noticeErr || !m.nt.prefs.SoundOff {
+		t.Fatalf("/sounds OFF: %q", m.notice)
+	}
+	// /dnd stops a ring that's going.
+	runInput(t, m, "/sounds on")
+	clkm := newClock(m)
+	clkm.add(time.Hour)
+	h.hmu.Lock()
+	h.rosters[20] = nil
+	h.hmu.Unlock()
+	startHuddle(m, h, 20, 2)
+	if m.nt.ring.ch == 0 {
+		t.Fatal("no ring")
+	}
+	runInput(t, m, "/dnd 1h")
+	if m.nt.ring.ch != 0 {
+		t.Fatal("ring survived /dnd")
+	}
+}

@@ -16,7 +16,7 @@ func TestCueArgv(t *testing.T) {
 		nt      Note
 		want    []string
 	}{
-		{Herdr, Note{Title: "t", Body: "b", Cue: CueMention}, []string{"herdr", "notification", "show", "t", "--body", "b", "--sound", "request"}},
+		{Herdr, Note{Title: "t", Body: "b", Cue: CueMention}, []string{"herdr", "notification", "show", "t", "--body=b", "--sound", "request"}},
 		{Herdr, Note{Title: "t", Cue: CueRing}, []string{"herdr", "notification", "show", "t", "--sound", "request"}},
 		{Herdr, Note{Title: "t", Cue: CueHuddle}, []string{"herdr", "notification", "show", "t", "--sound", "done"}},
 		{Herdr, Note{Title: "t", Cue: CueMessage}, []string{"herdr", "notification", "show", "t", "--sound", "none"}},

@@ -186,7 +186,7 @@ func (c *Client) SetChanNotify(ch uint64, lvl NotifyLevel, until int64) error {
 	if err != nil {
 		return fmt.Errorf("saving notification level: %w", err)
 	}
-	c.post(Update{Channels: true})
+	c.post(Update{Prefs: true})
 	return nil
 }
 
@@ -225,7 +225,7 @@ func (c *Client) SetNotifySetting(key, value string) error {
 	if err != nil {
 		return fmt.Errorf("saving %s: %w", key, err)
 	}
-	c.post(Update{Channels: true})
+	c.post(Update{Prefs: true})
 	return nil
 }
 

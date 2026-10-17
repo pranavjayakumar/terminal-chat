@@ -576,7 +576,9 @@ func (c *Client) huddleEphemeral(e proto.Ephemeral) {
 		c.hud.rosters[e.Chan] = parts
 		now := time.Now()
 		live := !c.hud.liveAt.IsZero() && now.After(c.hud.liveAt) && now.Sub(c.hud.joinedAt[e.Chan]) > baselineFor
-		if !had && live && parts[0].User != c.Me().ID {
+		// A start has one participant; a longer roster arriving late
+		// after a reconnect is a huddle that was already going.
+		if !had && live && len(parts) == 1 && parts[0].User != c.Me().ID {
 			start = []HuddleStart{{Chan: e.Chan, By: parts[0].User}}
 		}
 	}

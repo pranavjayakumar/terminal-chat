@@ -132,6 +132,11 @@ func (m *Model) notifyFor(news []client.Message) tea.Cmd {
 
 func (m *Model) queueNote(x proto.Message, kind noteKind, cue notify.Cue, window time.Duration) tea.Cmd {
 	title, body, group := m.noteText(x)
+	if p := m.notes[x.Chan]; p != nil && kind == noteMention && p.kind < noteMention {
+		// A mention never waits out a level-all channel's 30 s window: it
+		// opens its own (the soft messages before it are folded in).
+		delete(m.notes, x.Chan)
+	}
 	if p := m.notes[x.Chan]; p != nil {
 		p.n++
 		p.title, p.body, p.group = title, body, group
@@ -183,13 +188,14 @@ func (m *Model) flushNote(msg notifyFlushMsg) tea.Cmd {
 	}
 	delete(m.notes, msg.ch)
 	// Settings may have changed while it waited (muted, DND).
-	if popup, _ := decide(m.nt.prefs, m.now(), msg.ch, p.kind); !popup {
+	popup, cue := decide(m.nt.prefs, m.now(), msg.ch, p.kind)
+	if !popup {
 		return nil
 	}
 	if p.n == 1 {
-		m.fire(msg.ch, p.title, p.body, 1, p.cue)
+		m.fire(msg.ch, p.title, p.body, 1, cue)
 	} else {
-		m.fire(msg.ch, p.group, strconv.Itoa(p.n)+" new messages", p.n, p.cue)
+		m.fire(msg.ch, p.group, strconv.Itoa(p.n)+" new messages", p.n, cue)
 	}
 	return nil
 }

@@ -107,10 +107,10 @@ var helpLines = [][2]string{
 	{"  Ctrl-T", "in a huddle: hold to talk, tap to keep the mic open"},
 	{"/talk, /mute", "in a huddle: open / close the mic (when Ctrl-T doesn't work); Esc closes an open mic"},
 	{"/leave-huddle", "leave the huddle"},
-	{"/notify all|mentions|off [#chan] [for 2h]", "this channel's notifications (off = muted, dimmed)"},
-	{"/notify default · global · content · quiet · test", "reset · default level · popup privacy · quiet hours · try it"},
-	{"/dnd [2h|until 09:00|off]", "do not disturb: no popups, sounds or rings"},
-	{"/sounds [on|off|<cue> on|off|volume n]", "notification and huddle sounds"},
+	{"/notify LEVEL [#ch] [for 2h]", "all · mentions · off (muted, dimmed) · default"},
+	{"/notify", "settings; also: global LEVEL, content full|name|none, quiet 22:00-08:00, test"},
+	{"/dnd [2h|until 9am|off]", "do not disturb: no popups, sounds or rings"},
+	{"/sounds [CUE] on|off", "cues: mention message ring huddle join mic; /sounds volume N"},
 	{"//text", "send text starting with /"},
 }
 

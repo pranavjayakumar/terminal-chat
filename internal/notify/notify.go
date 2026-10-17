@@ -257,7 +257,7 @@ func (n *Notifier) argv(nt Note) []string {
 		// herdr takes the positional first and options after it.
 		a := []string{"herdr", "notification", "show", title}
 		if body != "" {
-			a = append(a, "--body", body)
+			a = append(a, "--body="+body) // one element: a body like "-1" can't read as a flag
 		}
 		return append(a, "--sound", herdrSound[nt.Cue])
 	case OSAScript:
