@@ -20,7 +20,8 @@ Status: **draft r1** (target release v0.4.0). Wire format: PROTOCOL.md §14 (cap
 
 - One huddle per channel, implicit: it exists while at least one person is in it.
 - Joining needs current membership of the channel (the server's `members` map, same check as
-  typing). Losing membership (`chan.leave`, `chan.remove`, `user.disable`) drops you at once.
+  typing). Losing membership (`chan.leave`, `chan.remove`, `user.disable`), a revoked device and
+  the channel becoming encrypted drop you at once.
 - A **session** (one connection = one device) is in at most one huddle. A **user** is in at
   most one huddle: joining from another session or channel moves them (the old participation
   ends, the old session sees itself leave). This matches Slack: you can't be in two calls.
@@ -109,17 +110,23 @@ ct    = ChaCha20-Poly1305(sk, nonce, opus_frame, AD = header)                   
   time in seconds, inside the AD; receivers drop frames whose `ts` is more than 60 s from their
   own clock. This needs clocks within a minute (NTP). Rejections are counted per reason in the
   engine (`voice.Stats`); a TUI warning for repeated clock-skew drops is a follow-up.
-- **Which keys a receiver accepts**: frames under the channel's newest verified epoch and the
-  one before it (so a rotation mid-sentence doesn't cut audio), with `dev` a verified,
-  non-revoked device of the user the roster names (trust store), and only from senders in that
-  epoch's roster. Anything else is dropped and counted; plaintext kinds in an e2e channel are
-  always dropped (downgrade).
-- **Senders** use the newest verified epoch, and switch as soon as a new one verifies. A
-  removed member keeps the old `K` but stops getting new keys, so after the remaining senders
-  switch (sub-second after the rotation verifies) they can't decrypt, even if a malicious server
-  keeps relaying to them.
-- A channel with no verified epoch yet (or an unconfirmed-member alarm, §13.4) refuses voice:
-  "voice waits for the channel's keys".
+- **Encrypted or not is decided by the client's trust state** (`E2EStatus`), never by the
+  server's `Channel.e2e` flag alone: plaintext only in a channel never known as encrypted and
+  not in alarm. A channel in alarm, or without a verified epoch we hold K for, refuses voice
+  ("voice waits for the channel's keys"). Encryption changing mid-huddle ends the huddle.
+- **Senders** seal only under a *fresh* head epoch, by the text path's rule (§13.4): its roster
+  is who we'd seal to now and it boxed no device revoked since. Rotation in tc is lazy (the next
+  sender rotates), so voice does what a text send does: at join, and whenever a once-a-second
+  check finds the epoch stale (a member left, a device was revoked, an alarm), sending pauses,
+  the client rotates via the same code path, and resumes under the new epoch. A removed member
+  or a stolen device therefore hears at most ~1 s more, even if a malicious server keeps
+  relaying to them.
+- **Which keys a receiver accepts**: frames under the newest epoch it verified, or the one
+  before it only within 10 s of first seeing the newer one (so a rotation mid-sentence doesn't
+  cut audio, but an ex-member holding the old K can't inject for long); from senders in that
+  epoch's roster who are also current members; with `dev` a verified, non-revoked device of the
+  user the roster names (trust store). Anything else is dropped and counted; plaintext kinds in
+  an e2e channel are always dropped (downgrade).
 
 Public channels: voice is protected hop by hop (QUIC/TLS 1.3) but the **server can hear it**,
 exactly like public-channel text. The TUI marks encrypted huddles with the lock it already uses.
@@ -129,10 +136,10 @@ exactly like public-channel text. The TUI marks encrypted huddles with the lock 
 | What | Limit |
 |---|---|
 | participants per huddle | 16 (`huddle.join` → `conflict`) |
-| concurrent huddles per server | 64 (`conflict`) |
+| concurrent huddles per server | 1024 (`conflict`; a user is in at most one, so this is ~users) |
 | datagram size | ≤ 512 B including the header; larger dropped |
 | per-session send rate | token bucket burst 100, refill 60/s (50/s nominal); excess dropped |
-| `huddle.join`/`huddle.leave` | count as write ops for rate limits (§9) |
+| `huddle.join` | counts as a write op for rate limits (§9); `huddle.leave` is exempt |
 | per-receiver relay queue | 64 datagrams; full → drop newest |
 
 ## UX (TUI + herdr)
@@ -193,10 +200,12 @@ a removed member; a hostile client spamming datagrams.
 | Network attacker reads/injects audio | QUIC (TLS 1.3, pinned SPKI) on every hop. |
 | Server listens to an encrypted channel's huddle | Frames are ChaCha20-Poly1305 under keys from `K_epoch`, which the server never has. |
 | Server alters, splices or relabels frames | Header is AEAD AD; per-sender key binds `dev`+`stream`; `dev` must be a verified device of the named user, so relabeling breaks decryption. |
-| Server replays frames within a session | 64-frame replay window per stream. |
+| Server replays frames within a session | 64-frame replay window per `src`, kept for the whole participation (a roster that drops and re-adds a `src` can't reset it). |
 | Server replays an old recording later | `ts` in the AD, ±60 s acceptance; window per stream. Within 60 s of recording a replay into a *new* stream is possible (accepted risk, documented). |
-| Server downgrades an e2e huddle to plaintext | Receivers drop plaintext kinds in e2e channels; senders never send them there. |
-| Removed member keeps listening | Senders move to the new epoch as soon as it verifies; old `K` decrypts nothing new. Honest servers also drop them from the huddle at once. |
+| Server downgrades an e2e huddle to plaintext | The client decides encryption from its sticky trust state, not the server's flag; refuses in alarm; ends the huddle if encryption changes. Receivers drop plaintext kinds in e2e channels. |
+| Removed member / stolen (revoked) device keeps listening | Senders only seal under a fresh epoch and rotate first when it's stale (checked at join and every second), so the old `K` decrypts at most ~1 s more. Honest servers also drop them at once and discard their queued datagrams. |
+| Ex-member injects audio under an old epoch | Previous epoch accepted only 10 s after the head moves, and only from current members. |
+| Alarm raised mid-huddle | Sending pauses while the channel isn't `E2EOK`. |
 | **Malicious member impersonates another member's voice** | **Not prevented in v1.** Any roster member can derive any sender's `sk` (group-symmetric, like SFrame with a shared key). Text messages are signed per message; per-frame Ed25519 would add 64 B × 50/s = 25.6 kbit/s. Future: per-sender keys sealed to the roster with signed announcements. |
 | Metadata | The server sees who is in which huddle, when, and frame sizes/timing (talk patterns; VBR sizes can leak some content). VBR leaks more than CBR; CBR is a possible opt-in later. |
 | Datagram flood / amplification | Only huddle participants can send; per-session token bucket; fixed max size; relay fan-out ≤ 15; bounded per-receiver queues with drop. A client can't make the server send to non-participants. |

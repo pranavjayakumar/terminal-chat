@@ -419,6 +419,7 @@ All sizes are UTF-8 bytes.
 - `search.q` ≤ 256 B; only the first 8 terms are used.
 - Presence updates: at most 1/s per session, and only broadcast when state or status changes.
 - Each session's unsent output is capped at 8 MiB (sync output excluded); beyond that → BYE `slow_consumer`.
+- Voice limits (datagram size, per-session datagram rate, relay queue, huddle sizes) are in §14.
 - Keepalive: the client sends PING after 20 s without sending anything. Either
   side closes after 45 s without receiving a frame. QUIC `MaxIdleTimeout` = 60 s.
 - On QUIC, BYE is followed by `CloseWithError(0, code)`.
@@ -1250,13 +1251,17 @@ whether or not their build can play audio (rosters are useful on their own).
   device of the caller (`forbidden`); elsewhere both are ignored and not relayed. Joining
   ends the caller's previous participation, if any, from any session of theirs (so a user is in
   at most one huddle); rejoining the same huddle gives a new `src`. At most 16 participants per
-  huddle and 64 huddles per server (`conflict`). `src` is non-zero, unique among live
-  participations and not reused while the server runs.
+  huddle and 1024 huddles per server (`conflict`). `src` is non-zero and never reused while the
+  server runs (once the u32 space is spent, joins fail with `conflict` until a restart).
 - **huddle.leave** ends this session's participation; not being in a huddle is ok (no-op).
-- Both count as write ops for rate limits (§9).
-- A participation also ends when its session closes, or when the user stops being a member of
-  the channel (`chan.leave`, `chan.remove`) or is disabled — in the same critical section that
-  updates membership, so no datagram is relayed to or from them afterwards.
+- `huddle.join` counts as a write op for rate limits (§9). `huddle.leave` is exempt: refusing a
+  cleanup would leave a listener the client no longer plays to.
+- A participation also ends when its session closes; when the user stops being a member of the
+  channel (`chan.leave`, `chan.remove`) or is disabled; when its `dev` is revoked
+  (`device.revoke`); and when the channel becomes encrypted (`chan.encrypt`: everyone rejoins
+  with device keys). This happens in the same critical section that applies the event, and
+  datagrams already queued for an ended participation are discarded, so none is relayed to or
+  from it afterwards.
 
 ### 14.2 Ephemeral `huddle`
 
@@ -1265,12 +1270,15 @@ EPHEMERAL {kind: "huddle", chan: u64, parts: [Part]}     S→C only
 Part = {user: u64, src: u32, dev?: bin16, stream?: bin16}
 ```
 
-The full roster of `chan`'s huddle, in join order; empty `parts` = the huddle ended. Sent after
-every change to every session of the channel's current members, and to the sessions of a user
-whose participation just ended even if they are no longer a member (so a removed user learns
-they left). After `sync`'s RES the server sends one `huddle` per live huddle in channels the
-user is a member of. `dev`/`stream` are present exactly in encrypted channels. C→S `huddle`
-ephemerals are ignored.
+The full roster of `chan`'s huddle, in join order; `parts` absent or empty = the huddle ended
+(servers omit the key). Sent, only to sessions with `voice1`:
+- after every change, to every session of the channel's current members;
+- to the sessions of a user whose participation just ended and who is no longer a member: an
+  **empty** roster (they learn they're out, not who is still talking);
+- to a user who joins the channel (`chan.join`) while a huddle runs, right after that event;
+- after `sync`'s RES, one per live huddle in channels the user is a member of.
+
+`dev`/`stream` are present exactly in encrypted channels. C→S `huddle` ephemerals are ignored.
 
 ### 14.3 Datagrams
 
@@ -1299,7 +1307,8 @@ off len field
   0x01 otherwise, the size is within limits and the session's token bucket (burst 100, refill
   60/s) has a token. Otherwise forward the **unchanged bytes** to every other participant of
   that huddle (never back to the sender). Per receiving session at most 64 datagrams wait to
-  be sent; more are dropped. The server never parses past byte 10.
+  be sent; more are dropped, as are queued ones whose participation has ended. The server never
+  parses past byte 10.
 - **Encrypted frames** (kind 0x02), with `K` the channel's epoch key for `epoch` (§13.3),
   `dev` and `stream` from the sender's `Part`:
 
@@ -1310,10 +1319,22 @@ off len field
   ct    = ChaCha20-Poly1305-Seal(sk, nonce, opus, AD = datagram[0:18])
   ```
 
-  Senders use the newest verified epoch and never send kind 0x01 in an encrypted channel.
-  Receivers MUST drop a frame unless: its kind matches the channel (no plaintext in encrypted
-  channels); `src` is in the roster; for kind 0x02, `epoch` is the newest verified epoch or
-  the one before, the sender's user is in that epoch's roster and `dev` is a verified,
-  non-revoked device of that user; `|ts − now| ≤ 60 s`; `seq` passes a 64-frame sliding
-  replay window per `src`; and the AEAD opens. The window advances only on frames that open.
+  **Whether a huddle is encrypted is the client's trust state's call** (§13 "Server identity
+  and downgrade"), never the server's `Channel.e2e` alone: a client sends kind 0x01 only in a
+  channel it has never known as encrypted and that isn't in alarm, and joins an encrypted one
+  only while it holds the current key (else it refuses: "voice waits for the channel's keys").
+  A participation whose channel changes encryption state ends.
+
+  **Senders** seal under the newest verified epoch, and only while it is fresh by §13.4's
+  sending rule (its roster is who they'd seal to now, it boxed no device revoked since); when it
+  isn't, they stop sending, rotate as a text send would (§13.4), and resume under the new
+  epoch. A short silence during a rotation is expected.
+
+  **Receivers** MUST drop a frame unless: its kind matches the channel (no plaintext in
+  encrypted channels); `src` is in the roster; for kind 0x02: `epoch` is the newest epoch the
+  receiver verified, or the one before it but only within 10 s of the receiver first seeing the
+  newer one; the sender's user is in that epoch's roster **and** a current member; `dev` is a
+  verified, non-revoked device of that user; `|ts − now| ≤ 60 s`; `seq` passes a 64-frame
+  sliding replay window kept per `src` for the receiver's whole participation (roster changes
+  don't reset it); and the AEAD opens. The window advances only on frames that open.
 
