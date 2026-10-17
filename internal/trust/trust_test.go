@@ -1388,3 +1388,35 @@ func TestEpochBoxed(t *testing.T) {
 		t.Fatalf("after migration %+v %v %v", got, ok, err)
 	}
 }
+
+func TestRevokedAfter(t *testing.T) {
+	s, _ := newStore(t)
+	d1, d2 := device(t, bob), device(t, 3)
+	for _, d := range []Device{d1, d2} {
+		if err := s.PutDevice(sidA, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func(users []uint64, seq uint64, want bool) {
+		t.Helper()
+		if got, err := s.RevokedAfter(sidA, users, seq); err != nil || got != want {
+			t.Fatalf("RevokedAfter(%v, %d) = %v, %v; want %v", users, seq, got, err, want)
+		}
+	}
+	check([]uint64{bob, 3}, 0, false)
+	if err := s.RevokeDevice(sidA, d1.ID); err != nil { // seq unknown
+		t.Fatal(err)
+	}
+	check([]uint64{bob}, 0, false)
+	if err := s.RevokeDeviceAt(sidA, d1.ID, 50); err != nil {
+		t.Fatal(err)
+	}
+	check([]uint64{bob}, 0, true) // epoch seq unknown: any known revoke
+	check([]uint64{bob}, 49, true)
+	check([]uint64{bob}, 50, false)
+	check([]uint64{3}, 0, false) // another user's device
+	check(nil, 0, false)
+	if got, err := s.RevokedAfter(sidB, []uint64{bob}, 0); err != nil || got {
+		t.Fatalf("other server: %v %v", got, err)
+	}
+}

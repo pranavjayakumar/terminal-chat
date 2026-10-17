@@ -210,8 +210,9 @@ func (c *Client) RefreshDevices(ctx context.Context, user uint64) error {
 // unavailable), with this device's key. Revoking the device we run on
 // needs allowSelf; this device then reconnects as a new device.
 //
-// Afterwards every encrypted channel we're in whose current key was sealed
-// to the revoked device gets a new epoch without it right away (rotated
+// Afterwards every encrypted channel we're in whose current key the revoked
+// device may hold (boxed to it, or shared with it by key.share) gets a new
+// epoch without it right away (rotated
 // counts them; a channel that fails to rotate now rotates before its next
 // send anyway).
 func (c *Client) RevokeDevice(ctx context.Context, dev e2ecrypto.DevID, allowSelf bool) (rotated int, err error) {
@@ -300,7 +301,7 @@ func (c *Client) RevokeDevice(ctx context.Context, dev e2ecrypto.DevID, allowSel
 			continue
 		}
 		ep, ok, err := c.trust.Epoch(sid, ch.ID, head.Epoch)
-		if err != nil || !ok || !c.boxedRevoked(sid, ep) {
+		if err != nil || !ok || !c.revokedStale(sid, ep) {
 			continue
 		}
 		if c.rotateLocked(ctx, s, sid, ch.ID) == nil {

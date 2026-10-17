@@ -701,7 +701,7 @@ func (c *Client) sealOffline(e outboxEntry) []byte {
 		return nil
 	}
 	ep, ok, err := c.trust.Epoch(sid, e.chan_, head.Epoch)
-	if err != nil || !ok || ep.Key == nil || !slices.Equal(ep.Roster, c.liveMembers(ch)) || c.boxedRevoked(sid, ep) {
+	if err != nil || !ok || ep.Key == nil || !slices.Equal(ep.Roster, c.liveMembers(ch)) || c.revokedStale(sid, ep) {
 		return nil
 	}
 	dev, err := c.trust.DeviceKeys(sid, c.Me().ID)
@@ -736,7 +736,7 @@ func (c *Client) encCurrent(e outboxEntry) bool {
 	}
 	ep, ok, err := c.trust.Epoch(sid, e.chan_, head.Epoch)
 	// not rosterNow: an unconfirmed member must reach sealWith
-	return err == nil && ok && ep.Key != nil && slices.Equal(ep.Roster, c.liveMembers(ch)) && !c.boxedRevoked(sid, ep)
+	return err == nil && ok && ep.Key != nil && slices.Equal(ep.Roster, c.liveMembers(ch)) && !c.revokedStale(sid, ep)
 }
 
 // sealEntry encrypts an outbox entry for sending (§13.4 "Sending"): it
@@ -750,16 +750,24 @@ func (c *Client) sealEntry(ctx context.Context, s *session, e outboxEntry, prev 
 	})
 }
 
-// boxedRevoked reports whether ep sealed K to a device revoked since: a
-// stolen device must not read what is sent next, whether or not the server
-// answers stale_epoch (step 12 security pass).
-func (c *Client) boxedRevoked(sid e2ecrypto.ServerID, ep trust.Epoch) bool {
+// revokedStale reports whether a device revoked since may hold ep's K, so
+// ep must be replaced before anything new is sealed under it: a stolen
+// device must not read what is sent next, whether or not the server answers
+// stale_epoch (step 12 security pass). That is a device ep boxed, or any
+// device of a roster user whose revoke came after ep's key.epoch (it may
+// have got K by key.share, e.g. history backfill on a new device: B5). An
+// error counts as stale: rotating needlessly is cheap, sealing to a
+// revoked device is not. A revoke whose seq is unknown counts only through
+// the boxes (only a lying server leaves it out, and it could as well
+// withhold the revoke).
+func (c *Client) revokedStale(sid e2ecrypto.ServerID, ep trust.Epoch) bool {
 	for _, id := range ep.Boxed {
-		if d, ok, err := c.trust.Device(sid, id); err == nil && ok && d.Revoked {
+		if d, ok, err := c.trust.Device(sid, id); err != nil || (ok && d.Revoked) {
 			return true
 		}
 	}
-	return false
+	hit, err := c.trust.RevokedAfter(sid, ep.Roster, ep.Seq)
+	return err != nil || hit
 }
 
 // sealWith is sealEntry for anything sealed with channel chID's current
@@ -861,7 +869,7 @@ func (c *Client) sealWith(ctx context.Context, s *session, chID uint64, prev []b
 		default:
 			cur, _, _ := c.trust.Epoch(sid, ch.ID, head.Epoch)
 			rotate = !slices.Equal(cur.Roster, c.rosterNow(ch)) || (prev != nil && head.Epoch == prevEpoch) ||
-				c.boxedRevoked(sid, cur)
+				c.revokedStale(sid, cur)
 		}
 		if rotate && attempt < attempts-1 {
 			err := c.rotateOnce(ctx, s, sid, ch.ID)

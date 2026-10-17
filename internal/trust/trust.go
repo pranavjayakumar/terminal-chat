@@ -17,6 +17,7 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -867,6 +868,34 @@ func (s *Store) Devices(sid e2ecrypto.ServerID, user uint64) ([]Device, error) {
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+// RevokedAfter reports whether a stored device of one of users was revoked
+// by a revoke whose seq is known and after seq (any known seq when seq is
+// 0, i.e. unknown). Such a device existed while the epoch with key.epoch
+// seq was current, so it may hold that epoch's key by key.share even if
+// the bundle never boxed it (PROTOCOL §13.3 "stale").
+func (s *Store) RevokedAfter(sid e2ecrypto.ServerID, users []uint64, seq uint64) (bool, error) {
+	if len(users) == 0 {
+		return false, nil
+	}
+	ids := make([]int64, len(users))
+	for i, u := range users {
+		ids[i] = i64(u)
+	}
+	js, err := json.Marshal(ids)
+	if err != nil {
+		return false, err
+	}
+	var hit bool
+	err = s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM revoked_devices r
+		JOIN devices d ON d.server_id = r.server_id AND d.dev = r.dev
+		WHERE r.server_id = ? AND r.seq IS NOT NULL AND r.seq > ?
+			AND d.user IN (SELECT value FROM json_each(?)))`, sid[:], i64(seq), string(js)).Scan(&hit)
+	if err != nil {
+		return false, fmt.Errorf("checking revoked devices: %w", err)
+	}
+	return hit, nil
 }
 
 // ---- epoch chain ----
