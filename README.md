@@ -22,15 +22,21 @@ It prints a one-liner. Share it in your team's usual channel:
 curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/install.sh | sh -s -- 'tc://host:7443/abc…#pin…'
 ```
 
-**Teammates** paste it. It downloads the release for their Mac or Linux box, checks its sha256,
-installs `tc` to `~/.local/bin` and runs `tc join`, which picks their SSH key (ssh-agent, then
-`~/.ssh/id_ed25519`, else it makes a tc-only key), suggests a name from `git config user.name`,
-and asks once to confirm. Then `tc`.
+**Teammates** paste it. It downloads the release for their Mac or Linux box, checks its signature
+and sha256, installs `tc` to `~/.local/bin` and runs `tc join`, which tries their SSH keys (ssh-agent,
+then `~/.ssh`, else it makes a tc-only key), suggests a name from `git config user.name`, and asks once
+to confirm. Then `tc`. Prefer Homebrew? `brew tap pranavjayakumar/tc https://github.com/pranavjayakumar/terminal-chat && brew install pranavjayakumar/tc/tc`, then `tc join 'tc://…'`.
 
-Already have tc? `tc join 'tc://…'` (`tc login` still works; `TC_INVITE='tc://…' tc join` keeps
-the code out of `ps`). Keep invites short-lived (a day is plenty) and revoke leftovers with
-`/invite-revoke` or `tc server invite --revoke`. Admins can also mint invites inside
-tc with `/invite [uses] [ttl]`, e.g. `/invite 15 1d`, which copies the one-liner to the clipboard.
+**Second computer:** `tc login` on the first one prints a `tc login 'tc://host:port#pin'` line; run it
+on the other with the same SSH key (re-running your original install command works too). If the join
+was interrupted, just run it again: a key that's already registered logs in and the invite stays unused.
+
+Already have tc? `tc join 'tc://…'` (`TC_INVITE='tc://…' tc join` keeps the code out of `ps`). Keep
+invites short-lived (a day is plenty) and revoke leftovers with `/invite-revoke` or `tc invite --revoke`.
+Any member can invite inside tc with `/invite [uses] [ttl]` (e.g. `/invite 5 1d`; members get up to 10
+uses, 7 days, 5 live invites; the server owner can turn this off with `tc server --member-invites=false`).
+`tc invite --key github:alice` makes an invite only the holder of alice's GitHub SSH keys can redeem, so a
+leaked code is useless.
 `tc update` installs the newest signed release in place (`--check` only reports); tc shows a dim
 `update vX` in the sidebar when one is out. For that, release builds make one HTTPS `HEAD` request to
 `github.com/pranavjayakumar/terminal-chat/releases/latest` at most once a day. It sends no version,
@@ -50,7 +56,11 @@ user, server or chat data, but GitHub sees your IP address and that it runs tc.
 | `F1` or `/help` | all keys and commands |
 | `Ctrl-C` twice | quit |
 
-Commands: `/join #x` `/create #x [--private]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/pins` `/activity` `/highlight [word…]` `/unhighlight word…` `/group name @a @b` (admin) `/groups` `/remind <when> <text>` `/reminders` `/remind-delete id` `/away [status]` `/back` `/snippet file[:range]` `/share-pane [pane]` `/invite [uses] [ttl]` `/invites` `/invite-revoke id` (admin) `/webhook name` `/webhooks` `/webhook-delete id` `/verify @user` `/accept-key @user` `/members` `/alarm`.
+Commands: `/join #x` `/create #x [--private [--plaintext]]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/pins` `/activity` `/highlight [word…]` `/unhighlight word…` `/group name @a @b` (admin) `/groups` `/remind <when> <text>` `/reminders` `/remind-delete id` `/away [status]` `/back` `/snippet file[:range]` `/share-pane [pane]` `/invite [uses] [ttl]` `/invites` `/invite-revoke id` (admin) `/webhook name` `/webhooks` `/webhook-delete id` `/verify @user` `/accept-key @user` `/members` `/alarm` `/devices [@user]` `/device-revoke id` `/disable @user` (admin).
+
+Private channels are end-to-end encrypted; `--plaintext` opts out (needed only for webhooks/bots).
+Admins: `tc users` lists accounts and who invited them; `tc users disable @name` locks an account
+out for good (also `/disable @name`).
 
 Unsent text is kept per channel and thread (a dim `✎` in the sidebar marks channels with a draft) and
 survives restarts. `/remind 10m stand up` or `/remind tomorrow 9am …` posts `⏰ …` in your private notes on time, even
@@ -109,10 +119,11 @@ history raises a `⚠ alarm` in that channel and tc stops sending there.
 - Messages from before a channel was encrypted, and anything the server inserts, are shown as
   `⚠ unauthenticated`. A message whose server timestamp is off by more than 5 minutes shows the
   author's own time and `⚠ server time differs`.
-- A stolen device reads what it could already read. Once it is revoked, tc rotates keys before
-  anything new is sent (there is no `tc` command to revoke a device yet: log in with a new SSH key and
-  ask an admin to disable the old account, or see docs/E2E.md). Losing every device loses your
-  encrypted history: there is no backup.
+- A stolen device reads what it could already read. `tc devices` lists yours; `tc devices revoke <id>`
+  (or `/devices`) revokes one and rotates the keys of every encrypted conversation it could read, so it
+  reads nothing new. Revoking doesn't remove an SSH key: if the thief also has your SSH key, an admin
+  must `tc users disable` the account and invite you again with a new key. Losing every device loses
+  your encrypted history: there is no backup.
 - Your local cache (`~/.config/tc`) holds decrypted messages and your keys. Use disk encryption.
 
 Design and threat model: [docs/E2E.md](docs/E2E.md).
