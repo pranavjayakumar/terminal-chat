@@ -69,10 +69,12 @@ name=tc-voice_${os}_${arch}
 bin=$work/$name/tc
 mkdir -p "$work/$name"
 # Only our static libopus is visible to pkg-config (no .so/.dylib in it),
-# so the linker can't pick a system libopus.
+# so the linker can't pick a system libopus. A private GOCACHE: a cached cgo
+# package from an earlier run keeps that run's -L$work path (CI restores the
+# build cache), and the link then fails to find libopus.
 (
 	cd "$root"
-	PKG_CONFIG_PATH=$prefix/lib/pkgconfig PKG_CONFIG_LIBDIR=$prefix/lib/pkgconfig \
+	PKG_CONFIG_PATH=$prefix/lib/pkgconfig PKG_CONFIG_LIBDIR=$prefix/lib/pkgconfig GOCACHE=$work/gocache \
 		CGO_ENABLED=1 GOOS=$os GOARCH=$arch CC=$cc GOTOOLCHAIN=local \
 		go build -tags voice -trimpath -ldflags "-s -w -X main.version=$version" -o "$bin" ./cmd/tc
 )
