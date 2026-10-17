@@ -207,7 +207,8 @@ func TestRevokeSelfTwoLiveProcesses_BreakDevfix(t *testing.T) {
 					i, name, f, next.ID[:4])
 			}
 			if err != nil {
-				t.Fatalf("cycle %d: flush: %v", i, err)
+				t.Fatalf("cycle %d: %s flush: %v (online %v, device error %v, e2e %+v)",
+					i, name, err, u.online(), u.DeviceError(), u.status(dm))
 			}
 			eventually(t, "bob reads "+body, bob.reads(dm, body))
 		}
