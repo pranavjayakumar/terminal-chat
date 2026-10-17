@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"strconv"
@@ -116,8 +115,8 @@ func boundLabel(src string, keys int64) string {
 	return sanitize.Line(src) + " only (" + n + ")"
 }
 
-// inviteCommand mints an invite and copies the install one-liner with OSC
-// 52; the notice shows the raw code for people who already have tc. With
+// inviteCommand mints an invite, copies the install one-liner (OSC 52, tmux
+// passthrough, pbcopy & co) and shows code and one-liner in full. With
 // --key github:<login> the client fetches that account's SSH keys and binds
 // the invite to them. Members may invite when the server allows it; the
 // server enforces who and how much.
@@ -140,7 +139,7 @@ func (m *Model) inviteCommand(args []string) (tea.Cmd, error) {
 			return nil, errors.New("key-bound invites aren't supported here")
 		}
 	}
-	be, out, version := m.c, m.opt.Out, m.opt.Version
+	be, opt, version := m.c, m.opt, m.opt.Version
 	if gh != nil {
 		// The GitHub fetch can take seconds; say something meanwhile.
 		m.setInfo("fetching github.com/" + login + "'s SSH keys…")
@@ -160,11 +159,9 @@ func (m *Model) inviteCommand(args []string) (tea.Cmd, error) {
 		if err != nil {
 			return nil, err
 		}
-		if out != nil {
-			_, _ = out.Write([]byte("\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(line)) + "\a"))
-		}
+		how, cerr := clip(opt, line)
 		// What matters first: narrow panes cut the notice from the right.
-		parts := []string{"install command copied"}
+		parts := []string{"invite created"}
 		if inv.Keys > 0 {
 			parts = append(parts, "for "+boundLabel("github:"+login, inv.Keys))
 		}
@@ -176,8 +173,35 @@ func (m *Model) inviteCommand(args []string) (tea.Cmd, error) {
 		if inv.Expires > 0 {
 			parts = append(parts, "expires "+time.UnixMilli(inv.Expires).Format("Jan 2 15:04"))
 		}
-		return infoMsg(strings.Join(parts, " · ") + " · code: " + sanitize.Line(inv.Code)), nil
+		return inviteShownMsg{summary: strings.Join(parts, " · "), code: sanitize.Line(inv.Code),
+			line: line, how: how, copyErr: cerr}, nil
 	}), nil
+}
+
+// inviteShownMsg carries a new invite to the UI, which shows it in full:
+// the status line truncates, and the copy can silently fail (tmux), so the
+// code must stay readable and selectable on screen.
+type inviteShownMsg struct {
+	summary, code, line, how string
+	copyErr                  error
+}
+
+func (m *Model) showInvite(s inviteShownMsg) {
+	copied := "NOT copied (no clipboard route worked): select the text below"
+	switch s.how {
+	case "system":
+		copied = "install command copied to the clipboard"
+	case "terminal":
+		copied = "install command sent to the terminal clipboard (OSC 52); if paste is empty, select it below"
+	}
+	m.view = viewer{
+		title: "invite",
+		lines: []string{s.summary, "", copied, "", "code:", s.code, "", "install command:", s.line},
+		copy:  s.line,
+		back:  modeNormal,
+	}
+	m.mode = modeViewer
+	m.setInfo(s.summary)
 }
 
 // InviteBackend is implemented by backends that can list and revoke

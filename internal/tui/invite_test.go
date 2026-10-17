@@ -59,12 +59,21 @@ func TestInviteCommandCopiesOneLiner(t *testing.T) {
 	if !strings.Contains(out, "\x1b]52;c;"+base64.StdEncoding.EncodeToString([]byte(line))+"\a") {
 		t.Fatalf("one-liner not copied via OSC 52: %q", out)
 	}
-	if !strings.Contains(m.notice, "15 uses") || !strings.Contains(m.notice, "install command copied") || !strings.Contains(m.notice, code) {
-		t.Fatalf("notice %q", m.notice)
+	// The full code is on screen (not truncated) even in a narrow pane.
+	if m.mode != modeViewer || !strings.Contains(m.notice, "15 uses") {
+		t.Fatalf("mode %v notice %q", m.mode, m.notice)
 	}
 	for _, sz := range [][2]int{{100, 30}, {40, 12}, {20, 6}} {
 		m.Update(tea.WindowSizeMsg{Width: sz[0], Height: sz[1]})
-		checkView(t, m, "invite notice")
+		checkView(t, m, "invite viewer")
+	}
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	if plain := checkView(t, m, "invite viewer"); !strings.Contains(plain, code) {
+		t.Fatalf("code not shown in full:\n%s", plain)
+	}
+	m.viewerKey(kEsc)
+	if m.mode != modeNormal {
+		t.Fatalf("Esc should close to normal mode, got %v", m.mode)
 	}
 
 	// Bad args: an error notice, no request.
@@ -285,16 +294,17 @@ func TestInviteKeyCommand(t *testing.T) {
 	if !f.called("ghinvite carol 72h0m0s") {
 		t.Fatalf("calls %v", f.calls)
 	}
-	if m.noticeErr || !strings.Contains(m.notice, "install command copied · for github:carol only (2 keys) · 1 use") || !strings.Contains(m.notice, "install command copied") {
+	if m.noticeErr || !strings.Contains(m.notice, "invite created · for github:carol only (2 keys) · 1 use") {
 		t.Fatalf("notice %q", m.notice)
 	}
+	m.viewerKey(kEsc)
 	if !strings.Contains(m.opt.Out.(*syncBuf).String(), "]52;c;") {
 		t.Fatal("one-liner not copied")
 	}
 	for _, sz := range [][2]int{{100, 30}, {40, 12}, {20, 6}} {
 		m.Update(tea.WindowSizeMsg{Width: sz[0], Height: sz[1]})
 		plain := checkView(t, m, "key invite notice")
-		if sz[0] == 40 && !strings.Contains(plain, "copied") {
+		if sz[0] == 40 && !strings.Contains(plain, "invite created") {
 			t.Fatalf("40 columns: 'copied' cut off:\n%s", plain)
 		}
 	}
@@ -338,5 +348,25 @@ func TestInviteKeyCommand(t *testing.T) {
 	run(m2, m2.submit())
 	if !m2.noticeErr || !strings.Contains(m2.notice, "aren't supported") {
 		t.Fatalf("unsupported: %q", m2.notice)
+	}
+}
+
+func TestOSC52TmuxPassthrough(t *testing.T) {
+	plain := osc52("hi", false)
+	wrapped := osc52("hi", true)
+	if !strings.HasPrefix(wrapped, plain+"\x1bPtmux;\x1b\x1b]52;c;") || !strings.HasSuffix(wrapped, "\a\x1b\\") {
+		t.Fatalf("bad tmux wrap %q", wrapped)
+	}
+}
+
+func TestClipNeverClaimsWithoutAttempt(t *testing.T) {
+	if how, _ := clip(Options{}, "x"); how != "" {
+		t.Fatalf("how %q with no route", how)
+	}
+	var b syncBuf
+	called := false
+	how, _ := clip(Options{Out: &b, ExtCopy: func(string) error { called = true; return nil }}, "x")
+	if how != "system" || !called {
+		t.Fatalf("how %q called %v", how, called)
 	}
 }

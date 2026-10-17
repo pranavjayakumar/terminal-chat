@@ -16,6 +16,8 @@ type viewer struct {
 	title string
 	lines []string
 	x, y  int
+	copy  string // what y copies; "": the lines
+	back  mode   // where Esc returns
 }
 
 const viewerStep = 8
@@ -32,6 +34,7 @@ func (m *Model) openViewer(msg client.Message) {
 	m.view = viewer{
 		title: sanitize.Line(m.r.userName(msg.Author)) + " · " + when,
 		lines: m.viewerBody(body),
+		back:  modeSelect,
 	}
 	m.mode = modeViewer
 }
@@ -41,7 +44,7 @@ func (m *Model) viewerKey(key string) {
 	page := max(m.dims().bodyH-2, 1)
 	switch key {
 	case kEsc, "q", kEnter, kSelView:
-		m.mode = modeSelect
+		m.mode = v.back
 		return
 	case kUp, "k":
 		v.y--
