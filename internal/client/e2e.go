@@ -1065,6 +1065,13 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 		return false
 	}
 	latest := max(c.cachedMaxEpoch(ch.ID), ch.Epoch)
+	if hasHead && latest < head.Epoch && c.fetchBundles(ctx, s, ch.ID, head.Epoch, head.Epoch) {
+		// Another process on this TC_HOME may have verified the epoch (and
+		// dropped its bundle from the shared cache) while this one replayed
+		// an older chan event: a rollback only if the server can't show
+		// the bundle we verified (checked against it below).
+		latest = max(latest, c.cachedMaxEpoch(ch.ID))
+	}
 	if hasHead && latest < head.Epoch {
 		return c.alarm(sid, ch.ID, fmt.Sprintf("rollback: the server shows epoch %d, this device verified %d", latest, head.Epoch))
 	}
@@ -1117,6 +1124,7 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 				}
 				// Only rows we checked: one arriving meanwhile gets checked next pass.
 				c.db.Exec(`DELETE FROM epochs WHERE chan = ? AND epoch = ? AND hash = ?`, ch.ID, o.epoch, o.hash)
+				c.db.Exec(`UPDATE chans SET epoch = max(epoch, ?) WHERE id = ?`, o.epoch, ch.ID)
 			}
 		}
 	}

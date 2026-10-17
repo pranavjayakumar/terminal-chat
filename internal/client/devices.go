@@ -136,10 +136,7 @@ func (c *Client) ensureDevice(ctx context.Context, s *session, signer ssh.Signer
 		}
 		s.dev.Store(keys)
 		c.myDev.Store(&keys.ID)
-	} else if slices.ContainsFunc(certs, func(sc proto.Signed) bool {
-		dc, err := identity.PeekDeviceCert(identity.Signed(sc))
-		return err == nil && dc.User == me && dc.Dev == keys.ID && bytes.Equal(dc.Ed25519, keys.Ed25519Pub)
-	}) {
+	} else if hasOwnCert(certs, me, keys) {
 		s.devOnce.Do(func() { close(s.devReady) })
 		return nil
 	}
@@ -150,6 +147,14 @@ func (c *Client) ensureDevice(ctx context.Context, s *session, signer ssh.Signer
 	// The device.new event lands in the cache through the event stream.
 	if _, err = s.call(ctx, proto.OpDeviceRegister, proto.DeviceRegisterArgs{Cert: proto.Signed(cert)}, nil); err != nil {
 		var pe *proto.Error
+		if errors.As(err, &pe) && pe.Code == proto.ErrConflict {
+			// Another process on this TC_HOME (after revoke --self) may
+			// have registered these same keys first, with its own cert.
+			if mine, _, ferr := c.fetchDevices(ctx, s, proto.DevicesListArgs{Users: []uint64{me}}); ferr == nil && hasOwnCert(mine, me, keys) {
+				s.devOnce.Do(func() { close(s.devReady) })
+				return nil
+			}
+		}
 		if errors.As(err, &pe) && pe.Code == proto.ErrBadRequest {
 			// The server's counts are its word, but they only pick the advice.
 			switch active, total := countDevices(me, certs, revokes); {
@@ -163,6 +168,14 @@ func (c *Client) ensureDevice(ctx context.Context, s *session, signer ssh.Signer
 	}
 	s.devOnce.Do(func() { close(s.devReady) })
 	return nil
+}
+
+// hasOwnCert reports whether certs hold a cert for our device keys.
+func hasOwnCert(certs []proto.Signed, me uint64, keys *e2ecrypto.DeviceKeys) bool {
+	return slices.ContainsFunc(certs, func(sc proto.Signed) bool {
+		dc, err := identity.PeekDeviceCert(identity.Signed(sc))
+		return err == nil && dc.User == me && dc.Dev == keys.ID && bytes.Equal(dc.Ed25519, keys.Ed25519Pub)
+	})
 }
 
 var (
