@@ -425,7 +425,9 @@ func Executable() (string, error) {
 // lives in a Homebrew Cellar, where brew owns upgrades and a self-replace
 // would leave its receipts and checksums stale.
 func IsHomebrew(exe string) bool {
-	return strings.Contains(filepath.ToSlash(exe), "/Cellar/")
+	p := filepath.ToSlash(exe)
+	i := strings.LastIndex(p, "/Cellar/tc/")
+	return i >= 0 && strings.HasSuffix(p, "/bin/tc") && strings.Count(p[i+len("/Cellar/tc/"):], "/") == 2
 }
 
 // ---- background update check ----

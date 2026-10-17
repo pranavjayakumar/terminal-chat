@@ -8,23 +8,31 @@ set -eu
 
 tag=${1:-}
 printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "usage: $0 vX.Y.Z [DIR]" >&2; exit 2; }
-version=${tag#v}
 root=$(cd "$(dirname "$0")/.." && pwd)
 
 dir=${2:-}
 if [ -z "$dir" ]; then
   dir=$(mktemp -d)
   trap 'rm -rf "$dir"' EXIT
-  gh release download "$tag" --dir "$dir" --pattern checksums.txt --pattern checksums.txt.sig
+  gh release download "$tag" -R pranavjayakumar/terminal-chat --dir "$dir" --pattern checksums.txt --pattern checksums.txt.sig
 fi
 
-(cd "$root" && GOTOOLCHAIN=local go run ./internal/release/verifyrelease "$dir/checksums.txt" "$dir/checksums.txt.sig") >&2
+# One verified "<os>_<arch> <sha256>" line per build; nothing else is trusted.
+sums=$(cd "$root" && GOTOOLCHAIN=local go run ./internal/release/verifyrelease "$dir/checksums.txt" "$dir/checksums.txt.sig" --sums) || exit 1
 
 sum() {
-  s=$(awk -v f="tc_$1.tar.gz" '$2 == f { print $1 }' "$dir/checksums.txt")
-  printf '%s\n' "$s" | grep -Eq '^[0-9a-f]{64}$' || { echo "no sha256 for tc_$1.tar.gz in checksums.txt" >&2; exit 1; }
+  s=$(printf '%s\n' "$sums" | awk -v k="$1" '$1 == k { print $2 }')
+  case "$s" in
+    *[!0-9a-f]* | "") echo "bad checksum for $1" >&2; exit 1 ;;
+  esac
+  [ ${#s} -eq 64 ] || { echo "bad checksum for $1" >&2; exit 1; }
   printf '%s' "$s"
 }
+# Compute first: a failure inside the heredoc would not stop the script.
+darwin_arm64=$(sum darwin_arm64) || exit 1
+darwin_amd64=$(sum darwin_amd64) || exit 1
+linux_arm64=$(sum linux_arm64) || exit 1
+linux_amd64=$(sum linux_amd64) || exit 1
 
 base="https://github.com/pranavjayakumar/terminal-chat/releases/download/$tag"
 out="$root/Formula/tc.rb"
@@ -39,22 +47,22 @@ class Tc < Formula
   on_macos do
     on_arm do
       url "$base/tc_darwin_arm64.tar.gz"
-      sha256 "$(sum darwin_arm64)"
+      sha256 "$darwin_arm64"
     end
     on_intel do
       url "$base/tc_darwin_amd64.tar.gz"
-      sha256 "$(sum darwin_amd64)"
+      sha256 "$darwin_amd64"
     end
   end
 
   on_linux do
     on_arm do
       url "$base/tc_linux_arm64.tar.gz"
-      sha256 "$(sum linux_arm64)"
+      sha256 "$linux_arm64"
     end
     on_intel do
       url "$base/tc_linux_amd64.tar.gz"
-      sha256 "$(sum linux_amd64)"
+      sha256 "$linux_amd64"
     end
   end
 
