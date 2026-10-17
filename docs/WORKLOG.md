@@ -34,3 +34,4 @@ The current resume point always lives in [STATUS.md](STATUS.md) → "Handoff".
 - 14:46 · Scratchpad wiped on session restart (boards lost). Saved agent work: pushed fix/join-flow (mid-merge), fix/device-revoke-gaps (+WIP test), fix/test-flakes. Open work moved to issues #54 #55 #56; STATUS handoff rewritten
 - 17:07 · All v0.3.0 fixes merged: #51 #53 #58 #60 #61 (B5 owed-rotation hardening after protocol review). README/ONBOARDING updated for v0.3.0
 - 17:47 · v0.3.0 released (tag → draft → make release-sign, signature OK); clean-HOME install verified; droplet upgraded v0.2.0→v0.3.0 via tc update after DB backup; fresh admin + 15-use team invites; formula PR #63; merged branches/worktrees cleaned. v0.4.0 voice agent started on #47
+- 22:30 · PR #47 merged (voice huddles + notifications/sounds; 8/8 CI green; security/protocol/tui/breaker reviewed twice). Docs PR: README voice/notifications/herdr toast/SSH, docs/TESTING.md. v0.4.0 tag waits on the owner's mic test
