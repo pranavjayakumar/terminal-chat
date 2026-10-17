@@ -213,47 +213,61 @@ func (e *Engine) sendFrame(pcm []int16) {
 	}
 }
 
-// Receive handles one datagram from the relay.
+// Receive handles one datagram from the relay. Call it from one goroutine:
+// key lookups and decryption run outside the lock the audio thread needs.
 func (e *Engine) Receive(b []byte) {
 	now := e.cfg.Now()
 	d, err := proto.ParseDatagram(b)
-	e.mu.Lock()
-	defer e.mu.Unlock()
 	if err != nil || (d.Kind == proto.DgAudioEnc) != e.cfg.Enc {
-		e.stats.BadFrame++
+		e.count(func(s *Stats) { s.BadFrame++ })
 		return
 	}
+	e.mu.Lock()
 	s := e.streams[d.Src]
-	if s == nil {
-		e.stats.Unknown++
+	fresh := s != nil && s.win.check(d.Seq)
+	e.mu.Unlock()
+	switch {
+	case s == nil:
+		e.count(func(s *Stats) { s.Unknown++ })
 		return
-	}
-	if !s.win.check(d.Seq) {
-		e.stats.Replay++
+	case !fresh:
+		e.count(func(s *Stats) { s.Replay++ })
 		return
 	}
 	payload := d.Payload
 	if e.cfg.Enc {
 		ts := time.Unix(int64(d.TS), 0)
 		if ts.Before(now.Add(-tsSkew)) || ts.After(now.Add(tsSkew)) {
-			e.stats.Skew++
+			e.count(func(s *Stats) { s.Skew++ })
 			return
 		}
 		vs, ok := e.cfg.Keys.Recv(d.Src, d.Epoch)
 		if !ok {
-			e.stats.Key++
+			e.count(func(s *Stats) { s.Key++ })
 			return
 		}
 		if payload, err = vs.Open(d.Seq, b[:d.HeaderLen()], d.Payload); err != nil {
-			e.stats.Auth++
+			e.count(func(s *Stats) { s.Auth++ })
 			return
 		}
 	} else {
 		payload = append([]byte(nil), payload...) // b belongs to the transport
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	// The roster may have changed meanwhile; only this goroutine moves windows.
+	if e.streams[d.Src] != s {
+		return
+	}
 	s.win.accept(d.Seq)
 	e.stats.Received++
 	s.jit.push(d.Seq, payload, d.Flags&proto.DgFlagEnd != 0, now)
+}
+
+func (e *Engine) count(f func(*Stats)) {
+	e.mu.Lock()
+	f(&e.stats)
+	e.mu.Unlock()
 }
 
 // Playout returns the next 20 ms of mixed remote audio. The audio device's
