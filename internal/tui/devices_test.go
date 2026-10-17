@@ -90,6 +90,9 @@ func TestDevicesOverlay(t *testing.T) {
 		}
 		v := checkView(t, m, "devices")
 		if sz[1] >= 12 {
+			if !strings.Contains(v, ":00") {
+				t.Errorf("%v: created time with seconds missing:\n%s", sz, v)
+			}
 			for _, want := range []string{"aaaaaaaa", "this device", "bbbbbbbb", "active", "revoked", "unverified"} {
 				if !strings.Contains(v, want) {
 					t.Errorf("%v: missing %q in\n%s", sz, want, v)
@@ -129,6 +132,9 @@ func TestDevicesOverlay(t *testing.T) {
 		}
 		if m.mode != modeDevices || !m.devs.devs[1].Revoked {
 			t.Fatalf("%v: list not refreshed: %+v", sz, m.devs.devs)
+		}
+		if !strings.Contains(m.notice, "doesn't remove an SSH key") {
+			t.Errorf("%v: SSH-key caveat missing: %q", sz, m.notice)
 		}
 		checkView(t, m, "after revoke")
 		for _, i := range []int{2, 3} { // revoked, unverified

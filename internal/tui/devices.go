@@ -176,6 +176,8 @@ func (m *Model) gotDevices(msg devicesMsg) tea.Cmd {
 			if r.rotated > 0 {
 				t += fmt.Sprintf(" — new keys in %d encrypted %s", r.rotated, plural(r.rotated, "channel", "channels"))
 			}
+			// Same caveat as `tc devices revoke`: revoking is not removing the key.
+			t += " · this doesn't remove an SSH key; a device holding it can register again"
 			m.setInfo(t)
 		}
 		if m.mode == modeDevices && s.user == msg.user {
@@ -350,9 +352,10 @@ func (m *Model) deviceRows(w int) []string {
 		if d.This {
 			mark = "*"
 		}
-		added := "added " + d.Created.Local().Format("2006-01-02")
+		// Seconds tell apart devices registered by one key on one day.
+		added := "added " + d.Created.Local().Format("2006-01-02 15:04:05")
 		if w < 50 {
-			added = d.Created.Local().Format("2006-01-02")
+			added = d.Created.Local().Format("01-02 15:04:05")
 		}
 		row := fmt.Sprintf("%s %s  %s  %s", mark, d.Short(), strings.Join(tags, ", "), added)
 		// A fingerprint is compared by eye: whole or not at all.
