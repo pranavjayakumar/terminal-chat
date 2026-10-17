@@ -196,7 +196,8 @@ func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp str
 			if n > 0 || groupNameTaken(ctx, tx, a.Name) {
 				return nil, fail(proto.ByeNameTaken, "")
 			}
-			res, err := tx.ExecContext(ctx, `INSERT INTO users (name, admin, created) VALUES (?, ?, ?)`, a.Name, admin, now)
+			res, err := tx.ExecContext(ctx, `INSERT INTO users (name, admin, created, invited_by) VALUES (?, ?, ?, ?)`,
+				a.Name, admin, now, createdBy)
 			if err != nil {
 				return nil, err
 			}
