@@ -26,8 +26,10 @@ const usage = `tc — terminal team chat
   tc devices [@user]         list your (or someone's) devices
   tc devices revoke <id> [--yes] [--self]
                              revoke a lost or stolen device
-  tc server [--listen :7443] [--public host:port] [--data dir]
-  tc server invite [--uses N] [--ttl 72h] [--admin] [--raw]
+  tc invite [--uses N] [--ttl 72h] [--key github:user] [--raw]   (or --list, --revoke ID)
+                             invite someone (admins; members if the server allows)
+  tc server [--listen :7443] [--public host:port] [--data dir] [--member-invites=false]
+  tc server invite [--uses N] [--ttl 72h] [--admin] [--key github:user] [--raw]
   tc update [--check]        install the latest release (or just check)
   tc version
 `

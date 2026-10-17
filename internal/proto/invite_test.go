@@ -56,6 +56,62 @@ func TestInstallCommandRejectsUnsafe(t *testing.T) {
 	}
 }
 
+func TestKeySrc(t *testing.T) {
+	for _, s := range []string{"github:alice", "github:A", "github:a-b-9", "github:" + strings.Repeat("a", 39)} {
+		if !ValidKeySrc(s) {
+			t.Errorf("%q refused", s)
+		}
+		if login, ok := GitHubKeySpec(s); !ok || "github:"+login != s {
+			t.Errorf("GitHubKeySpec(%q) = %q %v", s, login, ok)
+		}
+	}
+	if !ValidKeySrc("") {
+		t.Error("empty key_src refused")
+	}
+	if _, ok := GitHubKeySpec(""); ok {
+		t.Error("empty --key accepted")
+	}
+	for _, s := range []string{"alice", "github:", "github:-alice", "github:a_b", "github:a b", "github:a/b", "github:../x",
+		"gitlab:alice", "GITHUB:alice", "github:alice\n", "github:\x1b[2J", "github:" + strings.Repeat("a", 40), "github:ålice"} {
+		if ValidKeySrc(s) {
+			t.Errorf("%q accepted", s)
+		}
+		if _, ok := GitHubKeySpec(s); ok {
+			t.Errorf("GitHubKeySpec(%q) accepted", s)
+		}
+	}
+}
+
+// The key-invite fields are optional: a v0.2.0 peer's frames decode with
+// them empty, and v0.2.0 ignores them (which is why clients gate keys on
+// cap key_invites).
+func TestInviteFieldsCompat(t *testing.T) {
+	type oldArgs struct {
+		User  uint64 `msgpack:"user,omitempty"`
+		Uses  int64  `msgpack:"uses,omitempty"`
+		TTLMs int64  `msgpack:"ttl_ms,omitempty"`
+	}
+	var a InviteCreateArgs
+	if err := Unmarshal(MustRaw(oldArgs{Uses: 3}), &a); err != nil || a.Uses != 3 || a.Keys != nil || a.KeySrc != "" {
+		t.Fatalf("old args: %+v %v", a, err)
+	}
+	b := MustRaw(InviteCreateArgs{Uses: 1, Keys: [][]byte{{1, 2}}, KeySrc: "github:x"})
+	var o oldArgs
+	if err := Unmarshal(b, &o); err != nil || o.Uses != 1 {
+		t.Fatalf("new args on an old peer: %+v %v", o, err)
+	}
+	if err := Unmarshal(b, &a); err != nil || len(a.Keys) != 1 || a.KeySrc != "github:x" {
+		t.Fatalf("round trip: %+v %v", a, err)
+	}
+	var info InviteInfo
+	if err := Unmarshal(MustRaw(InviteInfo{ID: "x", Keys: 2, KeySrc: "github:y"}), &info); err != nil || info.Keys != 2 || info.KeySrc != "github:y" {
+		t.Fatalf("info: %+v %v", info, err)
+	}
+	if raw := MustRaw(InviteInfo{ID: "x"}); strings.Contains(string(raw), "key_src") {
+		t.Fatal("unbound invite carries key fields")
+	}
+}
+
 // Every byte FormatInvite can produce from a valid server is shell-safe:
 // base32 tokens, base64url pins and validated hosts.
 func TestShellSafeCharset(t *testing.T) {

@@ -137,7 +137,7 @@ func devices(ctx context.Context, c devicesBackend, args []string, in io.Reader,
 	}
 	fmt.Fprintf(out, "✓ revoked device %s", d.Short())
 	if rotated > 0 {
-		fmt.Fprintf(out, "; new keys in %d encrypted channel%s", rotated, plural(rotated))
+		fmt.Fprintf(out, "; new keys in %s", plural(rotated, "encrypted channel"))
 	}
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Note: this doesn't remove an SSH key. If that device held your SSH private key, it can sign in and register again.")
@@ -181,11 +181,4 @@ func printDevices(out io.Writer, ds []client.DeviceInfo, name string, mine bool)
 	if mine {
 		fmt.Fprintln(out, "Lost one? tc devices revoke <id>")
 	}
-}
-
-func plural(n int) string {
-	if n == 1 {
-		return ""
-	}
-	return "s"
 }

@@ -57,12 +57,13 @@ func (p *pane) open() bool { return p.ch != 0 }
 
 // Model is the Bubble Tea model.
 type Model struct {
-	c   Backend
-	ctx context.Context
-	st  *styles
-	r   renderer
-	rc  renderCache
-	opt Options
+	opened bool // a channel has been opened; stops the first-start auto-open
+	c      Backend
+	ctx    context.Context
+	st     *styles
+	r      renderer
+	rc     renderCache
+	opt    Options
 
 	w, h      int
 	me        proto.User
@@ -215,6 +216,15 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 	}
 	m.syncDraft()
 	return m
+}
+
+// openDefault selects the default channel when none is active. A fresh
+// client's cache is empty when New runs; the first snapshot arrives later.
+func (m *Model) openDefault() tea.Cmd {
+	if m.active != 0 || m.opened {
+		return nil
+	}
+	return m.openChannel(m.defaultChannel())
 }
 
 func (m *Model) defaultChannel() uint64 { return m.defaultChannelExcept(0) }
@@ -442,6 +452,7 @@ func (m *Model) openChannel(ch uint64) tea.Cmd {
 	if ch == 0 {
 		return nil
 	}
+	m.opened = true
 	if m.jump.wide != 0 && m.jump.wide != ch {
 		m.endWiden(false) // leaving the channel a jump widened
 	}
@@ -479,6 +490,11 @@ func (m *Model) markRead() tea.Cmd {
 	// Not gated on terminal focus: a visible but unfocused pane (a herdr
 	// split next to an editor) is still being read.
 	if m.active == 0 || m.main.scroll > 0 {
+		return nil
+	}
+	if m.status.State == client.Syncing {
+		// Read state is incomplete mid-sync; marking now would clobber
+		// unread/mentions on every device. Online transition retries.
 		return nil
 	}
 	for i := range m.chans {
@@ -885,8 +901,11 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 		if m.status.Stopped && m.status.Err != "" && !prev.Stopped {
 			m.setNotice("disconnected: "+m.status.Err, true, false, 0)
 		}
-		if m.status.State == client.Online && prev.State != client.Online && len(m.main.msgs) < 30 {
-			cmds = append(cmds, m.fetchHistory(m.active))
+		if m.status.State == client.Online && prev.State != client.Online {
+			if len(m.main.msgs) < 30 {
+				cmds = append(cmds, m.fetchHistory(m.active))
+			}
+			cmds = append(cmds, m.markRead())
 		}
 	}
 	if u.Reset || u.Channels {
@@ -894,6 +913,7 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 	}
 	if u.Reset {
 		m.reloadAll()
+		cmds = append(cmds, m.openDefault())
 		if m.mode == modeActivity {
 			m.refreshActivity()
 		}
@@ -907,6 +927,7 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 	}
 	if u.Channels || u.Users {
 		m.reloadChans()
+		cmds = append(cmds, m.openDefault())
 	}
 	if u.Msgs[m.main.ch] {
 		m.reloadPane(&m.main)

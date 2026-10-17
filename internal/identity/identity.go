@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/pem"
@@ -161,6 +162,43 @@ func verifyRaw(pubkey, sig, msg []byte) (ssh.PublicKey, error) {
 	}
 	if err := pk.Verify(msg, &s); err != nil {
 		return nil, fmt.Errorf("verifying signature: %w", err)
+	}
+	return pk, nil
+}
+
+// Bounds on RSA keys an invite may be bound to (PROTOCOL.md §4.1).
+const (
+	minInviteRSABits = 2048
+	maxInviteRSABits = 16384
+)
+
+// InviteKey parses a wire-format SSH public key that an invite is to be
+// bound to (cap key_invites). It accepts the key types tc logs in with
+// (ed25519, ECDSA, their sk-* security-key forms, RSA of 2048-16384 bits),
+// in canonical encoding only, so one key has one fingerprint.
+func InviteKey(b []byte) (ssh.PublicKey, error) {
+	pk, err := ssh.ParsePublicKey(b)
+	if err != nil {
+		return nil, fmt.Errorf("parsing public key: %w", err)
+	}
+	if !allowedKey[pk.Type()] {
+		return nil, fmt.Errorf("key type %s not accepted", pk.Type())
+	}
+	if !bytes.Equal(pk.Marshal(), b) {
+		return nil, errors.New("public key isn't canonically encoded")
+	}
+	if pk.Type() == ssh.KeyAlgoRSA {
+		ck, ok := pk.(ssh.CryptoPublicKey)
+		if !ok {
+			return nil, errors.New("unreadable RSA key")
+		}
+		rk, ok := ck.CryptoPublicKey().(*rsa.PublicKey)
+		if !ok {
+			return nil, errors.New("unreadable RSA key")
+		}
+		if n := rk.N.BitLen(); n < minInviteRSABits || n > maxInviteRSABits {
+			return nil, fmt.Errorf("RSA keys must have %d-%d bits, not %d", minInviteRSABits, maxInviteRSABits, n)
+		}
 	}
 	return pk, nil
 }
