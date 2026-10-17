@@ -1059,6 +1059,7 @@ func TestEpochStaleQueryPlans(t *testing.T) {
 		{revokedBoxesQuery(1), []any{[]byte{1}}},
 		{revokedBoxesQuery(proto.MaxBundleBoxes), make([]any, proto.MaxBundleBoxes)},
 		{rosterQuery, []any{1}},
+		{revokedSinceQuery, []any{1, 0}},
 	} {
 		p := plan(c.q, c.args...)
 		if strings.Contains(p, "SCAN devices") || strings.Contains(p, "SCAN m") || strings.Contains(p, "SCAN membership") {
@@ -1134,4 +1135,41 @@ func TestKeyRotateDisabledInFlight(t *testing.T) {
 	}
 	// The admin's own rotation goes through.
 	alice.rotate(ch.ID, bundle(t, a1, sid, ch.ID, 2, &e1, []uint64{alice.user.ID}, a1))
+}
+
+// B5: a device registered after the current epoch gets K by key.share, not
+// a box. Revoking it makes the epoch stale all the same, and the rotation
+// away from it isn't rate capped although the roster's active devices are
+// what they were when the epoch was made.
+func TestEpochStaleAfterSharedDeviceRevoked(t *testing.T) {
+	ts := startServer(t, "tcp")
+	ctx := context.Background()
+	alice := ts.registerCaps(t, "alice", true, e2eCaps)
+	bob := ts.registerCaps(t, "bob", false, e2eCaps)
+	alice.syncFresh()
+	bob.syncFresh()
+	sid := ts.sid()
+	stale := func(ch uint64, want bool) {
+		t.Helper()
+		got, err := ts.EpochStale(ctx, ch)
+		if err != nil || got != want {
+			t.Fatalf("EpochStale(%d) = %v, %v; want %v", ch, got, err, want)
+		}
+	}
+	ch := alice.createE2E("sec")
+	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: bob.user.ID}, nil)
+	a1, _ := alice.registerDevice(ts)
+	b1, _ := bob.registerDevice(ts)
+	roster := []uint64{alice.user.ID, bob.user.ID}
+	e1 := bundle(t, a1, sid, ch.ID, 1, nil, roster, a1, b1)
+	alice.rotate(ch.ID, e1)
+	b2, _ := bob.registerDevice(ts) // gets K by key.share
+	stale(ch.ID, false)
+	bob.ok(proto.OpDeviceRevoke, proto.DeviceRevokeArgs{Revoke: revokeBySSH(t, bob.signer, sid, bob.user.ID, b2.ID)}, nil)
+	stale(ch.ID, true)
+	e2 := bundle(t, a1, sid, ch.ID, 2, &e1, roster, a1, b1)
+	alice.rotate(ch.ID, e2) // within the 2 s channel cap: allowed
+	stale(ch.ID, false)
+	alice.fail(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: bundle(t, a1, sid, ch.ID, 3, &e2, roster, a1, b1)},
+		proto.ErrRateLimited) // nothing changed since: capped again
 }
