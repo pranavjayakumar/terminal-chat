@@ -386,6 +386,9 @@ type Update struct {
 	New []Message
 	// Failed lists outbox messages that the server permanently rejected.
 	Failed []Message
+	// Revoked lists verified devices that a verified revoke just retired
+	// (devmgmt.go), so the UI can say so. Never set on a first sync.
+	Revoked []DeviceRevoked
 }
 
 const maxNew = 256
@@ -399,7 +402,7 @@ func (u *Update) msgs(ch uint64) {
 
 func (u Update) empty() bool {
 	return !u.Status && !u.Channels && !u.Users && !u.Presence && !u.Reset &&
-		len(u.Msgs) == 0 && len(u.Typing) == 0 && len(u.New) == 0 && len(u.Failed) == 0
+		len(u.Msgs) == 0 && len(u.Typing) == 0 && len(u.New) == 0 && len(u.Failed) == 0 && len(u.Revoked) == 0
 }
 
 func (u Update) merge(v Update) Update {
@@ -424,6 +427,10 @@ func (u Update) merge(v Update) Update {
 	u.Failed = append(u.Failed, v.Failed...)
 	if len(u.Failed) > maxNew {
 		u.Failed = append([]Message(nil), u.Failed[len(u.Failed)-maxNew:]...)
+	}
+	u.Revoked = append(u.Revoked, v.Revoked...)
+	if len(u.Revoked) > maxNew {
+		u.Revoked = append([]DeviceRevoked(nil), u.Revoked[len(u.Revoked)-maxNew:]...)
 	}
 	return u
 }

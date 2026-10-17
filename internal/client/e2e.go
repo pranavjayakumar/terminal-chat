@@ -463,6 +463,19 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 			revokes = append(revokes, seqRevoke{s, seq})
 		}
 	})
+	// Devices we already trusted that a revoke names: if one ends up
+	// revoked below, the UI says so. A first sync verifies devices and old
+	// revokes in one pass, so nothing is announced then.
+	var wasActive []e2ecrypto.DevID
+	for _, r := range revokes {
+		pr, err := identity.PeekDeviceRevoke(r.s)
+		if err != nil || slices.Contains(wasActive, pr.Dev) {
+			continue
+		}
+		if d, ok, _ := ts.Device(sid, pr.Dev); ok && !d.Revoked {
+			wasActive = append(wasActive, pr.Dev)
+		}
+	}
 	pins := map[uint64][][]byte{}
 	pinsOf := func(u uint64) [][]byte {
 		if p, ok := pins[u]; ok {
@@ -581,6 +594,15 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 				changed = true
 			}
 		}
+	}
+	var gone []DeviceRevoked
+	for _, id := range wasActive {
+		if d, ok, _ := ts.Device(sid, id); ok && d.Revoked {
+			gone = append(gone, DeviceRevoked{User: d.User, Dev: d.ID})
+		}
+	}
+	if len(gone) > 0 {
+		c.post(Update{Revoked: gone})
 	}
 	return changed
 }
