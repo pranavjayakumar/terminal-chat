@@ -92,7 +92,7 @@ func nextSend(t *testing.T, f *e2eFake) proto.SendArgs {
 	select {
 	case a := <-f.sends:
 		return a
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		t.Fatal("no send")
 		return proto.SendArgs{}
 	}
@@ -622,7 +622,7 @@ func TestEncLateKeyDecryptsQueued(t *testing.T) {
 		}
 	}
 	got := map[string]bool{}
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(testWait)
 	for len(got) < 2 {
 		select {
 		case u := <-c.Updates():
@@ -687,7 +687,7 @@ func TestEncNoKeyFailsThenRequeues(t *testing.T) {
 		if n.Chan != dm || n.Epoch != 1 {
 			t.Fatalf("key.need %+v", n)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		t.Fatal("no key.need")
 	}
 	if len(f.sends) != 0 {
@@ -864,7 +864,7 @@ func TestEncRotatesAfterBoxedDeviceRevoked(t *testing.T) {
 	var a proto.KeyRotateArgs
 	select {
 	case a = <-d.f.rotates:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		t.Fatal("no rotation before sending")
 	}
 	eb, err := identity.PeekEpochBundle(identity.Signed(a.Bundle))

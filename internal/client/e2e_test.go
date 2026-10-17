@@ -387,7 +387,7 @@ func (f *e2eFake) myKeys(c *Client) *e2ecrypto.DeviceKeys {
 	f.t.Helper()
 	select {
 	case <-f.registered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		f.t.Fatal("device not registered")
 	}
 	k, err := c.Trust().DeviceKeys(testSID(), alice)
@@ -469,7 +469,7 @@ func TestE2EDeviceTrust(t *testing.T) {
 	var a proto.KeyRotateArgs
 	select {
 	case a = <-f.rotates:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		t.Fatal("epoch 1 of our channel not created")
 	}
 	devs, _ := ts.Devices(sid, bob)
@@ -750,7 +750,7 @@ func TestE2EKCMismatchWaitsForShare(t *testing.T) {
 	var need proto.Ephemeral
 	select {
 	case need = <-f.needs:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		t.Fatal("no key.need")
 	}
 	if need.Chan != dm || need.Epoch != 1 || e2ecrypto.DevID(need.Dev) != me.ID {
@@ -774,7 +774,7 @@ func TestE2EKCMismatchWaitsForShare(t *testing.T) {
 	// It keeps asking (rate limited).
 	select {
 	case <-f.needs:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		t.Fatal("no repeated key.need")
 	}
 	share(committed)
@@ -879,7 +879,7 @@ func TestE2EAnswersKeyNeed(t *testing.T) {
 	var s proto.KeyShareArgs
 	select {
 	case s = <-f.shares:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		t.Fatal("no key.share")
 	}
 	k, err := e2ecrypto.OpenShare(b1.dev.X25519, [32]byte(s.Eph), e2ecrypto.ShareAD{ServerID: testSID(), Chan: dm, Epoch: 1, Recipient: b1.dev.ID}, s.CT)
@@ -1190,6 +1190,22 @@ func TestE2EForgedCertNegativeCache(t *testing.T) {
 	}
 }
 
+// e2eSettled waits until the e2e worker is idle: no pass kicked or
+// running, and cert checks stable for a while. It returns their count.
+func e2eSettled(t *testing.T, c *Client) int64 {
+	t.Helper()
+	n, since := c.certVerifies.Load(), time.Now()
+	waitFor(t, "e2e worker idle", func() bool {
+		c.e2eMu.Lock() // a running pass holds it
+		c.e2eMu.Unlock()
+		if m := c.certVerifies.Load(); m != n || len(c.e2eKick) > 0 {
+			n, since = m, time.Now()
+		}
+		return time.Since(since) >= 500*time.Millisecond
+	})
+	return n
+}
+
 // key.need for devices we don't know triggers device verification at most
 // once per needVerifyEvery.
 func TestE2EKeyNeedVerifyThrottled(t *testing.T) {
@@ -1202,8 +1218,9 @@ func TestE2EKeyNeedVerifyThrottled(t *testing.T) {
 		Devs: []proto.Device{{Cert: b1.cert}, {Cert: b3.cert}}}, proto.DevicesListRes{})
 	f.myKeys(c)
 	waitFor(t, "key change pending", func() bool { p, _ := c.Trust().PendingKeyChanges(testSID()); return len(p) == 1 })
-	time.Sleep(200 * time.Millisecond)
-	n := c.certVerifies.Load()
+	// Passes kicked by setup still running would count against the key.needs
+	// (a fixed 200 ms wait wasn't enough under load): wait until none is due.
+	n := e2eSettled(t, c)
 	for i := range 5 {
 		unknown := e2ecrypto.DevID{0xee, byte(i)}
 		f.write(proto.TEphemeral, proto.Ephemeral{Kind: proto.EphKeyNeed, Chan: dm, User: bob, Epoch: 1, Dev: unknown[:]})
@@ -1238,7 +1255,7 @@ func TestE2EKeyNeedFormerMember(t *testing.T) {
 	f.write(proto.TEphemeral, proto.Ephemeral{Kind: proto.EphKeyNeed, Chan: dm, User: bob, Epoch: 1, Dev: b1.dev.ID[:]})
 	select {
 	case <-f.shares:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		t.Fatal("current member not answered")
 	}
 }

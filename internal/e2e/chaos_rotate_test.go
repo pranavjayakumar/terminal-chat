@@ -154,6 +154,14 @@ func TestChaosRotations(t *testing.T) {
 
 		time.Sleep(300 * time.Millisecond)
 		retry("add carol", func(c context.Context) error { return alice.AddMember(c, ch.ID, carol.Me().ID) }, member(carol))
+		// carol sends once her client has the channel, as a user would: until
+		// then her send gate can't check the members' keys and fails closed
+		// ("channel not loaded"), and under chaos that can take a while.
+		for w := time.Now().Add(180 * time.Second); time.Now().Before(w); time.Sleep(20 * time.Millisecond) {
+			if v, ok := carol.Channel(ch.ID); ok && v.Member {
+				break
+			}
+		}
 		wg.Add(1)
 		go send(carol, 0)
 		time.Sleep(3 * time.Second)
@@ -167,26 +175,39 @@ func TestChaosRotations(t *testing.T) {
 	// lasts until then too). Bounded: under constant kills a client's
 	// reconnect backoff grows to 30 s, so a long chaos phase mostly measures
 	// backoff; slow CI runners still get up to 120 s to reach the minimum.
-	const wantRotations, minRotations = 6, 3
+	// At most maxAttempts tries: each moves the server's clock 11 s ahead,
+	// and the total must stay within the clients' 5 min drift.
+	const wantRotations, minRotations, maxAttempts = 6, 3, 20
 	rotations := 0
 	rotDone := make(chan struct{})
 	go func() {
 		defer close(rotDone)
 		soft, hard := time.Now().Add(30*time.Second), time.Now().Add(120*time.Second)
-		for i := 0; rotations < wantRotations && time.Now().Before(hard) &&
+		for i, attempts := 0, 0; attempts < maxAttempts && rotations < wantRotations && time.Now().Before(hard) &&
 			(rotations < minRotations || time.Now().Before(soft)); i++ {
 			time.Sleep(time.Duration(400+rand.IntN(800)) * time.Millisecond)
-			u := us[i%len(us)]
-			if v, ok := u.Channel(ch.ID); !ok || !v.Member {
-				continue
+			// The next member in turn that has a session: once its backoff
+			// reaches the client's 30 s cap a client is offline most of the
+			// time (sessions never last the 10 s that reset it), so waiting
+			// for one particular member found slow runners making only a
+			// couple of attempts in 120 s (PR #45/#48/#51).
+			var u *user
+			for u == nil && time.Now().Before(hard) {
+				for j := range us {
+					c := us[(i+j)%len(us)]
+					if v, ok := c.Channel(ch.ID); ok && v.Member && c.online() {
+						u, i = c, i+j
+						break
+					}
+				}
+				if u == nil {
+					time.Sleep(20 * time.Millisecond)
+				}
 			}
-			// Connections die every few hundred ms and reconnects back off,
-			// up to the client's 30 s backoffMax (a 10 s wait found slow
-			// runners' clients offline most of the time, PR #45/#48): wait
-			// for a session, then try once.
-			for w := time.Now().Add(35 * time.Second); !u.online() && time.Now().Before(w) && time.Now().Before(hard); {
-				time.Sleep(20 * time.Millisecond)
+			if u == nil {
+				break
 			}
+			attempts++
 			skew.Add(int64(11 * time.Second))
 			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			err := u.RotateKey(cctx, ch.ID)
@@ -194,7 +215,7 @@ func TestChaosRotations(t *testing.T) {
 			if err == nil {
 				rotations++
 			} else {
-				t.Logf("rotate by %s: %v", u.Me().Name, err) // offline, stale, not a member yet: chaos
+				t.Logf("rotate by %s: %v", u.Me().Name, err) // killed mid-rotation, stale, rate limited: chaos
 			}
 		}
 	}()

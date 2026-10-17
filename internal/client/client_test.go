@@ -751,7 +751,7 @@ func TestRequestsFailOffline(t *testing.T) {
 		if !errors.Is(err, ErrOffline) {
 			t.Fatalf("react = %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		t.Fatal("pending request not failed on disconnect")
 	}
 
@@ -845,7 +845,7 @@ func TestByeRevokedStops(t *testing.T) {
 	fc.conn.Close()
 	select {
 	case <-stopped:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		t.Fatal("Run kept going after revoked")
 	}
 	st := c.Status()
@@ -892,7 +892,7 @@ func TestUpdatesCoalesce(t *testing.T) {
 	// so keep draining until all five arrive rather than stopping at the
 	// first empty read after last_seq moves.
 	var merged Update
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(testWait)
 	for len(merged.New) < 5 {
 		select {
 		case u := <-c.Updates():
@@ -958,7 +958,7 @@ func TestCloseStopsEverything(t *testing.T) {
 	}
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		t.Fatal("Run still running after Close")
 	}
 	for range c.Updates() { // drained, then closed

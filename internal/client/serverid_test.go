@@ -43,7 +43,7 @@ func TestServerIdentityChangeStops(t *testing.T) {
 	fc.conn.Close()
 	select {
 	case <-stopped:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testWait):
 		t.Fatal("Run kept going with another server identity")
 	}
 	fs.accept() // the refused connection
