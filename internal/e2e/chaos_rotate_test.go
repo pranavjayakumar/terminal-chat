@@ -162,13 +162,13 @@ func TestChaosRotations(t *testing.T) {
 	// until six went through, or 30 s passed with at least three (chaos
 	// lasts until then too). Bounded: under constant kills a client's
 	// reconnect backoff grows to 30 s, so a long chaos phase mostly measures
-	// backoff; slow CI runners still get up to 60 s to reach the minimum.
+	// backoff; slow CI runners still get up to 120 s to reach the minimum.
 	const wantRotations, minRotations = 6, 3
 	rotations := 0
 	rotDone := make(chan struct{})
 	go func() {
 		defer close(rotDone)
-		soft, hard := time.Now().Add(30*time.Second), time.Now().Add(60*time.Second)
+		soft, hard := time.Now().Add(30*time.Second), time.Now().Add(120*time.Second)
 		for i := 0; rotations < wantRotations && time.Now().Before(hard) &&
 			(rotations < minRotations || time.Now().Before(soft)); i++ {
 			time.Sleep(time.Duration(400+rand.IntN(800)) * time.Millisecond)
@@ -176,9 +176,11 @@ func TestChaosRotations(t *testing.T) {
 			if v, ok := u.Channel(ch.ID); !ok || !v.Member {
 				continue
 			}
-			// Connections die every few hundred ms and reconnects back off:
-			// wait for a session, then try once.
-			for w := time.Now().Add(10 * time.Second); !u.online() && time.Now().Before(w); {
+			// Connections die every few hundred ms and reconnects back off,
+			// up to the client's 30 s backoffMax (a 10 s wait found slow
+			// runners' clients offline most of the time, PR #45/#48): wait
+			// for a session, then try once.
+			for w := time.Now().Add(35 * time.Second); !u.online() && time.Now().Before(w) && time.Now().Before(hard); {
 				time.Sleep(20 * time.Millisecond)
 			}
 			skew.Add(int64(11 * time.Second))
