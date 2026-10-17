@@ -1287,8 +1287,10 @@ func (c *Client) sendKeyNeed(s *session, sid e2ecrypto.ServerID, ch uint64) {
 	// key.need per 30 s that the server relays, delaying the one we need.
 	myID := c.Me().ID
 	missing = slices.DeleteFunc(missing, func(e uint32) bool {
+		// Only a verified roster without us is proof nobody will answer;
+		// an epoch we can't read yet is still worth asking for.
 		ep, ok, err := c.trust.Epoch(sid, ch, e)
-		return err != nil || !ok || !slices.Contains(ep.Roster, myID)
+		return err == nil && ok && !slices.Contains(ep.Roster, myID)
 	})
 	if len(missing) == 0 {
 		return
