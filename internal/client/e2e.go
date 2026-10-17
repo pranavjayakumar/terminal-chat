@@ -293,6 +293,9 @@ func (c *Client) e2ePass(ctx context.Context, s *session, sid e2ecrypto.ServerID
 	defer c.e2eMu.Unlock()
 	me := c.Me().ID
 	changed := c.verifyDevices(sid, s.sshPub, me)
+	if c.selfRevoked(s, sid, me) {
+		return
+	}
 	chans, err := c.e2eChannels(sid, me)
 	if err != nil {
 		return
@@ -313,6 +316,25 @@ func (c *Client) e2ePass(ctx context.Context, s *session, sid e2ecrypto.ServerID
 	if changed {
 		c.post(Update{Channels: true})
 	}
+}
+
+// selfRevoked ends session s when another process on this TC_HOME retired
+// this device's keys (tc devices revoke --self), so the next connection
+// registers the new keys (ensureDevice) instead of sends failing. A revoke
+// made elsewhere is left to the next connection, as before: re-registering
+// at once wouldn't stop a thief holding the SSH key, and would surprise an
+// owner who revoked a device they still have.
+func (c *Client) selfRevoked(s *session, sid e2ecrypto.ServerID, me uint64) bool {
+	dev := s.myDevice()
+	if dev == nil {
+		return false
+	}
+	cur, err := c.trust.DeviceKeys(sid, me)
+	if err != nil || cur.ID == dev.ID {
+		return false
+	}
+	s.fail()
+	return true
 }
 
 // e2eChannels lists the cached channels we're a member of that are, or
@@ -463,6 +485,19 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 			revokes = append(revokes, seqRevoke{s, seq})
 		}
 	})
+	// Devices we already trusted that a revoke names: if one ends up
+	// revoked below, the UI says so. A first sync verifies devices and old
+	// revokes in one pass, so nothing is announced then.
+	var wasActive []e2ecrypto.DevID
+	for _, r := range revokes {
+		pr, err := identity.PeekDeviceRevoke(r.s)
+		if err != nil || slices.Contains(wasActive, pr.Dev) {
+			continue
+		}
+		if d, ok, _ := ts.Device(sid, pr.Dev); ok && !d.Revoked {
+			wasActive = append(wasActive, pr.Dev)
+		}
+	}
 	pins := map[uint64][][]byte{}
 	pinsOf := func(u uint64) [][]byte {
 		if p, ok := pins[u]; ok {
@@ -486,14 +521,28 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 		}
 		return ssh.FingerprintSHA256(pk), true
 	}
+	// A new device of ours is announced unless this is our first look
+	// (this device not verified yet): a thief re-registering with a stolen
+	// SSH key mustn't go unnoticed.
+	var newOwn []DeviceRef
+	var thisDev e2ecrypto.DevID
+	announceOwn := false
+	if id := c.myDev.Load(); id != nil {
+		thisDev = *id
+		_, announceOwn, _ = ts.Device(sid, thisDev)
+	}
 	put := func(cr certRow) {
 		d := trust.Device{ID: cr.dc.Dev, User: cr.dc.User, X25519: cr.dc.X25519, Cert: cr.raw}
 		copy(d.Ed25519[:], cr.dc.Ed25519)
-		if old, ok, _ := ts.Device(sid, d.ID); ok && bytes.Equal(old.Cert, d.Cert) {
+		old, had, _ := ts.Device(sid, d.ID)
+		if had && bytes.Equal(old.Cert, d.Cert) {
 			return
 		}
 		if ts.PutDevice(sid, d) == nil {
 			changed = true
+			if announceOwn && !had && d.User == me && d.ID != thisDev {
+				newOwn = append(newOwn, DeviceRef{User: me, Dev: d.ID})
+			}
 		}
 	}
 
@@ -581,6 +630,15 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 				changed = true
 			}
 		}
+	}
+	var gone []DeviceRef
+	for _, id := range wasActive {
+		if d, ok, _ := ts.Device(sid, id); ok && d.Revoked {
+			gone = append(gone, DeviceRef{User: d.User, Dev: d.ID})
+		}
+	}
+	if len(gone) > 0 || len(newOwn) > 0 {
+		c.post(Update{Revoked: gone, NewOwn: newOwn})
 	}
 	return changed
 }
@@ -1337,6 +1395,10 @@ func (c *Client) commitBundle(ctx context.Context, s *session, sid e2ecrypto.Ser
 	if me == nil {
 		return errors.New("this device isn't registered yet")
 	}
+	// A revoke whose event arrived while we held e2eMu (the worker that
+	// would apply it waits for us) must count, or the retry after a
+	// stale_epoch boxes the revoked device again.
+	c.verifyDevices(sid, s.sshPub, c.Me().ID)
 	ch, ok, err := getChan(c.db, chID)
 	if err != nil {
 		return err

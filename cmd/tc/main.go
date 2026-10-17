@@ -23,6 +23,9 @@ const usage = `tc — terminal team chat
                              run a command, then post ✓/✗, time and output tail
   tc verify @user [--github login]
                              compare safety numbers (or GitHub keys) to verify someone
+  tc devices [@user]         list your (or someone's) devices
+  tc devices revoke <id> [--yes] [--self]
+                             revoke a lost or stolen device
   tc invite [--uses N] [--ttl 72h] [--key github:user] [--raw]   (or --list, --revoke ID)
                              invite someone (admins; members if the server allows)
   tc server [--listen :7443] [--public host:port] [--data dir] [--member-invites=false]

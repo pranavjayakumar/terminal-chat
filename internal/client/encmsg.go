@@ -785,6 +785,9 @@ func (c *Client) sealWith(ctx context.Context, s *session, chID uint64, prev []b
 	if dev == nil {
 		return nil, failErr{"this device isn't registered for encryption yet"}
 	}
+	if c.selfRevoked(s, sid, c.Me().ID) {
+		return nil, ErrOffline // sent after reconnecting with the new keys
+	}
 	c.e2eMu.Lock()
 	defer c.e2eMu.Unlock()
 	me := c.Me().ID
