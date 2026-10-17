@@ -21,8 +21,8 @@ FUZZ := \
 	proto:FuzzDecode proto:FuzzDevices proto:FuzzKeyOps \
 	sanitize:FuzzSanitize \
 	e2ecrypto:FuzzParseEnc e2ecrypto:FuzzDecrypt e2ecrypto:FuzzUnpad e2ecrypto:FuzzOpenBoxes \
-	identity:FuzzDeviceCert identity:FuzzKeyEndorse identity:FuzzDeviceRevoke identity:FuzzEpochBundle \
-	client:FuzzPlain client:FuzzKeyShare
+	identity:FuzzDeviceCert identity:FuzzKeyEndorse identity:FuzzDeviceRevoke identity:FuzzEpochBundle identity:FuzzInviteKey \
+	client:FuzzPlain client:FuzzKeyShare client:FuzzGitHubKeys
 
 fuzz:
 	@set -e; for t in $(FUZZ); do \

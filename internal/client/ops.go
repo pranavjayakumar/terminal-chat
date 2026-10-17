@@ -513,7 +513,7 @@ func (c *Client) CreateInvite(ctx context.Context, user uint64) (string, error) 
 	return r.Code, err
 }
 
-// CreateTeamInvite (admin) returns a new-user invite that uses people can
+// CreateTeamInvite (admin, or member with cap member_invites) returns a new-user invite that uses people can
 // redeem within ttl; 0 means the server default (1 use, 7 days). Anything
 // but the defaults needs cap team_invites, so an older server can't silently
 // mint a single-use invite instead.
@@ -528,8 +528,9 @@ func (c *Client) CreateTeamInvite(ctx context.Context, uses int, ttl time.Durati
 	return r, err
 }
 
-// ListInvites (admin) returns the invites that can still be redeemed (cap
-// invite_manage). Tokens are never returned, only ids.
+// ListInvites returns the invites that can still be redeemed (cap
+// invite_manage): all of them for admins, a member's own with cap
+// member_invites. Tokens are never returned, only ids.
 func (c *Client) ListInvites(ctx context.Context) ([]proto.InviteInfo, error) {
 	if err := c.requireCap(proto.CapInviteManage, "listing invites"); err != nil {
 		return nil, err
@@ -539,7 +540,8 @@ func (c *Client) ListInvites(ctx context.Context) ([]proto.InviteInfo, error) {
 	return r.Invites, err
 }
 
-// RevokeInvite (admin) makes the invite with id unusable at once.
+// RevokeInvite makes the invite with id unusable at once (admins: any;
+// members: their own, cap member_invites).
 func (c *Client) RevokeInvite(ctx context.Context, id string) error {
 	if err := c.requireCap(proto.CapInviteManage, "revoking invites"); err != nil {
 		return err
