@@ -132,7 +132,10 @@ func TestDevicesOverlay(t *testing.T) {
 		if len(f.dv.revoked) != 1 || f.dv.revoked[0] != f.dv.list[1][1].ID {
 			t.Fatalf("%v: revoked %v", sz, f.dv.revoked)
 		}
-		if !strings.Contains(m.notice, "✓ revoked device bbbbbbbb — new keys in 2 encrypted channels") {
+		// The SSH-key advice always shows; the channel count only if it fits.
+		if !strings.HasPrefix(m.notice, "✓ revoked device bbbbbbbb") ||
+			!strings.HasSuffix(m.notice, "had your SSH key? an admin must disable your account") ||
+			(sz[0] >= 200) != strings.Contains(m.notice, "new keys in 2 encrypted channels") {
 			t.Errorf("%v: notice %q", sz, m.notice)
 		}
 		if m.mode != modeDevices || !m.devs.devs[1].Revoked {
@@ -350,4 +353,54 @@ func TestDeviceRevokedNotice(t *testing.T) {
 		t.Fatalf("notice %q", m.notice)
 	}
 	checkView(t, m, "notices")
+}
+
+// B2: this device's former id (revoked while it was offline, then
+// re-registered) reads as this device, not "your device"; a new device that
+// appeared meanwhile leads the notice. The point survives 80 columns.
+func TestFormerDeviceRevokedNotice(t *testing.T) {
+	old := tdev(0xee, false, true, true)
+	old.Former = true
+	m, f := newTestModelFake(t, 80, 24)
+	devFake(f)
+	f.dv.list[1] = append(f.dv.list[1], old)
+	run(m, m.applyUpdate(client.Update{Revoked: []client.DeviceRef{{User: 1, Dev: old.ID}},
+		NewOwn: []client.DeviceRef{{User: 1, Dev: f.dv.list[1][3].ID}}}))
+	if !m.noticeErr || !strings.HasPrefix(m.notice, "new device of yours: dddddddd — not you? /devices to revoke it · this device re-registered (was eeeeeeee)") {
+		t.Fatalf("notice %q", m.notice)
+	}
+	if v := checkView(t, m, "former+new"); !strings.Contains(v, "dddddddd — not you? /devices") {
+		t.Fatalf("new device cut off:\n%s", v)
+	}
+
+	m, f = newTestModelFake(t, 80, 24)
+	devFake(f)
+	f.dv.list[1] = append(f.dv.list[1], old)
+	run(m, m.applyUpdate(client.Update{Revoked: []client.DeviceRef{{User: 1, Dev: old.ID}, {User: 1, Dev: f.dv.list[1][1].ID}}}))
+	if !m.noticeErr || m.notice != "this device re-registered — /devices (was eeeeeeee) (+1 more)" {
+		t.Fatalf("notice %q", m.notice)
+	}
+	if v := checkView(t, m, "former"); !strings.Contains(v, "/devices") {
+		t.Fatalf("cut off:\n%s", v)
+	}
+
+	// The list says old id, and whether it is still active.
+	live := tdev(0xff, false, false, true)
+	live.Former = true
+	f.dv.list[1] = append(f.dv.list[1], live)
+	for _, w := range []int{80, 40} {
+		m.w = w
+		m.devs.devs = f.dv.list[1]
+		m.mode = modeDevices
+		rows := strings.Join(m.deviceRows(w), "\n")
+		want := []string{"eeeeeeee  old id of this device, revoked", "ffffffff  old id of this device, active"}
+		if w < 50 {
+			want = []string{"eeeeeeee  old id, revoked", "ffffffff  old id, active"}
+		}
+		for _, s := range want {
+			if !strings.Contains(rows, s) {
+				t.Fatalf("%d cols: missing %q in\n%s", w, s, rows)
+			}
+		}
+	}
 }

@@ -214,6 +214,35 @@ func (c *Client) ourDev(q dbtx) (e2ecrypto.DevID, bool) {
 	return k.ID, true
 }
 
+// formerDev is an earlier identity of this device: an id with the public
+// keys it had before this client retired them (revoked, or replaced).
+type formerDev struct {
+	id      e2ecrypto.DevID
+	x25519  [32]byte
+	ed25519 []byte
+}
+
+// formerDevs are this client's earlier identities as user me.
+func (c *Client) formerDevs(sid e2ecrypto.ServerID, me uint64) []formerDev {
+	arch, _ := c.trust.ArchivedDeviceKeys(sid)
+	var out []formerDev
+	for _, a := range arch {
+		if a.User == me {
+			out = append(out, formerDev{a.Keys.ID, a.Keys.X25519Pub, a.Keys.Ed25519Pub})
+		}
+	}
+	return out
+}
+
+// isFormer reports whether a device cert's id and keys are one of ours from
+// before. The keys must match too: ids are chosen by the device and public,
+// so a thief with our SSH key could certify its own keys under an old id.
+func isFormer(former []formerDev, id e2ecrypto.DevID, x25519 [32]byte, ed25519 []byte) bool {
+	return slices.ContainsFunc(former, func(f formerDev) bool {
+		return f.id == id && f.x25519 == x25519 && bytes.Equal(f.ed25519, ed25519)
+	})
+}
+
 // cachedMaxEpoch is the highest epoch among ch's cached, unverified bundles.
 func (c *Client) cachedMaxEpoch(ch uint64) (e uint32) {
 	c.db.QueryRow(`SELECT COALESCE(MAX(epoch), 0) FROM epochs WHERE chan = ?`, ch).Scan(&e)
@@ -554,16 +583,21 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 		}
 		return ssh.FingerprintSHA256(pk), true
 	}
-	// A new device of ours is announced unless this is our first look
-	// (this device not verified yet): a thief re-registering with a stolen
-	// SSH key mustn't go unnoticed.
+	// A new device of ours is announced unless this is our first look (no
+	// device of ours verified yet): a thief re-registering with a stolen
+	// SSH key mustn't go unnoticed. "This device verified" isn't the test:
+	// after this device was revoked while offline it re-registers under a
+	// new id first, and a device the thief added meanwhile would then be
+	// verified unannounced in this very pass. Our own former ids (retired
+	// keys) are never news.
 	var newOwn []DeviceRef
 	var thisDev e2ecrypto.DevID
-	announceOwn := false
 	if id := c.myDev.Load(); id != nil {
 		thisDev = *id
-		_, announceOwn, _ = ts.Device(sid, thisDev)
 	}
+	mine, _ := ts.Devices(sid, me)
+	announceOwn := len(mine) > 0
+	former := c.formerDevs(sid, me)
 	put := func(cr certRow) {
 		d := trust.Device{ID: cr.dc.Dev, User: cr.dc.User, X25519: cr.dc.X25519, Cert: cr.raw}
 		copy(d.Ed25519[:], cr.dc.Ed25519)
@@ -573,7 +607,7 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 		}
 		if ts.PutDevice(sid, d) == nil {
 			changed = true
-			if announceOwn && !had && d.User == me && d.ID != thisDev {
+			if announceOwn && !had && d.User == me && d.ID != thisDev && !isFormer(former, d.ID, d.X25519, d.Ed25519[:]) {
 				newOwn = append(newOwn, DeviceRef{User: me, Dev: d.ID})
 			}
 		}

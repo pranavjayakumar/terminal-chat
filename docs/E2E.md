@@ -164,8 +164,14 @@ What a malicious server can and cannot do today, and what closes each gap:
   (admin) also rotates them out. It keeps what it could already read. A device revoke does not remove
   an SSH login key: a stolen device that holds the user's SSH private key signs in again and registers
   as a new device, which every client trusts (its cert verifies under the pinned key). Clients announce
-  a new device of the user to the user's other devices, but the remedy is a new SSH key plus an admin
-  action (`user.disable`); there is no per-key removal yet.
+  a new device of the user to the user's other devices ("new device of yours"), including in the pass
+  where a device that was revoked while offline re-registers. The only remedy today is a whole account:
+  an admin disables it (`tc users disable @name`, op `user.disable`: its sessions close, none of its
+  keys can sign in, its invites go, encrypted channels rotate it out) and invites the owner again as a
+  new account (new name, new SSH key); the old account's encrypted history stays with the old devices.
+  **Known gap:** there is no per-key removal, so the owner can't drop just the stolen key and keep the
+  account. Members can't mint add-key invites (admins only, §4.1 of PROTOCOL.md), so a stolen key alone
+  can't add a second key of the thief's that would survive this.
 - **Lost devices**: K lives only on devices. Losing every device of a user loses their encrypted
   history (no backup in v1); a new device gets new messages, and older history only from a member's
   backlinks (the history of every epoch whose K a remaining member holds).

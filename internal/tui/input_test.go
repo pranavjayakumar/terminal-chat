@@ -89,6 +89,33 @@ func TestRunCommands(t *testing.T) {
 	}
 }
 
+// B7: /create --private makes an end-to-end encrypted channel; only an
+// explicit --plaintext makes an unencrypted private one.
+func TestCreatePrivateIsEncrypted(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	for in, want := range map[string]string{
+		"/create #ops --private":               "create e2e ops",
+		"/create --private #ops2":              "create e2e ops2",
+		"/create #pub":                         "create public pub",
+		"/create #hooks --private --plaintext": "create private hooks",
+	} {
+		m.input.SetValue(in)
+		run(m, m.submit())
+		if m.input.Value() != "" || !f.called(want) {
+			t.Errorf("%q: calls %v, notice %q", in, f.calls, m.notice)
+		}
+	}
+	if f.called("create private ops") || f.called("create private ops2") {
+		t.Fatalf("--private went the plaintext way: %v", f.calls)
+	}
+	m.input.SetValue("/create #x --plaintext")
+	m.submit()
+	if !m.noticeErr || m.input.Value() == "" {
+		t.Fatalf("--plaintext without --private: notice %q", m.notice)
+	}
+	checkView(t, m, "create errors")
+}
+
 func TestResolveEmoji(t *testing.T) {
 	ok := map[string]string{"+1": "👍", ":tada:": "🎉", "tada": "🎉", "🚀": "🚀", " 👀 ": "👀"}
 	for in, want := range ok {

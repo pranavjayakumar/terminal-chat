@@ -203,6 +203,14 @@ func (c *Client) EncryptChannel(ctx context.Context, ch uint64) error {
 	return err
 }
 
+// ListUsers asks the server for every user; for an admin the result also
+// says who invited each account (UsersRes.InvitedBy).
+func (c *Client) ListUsers(ctx context.Context) (proto.UsersRes, error) {
+	var r proto.UsersRes
+	err := c.call(ctx, proto.OpUsersList, proto.Empty{}, &r, nil)
+	return r, err
+}
+
 // DisableUser (admin) disables a user and closes their sessions, then
 // rotates every encrypted channel of ours they were in (best effort; any
 // other goes stale and its next sender rotates).

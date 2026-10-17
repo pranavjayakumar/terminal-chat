@@ -1,21 +1,42 @@
 # Status & handoff
 
-Last updated: 2026-10-10 (end of session 1; branch `m2-activity` adds drafts, highlights, activity view). Read this first when resuming.
+Last updated: 2026-10-17 (session 4). Read this first when resuming.
 
 ## Handoff (always current — read this first when switching accounts)
 
-**PAUSED (2026-10-10, owner's request)** after completing M3 and M4 and shipping the first release.
+**ACTIVE: v0.3.0 fix phase (session 4, 2026-10-17).** Open work lives in GitHub issues + PRs, never only in
+a scratchpad (the scratchpad was wiped once; boards were lost). Resume = this list, top to bottom:
+
+1. **#53** `fix/admin-and-send` (B4 tc send outbox, B7 `/create --private` encrypts, B8 `/disable @user`):
+   reviewed by tui-reviewer + security-reviewer inside the PR. Wait for CI (`gh pr checks 53 --watch`), merge.
+2. **#51** `fix/ux-polish` (B13–B16 UX: /invite view + clipboard, tc invite errors, select footer, /remind refusal
+   in e2e channels, --member-invites persistence). Review round 2 done; last CI run failed — check
+   `gh pr checks 51` (likely a load flake, see #56), rerun or fix, merge after #53.
+3. **#54** `fix/device-revoke-gaps` (B5 critical, B11, B12): commits pushed, needs final gates + PR + reviews.
+   **Blocks v0.3.0.**
+4. **#55** `fix/join-flow` (B6 `tc login`/second device, B9 key-bound invite key choice, B10 retry): commits
+   pushed; redo the merge of origin/main (conflicts in server invites.go/session.go vs #52), PROTOCOL.md changed →
+   protocol-guardian + security-reviewer.
+5. **#56** `fix/test-flakes`: stress-run, PR, merge.
+6. Release **v0.3.0**: update README (lines on device revoke/stolen key are stale; add `tc users`, `tc login`,
+   `/disable`, `/create --private --plaintext`, brew tap) and ONBOARDING (pin v0.3.0 install.sh, second-laptop
+   section), tag, `make release-sign`, commit the regenerated `Formula/tc.rb`, redeploy the droplet, new invites.
+7. **v0.4.0** = draft PR **#47** voice huddles (owner decisions listed in the PR). Then M6 from
+   `docs/research/PRODUCT-2026-10.md` (owner to approve). Serverless options: `docs/research/SERVERLESS-2026-10.md`.
+
+Done this session: #43 docs, #44 brew tap, #45 first-start (#42), #46/#49 chaos deflakes, #48 member + github-key
+invites, #50 device list/revoke, #52 B1–B3 (add-key invites admin-only, `tc users [disable]`, invited_by).
+
+**How the parallel run works:** one Claude subagent per area in its own worktree (`isolation: worktree`), each
+owns named files; overlaps are called out in the agent prompt. Reviewer agents (tui/security/protocol/breaker)
+check each PR before merge. Merge one PR at a time; later branches `git merge origin/main`. `gh` must use the
+personal account (`gh auth status` → pranavjayakumar active).
 
 - **Released:** v0.2.0 (signed with the owner's SSH key; https://github.com/pranavjayakumar/terminal-chat/releases/tag/v0.2.0).
-  Install: `curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/v0.2.0/install.sh | sh -s -- '<invite>'`.
 - **Production:** root@159.65.152.35 (key-only SSH), systemd `tc` running v0.2.0 on :7443 (UDP+TCP), data
-  `/var/lib/tc`, pin `kizIIb-LUvMblyz18Ovf52VftSZnISNdJAEUz56LoU4`. Owner got an admin invite and a 15-use team
-  invite (24 h). Owner should change the droplet root password (it was shared in chat; password SSH is off).
-- **Repo:** only `main`; GitHub deletes merged branches automatically; CI green.
-- **Name:** stays `tc` for now (owner). A rename later should happen before many installs; note `tc` clashes with
-  iproute2's `tc` on Linux.
-- **In progress (2026-10-17):** v0.3.0 + M5 voice in parallel (see WORKLOG). **Was next:** owner onboarding using `ONBOARDING.md`. Then candidates: M5 voice huddles; deferred M4 items
-  (brew tap, any-member invites, `--key github:user`, device revoke command); polish from real team use.
+  `/var/lib/tc`, pin `kizIIb-LUvMblyz18Ovf52VftSZnISNdJAEUz56LoU4`. The Oct 10 invites expired; make new ones
+  after the v0.3.0 redeploy. Owner should change the droplet root password (it was shared in chat).
+- **Name:** stays `tc` until v0.3/v0.4 are done, then rename (owner). `tc` clashes with iproute2's `tc` on Linux.
 
 **Rules:** kiro hard cap 55–60% of monthly credits (check `kiro-cli chat --no-interactive "/usage"`); once reached,
 run workers as Claude subagents. Claude orchestrates (review/merge/log). Merge only with `gh pr checks <n> --watch`

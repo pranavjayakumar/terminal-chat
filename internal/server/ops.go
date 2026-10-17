@@ -125,8 +125,7 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 	case proto.OpDMOpen:
 		return withArgs(args, func(a proto.DMOpenArgs) (any, error) { return s.opDMOpen(ctx, sess, a) })
 	case proto.OpUsersList:
-		users, err := listUsers(ctx, s.st.db)
-		return proto.UsersRes{Users: users}, err
+		return s.opUsersList(ctx, u)
 	case proto.OpInviteCreate:
 		return withArgs(args, func(a proto.InviteCreateArgs) (any, error) { return s.opInviteCreate(ctx, u, a) })
 	case proto.OpInviteList:
@@ -810,6 +809,22 @@ func (s *Server) opDMOpen(ctx context.Context, sess *session, a proto.DMOpenArgs
 }
 
 // ---- admin ----
+
+// opUsersList adds, for admins, who invited each account, so the accounts
+// a disabled member brought in can be found.
+func (s *Server) opUsersList(ctx context.Context, u proto.User) (any, error) {
+	users, err := listUsers(ctx, s.st.db)
+	if err != nil {
+		return nil, err
+	}
+	res := proto.UsersRes{Users: users}
+	if u.Admin {
+		if res.InvitedBy, err = invitedBy(ctx, s.st.db); err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
+}
 
 func (s *Server) opUserDisable(ctx context.Context, u proto.User, a proto.UserArgs) (any, error) {
 	if !u.Admin {
