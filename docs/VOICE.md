@@ -137,7 +137,7 @@ exactly like public-channel text. The TUI marks encrypted huddles with the lock 
 - `/huddle` — join the current channel's huddle (or start it). In a huddle, the status line
   shows `🎧 #chan · ana bo* cy` — `*` marks who's talking right now, `(m)` muted, and the lock
   for encrypted channels. Channels with a huddle you're not in show a small `🎧3` in the list.
-- **Talk key `ctrl+t`** (only bound while in a huddle; outside it does what it did before).
+- **Talk key `ctrl+t`** (bound only while in a huddle; unbound otherwise).
   Terminals don't report key-up, so: press starts talking; if key-repeats follow (you're
   holding it) talking stops 600 ms after the last repeat — push-to-talk. If no repeat arrives
   (a tap), the mic latches open until the next tap — open mic. The 600 ms covers typical OS
