@@ -681,6 +681,48 @@ func TestSendPermanentFailure(t *testing.T) {
 	}
 }
 
+// B4: a row rejected for good stays listed (Failed) but a later
+// SendLocal+FlushLocal reports only on its own message.
+func TestFlushLocalIgnoresOlderFailures(t *testing.T) {
+	testEnv(t)
+	fs := newFakeServer(t)
+	c := open(t, login(t, fs))
+	run(t, c)
+	fc := fs.accept()
+	fc.bootstrap()
+	waitFor(t, "online", online(c))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	bad, err := c.SendLocal(general, "rejected", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fc.fail(fc.expectReq(proto.OpSend, nil).ID, proto.ErrBadRequest)
+	if err := c.FlushLocal(ctx, bad); err == nil || !strings.Contains(err.Error(), "bad_request") {
+		t.Fatalf("flush own rejected = %v", err)
+	}
+
+	good, err := c.SendLocal(general, "fine", 0)
+	if err != nil || good == bad {
+		t.Fatalf("SendLocal = %d, %v", good, err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- c.FlushLocal(ctx, good) }()
+	r := fc.expectReq(proto.OpSend, nil)
+	fc.ok(r.ID, proto.SendRes{Msg: 60})
+	if err := <-done; err != nil {
+		t.Fatalf("flush own delivered = %v (an older failure leaked in)", err)
+	}
+	if err := c.Flush(ctx); err == nil {
+		t.Fatal("Flush (whole outbox) should still report the rejected row")
+	}
+	ms := c.Messages(general, 50)
+	if last := ms[len(ms)-1]; last.Failed == "" {
+		t.Fatalf("rejected row no longer shown as failed: %+v", ms)
+	}
+}
+
 func TestRequestsFailOffline(t *testing.T) {
 	testEnv(t)
 	fs := newFakeServer(t)

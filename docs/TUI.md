@@ -71,13 +71,18 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 
 ## Slash commands
 
-`/join #x`, `/leave`, `/create #x [--private]`, `/add @user`, `/topic text`, `/dm @a @b`,
+`/join #x`, `/leave`, `/create #x [--private [--plaintext]]`, `/add @user`, `/topic text`, `/dm @a @b`,
 `/invite` (admin; prints code), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps), `/pins` (overlay of this channel's pinned messages, newest pin first, as `author · preview`; Enter jumps, Esc closes),
 `/activity`, `/highlight [word…]`, `/unhighlight word…`, `/group name @a @b…` (admin), `/groups`,
 `/remind <when> <text>`, `/reminders`, `/remind-delete id`, `/snippet path[:range] [message]`,
 `/share-pane [pane]` (herdr only), `/verify @user [--github login]`, `/accept-key @user`, `/members`,
-`/alarm`, `/alarm-clear #name`, `/devices [@user]`, `/device-revoke id`, `/quit`.
+`/alarm`, `/alarm-clear #name`, `/devices [@user]`, `/device-revoke id`, `/disable @user` (admin), `/quit`.
 Unknown command → inline error, input kept.
+
+`/create #x --private` makes an end-to-end encrypted channel (🔒; the server never sees its text).
+`--plaintext` opts out, e.g. for a private channel webhooks post into (webhooks can't post into encrypted
+channels). Private channels made by older tc versions (whose `/create --private` didn't encrypt) stay unencrypted
+until someone runs `/encrypt` there (earlier messages are then marked legacy); their header has no 🔒.
 
 ## Verifying people (encrypted channels)
 
@@ -116,23 +121,44 @@ Unknown command → inline error, input kept.
   and refreshed from the server in the background (the title says `· refreshing…`, or `· cached (…)`
   when the refresh failed): `* ab12cd34  this device  added 2026-10-01`, then `active`,
   `revoked 2026-10-17` and `unverified` (a cert no pinned key of the user signed: only the server's
-  claim) rows. The signing key's fingerprint is added only when it fits whole. ↑/↓ (k/j), PgUp/PgDn,
-  Home/End move, `r` refreshes, Esc, `q` or Enter closes. Another user's list is read-only.
+  claim) rows. `old id of this device, …` (`old id, …` under 50 columns) prefixes a verified id with
+  the keys this device had before it was revoked and re-registered. The signing key's fingerprint is
+  added only when it fits whole. ↑/↓ (k/j), PgUp/PgDn, Home/End move, `r` refreshes, Esc, `q` or
+  Enter closes. Another user's list is read-only.
 - In your own list, `d` on an active, verified device that isn't this one puts the question in the
   title, in red (`revoke device ab12cd34 for good? y: revoke · any other key: cancel`; under 60 columns
   `revoke ab12cd34? y: yes · other: no`). Unlike the trust overlays, any key other than `y` cancels
-  ("not revoked"). `y` revokes it (notice `✓ revoked device ab12cd34 — new keys in N encrypted
-  channels`) and the list refreshes. `d` on this device, a revoked or an unverified one says why not
-  instead. The overlay ignores keys except Esc for 500 ms after opening, like the trust overlays.
+  ("not revoked"). `y` revokes it and the list refreshes. The notice (10 s) is `✓ revoked device
+  ab12cd34 — new keys in N encrypted channels · had your SSH key? an admin must disable your account`,
+  without the channel count when the line is too narrow: a revoke doesn't remove an SSH key (docs/E2E.md
+  "Stolen device"). `d` on this device, a revoked or an unverified one says why not instead. The
+  overlay ignores keys except Esc for 500 ms after opening, like the trust overlays.
 - **`/device-revoke id`** (any unique prefix of the id `/devices` shows) opens the list with that
   device's question already up. Revoking this device is only possible from the CLI
   (`tc devices revoke id --self`).
 - Notices: when a verified revoke of a device this client already trusted arrives — in red `this device
-  was revoked — it re-registers with new keys when it reconnects`, or `your device ab12cd34 was revoked
-  — /devices`; otherwise `@bob revoked a device (ab12cd34) — encrypted channels get a new key before the
-  next message` (not over an error notice). A newly verified device of yours shows in red `new device of
-  yours: ab12cd34 — not you? /devices to revoke it`. Several at once add `(+N more)`. Nothing is
-  announced on a first sync.
+  was revoked — it re-registers with new keys when it reconnects`; when it was revoked while offline
+  and has re-registered already, `this device re-registered — /devices (was ab12cd34)`, or, if a new
+  device of yours appeared meanwhile, `new device of yours: dd34ef56 — not you? /devices to revoke it ·
+  this device re-registered (was ab12cd34)`; `your device ab12cd34 was revoked — /devices`; otherwise
+  `@bob revoked a device (ab12cd34) — encrypted channels get a new key before the next message` (not
+  over an error notice). A newly verified device of yours shows in red `new device of yours: ab12cd34 —
+  not you? /devices to revoke it`. Several at once add `(+N more)`. Nothing is announced on a first
+  sync (before any device of yours is verified).
+
+## Disabling an account (admins)
+
+- **`/disable @user`** shuts an account out for good, e.g. after its SSH key or a laptop holding it was
+  stolen. The question takes over the body: two red lines first, so they survive any size
+  (`disable @eve for good?` and `y: disable · any other key: cancel`, under 40 columns `y: yes · other:
+  no`), then `It can't be undone.` and what it does: every session signed out now, none of their keys
+  can sign in again, their unused invites and webhooks deleted, encrypted channels they were in
+  re-keyed; to let them back in, invite them as a new account (new key and name). A background notice
+  can't replace the question. Keys in the first 500 ms are ignored (Esc still cancels); `y` disables
+  (`disabling @eve…`, then `✓ disabled @eve — signed out everywhere; none of their keys can sign in`),
+  any other key cancels (`not disabled`). One disable runs at a time (`a disable is still running`).
+  Members get `only admins can disable users`; yourself, an unknown or an already disabled user is an
+  inline error with the input kept. From a shell: `tc users disable @eve`.
 
 ## Behavior
 

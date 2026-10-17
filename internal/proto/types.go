@@ -444,6 +444,10 @@ type DMOpenArgs struct {
 
 type UsersRes struct {
 	Users []User `msgpack:"users"`
+	// InvitedBy (admin callers only) maps a user id to the id of whoever
+	// made the invite the account was created with; 0 = the server host.
+	// Users missing from it have no record (older accounts, bots).
+	InvitedBy map[uint64]uint64 `msgpack:"invited_by,omitempty"`
 }
 
 // InviteCreateArgs: Uses and TTLMs (cap `team_invites`) default to 1 and

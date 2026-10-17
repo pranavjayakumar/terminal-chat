@@ -227,6 +227,8 @@ func (m *Model) bodyLines(d dims) []string {
 		return m.verifyLines(w, h)
 	case modeDevices:
 		return m.devicesLines(w, h)
+	case modeDisable:
+		return m.disableLines(w, h)
 	case modeSwitcher:
 		return m.switcherLines(w, h)
 	case modeSearch:
