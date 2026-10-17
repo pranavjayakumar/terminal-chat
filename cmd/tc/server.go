@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
@@ -256,7 +257,8 @@ func printInvites(w io.Writer, invs []proto.InviteInfo, name func(uint64) string
 		fmt.Fprintln(w, "No open invites.")
 		return
 	}
-	fmt.Fprintf(w, "%-12s  %-14s  %9s  %-17s  %s\n", "ID", "KIND", "USES LEFT", "EXPIRES", "CREATED BY")
+	type row struct{ id, kind, left, exp, by string }
+	rows := []row{{"ID", "KIND", "USES LEFT", "EXPIRES", "CREATED BY"}}
 	for _, inv := range invs {
 		kind := sanitize.Line(inv.Kind)
 		if inv.Kind == proto.InviteKindKey {
@@ -269,8 +271,18 @@ func printInvites(w io.Writer, invs []proto.InviteInfo, name func(uint64) string
 		if inv.CreatedBy != 0 {
 			by = who(inv.CreatedBy, name)
 		}
-		fmt.Fprintf(w, "%-12s  %-14s  %9d  %-17s  %s\n", sanitize.Line(inv.ID), kind, inv.UsesLeft,
-			time.UnixMilli(inv.Expires).Format("Jan 2 15:04 MST"), by)
+		rows = append(rows, row{sanitize.Line(inv.ID), kind, fmt.Sprint(inv.UsesLeft),
+			time.UnixMilli(inv.Expires).Format("Jan 2 15:04 MST"), by})
+	}
+	// Columns are sized to their content so long kinds don't shove the rest.
+	var wid [4]int
+	for _, r := range rows {
+		for i, c := range []string{r.id, r.kind, r.left, r.exp} {
+			wid[i] = max(wid[i], utf8.RuneCountInString(c))
+		}
+	}
+	for _, r := range rows {
+		fmt.Fprintf(w, "%-*s  %-*s  %*s  %-*s  %s\n", wid[0], r.id, wid[1], r.kind, wid[2], r.left, wid[3], r.exp, r.by)
 	}
 	fmt.Fprintln(w, "\nRevoke one with: "+revoke)
 }

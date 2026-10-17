@@ -43,16 +43,7 @@ func inviteArgs(args []string) (uses int, ttl time.Duration, err error) {
 	return uses, ttl, nil
 }
 
-func parseTTL(s string) (time.Duration, error) {
-	if n, ok := strings.CutSuffix(s, "d"); ok {
-		days, err := strconv.Atoi(n)
-		if err != nil || days < 1 || days > 30 {
-			return 0, errors.New("bad days")
-		}
-		return time.Duration(days) * 24 * time.Hour, nil
-	}
-	return time.ParseDuration(s)
-}
+func parseTTL(s string) (time.Duration, error) { return client.ParseTTL(s) }
 
 // GitHubInviteBackend is implemented by backends that can mint invites
 // bound to a GitHub account's SSH keys (*client.Client does).

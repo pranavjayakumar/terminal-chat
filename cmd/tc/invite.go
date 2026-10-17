@@ -31,13 +31,26 @@ func parseInviteCmd(args []string) (inviteCmd, error) {
 	fs := flag.NewFlagSet("invite", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.IntVar(&c.uses, "uses", 0, fmt.Sprintf("how many people can join with it (1-%d; members 1-%d)", proto.MaxInviteUses, proto.MaxMemberInviteUses))
-	fs.DurationVar(&c.ttl, "ttl", 0, "how long it stays valid (default 7 days; at most 720h, members 168h)")
+	fs.Func("ttl", "how long it stays valid, like 72h or 3d (default 7 days; at most 30d, members 7d)", func(v string) error {
+		d, err := client.ParseTTL(v)
+		if err != nil {
+			return fmt.Errorf("%v (use a duration like 72h, 30m or 3d)", err)
+		}
+		c.ttl = d
+		return nil
+	})
 	key := fs.String("key", "", "github:<login>: only a holder of one of that account's SSH keys can use it")
 	fs.BoolVar(&c.raw, "raw", false, "print only the tc:// code")
 	fs.BoolVar(&c.list, "list", false, "list open invites (yours, or all for admins)")
 	fs.StringVar(&c.revoke, "revoke", "", "make the invite with this id (from --list) unusable at once")
-	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
-		return c, errUsage
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return c, errUsage
+		}
+		return c, fmt.Errorf("invite: %v (see tc help)", err)
+	}
+	if fs.NArg() > 0 {
+		return c, fmt.Errorf("invite: unexpected argument %q (see tc help)", fs.Arg(0))
 	}
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
@@ -60,7 +73,7 @@ func parseInviteCmd(args []string) (inviteCmd, error) {
 		return c, fmt.Errorf("--uses must be 1-%d", proto.MaxInviteUses)
 	}
 	if set["ttl"] && (c.ttl < time.Minute || c.ttl > proto.MaxInviteTTL) {
-		return c, errors.New("--ttl must be between 1m and 720h")
+		return c, errors.New("--ttl must be between 1m and 30d")
 	}
 	if set["key"] {
 		login, ok := proto.GitHubKeySpec(*key)
@@ -95,7 +108,7 @@ func runInvite(ctx context.Context, cl *client.Client, c inviteCmd, out io.Write
 	case c.list:
 		invs, err := cl.ListInvites(ctx)
 		if err != nil {
-			return err
+			return inviteErr(err, "list invites", "")
 		}
 		names := map[uint64]string{}
 		for _, u := range cl.Users() {
@@ -105,7 +118,7 @@ func runInvite(ctx context.Context, cl *client.Client, c inviteCmd, out io.Write
 		return nil
 	case c.revoke != "":
 		if err := cl.RevokeInvite(ctx, c.revoke); err != nil {
-			return err
+			return inviteErr(err, "revoke invites", c.revoke)
 		}
 		fmt.Fprintf(out, "Revoked invite %s; it can't be used any more.\n", c.revoke)
 		return nil
@@ -121,7 +134,7 @@ func runInvite(ctx context.Context, cl *client.Client, c inviteCmd, out io.Write
 		inv, err = cl.CreateTeamInvite(ctx, c.uses, c.ttl)
 	}
 	if err != nil {
-		return err
+		return inviteErr(err, "invite people", "")
 	}
 	if c.raw {
 		fmt.Fprintln(out, sanitize.Line(inv.Code)) // from the server
@@ -129,4 +142,26 @@ func runInvite(ctx context.Context, cl *client.Client, c inviteCmd, out io.Write
 	}
 	printInvite(out, inv, version)
 	return nil
+}
+
+// inviteErr says what the server's bare forbidden / not_found mean for
+// invites, like the TUI does; anything else passes through.
+func inviteErr(err error, what, id string) error {
+	var pe *proto.Error
+	if !errors.As(err, &pe) {
+		return err
+	}
+	switch pe.Code {
+	case proto.ErrForbidden:
+		msg := "only admins can " + what + " on this server"
+		if pe.Msg != "" {
+			msg += " (" + pe.Msg + ")"
+		}
+		return errors.New(msg)
+	case proto.ErrNotFound:
+		if id != "" {
+			return fmt.Errorf("no open invite %s of yours (see tc invite --list)", id)
+		}
+	}
+	return err
 }
