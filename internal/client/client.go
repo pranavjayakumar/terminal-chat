@@ -121,7 +121,11 @@ var (
 )
 
 // ByeError is a BYE received from the server.
-type ByeError struct{ Code, Msg string }
+type ByeError struct {
+	Code, Msg string
+	// Keys: the fingerprints a key-bound invite accepts (cap key_hint, §4.1).
+	Keys []string
+}
 
 func (e *ByeError) Error() string {
 	if e.Msg == "" {
@@ -161,8 +165,11 @@ type Config struct {
 	Addr    string `json:"addr"`
 	Pin     string `json:"pin"`
 	KeyPath string `json:"key_path,omitempty"`
-	UserID  uint64 `json:"user_id"`
-	Name    string `json:"name"`
+	// KeyFP pins the login key by fingerprint when KeyPath is "" (an agent
+	// or default key), so a reordered agent can't switch keys.
+	KeyFP  string `json:"key_fp,omitempty"`
+	UserID uint64 `json:"user_id"`
+	Name   string `json:"name"`
 }
 
 // Client owns one user's connection and cache. All methods are safe for
@@ -340,6 +347,14 @@ func (c *Client) Home() string { return c.home }
 
 // Config returns the loaded configuration.
 func (c *Client) Config() Config { return c.cfg }
+
+// KeySpec is the identity.Load spec for the login key.
+func (cfg Config) KeySpec() string {
+	if cfg.KeyPath == "" {
+		return cfg.KeyFP
+	}
+	return cfg.KeyPath
+}
 
 // Status is the current connection status.
 func (c *Client) Status() Status {

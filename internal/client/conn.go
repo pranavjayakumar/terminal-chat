@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -187,7 +188,7 @@ func handshake(conn transport.Conn, codec *proto.Codec, signer ssh.Signer, invit
 	if err != nil {
 		return proto.Welcome{}, err
 	}
-	hello := proto.Hello{Client: clientName, Caps: []string{proto.CapE2E},
+	hello := proto.Hello{Client: clientName, Caps: []string{proto.CapE2E, proto.CapKeyHint},
 		Auth: proto.Auth{Pubkey: signer.PublicKey().Marshal(), Sig: sig, Invite: invite, Name: name}}
 	if err := codec.Write(proto.THello, hello); err != nil {
 		return proto.Welcome{}, fmt.Errorf("sending hello: %w", err)
@@ -211,19 +212,22 @@ func handshake(conn transport.Conn, codec *proto.Codec, signer ssh.Signer, invit
 		case proto.TBye:
 			var b proto.Bye
 			_ = f.Decode(&b)
-			return proto.Welcome{}, &ByeError{Code: b.Code, Msg: b.Msg}
+			return proto.Welcome{}, &ByeError{Code: b.Code, Msg: b.Msg, Keys: b.Keys}
 		}
 	}
 }
 
-// Login redeems an invite (new user or new key for an existing user), writes
-// home/config.json and starts a fresh cache. keyPath "" means ssh-agent or
-// the default ~/.ssh keys.
 const stableSession = 10 * time.Second
 
+// Login redeems an invite (new user or new key for an existing user), or
+// with a tokenless tc://host:port#pin logs in a key already registered,
+// then writes home/config.json and starts a fresh cache. keyPath is an
+// identity.Load spec: "" means ssh-agent or the default ~/.ssh keys. A key
+// that is already registered logs in whatever the invite (§4), also
+// against servers that answer key_exists.
 func Login(ctx context.Context, home, invite, name, keyPath string) (proto.User, error) {
 	home = homeOr(home)
-	inv, err := proto.ParseInvite(invite)
+	inv, err := proto.ParseLogin(invite)
 	if err != nil {
 		return proto.User{}, err
 	}
@@ -231,22 +235,22 @@ func Login(ctx context.Context, home, invite, name, keyPath string) (proto.User,
 	if err != nil {
 		return proto.User{}, err
 	}
-	conn, err := transport.Dial(ctx, inv.Addr, inv.Pin)
-	if err != nil {
-		return proto.User{}, err
+	w, err := loginOnce(ctx, inv, signer, inv.Token, name)
+	var bye *ByeError
+	if errors.As(err, &bye) && bye.Code == proto.ByeKeyExists && inv.Token != "" {
+		w, err = loginOnce(ctx, inv, signer, "", "")
 	}
-	defer conn.Close()
-	stop := context.AfterFunc(ctx, func() { conn.Close() })
-	defer stop()
-	w, err := handshake(conn, proto.NewCodec(conn), signer, inv.Token, name, defaultTiming.handshake)
 	if err != nil {
-		if ctx.Err() != nil {
-			return proto.User{}, ctx.Err()
-		}
 		return proto.User{}, err
 	}
 
-	if keyPath != "" {
+	keyFP := ""
+	switch {
+	case keyPath == "":
+		keyFP = identity.Fingerprint(signer.PublicKey())
+	case strings.HasPrefix(keyPath, "SHA256:"):
+		keyFP, keyPath = keyPath, ""
+	default:
 		if abs, err := filepath.Abs(keyPath); err == nil {
 			keyPath = abs
 		}
@@ -285,11 +289,27 @@ func Login(ctx context.Context, home, invite, name, keyPath string) (proto.User,
 			return proto.User{}, err
 		}
 	}
-	cfg := Config{Addr: inv.Addr, Pin: inv.Pin, KeyPath: keyPath, UserID: w.User.ID, Name: w.User.Name}
+	cfg := Config{Addr: inv.Addr, Pin: inv.Pin, KeyPath: keyPath, KeyFP: keyFP, UserID: w.User.ID, Name: w.User.Name}
 	if err := writeConfig(home, cfg); err != nil {
 		return proto.User{}, err
 	}
 	return w.User, nil
+}
+
+// loginOnce runs one handshake on a new connection.
+func loginOnce(ctx context.Context, inv proto.Invite, signer ssh.Signer, token, name string) (proto.Welcome, error) {
+	conn, err := transport.Dial(ctx, inv.Addr, inv.Pin)
+	if err != nil {
+		return proto.Welcome{}, err
+	}
+	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+	w, err := handshake(conn, proto.NewCodec(conn), signer, token, name, defaultTiming.handshake)
+	if err != nil && ctx.Err() != nil {
+		return proto.Welcome{}, ctx.Err()
+	}
+	return w, err
 }
 
 func writeConfig(home string, cfg Config) error {
@@ -439,7 +459,7 @@ func (c *Client) Run(ctx context.Context) {
 // through sync (which resets the backoff).
 func (c *Client) connect(ctx context.Context) (online bool, err error) {
 	c.setStatus(Status{State: Connecting})
-	signer, err := identity.Load(c.cfg.KeyPath)
+	signer, err := identity.Load(c.cfg.KeySpec())
 	if err != nil {
 		return false, err
 	}
