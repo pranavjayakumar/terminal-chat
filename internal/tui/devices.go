@@ -367,9 +367,10 @@ func (m *Model) deviceRows(w int) []string {
 		if d.This {
 			mark = "*"
 		}
-		added := "added " + d.Created.Local().Format("2006-01-02")
+		// Seconds tell apart devices registered by one key on one day.
+		added := "added " + d.Created.Local().Format("2006-01-02 15:04:05")
 		if w < 50 {
-			added = d.Created.Local().Format("2006-01-02")
+			added = d.Created.Local().Format("01-02 15:04:05")
 		}
 		row := fmt.Sprintf("%s %s  %s  %s", mark, d.Short(), strings.Join(tags, ", "), added)
 		// A fingerprint is compared by eye: whole or not at all.

@@ -110,7 +110,8 @@ var _ Backend = (*client.Client)(nil)
 // version is this build's release tag, for the update notice.
 func Run(ctx context.Context, c *client.Client, version string) error {
 	env := notify.OSEnv()
-	o := Options{Out: os.Stdout, Notifier: notify.New(env, os.Stdout), AwayAfter: awayAfter(os.Getenv("TC_AWAY_MIN")), Version: version}
+	o := Options{Out: os.Stdout, Notifier: notify.New(env, os.Stdout), AwayAfter: awayAfter(os.Getenv("TC_AWAY_MIN")), Version: version, ExtCopy: defaultExtCopy,
+		Tmux: os.Getenv("TMUX") != "", SSH: os.Getenv("SSH_TTY") != "" || os.Getenv("SSH_CONNECTION") != ""}
 	o.UpdateCheck = func() string {
 		return release.Check(ctx, c.Home(), version, release.NewSource(), time.Now())
 	}
@@ -135,6 +136,13 @@ type Options struct {
 	// between renderer frames; neither moves the cursor, so they don't
 	// disturb the alt screen.
 	Out io.Writer
+	// ExtCopy copies to the system clipboard with a tool like pbcopy; nil:
+	// OSC 52 only. It is the fallback for terminals and tmux setups that
+	// drop OSC 52.
+	ExtCopy func(context.Context, string) error
+	// Tmux wraps OSC 52 for tmux passthrough; SSH skips ExtCopy (it would
+	// reach the remote clipboard). Both are set from the environment in Run.
+	Tmux, SSH bool
 	// Notifier gets mentions and DMs the user isn't looking at; nil: none.
 	Notifier Notifier
 	// Herdr is set when running inside herdr: unread badge, /share-pane.

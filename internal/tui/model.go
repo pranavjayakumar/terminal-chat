@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -702,17 +701,18 @@ func (m *Model) noticeTick() tea.Cmd {
 
 // ---- clipboard ----
 
-// copyCmd puts text on the clipboard with OSC 52. Most terminals support
-// it; tmux needs set-clipboard on.
+// copyCmd puts text on the clipboard (see clip). It only says "copied" when
+// a method was actually attempted.
 func (m *Model) copyCmd(text string) tea.Cmd {
-	out := m.opt.Out
-	if out == nil {
-		return nil
-	}
-	seq := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(text)) + "\a"
+	ctx, opt := m.ctx, m.opt
 	return func() tea.Msg {
-		if _, err := out.Write([]byte(seq)); err != nil {
+		// May run a clipboard tool: never on the UI goroutine.
+		how, err := clip(ctx, opt, text)
+		switch {
+		case err != nil:
 			return errMsg{"copy", err}
+		case how == "":
+			return errMsg{"copy", errors.New("no clipboard available")}
 		}
 		return infoMsg("copied")
 	}
@@ -811,6 +811,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case infoMsg:
 		m.setInfo(string(msg))
+		return m, nil
+	case inviteShownMsg:
+		m.showInvite(msg)
 		return m, nil
 	case updateAvailMsg:
 		m.newRelease = string(msg)
@@ -1008,6 +1011,9 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 		return m.disableKey(key)
 	case modeViewer:
 		if key == kSelCopy {
+			if m.view.copy != "" {
+				return m.copyCmd(m.view.copy)
+			}
 			return m.copyCmd(strings.Join(m.view.lines, "\n"))
 		}
 		m.viewerKey(key)
