@@ -49,7 +49,8 @@ type session struct {
 	done    chan struct{}
 
 	synced       bool
-	e2e          bool // both sides advertised proto.CapE2E
+	e2e          bool     // both sides advertised proto.CapE2E
+	byeKeys      []string // Bye.Keys for a failed handshake (cap key_hint)
 	lastTyping   map[uint64]time.Time
 	lastKeyNeed  map[uint64]time.Time // under srv.mu
 	lastPresence time.Time
@@ -73,7 +74,7 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 		return
 	}
 	if code != "" {
-		sendBye(sess.codec, conn, code, msg)
+		sendBye(sess.codec, conn, code, msg, sess.byeKeys...)
 		return
 	}
 	sess.user = user
@@ -123,22 +124,31 @@ func (s *Server) handshake(ctx context.Context, sess *session) (proto.User, stri
 	}
 	fp := identity.Fingerprint(pk)
 
-	if h.Auth.Invite == "" {
-		u, err := userByKey(ctx, s.st.db, fp)
-		if err != nil {
-			return proto.User{}, proto.ByeAuthFailed, "unknown key"
-		}
+	// A registered key logs in whatever invite comes with it, which stays
+	// unspent (§4): the key alone already proves who this is, and so a join
+	// retried after a lost WELCOME, or an invite reused on a second
+	// computer, signs in instead of failing.
+	if u, err := userByKey(ctx, s.st.db, fp); err == nil {
 		if u.Disabled {
 			return proto.User{}, proto.ByeRevoked, ""
 		}
 		return u, "", ""
 	}
-	return s.redeem(ctx, h.Auth, pk.Marshal(), fp)
+	if h.Auth.Invite == "" {
+		return proto.User{}, proto.ByeAuthFailed, "unknown key"
+	}
+	var hint *[]string
+	if slices.Contains(h.Caps, proto.CapKeyHint) {
+		hint = &sess.byeKeys
+	}
+	return s.redeem(ctx, h.Auth, pk.Marshal(), fp, hint)
 }
 
 var errBye = errors.New("bye")
 
-func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp string) (proto.User, string, string) {
+// redeem redeems a.Invite for a key not yet registered. A key-bound invite
+// refusing fp stores the fingerprints it accepts in *hint (if non-nil).
+func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp string, hint *[]string) (proto.User, string, string) {
 	var user proto.User
 	byeCode, byeMsg := "", ""
 	fail := func(code, msg string) error { byeCode, byeMsg = code, msg; return errBye }
@@ -158,13 +168,17 @@ func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp str
 		if err != nil || used || uses < 1 || expires <= now {
 			return nil, fail(proto.ByeInviteInvalid, "invite is invalid, used or expired")
 		}
-		if msg, err := s.redeemCheck(ctx, tx, stored, createdBy, fp); err != nil {
+		if msg, fps, err := s.redeemCheck(ctx, tx, stored, createdBy, fp); err != nil {
 			return nil, err
 		} else if msg != "" {
+			if hint != nil {
+				*hint = fps
+			}
 			return nil, fail(proto.ByeInviteInvalid, msg)
 		}
+		// Registered since handshake looked (a concurrent redemption).
 		if _, err := userByKey(ctx, tx, fp); err == nil {
-			return nil, fail(proto.ByeKeyExists, "this key is already registered; log in without an invite")
+			return nil, fail(proto.ByeKeyExists, "this key is already registered; log in with it: tc login tc://host:port#pin")
 		}
 		// Conditional so a use can never be spent twice, whatever serializes
 		// the callers; the rest of the transaction rolls back with it.
@@ -366,11 +380,11 @@ func (sess *session) bye(code, msg string) {
 // CloseWithError discards unsent stream data.
 const byeGrace = 200 * time.Millisecond
 
-func sendBye(c *proto.Codec, conn transport.Conn, code, msg string) {
+func sendBye(c *proto.Codec, conn transport.Conn, code, msg string, keys ...string) {
 	// A peer that isn't reading (slow consumer) would block the write forever.
 	t := time.AfterFunc(time.Second, func() { conn.CloseWithCode(code) })
 	defer t.Stop()
-	if c.Write(proto.TBye, proto.Bye{Code: code, Msg: msg}) == nil {
+	if c.Write(proto.TBye, proto.Bye{Code: code, Msg: msg, Keys: keys}) == nil {
 		time.Sleep(byeGrace)
 	}
 	conn.CloseWithCode(code)

@@ -28,6 +28,11 @@ const CapMemberInvites = "member_invites"
 // server would ignore them and mint an unbound invite.
 const CapKeyInvites = "key_invites"
 
+// CapKeyHint is sent in HELLO by clients that want the fingerprints of a
+// key-bound invite's keys in the BYE invite_invalid answering a HELLO with
+// another key, so they can retry with the right one (PROTOCOL.md §4.1).
+const CapKeyHint = "key_hint"
+
 // Invite management ops (admin; PROTOCOL.md §5).
 const (
 	OpInviteList   = "invite.list"
@@ -127,6 +132,16 @@ func FormatInvite(addr, token, pin string) string {
 
 // ParseInvite parses an invite code.
 func ParseInvite(code string) (Invite, error) {
+	inv, err := ParseLogin(code)
+	if err == nil && inv.Token == "" {
+		err = errors.New("invite is missing token or pin")
+	}
+	return inv, err
+}
+
+// ParseLogin parses an invite code or a server address without a token,
+// tc://<host>:<port>#<pin> (log in with a key already registered, §4).
+func ParseLogin(code string) (Invite, error) {
 	u, err := url.Parse(strings.TrimSpace(code))
 	if err != nil || u.Scheme != "tc" {
 		return Invite{}, errors.New("invite must look like tc://host:port/token#pin")
@@ -135,10 +150,16 @@ func ParseInvite(code string) (Invite, error) {
 		return Invite{}, errors.New("invite is missing host:port")
 	}
 	inv := Invite{Addr: u.Host, Token: strings.Trim(u.Path, "/"), Pin: u.Fragment}
-	if inv.Token == "" || inv.Pin == "" || strings.Contains(inv.Token, "/") {
+	if inv.Pin == "" || strings.Contains(inv.Token, "/") {
 		return Invite{}, errors.New("invite is missing token or pin")
 	}
 	return inv, nil
+}
+
+// FormatServer renders tc://<host>:<port>#<pin>, the tokenless form
+// ParseLogin accepts.
+func FormatServer(addr, pin string) string {
+	return "tc://" + addr + "#" + pin
 }
 
 // ShellSafe reports whether code can be printed inside single quotes in a
