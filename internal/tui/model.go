@@ -56,6 +56,8 @@ func (p *pane) open() bool { return p.ch != 0 }
 
 // Model is the Bubble Tea model.
 type Model struct {
+	hud huddleUI // voice huddles (huddle.go)
+
 	c   Backend
 	ctx context.Context
 	st  *styles
@@ -718,6 +720,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if cmd, ok := m.huddleMsg(msg); ok {
+		return m, cmd
+	}
 	switch msg := msg.(type) {
 	case noticeExpireMsg:
 		if msg.gen == m.noticeGen {
@@ -781,7 +786,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.focused = false
 		return m, nil
 	case updateMsg:
-		return m, tea.Batch(m.applyUpdate(client.Update(msg)), m.waitUpdate())
+		return m, tea.Batch(m.applyUpdate(client.Update(msg)), m.waitUpdate(), m.huddleTick())
 	case updatesClosedMsg:
 		return m, nil
 	case errMsg:
@@ -956,6 +961,11 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 	}
 	if key != kEsc {
 		m.escAt = time.Time{}
+	}
+	if key == kTalk {
+		if cmd, ok := m.talkKey(); ok {
+			return cmd
+		}
 	}
 
 	switch m.mode {

@@ -296,9 +296,15 @@ func (m *Model) statusText() string {
 	return m.status.State.String()
 }
 
-// statusLine is the notice (if any), then who is typing.
+// statusLine is our huddle (if any), the notice (if any), then who is typing.
 func (m *Model) statusLine(w int) string {
 	var b strings.Builder
+	if t := m.huddleText(); t != "" {
+		b.WriteString(t)
+		if m.notice != "" {
+			b.WriteString(m.st.dim.Render(" · "))
+		}
+	}
 	if m.notice != "" {
 		switch {
 		case m.noticeErr:
