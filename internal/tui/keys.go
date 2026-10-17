@@ -74,6 +74,8 @@ var helpLines = [][2]string{
 	{"/verify @user --github login", "check their key against github.com/login.keys"},
 	{"/accept-key @user [fp]", "review and accept a changed key (unblocks sending)"},
 	{"/members", "who's here; ? = not verified, ! = key changed"},
+	{"/devices [@user]", "your (or someone's) devices; d revokes a lost one"},
+	{"/device-revoke id", "revoke one of your devices (asks first)"},
 	{"/alarm", "why this channel's encryption is in alarm"},
 	{"/alarm-clear #name", "clear it (type the name to confirm; audited)"},
 	{"/topic text", "set the topic"},
