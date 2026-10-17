@@ -74,4 +74,6 @@ release-sign:
 		{ echo "not published: embed this key in internal/release/signers.go and install.sh first" >&2; exit 1; }; \
 	gh release upload "$(TAG)" "$$d/checksums.txt.sig" --clobber; \
 	gh release edit "$(TAG)" --draft=false --latest; \
-	echo "published $(TAG)"
+	echo "published $(TAG)"; \
+	scripts/brew-formula.sh "$(TAG)" "$$d" && \
+	echo "Formula/tc.rb now points at $(TAG): commit it on a branch and open a PR (docs/DEPLOY.md, Homebrew)"
