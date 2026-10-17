@@ -18,7 +18,7 @@ test-malicious:
 # longer run. Crashers land in testdata/fuzz/ and then run as regression tests.
 FUZZTIME ?= 30s
 FUZZ := \
-	proto:FuzzDecode proto:FuzzDevices proto:FuzzKeyOps \
+	proto:FuzzDecode proto:FuzzDevices proto:FuzzKeyOps proto:FuzzParseDatagram \
 	sanitize:FuzzSanitize \
 	e2ecrypto:FuzzParseEnc e2ecrypto:FuzzDecrypt e2ecrypto:FuzzUnpad e2ecrypto:FuzzOpenBoxes \
 	identity:FuzzDeviceCert identity:FuzzKeyEndorse identity:FuzzDeviceRevoke identity:FuzzEpochBundle \
