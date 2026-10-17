@@ -135,8 +135,8 @@ redemption either completed before it or fails with `invite_invalid`.
   (`invite_invalid`); they come back, if unexpired, when it is turned on again.
 - Disabling a user (`user.disable`), member or admin, deletes every invite they created
   in the same transaction. Redemption also re-checks that the creator is still enabled and
-  still allowed to invite. An add-key invite whose creator isn't an admin (unreleased builds let
-  members make them for themselves) is neither listed nor redeemable (`invite_invalid`).
+  still allowed to invite. An add-key invite whose creator isn't an admin (members could make
+  them for themselves in development builds) is neither listed nor redeemable (`invite_invalid`).
 
 **Key-bound invites** (cap `key_invites`). `invite.create {keys: [bin], key_src?: str}`
 binds an invite to SSH public keys (wire format, `ssh.PublicKey.Marshal`): only a joiner

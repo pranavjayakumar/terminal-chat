@@ -172,7 +172,7 @@ func (s *Server) CreateInviteOpts(ctx context.Context, o InviteOpts) (proto.Invi
 		if o.Member {
 			var n int
 			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM invites
-				WHERE created_by = ? AND used = 0 AND uses > 0 AND expires > ?`, o.CreatedBy, now).Scan(&n); err != nil {
+				WHERE created_by = ? AND user IS NULL AND used = 0 AND uses > 0 AND expires > ?`, o.CreatedBy, now).Scan(&n); err != nil {
 				return nil, err
 			}
 			if n >= proto.MaxMemberInvites {
