@@ -17,3 +17,39 @@ jobs:
       - run: go test -race ./...
       - run: go test -race -tags tctamper ./internal/e2e
       - run: make build && ls -lh bin/tc
+  # Voice flavor (docs/VOICE.md): cgo + libopus, -tags voice. The default
+  # job above stays CGO_ENABLED=0.
+  voice:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: libopus
+        run: |
+          if [ "$(uname -s)" = Darwin ]; then
+            brew install opus pkgconf
+          else
+            sudo apt-get update -q && sudo apt-get install -yq --no-install-recommends libopus-dev pkg-config
+          fi
+      - run: go vet -tags voice ./...
+        env: { CGO_ENABLED: "1" }
+      - run: go build -tags voice ./...
+        env: { CGO_ENABLED: "1" }
+      - run: go test -race -tags voice ./internal/voice/ ./internal/client/ ./internal/tui/ ./internal/e2e/ ./cmd/tc/
+        env: { CGO_ENABLED: "1" }
+      # The release packaging path (static libopus from source), for this
+      # runner's OS/arch, so release.yml's voice job is exercised on every PR.
+      - name: Release build (static libopus)
+        run: |
+          set -eu
+          arch=$(go env GOARCH)
+          os=$(go env GOOS)
+          sh scripts/build-voice.sh "$os" "$arch" v0.0.0-ci dist
+          mkdir smoke && tar -C smoke -xzf "dist/tc-voice_${os}_${arch}.tar.gz"
+          ./smoke/tc version | grep -F "v0.0.0-ci (voice)"
+          ls -l smoke/tc
