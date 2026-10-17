@@ -155,6 +155,10 @@ func (s *Server) opHuddleJoin(ctx context.Context, sess *session, a proto.Huddle
 	// Under Server.mu, membership and the e2e flag can't change underneath.
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.disabled[u] {
+		// Disabled after dispatch checked: its sweep already ran.
+		return nil, proto.Errf(proto.ErrUnauthorized, "account disabled")
+	}
 	mem, ok := s.members[a.Chan]
 	if !ok {
 		return nil, errNotFound
@@ -173,6 +177,16 @@ func (s *Server) opHuddleJoin(ctx context.Context, sess *session, a proto.Huddle
 	if enc {
 		if len(dev) != 16 || len(stream) != proto.VoiceStreamSize {
 			return nil, proto.Errf(proto.ErrBadRequest, "encrypted huddles need dev and stream")
+		}
+		if devOK {
+			// Re-check under the lock: a revoke that committed (and swept)
+			// since the fast check above must not be let in.
+			var one int
+			err := s.st.db.QueryRowContext(ctx, `SELECT 1 FROM devices WHERE dev = ? AND user = ? AND revoked IS NULL`, dev, u).Scan(&one)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return nil, err
+			}
+			devOK = err == nil
 		}
 		if !devOK {
 			return nil, errForbidden
@@ -286,14 +300,25 @@ func (s *Server) huddleEventLocked(ev proto.Event) {
 	case proto.KDeviceRevoke:
 		// The revoked device's participation ends at once (receivers would
 		// drop its frames anyway, once their key cache expires).
-		s.broadcastHuddlesLocked(s.hud.dropWhere(func(p *participant) bool {
-			if p.dev == nil {
-				return false
+		// Query outside hud.mu so the relay never waits on the database.
+		s.hud.mu.RLock()
+		var devs [][]byte
+		for _, p := range s.hud.bySess {
+			if p.dev != nil {
+				devs = append(devs, p.dev)
 			}
-			var revoked bool
-			err := s.st.db.QueryRow(`SELECT revoked IS NOT NULL FROM devices WHERE dev = ?`, p.dev).Scan(&revoked)
-			return err == nil && revoked
-		}))
+		}
+		s.hud.mu.RUnlock()
+		revoked := map[string]bool{}
+		for _, d := range devs {
+			var r bool
+			if s.st.db.QueryRow(`SELECT revoked IS NOT NULL FROM devices WHERE dev = ?`, d).Scan(&r) == nil && r {
+				revoked[string(d)] = true
+			}
+		}
+		if len(revoked) > 0 {
+			s.broadcastHuddlesLocked(s.hud.dropWhere(func(p *participant) bool { return revoked[string(p.dev)] }))
+		}
 	case proto.KUserUpdate:
 		var u proto.User
 		if proto.Unmarshal(ev.Data, &u) != nil || !u.Disabled {

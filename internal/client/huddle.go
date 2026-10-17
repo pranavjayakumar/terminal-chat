@@ -33,6 +33,10 @@ type huddleState struct {
 	rosters  map[uint64][]proto.Part // chan → roster, as the server last said
 	cur      *participation
 	platform func() (voice.Platform, error) // nil = voice.Native (tests inject)
+	// gen moves on every join attempt and leave, so a join that finishes
+	// after a newer join or a leave tears itself down instead of
+	// replacing (and leaking) what's current.
+	gen uint64
 }
 
 type participation struct {
@@ -130,6 +134,10 @@ func (c *Client) JoinHuddle(ctx context.Context, ch uint64) error {
 		return ErrVoiceKeys
 	}
 	c.LeaveHuddle()
+	c.hud.mu.Lock()
+	c.hud.gen++
+	gen := c.hud.gen
+	c.hud.mu.Unlock()
 
 	args := proto.HuddleJoinArgs{Chan: ch}
 	var keys *huddleKeys
@@ -172,9 +180,26 @@ func (c *Client) JoinHuddle(ctx context.Context, ch uint64) error {
 	}
 	p := &participation{ch: ch, src: res.Src, sess: s, vs: vs, keys: keys, cancel: cancel}
 	c.hud.mu.Lock()
-	c.hud.cur = p
 	roster := c.hud.rosters[ch]
+	// The server sends our roster before the RES; anything since (we were
+	// dropped while the device opened) or a newer join/leave wins.
+	stale := c.hud.gen != gen || c.hud.cur != nil
+	dropped := !slices.ContainsFunc(roster, func(q proto.Part) bool { return q.Src == res.Src })
+	if !stale && !dropped {
+		c.hud.cur = p
+	}
 	c.hud.mu.Unlock()
+	if stale || dropped {
+		cancel()
+		_ = vs.Close()
+		if !stale {
+			_ = s.fire(proto.OpHuddleLeave, struct{}{})
+		}
+		if dropped {
+			return errors.New("dropped from the huddle while joining")
+		}
+		return errors.New("huddle join superseded")
+	}
 	c.applyRoster(p, roster)
 	go func() {
 		for {
@@ -263,6 +288,7 @@ func (c *Client) huddleStillValid(ctx context.Context, p *participation) bool {
 		return true
 	}
 	if st.State == E2EOK && p.keys.fresh() {
+		p.keys.prime()
 		return true
 	}
 	k := p.keys
@@ -286,6 +312,7 @@ func (c *Client) huddleStillValid(ctx context.Context, p *participation) bool {
 // LeaveHuddle leaves the current huddle, if any, and closes the audio device.
 func (c *Client) LeaveHuddle() {
 	c.hud.mu.Lock()
+	c.hud.gen++ // a join still in flight gives up
 	p := c.hud.cur
 	c.hud.mu.Unlock()
 	if p == nil {
@@ -484,6 +511,32 @@ func (k *huddleKeys) fresh() bool {
 		return false
 	}
 	return slices.Equal(ep.Roster, k.c.rosterNow(ch)) && !k.c.boxedRevoked(k.sid, ep)
+}
+
+// prime re-reads the head and re-derives our sender key off the audio
+// thread, so Send (called from the audio callback) always finds them
+// cached and never touches the trust store.
+func (k *huddleKeys) prime() {
+	h, ok, err := k.c.trust.ChainHead(k.sid, k.ch)
+	if err != nil || !ok || h.Epoch == 0 {
+		return
+	}
+	vk, ok := k.epochKey(h.Epoch, k.me)
+	if !ok {
+		return
+	}
+	s, err := e2ecrypto.NewVoiceSender(vk, k.dev, k.stream)
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if h.Epoch != k.headEp {
+		k.grace = now.Add(prevEpochGrace)
+	}
+	k.headEp, k.headAt = h.Epoch, now
+	k.cache[[2]uint32{0, h.Epoch}] = cachedKey{s, now}
 }
 
 // member reports whether user is a current member of the channel.
