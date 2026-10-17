@@ -782,6 +782,10 @@ func (c *Client) sealWith(ctx context.Context, s *session, chID uint64, prev []b
 	defer wait.Stop()
 	select {
 	case <-s.devReady:
+	case <-s.devTried:
+		if err := s.deviceErr(); err != nil {
+			return nil, failErr{sanitize.Line(err.Error())}
+		}
 	case <-s.done:
 		return nil, ErrOffline
 	case <-ctx.Done():

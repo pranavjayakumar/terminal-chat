@@ -3,9 +3,11 @@ package e2e
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/identity"
 	"github.com/skailama/tc/internal/proto"
@@ -53,11 +55,25 @@ func TestRevokeDevice_BreakFromUnregisteredDeviceWhenFull(t *testing.T) {
 	if err := fresh.RefreshDevices(ctx, a); err != nil {
 		t.Fatal(err)
 	}
+	// The refusal is reported, not waited on for ever.
+	eventually(t, "registration failure reported", func() bool { return errors.Is(fresh.DeviceError(), client.ErrTooManyDevices) })
 	start := time.Now()
 	if _, err := fresh.RevokeDevice(ctx, old.ID, false); err != nil {
 		t.Fatalf("revoking an old device from a new machine while the device list is full: %v (after %s)",
 			err, time.Since(start).Round(time.Second))
 	}
+	// The freed slot is this machine's at once.
+	if err := fresh.DeviceError(); err != nil {
+		t.Fatalf("after the revoke: %v", err)
+	}
+	mine, err := fresh.Trust().DeviceKeys(sid, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "new machine registered", func() bool {
+		d, ok, _ := devs[0].Trust().Device(sid, mine.ID)
+		return ok && !d.Revoked
+	})
 }
 
 // `tc devices revoke <this> --self` promises the device "re-registers with

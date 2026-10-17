@@ -261,8 +261,9 @@ func (c *Client) e2eLoop(ctx context.Context, s *session, signer ssh.Signer) {
 	c.mu.Lock()
 	clear(c.probed) // a fetch that failed on the last connection is tried again
 	c.mu.Unlock()
-	// Best effort: a failure is retried on the next connection.
-	_ = c.ensureDevice(ctx, s, signer)
+	// A failure is retried on the next connection, or when RevokeDevice
+	// asks (devRetry); meanwhile e2eSession reports it (devErr).
+	c.tryDevice(ctx, s, signer)
 	t := time.NewTicker(c.timing.keyNeed)
 	defer t.Stop()
 	for {
@@ -273,6 +274,9 @@ func (c *Client) e2eLoop(ctx context.Context, s *session, signer ssh.Signer) {
 				return
 			case <-s.done:
 				return
+			case done := <-s.devRetry:
+				done <- c.tryDevice(ctx, s, signer)
+				wait = false
 			case e := <-c.keyNeeds:
 				c.answerKeyNeed(ctx, s, sid, e)
 			case <-c.e2eKick:
@@ -333,7 +337,7 @@ func (c *Client) selfRevoked(s *session, sid e2ecrypto.ServerID, me uint64) bool
 	if err != nil || cur.ID == dev.ID {
 		return false
 	}
-	s.fail()
+	s.restart()
 	return true
 }
 

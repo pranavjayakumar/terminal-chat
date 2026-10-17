@@ -205,26 +205,66 @@ func (c *Client) RefreshDevices(ctx context.Context, user uint64) error {
 	return nil
 }
 
-// RevokeDevice revokes one of our own devices for good (device.revoke).
+// RevokeOpts are RevokeDeviceOpts's options.
+type RevokeOpts struct {
+	// Self allows revoking the device we run on.
+	Self bool
+	// Force revokes this device even when the account has no device
+	// registrations left, so it can never register again.
+	Force bool
+}
+
+// ErrLastRegistration refuses to revoke this device when it couldn't
+// register again afterwards (RevokeOpts.Force overrides).
+var ErrLastRegistration = fmt.Errorf("%w: revoked, this device could never register again and would lose encryption for good", ErrNoRegistrations)
+
+// RevokeDevice is RevokeDeviceOpts with RevokeOpts{Self: allowSelf}.
+func (c *Client) RevokeDevice(ctx context.Context, dev e2ecrypto.DevID, allowSelf bool) (rotated int, err error) {
+	return c.RevokeDeviceOpts(ctx, dev, RevokeOpts{Self: allowSelf})
+}
+
+// RevokeDeviceOpts revokes one of our own devices for good (device.revoke).
 // It signs with our SSH key, or, when that can't sign (agent locked, key
 // unavailable), with this device's key. Revoking the device we run on
-// needs allowSelf; this device then reconnects as a new device.
+// needs o.Self; this device then reconnects as a new device (refused with
+// ErrLastRegistration when no registration is left, unless o.Force).
+//
+// It works while this device isn't registered (e.g. the account has the
+// most devices allowed, so the server refused it): that is when an old
+// device needs revoking. This device then registers in the freed slot.
 //
 // Afterwards every encrypted channel we're in whose current key the revoked
 // device may hold (boxed to it, or shared with it by key.share) gets a new
-// epoch without it right away (rotated
-// counts them; a channel that fails to rotate now rotates before its next
-// send anyway).
-func (c *Client) RevokeDevice(ctx context.Context, dev e2ecrypto.DevID, allowSelf bool) (rotated int, err error) {
-	s, sid, err := c.e2eSession(ctx)
+// epoch without it right away (rotated counts them; a channel that fails to
+// rotate now, or can't because this device isn't registered, rotates before
+// anyone's next send anyway).
+func (c *Client) RevokeDeviceOpts(ctx context.Context, dev e2ecrypto.DevID, o RevokeOpts) (rotated int, err error) {
+	s, sid, err := c.e2eConn(ctx)
 	if err != nil {
 		return 0, err
 	}
 	me := c.Me().ID
-	mine := s.myDevice()
-	self := mine != nil && mine.ID == dev
-	if self && !allowSelf {
+	this, err := c.trust.DeviceKeys(sid, me)
+	if err != nil {
+		return 0, err
+	}
+	self := this.ID == dev
+	if self && !o.Self {
 		return 0, ErrRevokeSelf
+	}
+	registered := s.registered()
+	mine := s.myDevice()
+	if !registered || (mine != nil && mine.ID != this.ID) {
+		mine = nil // the server doesn't know it (or it's being replaced): can't sign revokes
+	}
+	if self && !o.Force {
+		certs, revokes, err := c.fetchDevices(ctx, s, proto.DevicesListArgs{Users: []uint64{me}})
+		if err != nil {
+			return 0, err
+		}
+		if _, total := countDevices(me, certs, revokes); total >= proto.MaxDeviceRegistrations {
+			return 0, ErrLastRegistration
+		}
 	}
 	d, ok, err := c.trust.Device(sid, dev)
 	if err != nil {
@@ -281,8 +321,16 @@ func (c *Client) RevokeDevice(ctx context.Context, dev e2ecrypto.DevID, allowSel
 		if err == nil {
 			c.myDev.Store(&keys.ID)
 		}
-		s.fail()
+		s.restart()
 		return 0, err
+	}
+	if !registered {
+		// The revoke may have freed the slot the server refused us: register
+		// now, so this device can rotate (and read and send) at once.
+		if c.retryDevice(ctx, s) != nil || !s.registered() {
+			c.post(Update{Channels: true})
+			return 0, nil // DeviceError says why; others rotate before sending
+		}
 	}
 
 	c.e2eMu.Lock()
@@ -310,4 +358,42 @@ func (c *Client) RevokeDevice(ctx context.Context, dev e2ecrypto.DevID, allowSel
 	}
 	c.post(Update{Channels: true})
 	return rotated, nil
+}
+
+// retryDevice asks session s's e2e worker to register this device again
+// and waits (at most timing.devWait) for the outcome.
+func (c *Client) retryDevice(ctx context.Context, s *session) error {
+	t := time.NewTimer(c.timing.devWait)
+	defer t.Stop()
+	done := make(chan error, 1)
+	select {
+	case s.devRetry <- done:
+	case <-s.done:
+		return ErrOffline
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return fmt.Errorf("%w yet (still trying)", ErrDeviceNotRegistered)
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-s.done:
+		return ErrOffline
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return fmt.Errorf("%w yet (still trying)", ErrDeviceNotRegistered)
+	}
+}
+
+// RegistrationsLeft is how many more devices the account may ever register
+// (proto.MaxDeviceRegistrations minus every device the cache knows of ours,
+// revoked ones included): the server's word, so only for warnings.
+func (c *Client) RegistrationsLeft() int {
+	var n int
+	if err := c.db.QueryRow(`SELECT COUNT(DISTINCT dev) FROM devices WHERE user = ?`, c.Me().ID).Scan(&n); err != nil {
+		return proto.MaxDeviceRegistrations
+	}
+	return max(proto.MaxDeviceRegistrations-n, 0)
 }

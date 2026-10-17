@@ -149,10 +149,104 @@ func (c *Client) ensureDevice(ctx context.Context, s *session, signer ssh.Signer
 	}
 	// The device.new event lands in the cache through the event stream.
 	if _, err = s.call(ctx, proto.OpDeviceRegister, proto.DeviceRegisterArgs{Cert: proto.Signed(cert)}, nil); err != nil {
-		return err
+		var pe *proto.Error
+		if errors.As(err, &pe) && pe.Code == proto.ErrBadRequest {
+			// The server's counts are its word, but they only pick the advice.
+			switch active, total := countDevices(me, certs, revokes); {
+			case active >= proto.MaxDevices:
+				return fmt.Errorf("%w (%d active, the most allowed): revoke one you no longer use with tc devices revoke <id> or /devices", ErrTooManyDevices, active)
+			case total >= proto.MaxDeviceRegistrations:
+				return ErrNoRegistrations
+			}
+		}
+		return fmt.Errorf("registering this device: %w", err)
 	}
 	s.devOnce.Do(func() { close(s.devReady) })
 	return nil
+}
+
+var (
+	// ErrDeviceNotRegistered: this device has no registered keys, so it
+	// can't read or send encrypted messages (yet).
+	ErrDeviceNotRegistered = errors.New("this device isn't registered for encryption")
+	// ErrTooManyDevices: registering would pass proto.MaxDevices.
+	ErrTooManyDevices = errors.New("you have too many devices")
+	// ErrNoRegistrations: the account used all proto.MaxDeviceRegistrations.
+	ErrNoRegistrations = fmt.Errorf("your account has used all %d device registrations it may ever make", proto.MaxDeviceRegistrations)
+)
+
+// countDevices counts user's devices in a devices.list answer: active
+// (not revoked) and total (every registration, revoked included).
+func countDevices(user uint64, certs, revokes []proto.Signed) (active, total int) {
+	revoked := map[e2ecrypto.DevID]bool{}
+	for _, r := range revokes {
+		if dr, err := identity.PeekDeviceRevoke(identity.Signed(r)); err == nil && dr.User == user {
+			revoked[dr.Dev] = true
+		}
+	}
+	seen := map[e2ecrypto.DevID]bool{}
+	for _, sc := range certs {
+		dc, err := identity.PeekDeviceCert(identity.Signed(sc))
+		if err != nil || dc.User != user || seen[dc.Dev] {
+			continue
+		}
+		seen[dc.Dev] = true
+		total++
+		if !revoked[dc.Dev] {
+			active++
+		}
+	}
+	return active, total
+}
+
+// tryDevice runs ensureDevice and records the outcome for e2eSession.
+func (c *Client) tryDevice(ctx context.Context, s *session, signer ssh.Signer) error {
+	err := c.ensureDevice(ctx, s, signer)
+	if err != nil {
+		s.devErr.Store(&err)
+	} else {
+		s.devErr.Store(nil)
+	}
+	s.devTriedOne.Do(func() { close(s.devTried) })
+	c.post(Update{Status: true})
+	return err
+}
+
+// registered reports whether the server has this session's device.
+func (s *session) registered() bool {
+	select {
+	case <-s.devReady:
+		return true
+	default:
+		return false
+	}
+}
+
+// deviceErr is why this session's device isn't registered (nil if it is,
+// or no attempt has finished yet).
+func (s *session) deviceErr() error {
+	if s.registered() {
+		return nil
+	}
+	if p := s.devErr.Load(); p != nil {
+		if errors.Is(*p, ErrDeviceNotRegistered) {
+			return *p
+		}
+		return fmt.Errorf("%w: %w", ErrDeviceNotRegistered, *p)
+	}
+	return nil
+}
+
+// DeviceError is why this device isn't registered for encryption on the
+// current connection (nil when it is, while offline, or not known yet).
+func (c *Client) DeviceError() error {
+	c.mu.Lock()
+	s := c.sess
+	c.mu.Unlock()
+	if s == nil || !s.e2e() {
+		return nil
+	}
+	return s.deviceErr()
 }
 
 // fetchDevices pages through devices.list with args and stores everything

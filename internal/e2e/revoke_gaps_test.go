@@ -186,3 +186,46 @@ func rawRevoke(t *testing.T, addr, pin, keyPath string, sid e2ecrypto.ServerID, 
 		codec.Write(proto.TReq, reqs[1])
 	}
 }
+
+// B12: the reconnect after revoke --self is intentional, so it mustn't grow
+// the reconnect backoff: several in a row each come back within a second or
+// so (it used to double each time: offline > 15 s after ~7 cycles).
+func TestRevokeSelfRepeatedNoBackoff(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	t.Setenv("TC_TRANSPORT", "tcp")
+	s, addr := startServer(t, t.TempDir(), "127.0.0.1:0")
+	alice := login(t, s, addr, "alice", true)
+	eventually(t, "online", alice.online)
+	sid := alice.sid(t)
+	a := alice.Me().ID
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	for i := range 7 {
+		cur, err := alice.Trust().DeviceKeys(sid, a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		eventually(t, "registered", func() bool {
+			d, ok, _ := alice.Trust().Device(sid, cur.ID)
+			return alice.online() && ok && !d.Revoked && alice.DeviceError() == nil
+		})
+		if _, err := alice.RevokeDevice(ctx, cur.ID, true); err != nil {
+			t.Fatalf("cycle %d: %v", i, err)
+		}
+		start := time.Now()
+		next, err := alice.Trust().DeviceKeys(sid, a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for {
+			d, ok, _ := alice.Trust().Device(sid, next.ID)
+			if alice.online() && ok && !d.Revoked {
+				break
+			}
+			if time.Since(start) > 3*time.Second {
+				t.Fatalf("cycle %d: not back as a new device after %s", i, time.Since(start))
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}

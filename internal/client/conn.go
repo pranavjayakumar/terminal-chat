@@ -53,16 +53,28 @@ type session struct {
 	sawSnapshot bool
 
 	// E2E: our login key, our device keys once loaded, and devReady,
-	// closed once the server has our device (e2e.go).
-	sshPub   []byte
-	dev      atomic.Pointer[e2ecrypto.DeviceKeys]
-	devReady chan struct{}
-	devOnce  sync.Once
+	// closed once the server has our device (e2e.go). devTried closes
+	// after the first registration attempt whatever its outcome; devErr
+	// is why the last attempt failed (nil once registered); devRetry asks
+	// the e2e worker to try again (a revoke may have freed a slot).
+	sshPub      []byte
+	dev         atomic.Pointer[e2ecrypto.DeviceKeys]
+	devReady    chan struct{}
+	devOnce     sync.Once
+	devTried    chan struct{}
+	devTriedOne sync.Once
+	devErr      atomic.Pointer[error]
+	devRetry    chan chan error
+
+	// restarting: we ended the session on purpose (new device keys), so
+	// the reconnect isn't a failure that grows the backoff.
+	restarting atomic.Bool
 }
 
 func newSession(conn transport.Conn, codec *proto.Codec, w proto.Welcome, recvTimeout time.Duration) *session {
 	s := &session{conn: conn, codec: codec, welcome: w, done: make(chan struct{}),
-		pending: map[uint32]pendingReq{}, syncing: true, devReady: make(chan struct{})}
+		pending: map[uint32]pendingReq{}, syncing: true, devReady: make(chan struct{}),
+		devTried: make(chan struct{}), devRetry: make(chan chan error)}
 	s.lastSend.Store(time.Now().UnixNano())
 	// A timer rather than a polling goroutine: a blocked write must not be
 	// able to delay the receive timeout.
@@ -78,6 +90,16 @@ func (s *session) send(t proto.FrameType, v any) error {
 	s.lastSend.Store(time.Now().UnixNano())
 	return err
 }
+
+// restart ends the session on purpose: Run reconnects soon, without
+// counting it as a failure.
+func (s *session) restart() {
+	s.restarting.Store(true)
+	s.fail()
+}
+
+// errRestart is connect's result for a session ended by restart.
+var errRestart = errors.New("reconnecting with new device keys")
 
 // fail closes the connection and fails every pending request with ErrOffline.
 func (s *session) fail() {
@@ -411,7 +433,8 @@ func (c *Client) Run(ctx context.Context) {
 		}
 		// Only a session that stayed up resets the backoff, so a server that
 		// syncs and immediately drops us can't make us reconnect in a hot loop.
-		if online && time.Since(start) >= stableSession {
+		restart := errors.Is(err, errRestart)
+		if online && (restart || time.Since(start) >= stableSession) {
 			backoff = c.timing.backoffMin
 		}
 		st := Status{State: Offline, Stopped: fatal(err)}
@@ -423,7 +446,9 @@ func (c *Client) Run(ctx context.Context) {
 			return
 		}
 		d := backoff/2 + rand.N(backoff/2+1)
-		backoff = min(backoff*2, c.timing.backoffMax)
+		if !restart || !online {
+			backoff = min(backoff*2, c.timing.backoffMax)
+		}
 		t := time.NewTimer(d)
 		select {
 		case <-ctx.Done():
@@ -532,8 +557,11 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 	}
 	s.fail()
 	scancel()
-	if s.timedOut.Load() {
+	switch {
+	case s.timedOut.Load():
 		err = errTimeout
+	case s.restarting.Load():
+		err = errRestart
 	}
 	c.mu.Lock()
 	if c.sess == s {
