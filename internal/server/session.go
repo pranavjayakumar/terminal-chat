@@ -158,7 +158,7 @@ func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp str
 		if err != nil || used || uses < 1 || expires <= now {
 			return nil, fail(proto.ByeInviteInvalid, "invite is invalid, used or expired")
 		}
-		if msg, err := s.redeemCheck(ctx, tx, stored, createdBy, fp); err != nil {
+		if msg, err := s.redeemCheck(ctx, tx, stored, createdBy, target.Valid, fp); err != nil {
 			return nil, err
 		} else if msg != "" {
 			return nil, fail(proto.ByeInviteInvalid, msg)

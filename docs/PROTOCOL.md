@@ -120,8 +120,9 @@ redemption either completed before it or fails with `invite_invalid`.
 **Member invites** (cap `member_invites`, advertised only while the server runs with
 `tc server --member-invites=true`, the default). Members (not bots) may then use `invite.create`,
 `invite.list` and `invite.revoke` within tighter limits; admins are unaffected:
-- `invite.create` makes a new-user invite that never grants admin, or an add-key invite for
-  the member's own account (`user` = self; anyone else → `forbidden`). `uses` 1–10, `ttl`
+- `invite.create` makes a new-user invite that never grants admin. `user` (an add-key
+  invite) → `forbidden`, even for the member's own account: only admins add login keys, so
+  a stolen SSH key can't mint a second key that outlives revoking it. `uses` 1–10, `ttl`
   at most 7 days (default 7 days); beyond → `bad_request`.
 - At most 5 live (redeemable) invites per member; a 6th → `conflict`. The count and the
   insert are one serialized transaction, so concurrent creates can't exceed it. Spent,
@@ -134,7 +135,8 @@ redemption either completed before it or fails with `invite_invalid`.
   (`invite_invalid`); they come back, if unexpired, when it is turned on again.
 - Disabling a user (`user.disable`), member or admin, deletes every invite they created
   in the same transaction. Redemption also re-checks that the creator is still enabled and
-  still allowed to invite.
+  still allowed to invite. An add-key invite whose creator isn't an admin (unreleased builds let
+  members make them for themselves) is neither listed nor redeemable (`invite_invalid`).
 
 **Key-bound invites** (cap `key_invites`). `invite.create {keys: [bin], key_src?: str}`
 binds an invite to SSH public keys (wire format, `ssh.PublicKey.Marshal`): only a joiner
@@ -145,7 +147,8 @@ stored):
   ed25519, ECDSA (nistp256/384/521), their `sk-` security-key forms, or RSA of
   2048–16384 bits. Duplicates collapse; the server stores only fingerprints.
 - Key-bound invites are single-use (`uses` > 1 → `bad_request`). They may be new-user,
-  add-key or (server host) admin invites, made by admins or (with `member_invites`) members.
+  add-key or (server host) admin invites, made by admins or (new-user only, with
+  `member_invites`) members.
 - `key_src` is a label shown by `invite.list`: empty or `github:<login>`, `login` matching
   `^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`; it needs `keys`. It is the creator's claim, not
   checked by the server: informational only.
@@ -221,7 +224,7 @@ session **before** the RES. The `seq` in a RES is informational: clients advance
 | `chan.topic` | `{chan, topic: str}` | `{seq}` |
 | `dm.open` | `{users: [u64]}` (0–7 others; 0 = your private notes) | `{chan: Channel}` |
 | `users.list` | `{}` | `{users: [User]}` |
-| `invite.create` | `{user?: u64, uses?: int, ttl_ms?: i64, keys?: [bin], key_src?: str}` (admin; `uses` 1–100, `ttl_ms` 60 000–30 days, else `bad_request`; `uses` > 1 with `user` or `keys` → `bad_request`; members with cap `member_invites`: `uses` 1–10, `ttl_ms` ≤ 7 days, `user` only self else `forbidden`, ≤ 5 live else `conflict`) | `{code: str, uses?: int, expires?: i64, keys?: int}` (cap `team_invites` for `uses`/`ttl_ms`, cap `key_invites` for `keys`/`key_src`, §4.1) |
+| `invite.create` | `{user?: u64, uses?: int, ttl_ms?: i64, keys?: [bin], key_src?: str}` (admin; `uses` 1–100, `ttl_ms` 60 000–30 days, else `bad_request`; `uses` > 1 with `user` or `keys` → `bad_request`; members with cap `member_invites`: `uses` 1–10, `ttl_ms` ≤ 7 days, any `user` → `forbidden`, ≤ 5 live else `conflict`) | `{code: str, uses?: int, expires?: i64, keys?: int}` (cap `team_invites` for `uses`/`ttl_ms`, cap `key_invites` for `keys`/`key_src`, §4.1) |
 | `invite.list` | `{}` (admin: all; member with cap `member_invites`: own only) | `{invites: [{id: str, kind: "user"\|"admin"\|"key", user?: u64, uses_left: int, expires: i64, created: i64, created_by: u64, keys?: int, key_src?: str}]}` — live invites only, soonest to expire first; `created_by` 0 = made on the server host; `keys` = how many SSH keys it is bound to; never the token (cap `invite_manage`, §4.1) |
 | `invite.revoke` | `{id: str}` (admin; member with cap `member_invites`: own only, others' → `not_found`; 12 lowercase hex, else `bad_request`) | `{}` — no open (unused, unexpired) invite with that id → `not_found`; an id matching two invites → `conflict` (cap `invite_manage`) |
 | `user.disable` | `{user}` (admin) | `{}` — closes their sessions with BYE `revoked` |
