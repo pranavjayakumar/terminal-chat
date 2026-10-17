@@ -1,10 +1,18 @@
-.PHONY: build test test-malicious fuzz lint dev clean release-sign
+.PHONY: build build-voice test test-voice test-malicious fuzz lint dev clean release-sign
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
 build:
 	CGO_ENABLED=0 GOTOOLCHAIN=local go build -trimpath -ldflags "$(LDFLAGS)" -o bin/tc ./cmd/tc
+
+# Voice huddles need cgo + libopus (docs/VOICE.md): brew install opus /
+# apt install libopus-dev. The default build above stays static and CGO-free.
+build-voice:
+	CGO_ENABLED=1 GOTOOLCHAIN=local go build -tags voice -trimpath -ldflags "$(LDFLAGS)" -o bin/tc-voice ./cmd/tc
+
+test-voice:
+	CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -tags voice ./internal/voice/
 
 test: test-malicious
 	GOTOOLCHAIN=local go test -race ./...
