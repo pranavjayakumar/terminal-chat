@@ -34,7 +34,6 @@ cat > "$out" <<EOF
 class Tc < Formula
   desc "Lightweight end-to-end encrypted team chat for the terminal"
   homepage "https://github.com/pranavjayakumar/terminal-chat"
-  version "$version"
   license :cannot_represent
 
   on_macos do
