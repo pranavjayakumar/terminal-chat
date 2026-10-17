@@ -546,8 +546,32 @@ func TestEncCreateRefusesPlaintextAnswer(t *testing.T) {
 	d := newEncDM(t, proto.Snapshot{})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := d.c.CreateEncryptedChannel(ctx, "sec", ""); err == nil || !strings.Contains(err.Error(), "without encryption") {
+	d.f.mu.Lock()
+	d.f.onOp = func(f *e2eFake, r proto.Req) bool {
+		if r.Op != proto.OpChanCreate {
+			return false
+		}
+		f.ok(r.ID, proto.ChanRes{Chan: proto.Channel{ID: 77, Name: "sec", Kind: proto.ChanPrivate, Members: []uint64{alice}}})
+		return true
+	}
+	d.f.mu.Unlock()
+	ch, err := d.c.CreateEncryptedChannel(ctx, "sec", "")
+	if err == nil || !strings.Contains(err.Error(), "without encryption") {
 		t.Fatalf("create: %v", err)
+	}
+	// The channel the server made anyway stays ours-encrypted (sticky):
+	// nothing goes into it as plaintext.
+	if ch.ID == 0 {
+		t.Fatal("no channel id in the answer")
+	}
+	{
+		sid, _ := d.c.cacheServerID()
+		if was, _ := d.c.trust.ChannelE2E(sid, ch.ID); !was {
+			t.Fatal("plaintext answer not marked encrypted (sticky)")
+		}
+		if !d.c.needsEnc(ch.ID) {
+			t.Fatal("a send there would go out in plaintext")
+		}
 	}
 }
 
