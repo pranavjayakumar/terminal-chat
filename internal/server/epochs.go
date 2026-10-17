@@ -499,7 +499,18 @@ func (s *Server) rotateTx(ctx context.Context, tx *sql.Tx, u proto.User, ch uint
 	// since the current epoch was made. Compared against what the server
 	// recorded then, not what the bundle boxed: otherwise a member with
 	// one never-boxed device could rotate without limit.
-	if head.bundle != nil && bytes.Equal(head.state, state[:]) {
+	capped := head.bundle != nil && bytes.Equal(head.state, state[:])
+	if capped {
+		// A device registered after the epoch and revoked since leaves the
+		// state unchanged, but it may hold K by key.share: rotating away
+		// from it must not wait.
+		rev, err := revokedSince(ctx, tx, ch, head.seq)
+		if err != nil {
+			return none, err
+		}
+		capped = !rev
+	}
+	if capped {
 		if now-head.time < rotateChanEveryMs {
 			return none, proto.Errf(proto.ErrRateLimited, "nothing changed since the channel's last rotation")
 		}
@@ -583,7 +594,9 @@ func (s *Server) opKeyFetch(ctx context.Context, u proto.User, a proto.KeyFetchA
 
 // EpochStale reports whether encrypted channel ch needs a rotation before
 // anyone encrypts to it: it has no bundle yet, its roster isn't the current
-// non-disabled members, or it boxes a revoked device. Unencrypted channels
+// non-disabled members, it boxes a revoked device, or a member's device
+// was revoked after its key.epoch (that device may hold K by key.share,
+// PROTOCOL §13.3). Unencrypted channels
 // are never stale. It reads outside any transaction; a write that depends
 // on the answer must call epochStale with its own tx inside s.write.
 func (s *Server) EpochStale(ctx context.Context, ch uint64) (bool, error) {
@@ -616,9 +629,26 @@ func epochStale(ctx context.Context, q querier, ch uint64) (bool, error) {
 		args[i] = devs[i][:]
 	}
 	var revoked int
-	err = q.QueryRowContext(ctx, revokedBoxesQuery(len(devs)), args...).Scan(&revoked)
-	return revoked > 0, err
+	if err = q.QueryRowContext(ctx, revokedBoxesQuery(len(devs)), args...).Scan(&revoked); err != nil || revoked > 0 {
+		return revoked > 0, err
+	}
+	return revokedSince(ctx, q, ch, h.seq)
 }
+
+// revokedSince reports whether a device of a current member of ch was
+// revoked after seq (the current epoch's key.epoch). Such a device may
+// hold the epoch's K without a box (key.share to a device registered
+// after the bundle), so the epoch is stale (§13.3).
+func revokedSince(ctx context.Context, q querier, ch, seq uint64) (bool, error) {
+	var hit bool
+	err := q.QueryRowContext(ctx, revokedSinceQuery, ch, seq).Scan(&hit)
+	return hit, err
+}
+
+// (Members as in rosterQuery: not disabled.)
+const revokedSinceQuery = `SELECT EXISTS (SELECT 1 FROM membership m JOIN users u ON u.id = m.user
+		JOIN devices d ON d.user = m.user
+		WHERE m.chan = ? AND m.leave_seq IS NULL AND u.disabled = 0 AND d.revoked IS NOT NULL AND d.revoked_seq > ?)`
 
 // errHookE2E: webhooks can't post into encrypted channels (their text
 // comes from outside, and only members' devices can encrypt).

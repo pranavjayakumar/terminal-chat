@@ -243,6 +243,11 @@ func isFormer(former []formerDev, id e2ecrypto.DevID, x25519 [32]byte, ed25519 [
 	})
 }
 
+// getChanEpoch reads ch's cached epoch into e.
+func getChanEpoch(q dbtx, ch uint64, e *uint32) error {
+	return q.QueryRow(`SELECT epoch FROM chans WHERE id = ?`, ch).Scan(e)
+}
+
 // cachedMaxEpoch is the highest epoch among ch's cached, unverified bundles.
 func (c *Client) cachedMaxEpoch(ch uint64) (e uint32) {
 	c.db.QueryRow(`SELECT COALESCE(MAX(epoch), 0) FROM epochs WHERE chan = ?`, ch).Scan(&e)
@@ -290,8 +295,9 @@ func (c *Client) e2eLoop(ctx context.Context, s *session, signer ssh.Signer) {
 	c.mu.Lock()
 	clear(c.probed) // a fetch that failed on the last connection is tried again
 	c.mu.Unlock()
-	// Best effort: a failure is retried on the next connection.
-	_ = c.ensureDevice(ctx, s, signer)
+	// A failure is retried every timing.keyNeed, on the next connection, or
+	// when RevokeDevice asks (devRetry); meanwhile e2eSession reports it.
+	c.tryDevice(ctx, s, signer)
 	t := time.NewTicker(c.timing.keyNeed)
 	defer t.Stop()
 	for {
@@ -302,16 +308,61 @@ func (c *Client) e2eLoop(ctx context.Context, s *session, signer ssh.Signer) {
 				return
 			case <-s.done:
 				return
+			case done := <-s.devRetry:
+				done <- c.tryDevice(ctx, s, signer)
+				wait = false
 			case e := <-c.keyNeeds:
 				c.answerKeyNeed(ctx, s, sid, e)
 			case <-c.e2eKick:
 				wait = false
 			case <-t.C:
+				if c.retryDue(s, sid) {
+					c.tryDevice(ctx, s, signer)
+				}
 				wait = false
 			}
 		}
 	}
 }
+
+// retryDue reports whether the e2e worker should try registering this
+// device again on its tick: never once registered or with no registrations
+// left; with too many devices only after one of ours was revoked since the
+// last try (each try signs with the SSH key, which may ask for a touch);
+// otherwise (any other failure) with a gap that doubles up to
+// maxDevRetryGap, so a server that keeps refusing can't make the SSH key
+// ask for a touch every tick.
+func (c *Client) retryDue(s *session, sid e2ecrypto.ServerID) bool {
+	err := s.deviceErr()
+	switch {
+	case err == nil || errors.Is(err, ErrNoRegistrations):
+		return false
+	case errors.Is(err, ErrTooManyDevices):
+		n := 0
+		devs, _ := c.trust.Devices(sid, c.Me().ID)
+		for _, d := range devs {
+			if d.Revoked {
+				n++
+			}
+		}
+		if n == s.revokedSeen {
+			return false
+		}
+		s.revokedSeen = n
+	default:
+		now := time.Now()
+		if now.Before(s.devNext) {
+			return false
+		}
+		s.devGap = min(max(2*s.devGap, c.timing.keyNeed), maxDevRetryGap)
+		s.devNext = now.Add(s.devGap - c.timing.keyNeed/2) // ticks jitter a little
+	}
+	return true
+}
+
+// maxDevRetryGap is the longest wait between the e2e worker's registration
+// retries after transient failures.
+const maxDevRetryGap = 16 * time.Minute
 
 // myDevice is this session's device keys (nil until ensureDevice loaded them).
 func (s *session) myDevice() *e2ecrypto.DeviceKeys { return s.dev.Load() }
@@ -362,8 +413,15 @@ func (c *Client) selfRevoked(s *session, sid e2ecrypto.ServerID, me uint64) bool
 	if err != nil || cur.ID == dev.ID {
 		return false
 	}
-	s.fail()
+	s.restart()
 	return true
+}
+
+// selfRevokedKeys reports whether dev is no longer this device's current
+// keys in the trust store (retired by a revoke --self).
+func (c *Client) selfRevokedKeys(sid e2ecrypto.ServerID, dev e2ecrypto.DevID) bool {
+	cur, err := c.trust.DeviceKeys(sid, c.Me().ID)
+	return err != nil || cur.ID != dev
 }
 
 // e2eChannels lists the cached channels we're a member of that are, or
@@ -689,6 +747,7 @@ func (c *Client) applyRevoke(sid e2ecrypto.ServerID, r seqRevoke, byDevice bool,
 	if err != nil || pr.ServerID != sid {
 		return false
 	}
+	r.seq = c.plausibleRevokeSeq(sid, r.seq)
 	d, ok, _ := ts.Device(sid, pr.Dev)
 	// Only a known device of the revoke's user: a member must not be able
 	// to pre-revoke someone else's device id. Skip a revoke if we already
@@ -724,6 +783,23 @@ func (c *Client) applyRevoke(sid e2ecrypto.ServerID, r seqRevoke, byDevice bool,
 		}
 	}
 	return valid && ts.RevokeDeviceAtTime(sid, pr.Dev, r.seq, signedAt) == nil
+}
+
+// plausibleRevokeSeq is a revoke's claimed seq, or 0 (unknown) while it is
+// past this device's sync cursor: a seq the stream hasn't reached would
+// make every epoch until then stale (§13.3), and a server inflating it
+// could keep everyone rotating. Our own revoke's seq can run a little
+// ahead of the cursor; a claim more than proto.SnapshotGap ahead (no
+// honest server is that far) raises a server alarm.
+func (c *Client) plausibleRevokeSeq(sid e2ecrypto.ServerID, seq uint64) uint64 {
+	cur, err := metaUint(c.db, "last_seq")
+	if err != nil || seq <= cur {
+		return seq
+	}
+	if seq-cur > proto.SnapshotGap {
+		_ = c.trust.RaiseServerAlarm(sid, fmt.Sprintf("a device revoke claims seq %d, far past this device's sync position %d", seq, cur))
+	}
+	return 0
 }
 
 // seqRevoke is a cached DeviceRevoke with its event seq (0 = unknown).
@@ -940,6 +1016,33 @@ func (c *Client) recoverPoisoned(ctx context.Context, s *session, sid e2ecrypto.
 	_ = c.rotateLocked(ctx, s, sid, ch)
 }
 
+// rotateOwed rotates ch while it is owed a rotation (we revoked a device
+// that may hold its key, trust.OweRotation) and the revoke couldn't make it
+// then (not registered, offline, refused), at most once per channel
+// per timing.keyNeed. Caller holds e2eMu.
+func (c *Client) rotateOwed(ctx context.Context, s *session, sid e2ecrypto.ServerID, ch uint64) {
+	_, ok, err := c.trust.ChainHead(sid, ch)
+	if err != nil || !ok || !s.registered() {
+		return
+	}
+	// Not with keys a revoke --self (here or in another process) retired:
+	// the next session's worker does it with the new ones.
+	if dev := s.myDevice(); dev == nil || c.selfRevokedKeys(sid, dev.ID) {
+		return
+	}
+	if owed, err := c.trust.RotationOwed(sid, ch); err != nil || !owed {
+		return
+	}
+	c.mu.Lock()
+	if t, ok := c.owedTried[ch]; ok && time.Since(t) < c.timing.keyNeed {
+		c.mu.Unlock()
+		return
+	}
+	c.owedTried[ch] = time.Now()
+	c.mu.Unlock()
+	_ = c.rotateLocked(ctx, s, sid, ch)
+}
+
 func (c *Client) alarm(sid e2ecrypto.ServerID, ch uint64, detail string) bool {
 	_ = c.trust.RaiseAlarm(sid, ch, detail)
 	return true
@@ -1032,6 +1135,16 @@ func (c *Client) syncChannel(ctx context.Context, s *session, sid e2ecrypto.Serv
 		return false
 	}
 	latest := max(c.cachedMaxEpoch(ch.ID), ch.Epoch)
+	if hasHead && latest < head.Epoch {
+		// ch may predate another process on this TC_HOME verifying an
+		// epoch (which raises the cached chan epoch, then drops the
+		// bundle): read the cache again, bundles first, before alarming.
+		latest = max(latest, c.cachedMaxEpoch(ch.ID))
+		var cached uint32
+		if getChanEpoch(c.db, ch.ID, &cached) == nil {
+			latest = max(latest, cached)
+		}
+	}
 	if hasHead && latest < head.Epoch {
 		return c.alarm(sid, ch.ID, fmt.Sprintf("rollback: the server shows epoch %d, this device verified %d", latest, head.Epoch))
 	}
@@ -1196,6 +1309,7 @@ func (c *Client) syncAndRecover(ctx context.Context, s *session, sid e2ecrypto.S
 	changed := c.syncChannel(ctx, s, sid, ch)
 	if _, ok, _ := c.trust.Alarm(sid, ch.ID); !ok {
 		c.recoverPoisoned(ctx, s, sid, ch.ID)
+		c.rotateOwed(ctx, s, sid, ch.ID)
 	}
 	return changed
 }
@@ -1405,6 +1519,10 @@ func (c *Client) RotateKey(ctx context.Context, ch uint64) error {
 	return c.rotateLocked(ctx, s, sid, ch)
 }
 
+// errNoPrevKey: rotating needs the current epoch's K (the new bundle links
+// back to it), which this device doesn't have yet.
+var errNoPrevKey = errors.New("waiting for the key of epoch")
+
 func (c *Client) rotateLocked(ctx context.Context, s *session, sid e2ecrypto.ServerID, chID uint64) error {
 	for attempt := 0; ; attempt++ {
 		err := c.rotateOnce(ctx, s, sid, chID)
@@ -1479,7 +1597,7 @@ func (c *Client) commitBundle(ctx context.Context, s *session, sid e2ecrypto.Ser
 		prevK := cur.Key
 		if prevK == nil {
 			if !c.poisonedLong(sid, chID, head.Epoch, me) {
-				return fmt.Errorf("waiting for the key of epoch %d", head.Epoch)
+				return fmt.Errorf("%w %d", errNoPrevKey, head.Epoch)
 			}
 			// Nobody gave us K and its rotator sealed us a box that can't
 			// yield it: link back to a random key (a history gap for the
@@ -1545,6 +1663,9 @@ func (c *Client) commitBundle(ctx context.Context, s *session, sid e2ecrypto.Ser
 	got, ok, err := c.trust.Epoch(sid, chID, p.Epoch)
 	if err != nil || !ok || got.Hash != e2ecrypto.ChainHash(b.B) || got.Key == nil {
 		return fmt.Errorf("epoch %d was accepted but doesn't verify here", p.Epoch)
+	}
+	if err := c.trust.PayRotation(sid, chID, got.Boxed); err != nil {
+		return err
 	}
 	c.post(Update{Channels: true})
 	return nil

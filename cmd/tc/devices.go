@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/e2ecrypto"
@@ -22,10 +23,16 @@ type devicesBackend interface {
 	RefreshDevices(ctx context.Context, user uint64) error
 	Devices(user uint64) []client.DeviceInfo
 	FindDevice(user uint64, prefix string) (client.DeviceInfo, error)
-	RevokeDevice(ctx context.Context, dev e2ecrypto.DevID, allowSelf bool) (int, error)
+	RevokeDeviceOpts(ctx context.Context, dev e2ecrypto.DevID, o client.RevokeOpts) (int, error)
+	RegistrationsLeft() int
+	DeviceError() error
 }
 
-// tc devices [list] [@user] | tc devices revoke <id> [--yes] [--self]
+// devicesTimeout bounds each network step of tc devices, so nothing waits
+// for ever (the confirmation prompt isn't bounded).
+const devicesTimeout = 60 * time.Second
+
+// tc devices [list] [@user] | tc devices revoke <id> [--yes] [--self [--force]]
 func cmdDevices(args []string) error {
 	if _, err := parseDevices(args); err != nil {
 		return err
@@ -41,9 +48,9 @@ func cmdDevices(args []string) error {
 }
 
 type devicesArgs struct {
-	revoke    string // device id prefix; "" lists
-	who       string // list: @user without the @; "" = me
-	yes, self bool
+	revoke           string // device id prefix; "" lists
+	who              string // list: @user without the @; "" = me
+	yes, self, force bool
 }
 
 func parseDevices(args []string) (devicesArgs, error) {
@@ -58,13 +65,15 @@ func parseDevices(args []string) (devicesArgs, error) {
 				a.yes = true
 			case x == "--self":
 				a.self = true
+			case x == "--force":
+				a.force = true
 			case !strings.HasPrefix(x, "-") && a.revoke == "":
 				a.revoke = x
 			default:
 				return a, errUsage
 			}
 		}
-		if a.revoke == "" {
+		if a.revoke == "" || (a.force && !a.self) {
 			return a, errUsage
 		}
 		return a, nil
@@ -96,11 +105,17 @@ func devices(ctx context.Context, c devicesBackend, args []string, in io.Reader,
 			return fmt.Errorf("no user @%s", a.who)
 		}
 	}
-	if err := c.RefreshDevices(ctx, user); err != nil {
+	rctx, cancel := context.WithTimeout(ctx, devicesTimeout)
+	err = c.RefreshDevices(rctx, user)
+	cancel()
+	if err != nil {
 		return fmt.Errorf("loading devices: %w", err)
 	}
 	if a.revoke == "" {
 		printDevices(out, c.Devices(user), name, user == me.ID)
+		if user == me.ID {
+			printDeviceErr(out, c.DeviceError())
+		}
 		return nil
 	}
 
@@ -121,7 +136,19 @@ func devices(ctx context.Context, c devicesBackend, args []string, in io.Reader,
 	}
 	what := fmt.Sprintf("device %s (added %s)", d.Short(), d.Created.Format("2006-01-02 15:04"))
 	if d.This {
-		what = "THIS device " + d.Short() + " (it re-registers with new keys on its next connection)"
+		left := c.RegistrationsLeft()
+		if left == 0 && !a.force {
+			return errLastRegistration
+		}
+		what = "THIS device " + d.Short() + " (it registers again as a new device right away"
+		switch {
+		case left == 0:
+			what = "THIS device " + d.Short() + " (your account has no device registrations left: it can never register again and loses encryption for good)"
+		case left <= 5:
+			what += fmt.Sprintf("; your account may register only %d more devices, ever)", left)
+		default:
+			what += ")"
+		}
 	}
 	if !a.yes {
 		fmt.Fprintf(out, "Revoke %s? It stops receiving keys for new encrypted messages; this can't be undone. [y/N] ", what)
@@ -131,7 +158,12 @@ func devices(ctx context.Context, c devicesBackend, args []string, in io.Reader,
 			return nil
 		}
 	}
-	rotated, err := c.RevokeDevice(ctx, d.ID, a.self)
+	rctx, cancel = context.WithTimeout(ctx, devicesTimeout)
+	defer cancel()
+	rotated, err := c.RevokeDeviceOpts(rctx, d.ID, client.RevokeOpts{Self: a.self, Force: a.force})
+	if errors.Is(err, client.ErrLastRegistration) {
+		return errLastRegistration
+	}
 	if err != nil {
 		return err
 	}
@@ -143,7 +175,23 @@ func devices(ctx context.Context, c devicesBackend, args []string, in io.Reader,
 	fmt.Fprintln(out, "Note: this doesn't remove an SSH key. If that device held your SSH private key, it can still sign in and\n"+
 		"register a new device, and tc can't remove one key yet: ask an admin to disable your account\n"+
 		"(tc users disable @"+sanitize.Line(c.Me().Name)+") and to invite you again as a new account with a new SSH key.")
+	if !d.This {
+		printDeviceErr(out, c.DeviceError())
+	}
 	return nil
+}
+
+var errLastRegistration = fmt.Errorf("your account has no device registrations left (%d per account, ever): revoked, this device could never register again and would lose encryption for good. Add --force to revoke it anyway", proto.MaxDeviceRegistrations)
+
+// printDeviceErr says why this device isn't registered for encryption.
+func printDeviceErr(out io.Writer, err error) {
+	if err == nil {
+		return
+	}
+	fmt.Fprintf(out, "⚠ %s\n", sanitize.Line(err.Error()))
+	if errors.Is(err, client.ErrTooManyDevices) {
+		fmt.Fprintln(out, "  Until then this device can't read or send encrypted messages.")
+	}
 }
 
 func printDevices(out io.Writer, ds []client.DeviceInfo, name string, mine bool) {

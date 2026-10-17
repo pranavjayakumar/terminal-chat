@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,13 @@ type fakeDevs struct {
 	refreshErr error
 	revoked    []e2ecrypto.DevID
 	revokeErr  error
+	devErr     error
+}
+
+func (f *fakeClient) DeviceError() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.dv.devErr
 }
 
 func (f *fakeClient) Devices(user uint64) []client.DeviceInfo {
@@ -173,6 +181,54 @@ func TestDevicesStaleSanitized(t *testing.T) {
 			t.Fatalf("devs %v: no stale marker:\n%s", devs, p)
 		}
 		checkView(t, m, "stale")
+	}
+}
+
+// B11: when the server refused this device (too many devices), /devices
+// says so (sanitized), and only in our own list.
+func TestDevicesUnregisteredNotice(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	devFake(f)
+	f.dv.devErr = fmt.Errorf("%w: server said no\x1b]0;x\x07", client.ErrDeviceNotRegistered)
+	runInput(t, m, "/devices")
+	v := checkView(t, m, "unregistered")
+	if strings.Contains(v, "\x1b]0;") || !strings.Contains(ansi.Strip(v), "not registered for encryption") || !m.noticeErr {
+		t.Fatalf("no notice:\n%s", ansi.Strip(v))
+	}
+	m.clearNotice()
+	press(m, kEsc)
+	runInput(t, m, "/devices @bob")
+	if m.notice != "" {
+		t.Fatalf("notice in bob's list: %q", m.notice)
+	}
+
+	// Narrow: the cause stays visible.
+	m, f = newTestModelFake(t, 40, 12)
+	devFake(f)
+	f.dv.devErr = fmt.Errorf("%w: %w", client.ErrDeviceNotRegistered, client.ErrTooManyDevices)
+	runInput(t, m, "/devices")
+	if v := ansi.Strip(checkView(t, m, "unregistered narrow")); !strings.Contains(v, "too many devices") {
+		t.Fatalf("cause cut off:\n%s", v)
+	}
+
+	// A failed revoke's error isn't replaced by the refresh after it.
+	pastDevTypeAhead(m)
+	f.dv.revokeErr = errors.New("forbidden")
+	press(m, "down", "d", "y")
+	if !strings.Contains(m.notice, "forbidden") {
+		t.Fatalf("revoke error replaced: %q", m.notice)
+	}
+	// A revoke that went through keeps its ✓ (and says we're still waiting).
+	f.dv.revokeErr = nil
+	m.clearNotice()
+	press(m, "d", "y")
+	if !strings.Contains(m.notice, "✓ revoked") || !strings.Contains(m.notice, "isn't registered yet") {
+		t.Fatalf("after revoke: %q", m.notice)
+	}
+	f.dv.devErr = nil
+	press(m, "r")
+	if strings.Contains(m.notice, "not registered") {
+		t.Fatalf("registered now, still warned: %q", m.notice)
 	}
 }
 

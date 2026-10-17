@@ -1388,3 +1388,64 @@ func TestEpochBoxed(t *testing.T) {
 		t.Fatalf("after migration %+v %v %v", got, ok, err)
 	}
 }
+
+func TestRevokedAfter(t *testing.T) {
+	s, _ := newStore(t)
+	d1, d2 := device(t, bob), device(t, 3)
+	for _, d := range []Device{d1, d2} {
+		if err := s.PutDevice(sidA, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func(users []uint64, seq uint64, want bool) {
+		t.Helper()
+		if got, err := s.RevokedAfter(sidA, users, seq); err != nil || got != want {
+			t.Fatalf("RevokedAfter(%v, %d) = %v, %v; want %v", users, seq, got, err, want)
+		}
+	}
+	check([]uint64{bob, 3}, 0, false)
+	if err := s.RevokeDevice(sidA, d1.ID); err != nil { // seq unknown
+		t.Fatal(err)
+	}
+	check([]uint64{bob}, 0, false)
+	if err := s.RevokeDeviceAt(sidA, d1.ID, 50); err != nil {
+		t.Fatal(err)
+	}
+	check([]uint64{bob}, 0, true) // epoch seq unknown: any known revoke
+	check([]uint64{bob}, 49, true)
+	check([]uint64{bob}, 50, false)
+	check([]uint64{3}, 0, false) // another user's device
+	check(nil, 0, false)
+	if got, err := s.RevokedAfter(sidB, []uint64{bob}, 0); err != nil || got {
+		t.Fatalf("other server: %v %v", got, err)
+	}
+}
+
+func TestOweRotation(t *testing.T) {
+	s, _ := newStore(t)
+	check := func(sid e2ecrypto.ServerID, ch uint64, want bool) {
+		t.Helper()
+		if got, err := s.RotationOwed(sid, ch); err != nil || got != want {
+			t.Fatalf("RotationOwed(%d) = %v, %v; want %v", ch, got, err, want)
+		}
+	}
+	d1, d2, d3 := device(t, bob).ID, device(t, bob).ID, device(t, bob).ID
+	check(sidA, 7, false)
+	for _, d := range []e2ecrypto.DevID{d1, d2, d1} {
+		if err := s.OweRotation(sidA, 7, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check(sidA, 7, true)
+	check(sidA, 8, false)
+	check(sidB, 7, false)
+	// An epoch of ours that still boxes d2 pays only d1.
+	if err := s.PayRotation(sidA, 7, []e2ecrypto.DevID{d2, d3}); err != nil {
+		t.Fatal(err)
+	}
+	check(sidA, 7, true)
+	if err := s.PayRotation(sidA, 7, []e2ecrypto.DevID{d3}); err != nil {
+		t.Fatal(err)
+	}
+	check(sidA, 7, false)
+}
