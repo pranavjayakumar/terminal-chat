@@ -4,14 +4,18 @@ Last updated: 2026-10-17 (session 4). Read this first when resuming.
 
 ## Handoff (always current — read this first when switching accounts)
 
-**ACTIVE: releasing v0.3.0 (session 4, 2026-10-17).** All v0.3.0 fixes are merged (#43–#61). Open work lives
-in GitHub issues + PRs, never only in a scratchpad. Resume = this list:
+**v0.3.0 RELEASED (2026-10-17, signed).** Droplet upgraded to v0.3.0 (DB backup at
+/root/tc-pre-v030-2026-10-17.db, old binary /root/tc-v0.2.0). Fresh invites printed for the owner (admin single-use
++ 15-use team, both expire 2026-10-18 12:05 UTC; regenerate with `tc server invite` on the droplet).
 
-1. Tag **v0.3.0** on main, wait for the draft release, `make release-sign` with the owner's key, commit the
-   regenerated `Formula/tc.rb` via PR, redeploy the droplet from the signed release, make new invites.
-2. **v0.4.0** = draft PR **#47** voice huddles (owner decisions listed in the PR): merge main, review, release.
-3. Follow-ups: #59 admin add-key invite command; per-key removal (`key.remove`, proposed in #52); M6 from
-   `docs/research/PRODUCT-2026-10.md` (owner to approve); rename after v0.4.
+**ACTIVE: v0.4.0 = M5 voice huddles, draft PR #47** (worktree agent-a4fce39fe1475bfe8). Coordinator defaults for
+the owner decisions (owner may override): no voice over TCP fallback; shared frame keys in encrypted huddles for v1;
+separate signed `tc-voice_<os>_<arch>` artifact (default `tc` stays CGO_ENABLED=0); ±60 s clock window; no
+huddle-start notification. Remaining: merge main, CI + release jobs for the voice build, `install.sh --voice`,
+UX follow-ups, budgets, reviews; then real two-machine mic test by the owner, tag v0.4.0.
+
+Follow-ups after v0.4: #59 admin add-key invite command; per-key removal (`key.remove`, proposed in #52); M6 from
+`docs/research/PRODUCT-2026-10.md` (owner to approve); rename.
 
 Done this session: #43 docs, #44 brew tap, #45 first-start (#42), #46/#49 chaos deflakes, #48 member + github-key
 invites, #50 device list/revoke, #52 B1–B3 (add-key invites admin-only, `tc users [disable]`, invited_by), #51 UX
