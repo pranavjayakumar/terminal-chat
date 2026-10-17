@@ -8,16 +8,20 @@ Last updated: 2026-10-17 (session 4). Read this first when resuming.
 /root/tc-pre-v030-2026-10-17.db, old binary /root/tc-v0.2.0). Fresh invites printed for the owner (admin single-use
 + 15-use team, both expire 2026-10-18 12:05 UTC; regenerate with `tc server invite` on the droplet).
 
-**ACTIVE: v0.4.0 = M5 voice huddles, draft PR #47** (worktree agent-a4fce39fe1475bfe8). Coordinator defaults for
-the owner decisions (owner may override): no voice over TCP fallback; shared frame keys in encrypted huddles for v1;
-separate signed `tc-voice_<os>_<arch>` artifact (default `tc` stays CGO_ENABLED=0); ±60 s clock window; no
-huddle-start notification. Remaining: merge main, CI + release jobs for the voice build, `install.sh --voice`,
-UX follow-ups, budgets, reviews; then real two-machine mic test by the owner, tag v0.4.0.
+**v0.4.0 = M5 voice huddles + notifications/sounds: MERGED (PR #47, 2026-10-17), not tagged yet.**
+Waiting on the owner's two-machine mic test (docs/TESTING.md, "v0.4.0 release test"), then: tag
+v0.4.0 → watch the voice release jobs (ubuntu-22.04-arm and macos-14 amd64 run for the first time)
+→ `make release-sign` → brew formula PR → redeploy the droplet (back up the DB first) → new invites.
+Decisions taken (owner may override): no voice over TCP; shared frame keys in encrypted huddles for
+v1; separate signed `tc-voice_<os>_<arch>` artifact; ±60 s clock window; DM huddles ring, channel
+huddles are silent unless `/notify all`. Known: idle RSS measured up to 29.8 MB on macOS (budget 30;
+both builds, not voice-specific; real footprint ~15 MB); Linux RSS and in-huddle RSS not measured.
+Notification design: docs/research/NOTIFICATIONS-2026-10.md (ntfy push + settings sync deferred to M6).
 
 Follow-ups after v0.4: #59 admin add-key invite command; per-key removal (`key.remove`, proposed in #52); M6 from
 `docs/research/PRODUCT-2026-10.md` (owner to approve); rename.
 
-Done this session: #43 docs, #44 brew tap, #45 first-start (#42), #46/#49 chaos deflakes, #48 member + github-key
+Done this session: #47 voice + notifications, #43 docs, #44 brew tap, #45 first-start (#42), #46/#49 chaos deflakes, #48 member + github-key
 invites, #50 device list/revoke, #52 B1–B3 (add-key invites admin-only, `tc users [disable]`, invited_by), #51 UX
 polish, #53 B4/B7/B8, #58 `tc login` + join fixes, #60 CI flakes, #61 B5/B11/B12 device revoke gaps.
 
@@ -45,7 +49,7 @@ exit 0. Log every event in `docs/WORKLOG.md`. Delete worktrees/local branches af
 | M2 collaboration | ✅ essentially done: notifications, herdr badge, `/share-pane`, auto-away, `tc notify`, notes, `/name`, threads, webhooks + bots, privacy scrubbing, drafts, `/highlight`, activity (Alt-A), message viewer (`v`), pins (`p`, `/pins`), user groups (`@oncall`), reminders (`/remind`), diff/snippets (`tc send --file`, `/snippet`) |
 | M3 end-to-end encryption | ✅ done: steps 1–12 (PRs #9–#13, #16, #25, #26, #28–#30, #32, step 12 PR) incl. malicious-server suite, chaos during rotations, fuzzing, security pass |
 | M4 zero-setup onboarding | ✅ done (PR #34): signed releases, verified install.sh, `tc join`, invite one-liner, team invites + list/revoke, `tc update`. Deferred: brew tap, any-member invites |
-| M5 voice | not started |
+| M5 voice | ✅ merged (PR #47), v0.4.0 tag pending the owner's mic test |
 
 Release tags: `v0.1.0` = M1, `v0.2.0` = M2 + M3 + M4 (signed). Next: `v0.3.0` (#42, member/github-key invites, device revoke, brew), `v0.4.0` (M5 voice).
 

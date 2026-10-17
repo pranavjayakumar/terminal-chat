@@ -1,11 +1,12 @@
 # Voice huddles design (M5)
 
-Status: **draft r1** (target release v0.4.0). Wire format: PROTOCOL.md §14 (cap `voice1`).
+Status: **shipped in v0.4.0**. Wire format: PROTOCOL.md §14 (cap `voice1`).
 
 ## Goals / non-goals
 
 - Drop-in voice per channel (public, private, DM): `/huddle` joins the channel's huddle,
-  `/leave-huddle` leaves. No ringing, no scheduling, no "call" object.
+  `/leave-huddle` leaves. No scheduling, no "call" object. A huddle started in a DM rings
+  (docs/TUI.md, Notifications); channel huddles don't.
 - Low latency over flaky networks: unreliable QUIC datagrams on the existing connection, Opus
   with in-band FEC, an adaptive jitter buffer. Mouth-to-ear target < 200 ms on a decent link.
 - Voice in an encrypted channel (`Channel.e2e`) is end-to-end encrypted with keys derived from
