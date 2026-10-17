@@ -27,9 +27,20 @@ func TestRevokeDevice_BreakFromUnregisteredDeviceWhenFull(t *testing.T) {
 	t.Setenv("TC_TRANSPORT", "tcp")
 	s, addr := startServer(t, t.TempDir(), "127.0.0.1:0")
 	alice := login(t, s, addr, "alice", true)
-	eventually(t, "online", alice.online)
+	bob := login(t, s, addr, "bob", false)
+	eventually(t, "online", func() bool { return alice.online() && bob.online() })
 	sid := alice.sid(t)
 	a := alice.Me().ID
+	eventually(t, "bob verified", func() bool { return alice.verifiedDevices(sid, bob.Me().ID) == 1 })
+	dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer dcancel()
+	dmc, err := alice.OpenDM(dctx, []uint64{bob.Me().ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dm := dmc.ID
+	alice.send(t, dctx, dm, "hello bob")
+	eventually(t, "bob reads", bob.reads(dm, "hello bob"))
 	devs := []*user{alice}
 	for len(devs) < proto.MaxDevices {
 		d := secondDevice(t, alice)
@@ -57,6 +68,13 @@ func TestRevokeDevice_BreakFromUnregisteredDeviceWhenFull(t *testing.T) {
 	}
 	// The refusal is reported, not waited on for ever.
 	eventually(t, "registration failure reported", func() bool { return errors.Is(fresh.DeviceError(), client.ErrTooManyDevices) })
+	// Written while the device can't register: fails at once, and goes
+	// out by itself once the revoke frees a slot.
+	eventually(t, "fresh has the DM", func() bool { _, ok := fresh.Channel(dm); return ok })
+	if err := fresh.Send(dm, "from the new machine", 0); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the send fails: too many devices", func() bool { return fresh.brFailed(dm) != "" })
 	start := time.Now()
 	if _, err := fresh.RevokeDevice(ctx, old.ID, false); err != nil {
 		t.Fatalf("revoking an old device from a new machine while the device list is full: %v (after %s)",
@@ -74,6 +92,15 @@ func TestRevokeDevice_BreakFromUnregisteredDeviceWhenFull(t *testing.T) {
 		d, ok, _ := devs[0].Trust().Device(sid, mine.ID)
 		return ok && !d.Revoked
 	})
+	// Requeued (not failed for good); it may wait for the DM's key by
+	// key.need (asked every 30 s) before it can rotate and go out.
+	deadline := time.Now().Add(75 * time.Second)
+	for !bob.reads(dm, "from the new machine")() {
+		if time.Now().After(deadline) {
+			t.Fatalf("the message written while unregistered never went out (failed: %q)", fresh.brFailed(dm))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // `tc devices revoke <this> --self` promises the device "re-registers with

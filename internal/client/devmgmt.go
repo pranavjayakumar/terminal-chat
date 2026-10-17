@@ -310,26 +310,47 @@ func (c *Client) RevokeDeviceOpts(ctx context.Context, dev e2ecrypto.DevID, o Re
 			return 0, fmt.Errorf("signing the revoke: %w", err)
 		}
 	}
-	raw, err := s.call(ctx, proto.OpDeviceRevoke, proto.DeviceRevokeArgs{Revoke: proto.Signed(rev)}, nil)
-	if err != nil {
-		return 0, err
-	}
-	var res proto.SeqRes
-	_ = proto.Unmarshal(raw, &res)
-	// Don't wait for the event: the trust store must know before we rotate.
-	if err := storeRevoke(c.db, proto.Signed(rev), res.Seq); err != nil {
+	// Other clients judge which epochs the revoked device may hold by the
+	// server's seqs; this one must not need to. Every current epoch is owed
+	// a rotation (marked before the revoke, so a crash can't skip it, and
+	// again after, for any epoch made meanwhile) until a newer one exists:
+	// sends here rotate first, and the e2e worker keeps trying.
+	if err := c.oweRotations(sid, me); err != nil {
 		return 0, err
 	}
 	if self {
-		// Our keys are dead: retire them now (we signed the revoke, so we
-		// needn't wait for the server to list it) and reconnect, which
-		// registers the new keys (ensureDevice).
-		keys, err := c.trust.RetireDeviceKeys(sid, me, dev)
+		// Until our dead keys are retired, the e2e worker must not use them
+		// (its owed rotations would be refused, then wait).
+		c.e2eMu.Lock()
+	}
+	raw, err := s.call(ctx, proto.OpDeviceRevoke, proto.DeviceRevokeArgs{Revoke: proto.Signed(rev)}, nil)
+	var res proto.SeqRes
+	if err == nil {
+		_ = proto.Unmarshal(raw, &res)
+		// Don't wait for the event: the trust store must know before we rotate.
+		err = storeRevoke(c.db, proto.Signed(rev), res.Seq)
+	}
+	if self {
 		if err == nil {
-			c.myDev.Store(&keys.ID)
+			// Our keys are dead: retire them now (we signed the revoke, so
+			// we needn't wait for the server to list it) and reconnect,
+			// which registers the new keys (ensureDevice).
+			var keys *e2ecrypto.DeviceKeys
+			if keys, err = c.trust.RetireDeviceKeys(sid, me, dev); err == nil {
+				c.myDev.Store(&keys.ID)
+			}
+			s.restart()
 		}
-		s.restart()
+		c.e2eMu.Unlock()
+	}
+	if err != nil {
 		return 0, err
+	}
+	if err := c.oweRotations(sid, me); err != nil {
+		return 0, err
+	}
+	if self {
+		return 0, nil // the next session's worker rotates (rotateOwed)
 	}
 	if !registered {
 		// The revoke may have freed the slot the server refused us: register
@@ -363,6 +384,29 @@ func (c *Client) RevokeDeviceOpts(ctx context.Context, dev e2ecrypto.DevID, o Re
 	}
 	c.post(Update{Channels: true})
 	return rotated, nil
+}
+
+// oweRotations marks the current verified epoch of every encrypted channel
+// we're in as owed a rotation (trust.OweRotation).
+func (c *Client) oweRotations(sid e2ecrypto.ServerID, me uint64) error {
+	c.e2eMu.Lock()
+	defer c.e2eMu.Unlock()
+	chans, err := c.e2eChannels(sid, me)
+	if err != nil {
+		return err
+	}
+	for _, ch := range chans {
+		head, ok, err := c.trust.ChainHead(sid, ch.ID)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if err := c.trust.OweRotation(sid, ch.ID, head.Epoch); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // retryDevice asks session s's e2e worker to register this device again

@@ -229,3 +229,31 @@ func TestRevokeSelfRepeatedNoBackoff(t *testing.T) {
 		}
 	}
 }
+
+// Security review (B5 follow-up): the revoking client must replace every
+// epoch the revoked device may hold without relying on the server's seqs,
+// even when the revoke itself can't rotate (here --self, which reconnects
+// first). The owed rotation is durable: the re-registered device makes it
+// with nobody sending.
+func TestRevokeSelfOwedRotationWithoutSends(t *testing.T) {
+	_, _, alice, _, bob, dm, ctx := shareSetup(t)
+	sid := alice.sid(t)
+	a := alice.Me().ID
+	old, err := alice.Trust().DeviceKeys(sid, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.RevokeDeviceOpts(ctx, old.ID, client.RevokeOpts{Self: true}); err != nil {
+		t.Fatal(err)
+	}
+	if owed, err := alice.Trust().RotationOwed(sid, dm); err != nil || owed != 1 {
+		t.Fatalf("owed rotation %d, %v; want epoch 1", owed, err)
+	}
+	eventually(t, "alice's new device rotates the DM by itself", alice.e2eAt(dm, 2))
+	eventually(t, "bob follows", bob.e2eAt(dm, 2))
+	if ep, _, _ := alice.Trust().Epoch(sid, dm, 2); slices.Contains(ep.Boxed, old.ID) {
+		t.Fatal("epoch 2 boxed the revoked keys")
+	}
+	bob.send(t, ctx, dm, "bob after self revoke")
+	eventually(t, "alice reads bob", alice.reads(dm, "bob after self revoke"))
+}

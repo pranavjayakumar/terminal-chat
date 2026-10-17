@@ -1420,3 +1420,22 @@ func TestRevokedAfter(t *testing.T) {
 		t.Fatalf("other server: %v %v", got, err)
 	}
 }
+
+func TestOweRotation(t *testing.T) {
+	s, _ := newStore(t)
+	check := func(sid e2ecrypto.ServerID, ch uint64, want uint32) {
+		t.Helper()
+		if got, err := s.RotationOwed(sid, ch); err != nil || got != want {
+			t.Fatalf("RotationOwed(%d) = %d, %v; want %d", ch, got, err, want)
+		}
+	}
+	check(sidA, 7, 0)
+	for _, e := range []uint32{3, 5, 4} {
+		if err := s.OweRotation(sidA, 7, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check(sidA, 7, 5) // only raised
+	check(sidA, 8, 0)
+	check(sidB, 7, 0)
+}

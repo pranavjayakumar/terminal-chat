@@ -822,8 +822,11 @@ user was revoked after the bundle's `key.epoch` seq (that device may hold
 K without a box: it got it via `key.share`, §13.7). A newly registered
 device doesn't make it stale (it gets K via `key.share`). Clients judge
 the last rule by seqs (a stolen device colluding with the server can
-misorder them; the revoking client therefore rotates every encrypted
-channel it is in right after its own revoke, §13.2): a revoke whose seq
+misorder them; the revoking client therefore owes a rotation to every
+encrypted channel it is in, recorded durably before it sends the revoke:
+it never seals under those epochs and keeps rotating them, at once and
+after any failure, reconnect or `--self` re-registration, until a newer
+epoch exists, §13.2): a revoke whose seq
 they don't know counts only through the boxes, and for an epoch whose
 seq they don't know every revoke with a known seq counts (the rotation
 gives the new epoch a known seq).

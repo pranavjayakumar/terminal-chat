@@ -42,8 +42,9 @@ const FileName = "e2e.db"
 // v7 adds archived_device_keys; v8 adds epochs.seq (the key.epoch seq of a
 // verified bundle; NULL = unknown) and legacy_cutoffs; v9 adds
 // legacy_cutoffs.claimed (the cutoff is the server's Channel.legacy); v10
-// adds trust_audit (deliberate alarm clears and out-of-band verifications).
-const schemaVersion = 11
+// adds trust_audit (deliberate alarm clears and out-of-band verifications);
+// v11 adds epochs.boxed; v12 adds owed_rotations.
+const schemaVersion = 12
 
 // maxKeyChanges bounds the pending key changes kept per user and server; the
 // least recently seen is dropped (it is re-recorded if seen again).
@@ -101,6 +102,12 @@ CREATE TABLE IF NOT EXISTS trust_audit (
 	server_id BLOB NOT NULL, time INTEGER NOT NULL, by INTEGER NOT NULL, action TEXT NOT NULL,
 	chan INTEGER NOT NULL DEFAULT 0, user INTEGER NOT NULL DEFAULT 0, detail TEXT NOT NULL,
 	raised INTEGER NOT NULL DEFAULT 0);
+-- Per encrypted channel: the newest epoch this device must replace before
+-- sealing anything new, because it revoked a device that may hold its key
+-- (PROTOCOL §13.2). Epoch numbers are verified; the server's seqs aren't.
+CREATE TABLE IF NOT EXISTS owed_rotations (
+	server_id BLOB NOT NULL, chan INTEGER NOT NULL, epoch INTEGER NOT NULL,
+	PRIMARY KEY (server_id, chan));
 `
 
 // migrateV1 adds the v2 columns to a v1 file (the v2 tables come from schema).
@@ -868,6 +875,31 @@ func (s *Store) Devices(sid e2ecrypto.ServerID, user uint64) ([]Device, error) {
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+// OweRotation records that this device must replace channel ch's epochs
+// up to epoch before sealing under them (it revoked a device that may hold
+// their key). It only ever raises the mark.
+func (s *Store) OweRotation(sid e2ecrypto.ServerID, ch uint64, epoch uint32) error {
+	_, err := s.db.Exec(`INSERT INTO owed_rotations (server_id, chan, epoch) VALUES (?, ?, ?)
+		ON CONFLICT (server_id, chan) DO UPDATE SET epoch = max(epoch, excluded.epoch)`, sid[:], i64(ch), int64(epoch))
+	if err != nil {
+		return fmt.Errorf("recording owed rotation of channel %d: %w", ch, err)
+	}
+	return nil
+}
+
+// RotationOwed is the newest epoch of ch that OweRotation marked (0: none).
+func (s *Store) RotationOwed(sid e2ecrypto.ServerID, ch uint64) (uint32, error) {
+	var e int64
+	err := s.db.QueryRow(`SELECT epoch FROM owed_rotations WHERE server_id = ? AND chan = ?`, sid[:], i64(ch)).Scan(&e)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("loading owed rotation of channel %d: %w", ch, err)
+	}
+	return uint32(e), nil
 }
 
 // RevokedAfter reports whether a stored device of one of users was revoked

@@ -65,7 +65,9 @@ type session struct {
 	devTriedOne sync.Once
 	devErr      atomic.Pointer[error]
 	devRetry    chan chan error
-	revokedSeen int // e2e worker only: our revoked devices at the last retry (retryDue)
+	revokedSeen int           // e2e worker only: our revoked devices at the last retry (retryDue)
+	devGap      time.Duration // e2e worker only: retryDue's current gap
+	devNext     time.Time     // e2e worker only: no transient retry before
 
 	// restarting: we ended the session on purpose (new device keys), so
 	// the reconnect isn't a failure that grows the backoff.

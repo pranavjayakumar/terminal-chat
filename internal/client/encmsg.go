@@ -701,7 +701,7 @@ func (c *Client) sealOffline(e outboxEntry) []byte {
 		return nil
 	}
 	ep, ok, err := c.trust.Epoch(sid, e.chan_, head.Epoch)
-	if err != nil || !ok || ep.Key == nil || !slices.Equal(ep.Roster, c.liveMembers(ch)) || c.revokedStale(sid, ep) {
+	if err != nil || !ok || ep.Key == nil || !slices.Equal(ep.Roster, c.liveMembers(ch)) || c.revokedStale(sid, e.chan_, ep) {
 		return nil
 	}
 	dev, err := c.trust.DeviceKeys(sid, c.Me().ID)
@@ -736,7 +736,7 @@ func (c *Client) encCurrent(e outboxEntry) bool {
 	}
 	ep, ok, err := c.trust.Epoch(sid, e.chan_, head.Epoch)
 	// not rosterNow: an unconfirmed member must reach sealWith
-	return err == nil && ok && ep.Key != nil && slices.Equal(ep.Roster, c.liveMembers(ch)) && !c.revokedStale(sid, ep)
+	return err == nil && ok && ep.Key != nil && slices.Equal(ep.Roster, c.liveMembers(ch)) && !c.revokedStale(sid, e.chan_, ep)
 }
 
 // sealEntry encrypts an outbox entry for sending (§13.4 "Sending"): it
@@ -759,8 +759,12 @@ func (c *Client) sealEntry(ctx context.Context, s *session, e outboxEntry, prev 
 // error counts as stale: rotating needlessly is cheap, sealing to a
 // revoked device is not. A revoke whose seq is unknown counts only through
 // the boxes (only a lying server leaves it out, and it could as well
-// withhold the revoke).
-func (c *Client) revokedStale(sid e2ecrypto.ServerID, ep trust.Epoch) bool {
+// withhold the revoke). An epoch this device owes a rotation for (it
+// revoked a device then, OweRotation) is stale whatever the seqs say.
+func (c *Client) revokedStale(sid e2ecrypto.ServerID, ch uint64, ep trust.Epoch) bool {
+	if owed, err := c.trust.RotationOwed(sid, ch); err != nil || ep.Epoch <= owed {
+		return true
+	}
 	for _, id := range ep.Boxed {
 		if d, ok, err := c.trust.Device(sid, id); err != nil || (ok && d.Revoked) {
 			return true
@@ -882,7 +886,7 @@ func (c *Client) sealWith(ctx context.Context, s *session, chID uint64, prev []b
 		default:
 			cur, _, _ := c.trust.Epoch(sid, ch.ID, head.Epoch)
 			rotate = !slices.Equal(cur.Roster, c.rosterNow(ch)) || (prev != nil && head.Epoch == prevEpoch) ||
-				c.revokedStale(sid, cur)
+				c.revokedStale(sid, ch.ID, cur)
 		}
 		if rotate && attempt < attempts-1 {
 			err := c.rotateOnce(ctx, s, sid, ch.ID)
@@ -898,6 +902,10 @@ func (c *Client) sealWith(ctx context.Context, s *session, chID uint64, prev []b
 				return nil, err
 			case errors.As(err, &unv):
 				return nil, failErr{sanitize.Line(err.Error())}
+			case errors.Is(err, errNoPrevKey):
+				// Like having no key at all: key.need asks for it, and the
+				// entry is requeued (requeueNoKey) once it arrives.
+				return nil, failErr{noKeyReason}
 			case errors.Is(err, ErrOffline) || ctx.Err() != nil:
 				return nil, ErrOffline
 			default:
@@ -930,6 +938,30 @@ func (c *Client) requeueNoKey(ch uint64) {
 	res, err := c.db.Exec(`UPDATE outbox SET failed = '' WHERE chan = ? AND failed = ?`, ch, noKeyReason)
 	if n, _ := rowsAffected(res); err == nil && n > 0 {
 		c.outboxChanged(ch, nil)
+	}
+}
+
+// requeueUnregistered puts messages that failed because this device wasn't
+// registered (too many devices, no registrations left, or not yet) back in the outbox
+// once it is.
+func (c *Client) requeueUnregistered() {
+	pat := ErrDeviceNotRegistered.Error() + "%" // also "... yet" (gave up waiting)
+	rows, err := c.db.Query(`SELECT DISTINCT chan FROM outbox WHERE failed LIKE ?`, pat)
+	if err != nil {
+		return
+	}
+	var chans []uint64
+	for rows.Next() {
+		var ch uint64
+		if rows.Scan(&ch) == nil {
+			chans = append(chans, ch)
+		}
+	}
+	rows.Close()
+	for _, ch := range chans {
+		if _, err := c.db.Exec(`UPDATE outbox SET failed = '' WHERE chan = ? AND failed LIKE ?`, ch, pat); err == nil {
+			c.outboxChanged(ch, nil)
+		}
 	}
 }
 

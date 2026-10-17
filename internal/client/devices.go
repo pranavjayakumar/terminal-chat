@@ -150,7 +150,8 @@ func (c *Client) ensureDevice(ctx context.Context, s *session, signer ssh.Signer
 		if errors.As(err, &pe) && pe.Code == proto.ErrConflict {
 			// Another process on this TC_HOME (after revoke --self) may
 			// have registered these same keys first, with its own cert.
-			if mine, _, ferr := c.fetchDevices(ctx, s, proto.DevicesListArgs{Users: []uint64{me}}); ferr == nil && hasOwnCert(mine, me, keys) {
+			if mine, mrev, ferr := c.fetchDevices(ctx, s, proto.DevicesListArgs{Users: []uint64{me}}); ferr == nil &&
+				hasOwnCert(mine, me, keys) && !ownRevoked(sid, me, keys.ID, mySSH, mine, mrev) {
 				s.devOnce.Do(func() { close(s.devReady) })
 				return nil
 			}
@@ -219,6 +220,7 @@ func (c *Client) tryDevice(ctx context.Context, s *session, signer ssh.Signer) e
 		s.devErr.Store(&err)
 	} else {
 		s.devErr.Store(nil)
+		c.requeueUnregistered()
 	}
 	s.devTriedOne.Do(func() { close(s.devTried) })
 	c.post(Update{Status: true})
