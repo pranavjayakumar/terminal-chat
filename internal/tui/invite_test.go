@@ -202,7 +202,7 @@ func TestInviteListRevokeCommands(t *testing.T) {
 	}
 
 	do("/invites")
-	for _, want := range []string{"0123456789ab team 14 left, exp Mar 4 15:04, by @alice", "ba9876543210 admin 1 left", "by server host", "by @bob"} {
+	for _, want := range []string{"0123456789ab team, 14 left, exp Mar 4 15:04, by @alice", "ba9876543210 admin, 1 left", "by server host", "by @bob"} {
 		if !strings.Contains(m.notice, want) {
 			t.Fatalf("missing %q in notice %q", want, m.notice)
 		}
@@ -243,7 +243,7 @@ func TestInviteListRevokeCommands(t *testing.T) {
 	f.invites = []proto.InviteInfo{{ID: "0123456789ab", Kind: proto.InviteKindUser, UsesLeft: 1, Expires: exp, CreatedBy: 1,
 		Keys: 2, KeySrc: "github:carol\x1b[2J"}}
 	do("/invites")
-	if m.noticeErr || !strings.Contains(m.notice, "team for 2 keys of github:carol") || strings.Contains(m.notice, "\x1b") {
+	if m.noticeErr || !strings.Contains(m.notice, "only (2 keys), 1 left") || strings.Contains(m.notice, "\x1b") {
 		t.Fatalf("member list: %q", m.notice)
 	}
 	do("/invite-revoke 0123456789ab")
@@ -285,7 +285,7 @@ func TestInviteKeyCommand(t *testing.T) {
 	if !f.called("ghinvite carol 72h0m0s") {
 		t.Fatalf("calls %v", f.calls)
 	}
-	if m.noticeErr || !strings.Contains(m.notice, "only for github.com/carol's keys (2)") || !strings.Contains(m.notice, "install command copied") {
+	if m.noticeErr || !strings.Contains(m.notice, "install command copied · for github:carol only (2 keys) · 1 use") || !strings.Contains(m.notice, "install command copied") {
 		t.Fatalf("notice %q", m.notice)
 	}
 	if !strings.Contains(m.opt.Out.(*syncBuf).String(), "]52;c;") {
@@ -293,9 +293,29 @@ func TestInviteKeyCommand(t *testing.T) {
 	}
 	for _, sz := range [][2]int{{100, 30}, {40, 12}, {20, 6}} {
 		m.Update(tea.WindowSizeMsg{Width: sz[0], Height: sz[1]})
-		checkView(t, m, "key invite notice")
+		plain := checkView(t, m, "key invite notice")
+		if sz[0] == 40 && !strings.Contains(plain, "copied") {
+			t.Fatalf("40 columns: 'copied' cut off:\n%s", plain)
+		}
 	}
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	// The help overlay keeps a gap after the long key.
+	for _, w := range []int{60, 100} {
+		var row string
+		for _, l := range m.helpLines(w, 200) {
+			if p := ansi.Strip(l); strings.HasPrefix(p, "/invite --key") {
+				row = p
+			}
+		}
+		if !strings.Contains(row, "/invite --key github:user ") || ansi.StringWidth(row) > w {
+			t.Fatalf("width %d: help row %q", w, row)
+		}
+	}
+	// Specific usage errors.
+	do("/invite --key carol")
+	if !strings.Contains(m.notice, "did you mean github:carol") {
+		t.Fatalf("hint: %q", m.notice)
+	}
 	f.calls = nil
 	for _, in := range []string{"/invite --key", "/invite --key carol", "/invite --key github:a_b", "/invite --key github:x --key github:y",
 		"/invite --key github:x 5", "/invite --key github:\x1b[2J"} {

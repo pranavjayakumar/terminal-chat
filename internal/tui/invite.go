@@ -20,9 +20,10 @@ import (
 type updateAvailMsg string
 
 // inviteArgs parses /invite [uses] [ttl]: a number of uses (1-100) and a
-// duration like 72h, 3d or 30m, in either order.
+// duration like 72h, 3d or 30m, in either order. The server applies the
+// tighter member limits.
 func inviteArgs(args []string) (uses int, ttl time.Duration, err error) {
-	const usage = "usage: /invite [uses 1-100] [ttl like 72h or 3d, at most 30d]"
+	const usage = "usage: /invite [uses 1-100, members 1-10] [ttl like 72h or 3d, at most 30d, members 7d]"
 	if len(args) > 2 {
 		return 0, 0, errors.New(usage)
 	}
@@ -65,18 +66,23 @@ var _ GitHubInviteBackend = (*client.Client)(nil)
 // keyArg removes "--key github:<login>" from args and returns the login
 // ("" without --key).
 func keyArg(args []string) (login string, rest []string, err error) {
-	const usage = "usage: /invite --key github:user [ttl like 72h or 3d]"
 	for i := 0; i < len(args); i++ {
 		if args[i] != "--key" {
 			rest = append(rest, args[i])
 			continue
 		}
-		if login != "" || i+1 >= len(args) {
-			return "", nil, errors.New(usage)
+		if login != "" {
+			return "", nil, errors.New("give --key once")
+		}
+		if i+1 >= len(args) {
+			return "", nil, errors.New("usage: /invite --key github:user [ttl like 72h or 3d]")
 		}
 		l, ok := proto.GitHubKeySpec(args[i+1])
 		if !ok {
-			return "", nil, errors.New(usage)
+			if proto.ValidKeySrc("github:" + args[i+1]) {
+				return "", nil, errors.New("--key needs github:<user> (did you mean github:" + args[i+1] + "?)")
+			}
+			return "", nil, errors.New("--key needs github:<user>, a GitHub user name")
 		}
 		login = l
 		i++
@@ -84,13 +90,30 @@ func keyArg(args []string) (login string, rest []string, err error) {
 	return login, rest, nil
 }
 
-// inviteErr turns the server's forbidden into what it means here.
+// inviteErr turns the server's forbidden into what it means here, keeping
+// any reason the server gave (sanitized when shown).
 func inviteErr(err error, what string) error {
 	var pe *proto.Error
 	if errors.As(err, &pe) && pe.Code == proto.ErrForbidden {
-		return errors.New("only admins can " + what + " on this server")
+		msg := "only admins can " + what + " on this server"
+		if pe.Msg != "" {
+			msg += " (" + pe.Msg + ")"
+		}
+		return errors.New(msg)
 	}
 	return err
+}
+
+// boundLabel is how a key binding reads everywhere: "github:carol only (2 keys)".
+func boundLabel(src string, keys int64) string {
+	n := "1 key"
+	if keys != 1 {
+		n = fmt.Sprintf("%d keys", keys)
+	}
+	if src == "" {
+		return "bound to " + n
+	}
+	return sanitize.Line(src) + " only (" + n + ")"
 }
 
 // inviteCommand mints an invite and copies the install one-liner with OSC
@@ -118,6 +141,10 @@ func (m *Model) inviteCommand(args []string) (tea.Cmd, error) {
 		}
 	}
 	be, out, version := m.c, m.opt.Out, m.opt.Version
+	if gh != nil {
+		// The GitHub fetch can take seconds; say something meanwhile.
+		m.setInfo("fetching github.com/" + login + "'s SSH keys…")
+	}
 	return m.callThen("invite", func(ctx context.Context) (tea.Msg, error) {
 		var inv proto.InviteRes
 		var err error
@@ -136,17 +163,20 @@ func (m *Model) inviteCommand(args []string) (tea.Cmd, error) {
 		if out != nil {
 			_, _ = out.Write([]byte("\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(line)) + "\a"))
 		}
-		what := "1 use"
+		// What matters first: narrow panes cut the notice from the right.
+		parts := []string{"install command copied"}
+		if inv.Keys > 0 {
+			parts = append(parts, "for "+boundLabel("github:"+login, inv.Keys))
+		}
 		if inv.Uses > 1 {
-			what = fmt.Sprintf("%d uses", inv.Uses)
+			parts = append(parts, fmt.Sprintf("%d uses", inv.Uses))
+		} else {
+			parts = append(parts, "1 use")
 		}
 		if inv.Expires > 0 {
-			what += " · expires " + time.UnixMilli(inv.Expires).Format("Jan 2 15:04")
+			parts = append(parts, "expires "+time.UnixMilli(inv.Expires).Format("Jan 2 15:04"))
 		}
-		if inv.Keys > 0 {
-			what += fmt.Sprintf(" · only for github.com/%s's keys (%d)", login, inv.Keys)
-		}
-		return infoMsg("invite (" + what + ") · install command copied · code: " + sanitize.Line(inv.Code)), nil
+		return infoMsg(strings.Join(parts, " · ") + " · code: " + sanitize.Line(inv.Code)), nil
 	}), nil
 }
 
@@ -176,6 +206,10 @@ func (m *Model) inviteManageCommand(c command) (cmd tea.Cmd, ok bool, err error)
 		id := strings.ToLower(c.args[0])
 		return m.callThen("invite-revoke", func(ctx context.Context) (tea.Msg, error) {
 			if err := be.RevokeInvite(ctx, id); err != nil {
+				var pe *proto.Error
+				if errors.As(err, &pe) && pe.Code == proto.ErrNotFound {
+					return nil, errors.New("no open invite " + id + " of yours (see /invites)")
+				}
 				return nil, inviteErr(err, "revoke invites")
 			}
 			return infoMsg("invite " + id + " revoked"), nil
@@ -200,12 +234,13 @@ func (m *Model) inviteManageCommand(c command) (cmd tea.Cmd, ok bool, err error)
 		for i, inv := range invs {
 			parts[i] = describeInvite(inv, names)
 		}
-		return infoMsg("invites (/invite-revoke id): " + strings.Join(parts, " · ")), nil
+		// Ids first so they survive truncation in narrow panes.
+		return infoMsg(strings.Join(parts, " · ") + " · revoke with /invite-revoke id"), nil
 	}), true, nil
 }
 
-// describeInvite is "<id> <kind> <n> left, exp <time>, by <who>". Every
-// server-supplied field is sanitized or numeric.
+// describeInvite is "<id> <kind>[, <binding>], <n> left, exp <time>, by
+// <who>". Every server-supplied field is sanitized or numeric.
 func describeInvite(inv proto.InviteInfo, names map[uint64]string) string {
 	kind := sanitize.Line(inv.Kind)
 	switch inv.Kind {
@@ -224,12 +259,9 @@ func describeInvite(inv proto.InviteInfo, names map[uint64]string) string {
 		}
 	}
 	if inv.Keys > 0 {
-		kind += fmt.Sprintf(" for %d keys", inv.Keys)
-		if inv.KeySrc != "" {
-			kind += " of " + sanitize.Line(inv.KeySrc)
-		}
+		kind += ", " + boundLabel(inv.KeySrc, inv.Keys)
 	}
-	return fmt.Sprintf("%s %s %d left, exp %s, by %s", sanitize.Line(inv.ID), kind, inv.UsesLeft,
+	return fmt.Sprintf("%s %s, %d left, exp %s, by %s", sanitize.Line(inv.ID), kind, inv.UsesLeft,
 		time.UnixMilli(inv.Expires).Format("Jan 2 15:04"), by)
 }
 
