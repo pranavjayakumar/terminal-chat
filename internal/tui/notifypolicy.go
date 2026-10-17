@@ -514,9 +514,15 @@ func (m *Model) untilClock(s string) (int64, error) {
 		return 0, fmt.Errorf("bad time %q (like 09:00 or 9am)", sanitize.Line(s))
 	}
 	now := m.now().Local() // the user's clock
-	t := time.Date(now.Year(), now.Month(), now.Day(), hh, mm, 0, 0, now.Location())
-	if !t.After(now) {
-		t = t.AddDate(0, 0, 1)
+	// Pick the day by wall-clock minutes, not by comparing instants: in a
+	// repeated DST hour time.Date resolves to the first occurrence.
+	day := now.Day()
+	if hh*60+mm <= now.Hour()*60+now.Minute() {
+		day++
+	}
+	t := time.Date(now.Year(), now.Month(), day, hh, mm, 0, 0, now.Location())
+	for !t.After(now) { // the ambiguous hour, second time round
+		t = t.Add(time.Hour)
 	}
 	return t.UnixMilli(), nil
 }
