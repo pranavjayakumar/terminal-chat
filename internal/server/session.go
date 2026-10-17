@@ -50,6 +50,11 @@ type session struct {
 
 	synced       bool
 	e2e          bool // both sides advertised proto.CapE2E
+	voice        bool // both sides advertised proto.CapVoice
+	// Voice datagrams (huddle.go); dg is nil unless voice over QUIC.
+	dg       transport.DatagramConn
+	dgOut    chan []byte
+	dgBucket bucket // only the datagram reader goroutine touches it
 	lastTyping   map[uint64]time.Time
 	lastKeyNeed  map[uint64]time.Time // under srv.mu
 	lastPresence time.Time
@@ -87,7 +92,7 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 	}
 	defer s.unregister(sess)
 	w := proto.Welcome{
-		Server: Version, Caps: []string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapTeamInvites, proto.CapInviteManage}, ServerID: s.st.serverID, User: user, Time: s.now(),
+		Server: Version, Caps: []string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapTeamInvites, proto.CapInviteManage, proto.CapVoice}, ServerID: s.st.serverID, User: user, Time: s.now(),
 	}
 	if tamperEnabled {
 		s.tamper.welcome(user.ID, &w)
@@ -96,6 +101,11 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 		return
 	}
 	go sess.writer()
+	if dg, ok := transport.Datagrams(conn); ok && sess.voice {
+		dctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		sess.startDatagrams(dctx, dg)
+	}
 	sess.readLoop(ctx)
 }
 
@@ -113,6 +123,7 @@ func (s *Server) handshake(ctx context.Context, sess *session) (proto.User, stri
 		return proto.User{}, proto.ByeProtocolError, "bad HELLO"
 	}
 	sess.e2e = slices.Contains(h.Caps, proto.CapE2E)
+	sess.voice = slices.Contains(h.Caps, proto.CapVoice)
 	exp, err := sess.conn.Exporter()
 	if err != nil {
 		return proto.User{}, proto.ByeProtocolError, "no TLS exporter"
@@ -244,6 +255,7 @@ func (s *Server) unregister(sess *session) {
 		return
 	}
 	delete(s.sessions, sess)
+	s.huddleGoneLocked(sess)
 	s.online[sess.user.ID]--
 	if s.online[sess.user.ID] <= 0 {
 		delete(s.online, sess.user.ID)
@@ -496,6 +508,7 @@ func (sess *session) handleReq(ctx context.Context, r proto.Req) {
 			sess.synced = true
 			sess.goLive(res.Head)
 			sess.srv.sendPresence(sess)
+			sess.srv.sendHuddles(sess)
 		}
 		return
 	}

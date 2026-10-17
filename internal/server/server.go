@@ -45,6 +45,7 @@ type Server struct {
 	pin  string
 	log  *slog.Logger
 	hk   *hookState
+	hud  *huddles
 	// tamper holds the malicious-server test hooks; an empty struct unless
 	// built with -tags tctamper (tamper_on.go).
 	tamper tamperState
@@ -115,6 +116,7 @@ func New(cfg Config) (*Server, error) {
 		wlimits:    map[uint64]*bucket{},
 		disabled:   map[uint64]bool{},
 		remindWake: make(chan struct{}, 1),
+		hud:        newHuddles(),
 	}
 	if s.hk, err = newHookState(cfg.DataDir, func() time.Time { return s.cfg.Now() }); err != nil {
 		st.close()
@@ -222,6 +224,7 @@ func (s *Server) write(ctx context.Context, fn func(tx *sql.Tx) ([]proto.Event, 
 	for _, ev := range evs {
 		s.applyCache(ev)
 		s.publishLocked(ev)
+		s.huddleEventLocked(ev)
 	}
 	return evs, nil
 }
