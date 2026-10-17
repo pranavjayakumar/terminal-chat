@@ -814,6 +814,41 @@ func TestE2EBacklinksRecoverOlderKeys(t *testing.T) {
 	}
 }
 
+// No key.need for an epoch whose roster lacks us: members never share it
+// (§13.7), and asking would spend the one key.need per 30 s the server
+// relays, so the request for a key we can get would wait (it made
+// TestMaliciousMemberInconsistentBoxes flaky).
+func TestE2ENoKeyNeedOutsideRoster(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	b1 := newPeer(t, bob, nil)
+	f := startE2E(t, fs, proto.Snapshot{Chans: []proto.Channel{dmChan(0)}, Devs: []proto.Device{{Cert: b1.cert}}}, proto.DevicesListRes{})
+	me := f.myKeys(c)
+	k1, k2, k3 := newK(t), newK(t), newK(t)
+	e1 := mkBundle(t, b1.dev, dm, 1, nil, []uint64{bob}, k1, nil, b1.dev)
+	e2 := mkBundle(t, b1.dev, dm, 2, &e1, []uint64{alice, bob}, k2, nil, b1.dev, me) // no backlink
+	f.addBundle(dm, e1, 30)
+	f.keyEpoch(dm, bob, e2)
+	waitFor(t, "ok at epoch 2", func() bool { st := c.E2EStatus(dm); return st.State == E2EOK && st.Epoch == 2 })
+	// e3's box isn't for us: the key.need must be for epoch 3, never 1.
+	e3 := mkBundle(t, b1.dev, dm, 3, &e2, []uint64{alice, bob}, k3, &k2, b1.dev)
+	f.keyEpoch(dm, bob, e3)
+	deadline := time.After(testWait)
+	for {
+		select {
+		case n := <-f.needs:
+			if n.Epoch == 1 {
+				t.Fatalf("asked for an epoch outside our roster: %+v", n)
+			}
+			if n.Epoch == 3 {
+				return
+			}
+		case <-deadline:
+			t.Fatal("no key.need for epoch 3")
+		}
+	}
+}
+
 // key.need from a verified device of a roster member is answered with a
 // share that opens to K; from anyone else it isn't.
 func TestE2EAnswersKeyNeed(t *testing.T) {
