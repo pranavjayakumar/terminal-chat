@@ -1374,6 +1374,11 @@ The full roster of `chan`'s huddle, in join order; `parts` absent or empty = the
 
 `dev`/`stream` are present exactly in encrypted channels. C→S `huddle` ephemerals are ignored.
 
+The server queues the post-sync rosters before it reads the client's next frame, and answers a
+PING in order, so a client that sends a PING right after `sync`'s RES gets its PONG after every
+roster the sync brought: clients use this to tell "already running" (baseline, no ring) from
+"just started" (§14 notifications are client-side; no new fields).
+
 ### 14.3 Datagrams
 
 Voice travels in QUIC datagrams (RFC 9221) on the session's QUIC connection; both peers enable

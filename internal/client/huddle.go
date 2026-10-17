@@ -40,9 +40,8 @@ type huddleState struct {
 	// replacing (and leaking) what's current.
 	gen uint64
 	// Rosters are a baseline (never a "start") until liveAt, which is
-	// zero until a sync completes and then a moment after it (the server
-	// sends every live roster right after sync), and for a channel we
-	// just joined (joinedAt).
+	// zero until the post-sync PING's PONG (conn.go rosterMark), and for
+	// a channel we just joined (joinedAt).
 	liveAt   time.Time
 	joinedAt map[uint64]time.Time
 }
@@ -533,15 +532,16 @@ type HuddleStart struct {
 	Chan, By uint64
 }
 
-// baselineFor is how long after a sync or chan.join rosters are taken as
-// what was already there.
+// baselineFor is how long after our chan.join a roster for that channel
+// is taken as what was already there.
 const baselineFor = 2 * time.Second
 
-// huddlesLive starts treating new rosters as starts, baselineFor after a
-// completed sync; huddlesOffline stops it until the next one.
+// huddlesLive starts treating new rosters as starts: called when the PONG
+// to the post-sync PING arrives, i.e. after every roster the sync brought
+// (order, not time: a slow link can't make a running huddle ring).
 func (c *Client) huddlesLive(now time.Time) {
 	c.hud.mu.Lock()
-	c.hud.liveAt = now.Add(baselineFor)
+	c.hud.liveAt = now
 	c.hud.mu.Unlock()
 }
 
@@ -575,7 +575,7 @@ func (c *Client) huddleEphemeral(e proto.Ephemeral) {
 	} else {
 		c.hud.rosters[e.Chan] = parts
 		now := time.Now()
-		live := !c.hud.liveAt.IsZero() && now.After(c.hud.liveAt) && now.Sub(c.hud.joinedAt[e.Chan]) > baselineFor
+		live := !c.hud.liveAt.IsZero() && !now.Before(c.hud.liveAt) && now.Sub(c.hud.joinedAt[e.Chan]) > baselineFor
 		// A start has one participant; a longer roster arriving late
 		// after a reconnect is a huddle that was already going.
 		if !had && live && len(parts) == 1 && parts[0].User != c.Me().ID {

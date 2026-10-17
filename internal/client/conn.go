@@ -41,8 +41,12 @@ type session struct {
 	done     chan struct{}
 	failOnce sync.Once
 	lastSend atomic.Int64
-	watchdog *time.Timer // fails the session when nothing is received for recvTimeout
-	timedOut atomic.Bool
+	// rosterMark is the PING sent right after sync: its PONG comes after
+	// every roster the server sends for the sync (it answers in order), so
+	// rosters before it are a baseline, never huddle starts.
+	rosterMark atomic.Int64
+	watchdog   *time.Timer // fails the session when nothing is received for recvTimeout
+	timedOut   atomic.Bool
 
 	mu      sync.Mutex
 	nextID  uint32
@@ -565,7 +569,9 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 	}
 	if err == nil {
 		c.checkDowngrade(s)
-		c.huddlesLive(time.Now())
+		// Negative: never equal to a keepalive PING's unix-ms t.
+		s.rosterMark.Store(-1 - time.Now().UnixNano()&(1<<62-1))
+		_ = s.send(proto.TPing, proto.Ping{T: s.rosterMark.Load()})
 		online = true
 		if s.e2e() {
 			// Before publishing s: RefreshDevices reads it without waiting.
@@ -683,6 +689,11 @@ func (c *Client) readLoop(s *session) error {
 				return fmt.Errorf("applying snapshot: %w", err)
 			}
 			c.kickE2E()
+		case proto.TPong:
+			var p proto.Ping
+			if f.Decode(&p) == nil && p.T < 0 && p.T == s.rosterMark.Load() {
+				c.huddlesLive(time.Now())
+			}
 		case proto.TEphemeral:
 			var e proto.Ephemeral
 			if f.Decode(&e) == nil {
