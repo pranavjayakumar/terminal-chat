@@ -4,28 +4,18 @@ Last updated: 2026-10-17 (session 4). Read this first when resuming.
 
 ## Handoff (always current — read this first when switching accounts)
 
-**ACTIVE: v0.3.0 fix phase (session 4, 2026-10-17).** Open work lives in GitHub issues + PRs, never only in
-a scratchpad (the scratchpad was wiped once; boards were lost). Resume = this list, top to bottom:
+**ACTIVE: releasing v0.3.0 (session 4, 2026-10-17).** All v0.3.0 fixes are merged (#43–#61). Open work lives
+in GitHub issues + PRs, never only in a scratchpad. Resume = this list:
 
-1. **#53** `fix/admin-and-send` (B4 tc send outbox, B7 `/create --private` encrypts, B8 `/disable @user`):
-   reviewed by tui-reviewer + security-reviewer inside the PR. Wait for CI (`gh pr checks 53 --watch`), merge.
-2. **#51** `fix/ux-polish` (B13–B16 UX: /invite view + clipboard, tc invite errors, select footer, /remind refusal
-   in e2e channels, --member-invites persistence). Review round 2 done; last CI run failed — check
-   `gh pr checks 51` (likely a load flake, see #56), rerun or fix, merge after #53.
-3. **#54** `fix/device-revoke-gaps` (B5 critical, B11, B12): commits pushed, needs final gates + PR + reviews.
-   **Blocks v0.3.0.**
-4. **#55** `fix/join-flow` (B6 `tc login`/second device, B9 key-bound invite key choice, B10 retry): commits
-   pushed; redo the merge of origin/main (conflicts in server invites.go/session.go vs #52), PROTOCOL.md changed →
-   protocol-guardian + security-reviewer.
-5. **#56** `fix/test-flakes`: stress-run, PR, merge.
-6. Release **v0.3.0**: update README (lines on device revoke/stolen key are stale; add `tc users`, `tc login`,
-   `/disable`, `/create --private --plaintext`, brew tap) and ONBOARDING (pin v0.3.0 install.sh, second-laptop
-   section), tag, `make release-sign`, commit the regenerated `Formula/tc.rb`, redeploy the droplet, new invites.
-7. **v0.4.0** = draft PR **#47** voice huddles (owner decisions listed in the PR). Then M6 from
-   `docs/research/PRODUCT-2026-10.md` (owner to approve). Serverless options: `docs/research/SERVERLESS-2026-10.md`.
+1. Tag **v0.3.0** on main, wait for the draft release, `make release-sign` with the owner's key, commit the
+   regenerated `Formula/tc.rb` via PR, redeploy the droplet from the signed release, make new invites.
+2. **v0.4.0** = draft PR **#47** voice huddles (owner decisions listed in the PR): merge main, review, release.
+3. Follow-ups: #59 admin add-key invite command; per-key removal (`key.remove`, proposed in #52); M6 from
+   `docs/research/PRODUCT-2026-10.md` (owner to approve); rename after v0.4.
 
 Done this session: #43 docs, #44 brew tap, #45 first-start (#42), #46/#49 chaos deflakes, #48 member + github-key
-invites, #50 device list/revoke, #52 B1–B3 (add-key invites admin-only, `tc users [disable]`, invited_by).
+invites, #50 device list/revoke, #52 B1–B3 (add-key invites admin-only, `tc users [disable]`, invited_by), #51 UX
+polish, #53 B4/B7/B8, #58 `tc login` + join fixes, #60 CI flakes, #61 B5/B11/B12 device revoke gaps.
 
 **How the parallel run works:** one Claude subagent per area in its own worktree (`isolation: worktree`), each
 owns named files; overlaps are called out in the agent prompt. Reviewer agents (tui/security/protocol/breaker)
