@@ -141,6 +141,15 @@ func openStore(path string) (*store, error) {
 		db.Close()
 		return nil, err
 	}
+	// Key-bound invites (PROTOCOL.md §4.1).
+	if err := addColumn(db, "invites", "key_src", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if _, err := db.Exec(inviteKeysSchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("creating invite_keys: %w", err)
+	}
 	if err := migrateHooks(db); err != nil {
 		db.Close()
 		return nil, err

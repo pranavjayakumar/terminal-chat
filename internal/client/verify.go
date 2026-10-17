@@ -1,7 +1,7 @@
 package client
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha512"
 	"encoding/binary"
@@ -269,6 +269,27 @@ func (c *Client) ConfirmGitHub(res GitHubCheck) error {
 }
 
 func fetchGitHubKeys(ctx context.Context, base, login string) ([]string, error) {
+	keys, err := getGitHubKeys(ctx, base, login)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, pk := range keys {
+		if fp := ssh.FingerprintSHA256(pk); !slices.Contains(out, fp) {
+			out = append(out, fp)
+		}
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
+// getGitHubKeys fetches <base>/<login>.keys over the same origin only and
+// returns the keys that parse, in order. A body over maxGitHubKeys is an
+// error rather than silently cut short.
+func getGitHubKeys(ctx context.Context, base, login string) ([]ssh.PublicKey, error) {
+	if !githubLogin.MatchString(login) {
+		return nil, errors.New("not a GitHub user name")
+	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/"+url.PathEscape(login)+".keys", nil)
@@ -294,27 +315,30 @@ func fetchGitHubKeys(ctx context.Context, base, login string) ([]string, error) 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetching GitHub keys: HTTP %d", resp.StatusCode)
 	}
-	var out []string
-	sc := bufio.NewScanner(io.LimitReader(resp.Body, maxGitHubKeys))
-	sc.Buffer(make([]byte, 0, 4096), maxGitHubKeys)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		pk, _, _, _, err := ssh.ParseAuthorizedKey([]byte(line))
-		if err != nil {
-			continue
-		}
-		if fp := ssh.FingerprintSHA256(pk); !slices.Contains(out, fp) {
-			out = append(out, fp)
-		}
-	}
-	if err := sc.Err(); err != nil {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxGitHubKeys+1))
+	if err != nil {
 		return nil, fmt.Errorf("reading GitHub keys: %w", err)
 	}
-	slices.Sort(out)
-	return out, nil
+	if len(body) > maxGitHubKeys {
+		return nil, fmt.Errorf("GitHub keys response is over %d KiB", maxGitHubKeys>>10)
+	}
+	return parseGitHubKeys(body), nil
+}
+
+// parseGitHubKeys parses a .keys body: one authorized_keys line per key.
+// Lines that don't parse are skipped.
+func parseGitHubKeys(body []byte) []ssh.PublicKey {
+	var out []ssh.PublicKey
+	for line := range bytes.Lines(body) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		if pk, _, _, rest, err := ssh.ParseAuthorizedKey(line); err == nil && len(rest) == 0 {
+			out = append(out, pk)
+		}
+	}
+	return out
 }
 
 // ---- key changes ----

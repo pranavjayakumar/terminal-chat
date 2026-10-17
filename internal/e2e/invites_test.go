@@ -4,11 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/skailama/tc/internal/client"
+	"github.com/skailama/tc/internal/identity"
 	"github.com/skailama/tc/internal/proto"
+	"github.com/skailama/tc/internal/server"
 )
 
 // An admin's /invite 3 1h through the real client: three people join with
@@ -49,6 +55,90 @@ func TestTeamInviteViaClient(t *testing.T) {
 	}
 	if _, err := admin.CreateTeamInvite(ctx, 101, 0); !errors.As(err, &pe) || pe.Code != proto.ErrBadRequest {
 		t.Fatalf("101 uses: %v", err)
+	}
+}
+
+// A member's /invite and /invite --key github:carol through the real
+// client and server: the member sees only their own invites, and the
+// key-bound one admits carol's key and nobody else's.
+func TestMemberAndKeyInvitesViaClient(t *testing.T) {
+	s, addr := startServerConfig(t, "127.0.0.1:0", server.Config{DataDir: t.TempDir(), MemberInvites: true})
+	admin := login(t, s, addr, "admin", true)
+	bob := login(t, s, addr, "bob", false)
+	eventually(t, "online", func() bool { return admin.online() && bob.online() })
+	ctx := context.Background()
+
+	if _, err := admin.CreateTeamInvite(ctx, 20, 0); err != nil {
+		t.Fatal(err)
+	}
+	team, err := bob.CreateTeamInvite(ctx, 3, 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pe *proto.Error
+	if _, err := bob.CreateTeamInvite(ctx, 11, 0); !errors.As(err, &pe) || pe.Code != proto.ErrBadRequest {
+		t.Fatalf("member, 11 uses: %v", err)
+	}
+
+	carolHome := t.TempDir()
+	carolKey := writeKey(t, carolHome)
+	pub, err := identity.Load(carolKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/carol.keys" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(ssh.MarshalAuthorizedKey(pub.PublicKey()))
+	}))
+	defer gh.Close()
+	bob.SetGitHubBase(gh.URL)
+	bound, err := bob.CreateGitHubInvite(ctx, "carol", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bound.Keys != 1 || bound.Uses != 1 {
+		t.Fatalf("bound %+v", bound)
+	}
+
+	mine, err := bob.ListInvites(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mine) != 2 {
+		t.Fatalf("bob's list %+v", mine)
+	}
+	for _, inv := range mine {
+		if inv.CreatedBy != bob.Me().ID {
+			t.Fatalf("bob sees someone else's invite %+v", inv)
+		}
+		if inv.Keys == 1 && inv.KeySrc != "github:carol" {
+			t.Fatalf("bound invite listed as %+v", inv)
+		}
+	}
+	if all, _ := admin.ListInvites(ctx); len(all) != 3 {
+		t.Fatalf("admin's list %+v", all)
+	}
+
+	join := func(code, name, home, key string) error {
+		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		_, err := client.Login(lctx, home, code, name, key)
+		return err
+	}
+	malHome := t.TempDir()
+	var bye *client.ByeError
+	if err := join(bound.Code, "mallory", malHome, writeKey(t, malHome)); !errors.As(err, &bye) || bye.Code != proto.ByeInviteInvalid {
+		t.Fatalf("leaked bound invite with another key: %v", err)
+	}
+	if err := join(bound.Code, "carol", carolHome, carolKey); err != nil {
+		t.Fatalf("carol: %v", err)
+	}
+	dHome := t.TempDir()
+	if err := join(team.Code, "dave", dHome, writeKey(t, dHome)); err != nil {
+		t.Fatalf("dave via bob's team invite: %v", err)
 	}
 }
 

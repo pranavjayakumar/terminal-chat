@@ -27,8 +27,17 @@ type testServer struct {
 
 func startServer(t *testing.T, kind string) *testServer {
 	t.Helper()
-	dir := t.TempDir()
-	srv, err := New(Config{DataDir: dir, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	return startServerCfg(t, kind, Config{})
+}
+
+// startServerCfg is startServer with cfg; an empty DataDir is a new temp dir.
+func startServerCfg(t *testing.T, kind string, cfg Config) *testServer {
+	t.Helper()
+	if cfg.DataDir == "" {
+		cfg.DataDir = t.TempDir()
+	}
+	cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

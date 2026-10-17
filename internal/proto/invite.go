@@ -17,6 +17,17 @@ const CapTeamInvites = "team_invites"
 // invite.list and invite.revoke (PROTOCOL.md §4.1).
 const CapInviteManage = "invite_manage"
 
+// CapMemberInvites is advertised in WELCOME while non-admin members may
+// create, list and revoke their own invites (PROTOCOL.md §4.1). Servers
+// advertise it only while that setting is on.
+const CapMemberInvites = "member_invites"
+
+// CapKeyInvites is advertised in WELCOME when invite.create accepts keys:
+// an invite only a joiner holding one of those SSH keys can redeem
+// (PROTOCOL.md §4.1). Clients must not send keys without it: an older
+// server would ignore them and mint an unbound invite.
+const CapKeyInvites = "key_invites"
+
 // Invite management ops (admin; PROTOCOL.md §5).
 const (
 	OpInviteList   = "invite.list"
@@ -43,6 +54,10 @@ type InviteInfo struct {
 	Expires   int64  `msgpack:"expires"`
 	Created   int64  `msgpack:"created"`
 	CreatedBy uint64 `msgpack:"created_by"` // 0: made on the server host
+	// Keys is how many SSH keys the invite is bound to (cap key_invites);
+	// 0: any key can redeem it.
+	Keys   int64  `msgpack:"keys,omitempty"`
+	KeySrc string `msgpack:"key_src,omitempty"` // where the keys came from, e.g. "github:alice"
 }
 
 type InvitesRes struct {
@@ -68,6 +83,14 @@ func ValidInviteID(id string) bool {
 
 // Invite limits (PROTOCOL.md §4.1).
 const (
+	// Members' invites (cap member_invites) are tighter than admins'.
+	MaxMemberInviteUses = 10
+	MaxMemberInviteTTL  = 7 * 24 * time.Hour
+	MaxMemberInvites    = 5 // live invites per member
+	// Key-bound invites (cap key_invites).
+	MaxInviteKeys   = 32
+	MaxInviteKeyLen = 4096 // bytes of one wire-format SSH public key
+
 	DefaultInviteTTL = 7 * 24 * time.Hour
 	MaxInviteTTL     = 30 * 24 * time.Hour
 	MaxInviteUses    = 100
@@ -154,4 +177,21 @@ func InstallCommand(code, version string) (string, error) {
 		return "", errors.New("invite code has characters that aren't safe in a shell command")
 	}
 	return "curl -fsSL " + InstallScriptURL(version) + " | sh -s -- '" + code + "'", nil
+}
+
+// keySrcRE is "github:<login>", login in GitHub's user-name charset.
+var keySrcRE = regexp.MustCompile(`^github:[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
+
+// ValidKeySrc reports whether s may be InviteCreateArgs.KeySrc: empty or
+// "github:<login>". Other people see it in invite.list, so nothing else
+// is accepted.
+func ValidKeySrc(s string) bool { return s == "" || keySrcRE.MatchString(s) }
+
+// GitHubKeySpec returns login from the --key value "github:<login>", or
+// false if s isn't that form with a valid GitHub user name.
+func GitHubKeySpec(s string) (string, bool) {
+	if !keySrcRE.MatchString(s) {
+		return "", false
+	}
+	return strings.TrimPrefix(s, "github:"), true
 }

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -165,10 +166,19 @@ type inviteFake struct {
 	*fakeClient
 	invites []proto.InviteInfo
 	revoked []string
+	forbid  bool // answer forbidden, like a server without member_invites
 }
 
-func (f *inviteFake) ListInvites(context.Context) ([]proto.InviteInfo, error) { return f.invites, nil }
+func (f *inviteFake) ListInvites(context.Context) ([]proto.InviteInfo, error) {
+	if f.forbid {
+		return nil, proto.Errf(proto.ErrForbidden, "")
+	}
+	return f.invites, nil
+}
 func (f *inviteFake) RevokeInvite(_ context.Context, id string) error {
+	if f.forbid {
+		return proto.Errf(proto.ErrForbidden, "")
+	}
 	f.revoked = append(f.revoked, id)
 	return nil
 }
@@ -192,7 +202,7 @@ func TestInviteListRevokeCommands(t *testing.T) {
 	}
 
 	do("/invites")
-	for _, want := range []string{"0123456789ab team 14 left, exp Mar 4 15:04, by @alice", "ba9876543210 admin 1 left", "by server host", "by @bob"} {
+	for _, want := range []string{"0123456789ab team, 14 left, exp Mar 4 15:04, by @alice", "ba9876543210 admin, 1 left", "by server host", "by @bob"} {
 		if !strings.Contains(m.notice, want) {
 			t.Fatalf("missing %q in notice %q", want, m.notice)
 		}
@@ -226,11 +236,107 @@ func TestInviteListRevokeCommands(t *testing.T) {
 		t.Fatalf("empty: %q", m.notice)
 	}
 
-	// Non-admins are told up front; nothing is sent.
+	// Members ask the server (cap member_invites decides); a forbidden
+	// answer says what it means.
 	m.me.Admin = false
 	f.users[0].Admin = false
+	f.invites = []proto.InviteInfo{{ID: "0123456789ab", Kind: proto.InviteKindUser, UsesLeft: 1, Expires: exp, CreatedBy: 1,
+		Keys: 2, KeySrc: "github:carol\x1b[2J"}}
+	do("/invites")
+	if m.noticeErr || !strings.Contains(m.notice, "only (2 keys), 1 left") || strings.Contains(m.notice, "\x1b") {
+		t.Fatalf("member list: %q", m.notice)
+	}
 	do("/invite-revoke 0123456789ab")
-	if !m.noticeErr || !strings.Contains(m.notice, "only admins") || len(f.revoked) != 1 {
-		t.Fatalf("non-admin: %q %v", m.notice, f.revoked)
+	if m.noticeErr || len(f.revoked) != 2 {
+		t.Fatalf("member revoke: %q %v", m.notice, f.revoked)
+	}
+	f.forbid = true
+	do("/invite-revoke 0123456789ab")
+	if !m.noticeErr || !strings.Contains(m.notice, "only admins can revoke invites on this server") {
+		t.Fatalf("forbidden revoke: %q", m.notice)
+	}
+	do("/invites")
+	if !m.noticeErr || !strings.Contains(m.notice, "only admins can list invites") {
+		t.Fatalf("forbidden list: %q", m.notice)
+	}
+}
+
+func (f *inviteFake) CreateGitHubInvite(_ context.Context, login string, ttl time.Duration) (proto.InviteRes, error) {
+	f.record(fmt.Sprintf("ghinvite %s %s", login, ttl))
+	if f.forbid {
+		return proto.InviteRes{}, proto.Errf(proto.ErrForbidden, "")
+	}
+	return proto.InviteRes{Code: "tc://chat.example.com:7443/abcdefghijklmnopqrstuvwxyz#Pin-_x", Uses: 1,
+		Expires: time.Now().Add(time.Hour).UnixMilli(), Keys: 2}, nil
+}
+
+// /invite --key github:user fetches through the backend and says the
+// invite is bound; bad forms never reach it.
+func TestInviteKeyCommand(t *testing.T) {
+	f := &inviteFake{fakeClient: newFake()}
+	m := New(context.Background(), f, Options{Out: &syncBuf{}, styles: testStyles(true), Version: "v0.2.0"})
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	do := func(in string) {
+		t.Helper()
+		m.input.SetValue(in)
+		run(m, m.submit())
+	}
+	do("/invite --key github:carol 3d")
+	if !f.called("ghinvite carol 72h0m0s") {
+		t.Fatalf("calls %v", f.calls)
+	}
+	if m.noticeErr || !strings.Contains(m.notice, "install command copied · for github:carol only (2 keys) · 1 use") || !strings.Contains(m.notice, "install command copied") {
+		t.Fatalf("notice %q", m.notice)
+	}
+	if !strings.Contains(m.opt.Out.(*syncBuf).String(), "]52;c;") {
+		t.Fatal("one-liner not copied")
+	}
+	for _, sz := range [][2]int{{100, 30}, {40, 12}, {20, 6}} {
+		m.Update(tea.WindowSizeMsg{Width: sz[0], Height: sz[1]})
+		plain := checkView(t, m, "key invite notice")
+		if sz[0] == 40 && !strings.Contains(plain, "copied") {
+			t.Fatalf("40 columns: 'copied' cut off:\n%s", plain)
+		}
+	}
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	// The help overlay keeps a gap after the long key.
+	for _, w := range []int{60, 100} {
+		var row string
+		for _, l := range m.helpLines(w, 200) {
+			if p := ansi.Strip(l); strings.HasPrefix(p, "/invite --key") {
+				row = p
+			}
+		}
+		if !strings.Contains(row, "/invite --key github:user ") || ansi.StringWidth(row) > w {
+			t.Fatalf("width %d: help row %q", w, row)
+		}
+	}
+	// Specific usage errors.
+	do("/invite --key carol")
+	if !strings.Contains(m.notice, "did you mean github:carol") {
+		t.Fatalf("hint: %q", m.notice)
+	}
+	f.calls = nil
+	for _, in := range []string{"/invite --key", "/invite --key carol", "/invite --key github:a_b", "/invite --key github:x --key github:y",
+		"/invite --key github:x 5", "/invite --key github:\x1b[2J"} {
+		do(in)
+		if !m.noticeErr {
+			t.Errorf("%q: notice %q", in, m.notice)
+		}
+	}
+	if len(f.calls) != 0 {
+		t.Fatalf("bad input reached the backend: %v", f.calls)
+	}
+	f.forbid = true
+	do("/invite --key github:carol")
+	if !m.noticeErr || !strings.Contains(m.notice, "only admins can invite people on this server") {
+		t.Fatalf("forbidden: %q", m.notice)
+	}
+	// A backend without key-bound invites says so.
+	m2, _ := newTestModelFake(t, 100, 30)
+	m2.input.SetValue("/invite --key github:carol")
+	run(m2, m2.submit())
+	if !m2.noticeErr || !strings.Contains(m2.notice, "aren't supported") {
+		t.Fatalf("unsupported: %q", m2.notice)
 	}
 }

@@ -87,7 +87,7 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 	}
 	defer s.unregister(sess)
 	w := proto.Welcome{
-		Server: Version, Caps: []string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapTeamInvites, proto.CapInviteManage}, ServerID: s.st.serverID, User: user, Time: s.now(),
+		Server: Version, Caps: append([]string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind}, s.inviteCaps()...), ServerID: s.st.serverID, User: user, Time: s.now(),
 	}
 	if tamperEnabled {
 		s.tamper.welcome(user.ID, &w)
@@ -149,10 +149,19 @@ func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp str
 		var target sql.NullInt64
 		var expires, uses int64
 		var used bool
-		err := tx.QueryRowContext(ctx, `SELECT admin, user, expires, used, uses FROM invites WHERE token = ?`,
-			tokenHash(a.Invite)).Scan(&admin, &target, &expires, &used, &uses)
-		if err != nil || used || uses < 1 || expires < now {
+		var createdBy uint64
+		var stored string // tokenHash or boundTokenHash (invites.go)
+		err := tx.QueryRowContext(ctx, `SELECT token, admin, user, expires, used, uses, created_by FROM invites WHERE token IN (?, ?)`,
+			tokenHash(a.Invite), boundTokenHash(a.Invite)).Scan(&stored, &admin, &target, &expires, &used, &uses, &createdBy)
+		// expires <= now matches invite.list, revoke and the member cap,
+		// which count an invite as live only while expires > now.
+		if err != nil || used || uses < 1 || expires <= now {
 			return nil, fail(proto.ByeInviteInvalid, "invite is invalid, used or expired")
+		}
+		if msg, err := s.redeemCheck(ctx, tx, stored, createdBy, fp); err != nil {
+			return nil, err
+		} else if msg != "" {
+			return nil, fail(proto.ByeInviteInvalid, msg)
 		}
 		if _, err := userByKey(ctx, tx, fp); err == nil {
 			return nil, fail(proto.ByeKeyExists, "this key is already registered; log in without an invite")
@@ -161,7 +170,7 @@ func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp str
 		// the callers; the rest of the transaction rolls back with it.
 		res, err := tx.ExecContext(ctx,
 			`UPDATE invites SET uses = uses - 1, used = (uses - 1 <= 0) WHERE token = ? AND uses > 0 AND used = 0`,
-			tokenHash(a.Invite))
+			stored)
 		if err != nil {
 			return nil, err
 		}
