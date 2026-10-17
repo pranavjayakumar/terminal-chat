@@ -36,6 +36,18 @@ func readMemberInvites(data string) bool {
 	return err != nil || strings.TrimSpace(string(b)) != "false"
 }
 
+// memberInvitesSetting is the value to run with: --member-invites when given,
+// else what the server last ran with, so a restart without the flag does not
+// silently turn member invites back on after an admin disabled them.
+func memberInvitesSetting(fs *flag.FlagSet, data string, flagVal bool) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) { set = set || f.Name == "member-invites" })
+	if set {
+		return flagVal
+	}
+	return readMemberInvites(data)
+}
+
 func cmdServer(args []string) error {
 	if len(args) > 0 && args[0] == "invite" {
 		return cmdServerInvite(args[1:])
@@ -44,9 +56,10 @@ func cmdServer(args []string) error {
 	data := fs.String("data", defaultDataDir(), "data directory (database, TLS key)")
 	listen := fs.String("listen", ":7443", "listen address (UDP for QUIC and TCP)")
 	public := fs.String("public", "", "host:port clients use to reach this server (saved for invites)")
-	memberInvites := fs.Bool("member-invites", true, fmt.Sprintf("let members invite people (never admins; at most %d live invites, %d uses, 7 days each)",
+	memberInvites := fs.Bool("member-invites", true, fmt.Sprintf("let members invite people; unset keeps the last setting (never admins; at most %d live invites, %d uses, 7 days each)",
 		proto.MaxMemberInvites, proto.MaxMemberInviteUses))
 	fs.Parse(args)
+	*memberInvites = memberInvitesSetting(fs, *data, *memberInvites)
 
 	if *public != "" {
 		if err := server.ValidPublicAddr(*public); err != nil {
