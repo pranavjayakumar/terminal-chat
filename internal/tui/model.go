@@ -215,6 +215,15 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 	return m
 }
 
+// openDefault selects the default channel when none is active. A fresh
+// client's cache is empty when New runs; the first snapshot arrives later.
+func (m *Model) openDefault() tea.Cmd {
+	if m.active != 0 {
+		return nil
+	}
+	return m.openChannel(m.defaultChannel())
+}
+
 func (m *Model) defaultChannel() uint64 { return m.defaultChannelExcept(0) }
 
 func (m *Model) defaultChannelExcept(skip uint64) uint64 {
@@ -890,6 +899,7 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 	}
 	if u.Reset {
 		m.reloadAll()
+		cmds = append(cmds, m.openDefault())
 		if m.mode == modeActivity {
 			m.refreshActivity()
 		}
@@ -903,6 +913,9 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 	}
 	if u.Channels || u.Users {
 		m.reloadChans()
+	}
+	if u.Channels || u.Users {
+		cmds = append(cmds, m.openDefault())
 	}
 	if u.Msgs[m.main.ch] {
 		m.reloadPane(&m.main)
