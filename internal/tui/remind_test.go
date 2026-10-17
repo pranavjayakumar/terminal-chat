@@ -259,3 +259,20 @@ func TestReminderCountsAsUnreadInTheSidebar(t *testing.T) {
 		t.Fatalf("notes missing from the sidebar:\n%s", v)
 	}
 }
+
+// Encrypted channels refuse (the server stores reminders in the clear), say
+// why, and keep the typed command.
+func TestRemindInEncryptedChannelRefuses(t *testing.T) {
+	m, f := newTestModelFake(t, 100, 24)
+	newClock(m)
+	m.openChannel(20)
+	m.e2e[20] = client.E2EStatus{State: client.E2EOK}
+	m.input.SetValue("/remind 1h ask bob")
+	run(m, m.submit())
+	if len(f.reminded) != 0 || !m.noticeErr || !strings.Contains(m.notice, "stored unencrypted") {
+		t.Fatalf("reminded %+v notice %q", f.reminded, m.notice)
+	}
+	if m.input.Value() != "/remind 1h ask bob" {
+		t.Fatalf("input lost: %q", m.input.Value())
+	}
+}

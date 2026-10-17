@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"strconv"
@@ -44,16 +43,7 @@ func inviteArgs(args []string) (uses int, ttl time.Duration, err error) {
 	return uses, ttl, nil
 }
 
-func parseTTL(s string) (time.Duration, error) {
-	if n, ok := strings.CutSuffix(s, "d"); ok {
-		days, err := strconv.Atoi(n)
-		if err != nil || days < 1 || days > 30 {
-			return 0, errors.New("bad days")
-		}
-		return time.Duration(days) * 24 * time.Hour, nil
-	}
-	return time.ParseDuration(s)
-}
+func parseTTL(s string) (time.Duration, error) { return client.ParseTTL(s) }
 
 // GitHubInviteBackend is implemented by backends that can mint invites
 // bound to a GitHub account's SSH keys (*client.Client does).
@@ -95,11 +85,10 @@ func keyArg(args []string) (login string, rest []string, err error) {
 func inviteErr(err error, what string) error {
 	var pe *proto.Error
 	if errors.As(err, &pe) && pe.Code == proto.ErrForbidden {
-		msg := "only admins can " + what + " on this server"
 		if pe.Msg != "" {
-			msg += " (" + pe.Msg + ")"
+			return errors.New(pe.Msg + " (only admins can " + what + " on this server)")
 		}
-		return errors.New(msg)
+		return errors.New("only admins can " + what + " on this server")
 	}
 	return err
 }
@@ -116,8 +105,8 @@ func boundLabel(src string, keys int64) string {
 	return sanitize.Line(src) + " only (" + n + ")"
 }
 
-// inviteCommand mints an invite and copies the install one-liner with OSC
-// 52; the notice shows the raw code for people who already have tc. With
+// inviteCommand mints an invite, copies the install one-liner (OSC 52, tmux
+// passthrough, pbcopy & co) and shows code and one-liner in full. With
 // --key github:<login> the client fetches that account's SSH keys and binds
 // the invite to them. Members may invite when the server allows it; the
 // server enforces who and how much.
@@ -140,7 +129,7 @@ func (m *Model) inviteCommand(args []string) (tea.Cmd, error) {
 			return nil, errors.New("key-bound invites aren't supported here")
 		}
 	}
-	be, out, version := m.c, m.opt.Out, m.opt.Version
+	be, opt, version := m.c, m.opt, m.opt.Version
 	if gh != nil {
 		// The GitHub fetch can take seconds; say something meanwhile.
 		m.setInfo("fetching github.com/" + login + "'s SSH keys…")
@@ -160,11 +149,9 @@ func (m *Model) inviteCommand(args []string) (tea.Cmd, error) {
 		if err != nil {
 			return nil, err
 		}
-		if out != nil {
-			_, _ = out.Write([]byte("\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(line)) + "\a"))
-		}
+		how, cerr := clip(ctx, opt, line)
 		// What matters first: narrow panes cut the notice from the right.
-		parts := []string{"install command copied"}
+		parts := []string{"invite created"}
 		if inv.Keys > 0 {
 			parts = append(parts, "for "+boundLabel("github:"+login, inv.Keys))
 		}
@@ -176,8 +163,109 @@ func (m *Model) inviteCommand(args []string) (tea.Cmd, error) {
 		if inv.Expires > 0 {
 			parts = append(parts, "expires "+time.UnixMilli(inv.Expires).Format("Jan 2 15:04"))
 		}
-		return infoMsg(strings.Join(parts, " · ") + " · code: " + sanitize.Line(inv.Code)), nil
+		return inviteShownMsg{summary: strings.Join(parts, " · "), code: sanitize.Line(inv.Code),
+			line: line, how: how, copyErr: cerr}, nil
 	}), nil
+}
+
+// inviteShownMsg carries a new invite to the UI, which shows it in full:
+// the status line truncates, and the copy can silently fail (tmux), so the
+// code must stay readable and selectable on screen.
+type inviteShownMsg struct {
+	summary, code, line, how string
+	copyErr                  error
+}
+
+func (m *Model) showInvite(s inviteShownMsg) {
+	copied := "NOT copied: select the text below"
+	switch s.how {
+	case "system":
+		copied = "copied to the clipboard"
+	case "terminal":
+		copied = "sent to terminal clipboard"
+	}
+	m.view = viewer{
+		title: "invite",
+		build: func(w int) []string { return inviteLines(s, copied, w) },
+		copy:  s.line,
+		back:  modeNormal,
+	}
+	m.mode = modeViewer
+	m.setInfo("invite created")
+}
+
+// inviteLines lays the invite out for width w: copy result first, then the
+// summary, the code in chunks, and the install command broken at spaces with
+// backslash continuations so pasting several rows still runs in sh.
+func inviteLines(s inviteShownMsg, copied string, w int) []string {
+	w = max(w, 8)
+	out := wrapWords(copied, w)
+	out = append(out, "")
+	out = append(out, wrapWords(s.summary, w)...)
+	out = append(out, "", "code:")
+	for r := []rune(s.code); len(r) > 0; {
+		n := min(len(r), w)
+		out = append(out, string(r[:n]))
+		r = r[n:]
+	}
+	out = append(out, "", "install command:")
+	return append(out, wrapShell(s.line, w)...)
+}
+
+// wrapShell breaks a shell command into rows of at most w columns that still
+// run when pasted together: a backslash-newline is removed by sh even inside
+// a word, and a quoted word is cut as adjacent quoted pieces.
+func wrapShell(line string, w int) []string {
+	var out []string
+	row := ""
+	flush := func() { out = append(out, row+" \\"); row = "" }
+	for _, tok := range strings.Fields(line) {
+		if row != "" && len(row)+1+len(tok)+2 <= w {
+			row += " " + tok
+			continue
+		}
+		if row != "" {
+			flush()
+		}
+		if len(tok)+2 <= w {
+			row = tok
+			continue
+		}
+		quoted := len(tok) >= 2 && tok[0] == '\'' && tok[len(tok)-1] == '\''
+		body, q, size := tok, "", w-1
+		if quoted {
+			body, q, size = tok[1:len(tok)-1], "'", w-3
+		}
+		size = max(size, 1)
+		for len(body) > size {
+			out = append(out, q+body[:size]+q+"\\")
+			body = body[size:]
+		}
+		row = q + body + q
+	}
+	if row != "" {
+		out = append(out, row)
+	}
+	return out
+}
+
+// wrapWords breaks text at spaces into rows of at most w columns (a longer
+// word stays whole).
+func wrapWords(text string, w int) []string {
+	var out []string
+	row := ""
+	for _, tok := range strings.Fields(text) {
+		switch {
+		case row == "":
+			row = tok
+		case strWidth(row)+1+strWidth(tok) <= w:
+			row += " " + tok
+		default:
+			out = append(out, row)
+			row = tok
+		}
+	}
+	return append(out, row)
 }
 
 // InviteBackend is implemented by backends that can list and revoke

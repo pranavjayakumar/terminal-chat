@@ -16,6 +16,7 @@ import (
 	"github.com/skailama/tc/internal/identity"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/transport"
+	"github.com/skailama/tc/internal/transport/transporttest"
 )
 
 type testServer struct {
@@ -84,16 +85,11 @@ func newKey(t *testing.T) ssh.Signer {
 
 func (ts *testServer) dial(t *testing.T) (transport.Conn, *proto.Codec) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	dial := transport.DialTCP
 	if ts.kind == "quic" {
 		dial = transport.DialQUIC
 	}
-	conn, err := dial(ctx, ts.addr, ts.Pin())
-	if err != nil {
-		t.Fatal(err)
-	}
+	conn := transporttest.Dial(t, dial, ts.addr, ts.Pin())
 	t.Cleanup(func() { conn.Close() })
 	return conn, proto.NewCodec(conn)
 }
@@ -197,7 +193,7 @@ func (c *tclient) recv(what string) proto.Frame {
 			c.t.Fatalf("%s: connection closed waiting for %s", c.user.Name, what)
 		}
 		return f
-	case <-time.After(3 * time.Second):
+	case <-time.After(15 * time.Second): // a hang guard; loaded CI runners are slow
 		c.t.Fatalf("%s: timeout waiting for %s", c.user.Name, what)
 	}
 	panic("unreachable")

@@ -25,6 +25,7 @@ import (
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/server"
 	"github.com/skailama/tc/internal/transport"
+	"github.com/skailama/tc/internal/transport/transporttest"
 )
 
 type frame = server.TamperFrame
@@ -477,12 +478,7 @@ func dialRaw(t *testing.T, addr, pin, keyPath string) *rawSession {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	conn, err := transport.DialTCP(ctx, addr, pin)
-	if err != nil {
-		t.Fatal(err)
-	}
+	conn := transporttest.Dial(t, transport.DialTCP, addr, pin)
 	t.Cleanup(func() { conn.Close() })
 	codec := proto.NewCodec(conn)
 	exp, _ := conn.Exporter()

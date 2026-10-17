@@ -295,7 +295,7 @@ func (c *Client) RevokeDeviceOpts(ctx context.Context, dev e2ecrypto.DevID, o Re
 
 	now := time.Now()
 	var rev identity.Signed
-	signer, serr := identity.Load(c.cfg.KeyPath)
+	signer, serr := identity.Load(c.cfg.KeySpec())
 	if serr == nil && !bytes.Equal(signer.PublicKey().Marshal(), s.sshPub) {
 		serr = errors.New("the SSH key changed since this session logged in")
 	}

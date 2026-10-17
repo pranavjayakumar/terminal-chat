@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
@@ -35,6 +36,28 @@ func readMemberInvites(data string) bool {
 	return err != nil || strings.TrimSpace(string(b)) != "false"
 }
 
+// memberInvitesSetting is the value to run with: --member-invites when given,
+// else what the server last ran with, so a restart without the flag does not
+// silently turn member invites back on after an admin disabled them.
+func memberInvitesSetting(o *optBool, data string) bool {
+	if o.set {
+		return o.val
+	}
+	return readMemberInvites(data)
+}
+
+// optBool is a bool flag that knows whether it was given. Its String is
+// always empty so -h does not print a misleading "(default true)".
+type optBool struct{ set, val bool }
+
+func (o *optBool) String() string   { return "" }
+func (o *optBool) IsBoolFlag() bool { return true }
+func (o *optBool) Set(v string) error {
+	b, err := strconv.ParseBool(v)
+	o.set, o.val = true, b
+	return err
+}
+
 func cmdServer(args []string) error {
 	if len(args) > 0 && args[0] == "invite" {
 		return cmdServerInvite(args[1:])
@@ -43,9 +66,12 @@ func cmdServer(args []string) error {
 	data := fs.String("data", defaultDataDir(), "data directory (database, TLS key)")
 	listen := fs.String("listen", ":7443", "listen address (UDP for QUIC and TCP)")
 	public := fs.String("public", "", "host:port clients use to reach this server (saved for invites)")
-	memberInvites := fs.Bool("member-invites", true, fmt.Sprintf("let members invite people (never admins; at most %d live invites, %d uses, 7 days each)",
+	var mi optBool
+	fs.Var(&mi, "member-invites", fmt.Sprintf("let members invite people (never admins; at most %d live invites, %d uses, 7 days each); without the flag, keeps the last setting, on for a new server",
 		proto.MaxMemberInvites, proto.MaxMemberInviteUses))
 	fs.Parse(args)
+	memberInvites := new(bool)
+	*memberInvites = memberInvitesSetting(&mi, *data)
 
 	if *public != "" {
 		if err := server.ValidPublicAddr(*public); err != nil {
@@ -256,7 +282,8 @@ func printInvites(w io.Writer, invs []proto.InviteInfo, name func(uint64) string
 		fmt.Fprintln(w, "No open invites.")
 		return
 	}
-	fmt.Fprintf(w, "%-12s  %-14s  %9s  %-17s  %s\n", "ID", "KIND", "USES LEFT", "EXPIRES", "CREATED BY")
+	type row struct{ id, kind, left, exp, by string }
+	rows := []row{{"ID", "KIND", "USES LEFT", "EXPIRES", "CREATED BY"}}
 	for _, inv := range invs {
 		kind := sanitize.Line(inv.Kind)
 		if inv.Kind == proto.InviteKindKey {
@@ -269,8 +296,18 @@ func printInvites(w io.Writer, invs []proto.InviteInfo, name func(uint64) string
 		if inv.CreatedBy != 0 {
 			by = who(inv.CreatedBy, name)
 		}
-		fmt.Fprintf(w, "%-12s  %-14s  %9d  %-17s  %s\n", sanitize.Line(inv.ID), kind, inv.UsesLeft,
-			time.UnixMilli(inv.Expires).Format("Jan 2 15:04 MST"), by)
+		rows = append(rows, row{sanitize.Line(inv.ID), kind, fmt.Sprint(inv.UsesLeft),
+			time.UnixMilli(inv.Expires).Format("Jan 2 15:04 MST"), by})
+	}
+	// Columns are sized to their content so long kinds don't shove the rest.
+	var wid [4]int
+	for _, r := range rows {
+		for i, c := range []string{r.id, r.kind, r.left, r.exp} {
+			wid[i] = max(wid[i], utf8.RuneCountInString(c))
+		}
+	}
+	for _, r := range rows {
+		fmt.Fprintf(w, "%-*s  %-*s  %*s  %-*s  %s\n", wid[0], r.id, wid[1], r.kind, wid[2], r.left, wid[3], r.exp, r.by)
 	}
 	fmt.Fprintln(w, "\nRevoke one with: "+revoke)
 }
