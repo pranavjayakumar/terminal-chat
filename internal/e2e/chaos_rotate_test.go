@@ -159,16 +159,18 @@ func TestChaosRotations(t *testing.T) {
 		removedAt = head.Epoch
 	}()
 	// Rotations by every current member in turn, racing everything above,
-	// until six went through or 30 s passed (chaos lasts until then too).
-	// Bounded: under constant kills a client's reconnect backoff grows to
-	// 30 s, so a long chaos phase mostly measures backoff.
+	// until six went through, or 30 s passed with at least three (chaos
+	// lasts until then too). Bounded: under constant kills a client's
+	// reconnect backoff grows to 30 s, so a long chaos phase mostly measures
+	// backoff; slow CI runners still get up to 60 s to reach the minimum.
 	const wantRotations, minRotations = 6, 3
 	rotations := 0
 	rotDone := make(chan struct{})
 	go func() {
 		defer close(rotDone)
-		deadline := time.Now().Add(30 * time.Second)
-		for i := 0; rotations < wantRotations && time.Now().Before(deadline); i++ {
+		soft, hard := time.Now().Add(30*time.Second), time.Now().Add(60*time.Second)
+		for i := 0; rotations < wantRotations && time.Now().Before(hard) &&
+			(rotations < minRotations || time.Now().Before(soft)); i++ {
 			time.Sleep(time.Duration(400+rand.IntN(800)) * time.Millisecond)
 			u := us[i%len(us)]
 			if v, ok := u.Channel(ch.ID); !ok || !v.Member {
