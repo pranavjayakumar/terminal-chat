@@ -14,7 +14,7 @@ Last updated: 2026-10-10 (end of session 1; branch `m2-activity` adds drafts, hi
 - **Repo:** only `main`; GitHub deletes merged branches automatically; CI green.
 - **Name:** stays `tc` for now (owner). A rename later should happen before many installs; note `tc` clashes with
   iproute2's `tc` on Linux.
-- **Next session:** owner onboarding using `ONBOARDING.md`. Then candidates: M5 voice huddles; deferred M4 items
+- **In progress (2026-10-17):** v0.3.0 + M5 voice in parallel (see WORKLOG). **Was next:** owner onboarding using `ONBOARDING.md`. Then candidates: M5 voice huddles; deferred M4 items
   (brew tap, any-member invites, `--key github:user`, device revoke command); polish from real team use.
 
 **Rules:** kiro hard cap 55–60% of monthly credits (check `kiro-cli chat --no-interactive "/usage"`); once reached,
@@ -32,7 +32,7 @@ exit 0. Log every event in `docs/WORKLOG.md`. Delete worktrees/local branches af
 | M4 zero-setup onboarding | ✅ done (PR #34): signed releases, verified install.sh, `tc join`, invite one-liner, team invites + list/revoke, `tc update`. Deferred: brew tap, any-member invites |
 | M5 voice | not started |
 
-Release tag: `v0.1.0` = M1. No newer tag yet.
+Release tags: `v0.1.0` = M1, `v0.2.0` = M2 + M3 + M4 (signed). Next: `v0.3.0` (#42, member/github-key invites, device revoke, brew), `v0.4.0` (M5 voice).
 
 ## Resume checklist (do in order)
 
