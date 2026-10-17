@@ -498,6 +498,10 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 	if err == nil {
 		c.checkDowngrade(s)
 		online = true
+		if s.e2e() {
+			// Before publishing s: RefreshDevices reads it without waiting.
+			s.sshPub = signer.PublicKey().Marshal()
+		}
 		c.mu.Lock()
 		c.sess = s
 		away := c.away
@@ -513,7 +517,6 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 			c.outboxLoop(sctx, s)
 		}()
 		if s.e2e() {
-			s.sshPub = signer.PublicKey().Marshal()
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
