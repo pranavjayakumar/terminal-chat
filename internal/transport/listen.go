@@ -32,6 +32,9 @@ func quicConfig() *quic.Config {
 		MaxIdleTimeout:       maxIdleTimeout,
 		KeepAlivePeriod:      keepAlivePeriod,
 		Allow0RTT:            false,
+		// Voice (PROTOCOL.md §14.3). A transport parameter: peers without
+		// it just never get datagrams.
+		EnableDatagrams: true,
 	}
 }
 

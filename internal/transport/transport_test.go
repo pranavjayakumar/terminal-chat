@@ -264,3 +264,27 @@ func TestCertPersisted(t *testing.T) {
 		t.Fatal("expected error with only key present")
 	}
 }
+
+func TestDatagrams(t *testing.T) {
+	ln, cert := newServer(t, listenOpts{})
+	c, s := connect(t, ln, Pin(cert), DialQUIC)
+	cd, ok := Datagrams(c)
+	sd, ok2 := Datagrams(s)
+	if !ok || !ok2 {
+		t.Fatal("QUIC conns should negotiate datagrams")
+	}
+	if err := cd.SendDatagram([]byte("hi")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := sd.ReceiveDatagram(testCtx(t))
+	if err != nil || string(got) != "hi" {
+		t.Fatalf("got %q %v", got, err)
+	}
+	tc, ts := connect(t, ln, Pin(cert), DialTCP)
+	if _, ok := Datagrams(tc); ok {
+		t.Fatal("tcp client has no datagrams")
+	}
+	if _, ok := Datagrams(ts); ok {
+		t.Fatal("tcp server conn has no datagrams")
+	}
+}
