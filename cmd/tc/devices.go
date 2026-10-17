@@ -140,7 +140,9 @@ func devices(ctx context.Context, c devicesBackend, args []string, in io.Reader,
 		fmt.Fprintf(out, "; new keys in %s", plural(rotated, "encrypted channel"))
 	}
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, "Note: this doesn't remove an SSH key. If that device held your SSH private key, it can sign in and register again.")
+	fmt.Fprintln(out, "Note: this doesn't remove an SSH key. If that device held your SSH private key, it can still sign in and\n"+
+		"register a new device, and tc can't remove one key yet: ask an admin to disable your account\n"+
+		"(tc users disable @"+sanitize.Line(c.Me().Name)+") and to invite you again as a new account with a new SSH key.")
 	return nil
 }
 
@@ -164,6 +166,10 @@ func printDevices(out io.Writer, ds []client.DeviceInfo, name string, mine bool)
 		switch {
 		case d.This && !d.Revoked:
 			state = "this device"
+		case d.Former && d.Revoked:
+			state = "this device's old keys, revoked"
+		case d.Former:
+			state = "this device's old keys"
 		case d.Revoked && !d.RevokedAt.IsZero():
 			state = "revoked " + d.RevokedAt.Format("2006-01-02 15:04")
 		case d.Revoked:

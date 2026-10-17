@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -176,6 +177,8 @@ func (m *Model) gotDevices(msg devicesMsg) tea.Cmd {
 			if r.rotated > 0 {
 				t += fmt.Sprintf(" — new keys in %d encrypted %s", r.rotated, plural(r.rotated, "channel", "channels"))
 			}
+			// The revoke doesn't remove an SSH key; say what does.
+			t += " · if it had your SSH key, ask an admin to disable your account"
 			m.setInfo(t)
 		}
 		if m.mode == modeDevices && s.user == msg.user {
@@ -336,6 +339,8 @@ func (m *Model) deviceRows(w int) []string {
 		switch {
 		case d.This && !d.Revoked:
 			tags = append(tags, "this device")
+		case d.Former:
+			tags = append(tags, "this device's old keys")
 		case d.Revoked && !d.RevokedAt.IsZero():
 			tags = append(tags, "revoked "+d.RevokedAt.Local().Format("2006-01-02"))
 		case d.Revoked:
@@ -365,25 +370,33 @@ func (m *Model) deviceRows(w int) []string {
 }
 
 // devicesNotice says which devices were just revoked or newly appeared for
-// us (Update.Revoked, Update.NewOwn): this device's revoke first, then
-// ours, then other people's. It doesn't hide an error notice unless this
-// device was revoked.
+// us (Update.Revoked, Update.NewOwn): this device's revoke first (by its
+// current id, or a former one when it was revoked while offline and has
+// re-registered already), then ours, then other people's. It doesn't hide
+// an error notice unless this device was revoked.
 func (m *Model) devicesNotice(revoked, newOwn []client.DeviceRef) {
 	if len(revoked) == 0 && len(newOwn) == 0 {
 		return
 	}
 	var this e2ecrypto.DevID
+	var former []e2ecrypto.DevID
 	for _, d := range m.c.Devices(m.me.ID) {
-		if d.This {
+		switch {
+		case d.This:
 			this = d.ID
+		case d.Former:
+			former = append(former, d.ID)
 		}
 	}
 	var mine, others []client.DeviceRef
 	thisGone := false
+	var formerGone *client.DeviceRef
 	for _, r := range revoked {
 		switch {
 		case r.User == m.me.ID && r.Dev == this:
 			thisGone = true
+		case r.User == m.me.ID && slices.Contains(former, r.Dev):
+			formerGone = &r
 		case r.User == m.me.ID:
 			mine = append(mine, r)
 		default:
@@ -399,6 +412,12 @@ func (m *Model) devicesNotice(revoked, newOwn []client.DeviceRef) {
 	switch {
 	case thisGone:
 		m.setNotice("this device was revoked — it re-registers with new keys when it reconnects", true, false, 0)
+	case formerGone != nil && len(newOwn) > 0:
+		m.setNotice(fmt.Sprintf("this device was revoked (as %s) and re-registered; new device of yours: %s%s — not you? /devices",
+			formerGone.Short(), newOwn[0].Short(), more(len(newOwn))), true, false, 0)
+	case formerGone != nil:
+		m.setNotice(fmt.Sprintf("this device was revoked (as %s) and re-registered with new keys — not you? /devices",
+			formerGone.Short()), true, false, 0)
 	case len(mine) > 0:
 		m.setNotice(fmt.Sprintf("your device %s was revoked%s — /devices", mine[0].Short(), more(len(mine))), true, false, 0)
 	case len(newOwn) > 0:

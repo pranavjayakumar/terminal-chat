@@ -60,6 +60,9 @@ type DeviceInfo struct {
 	Verified bool
 	// This is the device this client runs on.
 	This bool
+	// Former is an earlier id of this device: keys it retired, e.g. after
+	// it was revoked and re-registered.
+	Former bool
 	// Revoked by a revoke this client verified (or, for an unverified
 	// device, one the server sent).
 	Revoked   bool
@@ -78,9 +81,11 @@ func (c *Client) Devices(user uint64) []DeviceInfo {
 		return nil
 	}
 	var this e2ecrypto.DevID
+	var former []e2ecrypto.DevID
 	haveThis := false
 	if user == c.Me().ID {
 		this, haveThis = c.ourDev(c.db)
+		former = c.formerDevs(sid, user)
 	}
 	verified, _ := c.trust.Devices(sid, user)
 	var out []DeviceInfo
@@ -97,6 +102,7 @@ func (c *Client) Devices(user uint64) []DeviceInfo {
 		seen[dc.Dev] = true
 		d := DeviceInfo{ID: dc.Dev, User: user, Created: time.UnixMilli(dc.Created), Verified: v != nil,
 			This: haveThis && dc.Dev == this}
+		d.Former = !d.This && slices.Contains(former, dc.Dev)
 		if pk, err := ssh.ParsePublicKey(dc.SSH); err == nil {
 			d.KeyFP = ssh.FingerprintSHA256(pk)
 		}

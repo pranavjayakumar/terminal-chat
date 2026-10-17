@@ -214,6 +214,19 @@ func (c *Client) ourDev(q dbtx) (e2ecrypto.DevID, bool) {
 	return k.ID, true
 }
 
+// formerDevs are the ids this client had as user me before it retired
+// their keys (revoked, or replaced): earlier identities of this device.
+func (c *Client) formerDevs(sid e2ecrypto.ServerID, me uint64) []e2ecrypto.DevID {
+	arch, _ := c.trust.ArchivedDeviceKeys(sid)
+	var out []e2ecrypto.DevID
+	for _, a := range arch {
+		if a.User == me {
+			out = append(out, a.Keys.ID)
+		}
+	}
+	return out
+}
+
 // cachedMaxEpoch is the highest epoch among ch's cached, unverified bundles.
 func (c *Client) cachedMaxEpoch(ch uint64) (e uint32) {
 	c.db.QueryRow(`SELECT COALESCE(MAX(epoch), 0) FROM epochs WHERE chan = ?`, ch).Scan(&e)
@@ -521,16 +534,21 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 		}
 		return ssh.FingerprintSHA256(pk), true
 	}
-	// A new device of ours is announced unless this is our first look
-	// (this device not verified yet): a thief re-registering with a stolen
-	// SSH key mustn't go unnoticed.
+	// A new device of ours is announced unless this is our first look (no
+	// device of ours verified yet): a thief re-registering with a stolen
+	// SSH key mustn't go unnoticed. "This device verified" isn't the test:
+	// after this device was revoked while offline it re-registers under a
+	// new id first, and a device the thief added meanwhile would then be
+	// verified unannounced in this very pass. Our own former ids (retired
+	// keys) are never news.
 	var newOwn []DeviceRef
 	var thisDev e2ecrypto.DevID
-	announceOwn := false
 	if id := c.myDev.Load(); id != nil {
 		thisDev = *id
-		_, announceOwn, _ = ts.Device(sid, thisDev)
 	}
+	mine, _ := ts.Devices(sid, me)
+	announceOwn := len(mine) > 0
+	former := c.formerDevs(sid, me)
 	put := func(cr certRow) {
 		d := trust.Device{ID: cr.dc.Dev, User: cr.dc.User, X25519: cr.dc.X25519, Cert: cr.raw}
 		copy(d.Ed25519[:], cr.dc.Ed25519)
@@ -540,7 +558,7 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 		}
 		if ts.PutDevice(sid, d) == nil {
 			changed = true
-			if announceOwn && !had && d.User == me && d.ID != thisDev {
+			if announceOwn && !had && d.User == me && d.ID != thisDev && !slices.Contains(former, d.ID) {
 				newOwn = append(newOwn, DeviceRef{User: me, Dev: d.ID})
 			}
 		}

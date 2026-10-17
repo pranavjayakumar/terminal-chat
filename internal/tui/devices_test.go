@@ -295,3 +295,33 @@ func TestDeviceRevokedNotice(t *testing.T) {
 	}
 	checkView(t, m, "notices")
 }
+
+// B2: this device's former id (revoked while it was offline, then
+// re-registered) reads as this device, not "your device", and a new device
+// that appeared meanwhile is named in the same notice.
+func TestFormerDeviceRevokedNotice(t *testing.T) {
+	m, f := newTestModelFake(t, 120, 24)
+	devFake(f)
+	old := tdev(0xee, false, true, true)
+	old.Former = true
+	f.dv.list[1] = append(f.dv.list[1], old)
+	run(m, m.applyUpdate(client.Update{Revoked: []client.DeviceRef{{User: 1, Dev: old.ID}},
+		NewOwn: []client.DeviceRef{{User: 1, Dev: f.dv.list[1][3].ID}}}))
+	if !m.noticeErr || !strings.Contains(m.notice, "this device was revoked (as eeeeeeee) and re-registered; new device of yours: dddddddd") {
+		t.Fatalf("notice %q", m.notice)
+	}
+	checkView(t, m, "former+new")
+	m, f = newTestModelFake(t, 40, 12)
+	devFake(f)
+	f.dv.list[1] = append(f.dv.list[1], old)
+	run(m, m.applyUpdate(client.Update{Revoked: []client.DeviceRef{{User: 1, Dev: old.ID}}}))
+	if !m.noticeErr || !strings.Contains(m.notice, "this device was revoked (as eeeeeeee) and re-registered with new keys") {
+		t.Fatalf("notice %q", m.notice)
+	}
+	checkView(t, m, "former narrow")
+	runInput(t, m, "/devices")
+	pastDevTypeAhead(m)
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "this device's old keys") {
+		t.Fatalf("list:\n%s", v)
+	}
+}
