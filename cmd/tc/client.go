@@ -36,6 +36,8 @@ func runClient(cmd string, args []string) error {
 		return cmdDevices(args)
 	case "invite":
 		return cmdInvite(args)
+	case "users":
+		return cmdUsers(args)
 	}
 	return errUsage
 }
