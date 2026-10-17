@@ -61,7 +61,7 @@ The server key never rotates in v1; rotating means re-issuing invites.
 | 0x30 | PING | both | `{t: i64}` |
 | 0x31 | PONG | both | `{t: i64}` (echo) |
 | 0x40 | VOICE | both | reserved for v2 (TCP fallback only; QUIC uses datagrams) |
-| 0x7F | BYE | both | `{code: str, msg: str}` then close |
+| 0x7F | BYE | both | `{code: str, msg: str, keys?: [str]}` then close (`keys`: §4.1 key hint) |
 
 Effective caps = intersection of HELLO and WELCOME caps. Protocol version is the ALPN.
 
@@ -92,6 +92,17 @@ Auth = {pubkey: bin, sig: bin, invite?: str, name?: str}
   signature can't be replayed on another connection or relayed by a MITM.
 - Without `invite`: log in an existing key.
 - With `invite` (+ `name` for a new user): redeem an invite (§4.1).
+- A key that is already registered always logs in, as the user it belongs to, whatever
+  `invite`/`name` come with it; the invite is not checked, applied or spent (BYE `revoked`
+  if that user is disabled). The key alone already proves who this is, and so a join retried
+  after a lost WELCOME, or an invite code reused on a second computer, signs in. An admin or
+  add-key invite grants nothing to such a key (it doesn't become admin or move to the
+  invite's user), and an unknown or garbage `invite` gets the same WELCOME, so this is no
+  oracle for invite validity. Clients should say when the invite went unused. (Servers
+  through v0.2.0 checked the invite first, answering `invite_invalid` for a spent, expired or
+  key-bound invite and `key_exists` otherwise; clients retry either as a plain login.)
+- Clients give a second computer the server as `tc://<host>:<port>#<pin>` (an invite code
+  without the token): `tc login` with it sends a HELLO without `invite`.
 
 The handshake must complete within 30 s (hardware keys may wait for a touch).
 
@@ -104,8 +115,9 @@ redemptions (1–100, default 1) until it expires (`ttl` 1 minute–30 days, def
 it is live while `expires > now`, everywhere (redemption, list, revoke, the member cap).
 Redemption decrements the remaining uses — conditionally (`uses > 0`), in the same
 transaction that creates the user/key, so concurrent redemptions of an N-use invite
-produce exactly N users. A redemption that fails (`name_taken`, `key_exists`, reserved
-name) rolls back and spends nothing. Exhausted, expired or unknown → BYE `invite_invalid`.
+produce exactly N users. A redemption that fails (`name_taken`, a reserved name, or
+`key_exists` when a concurrent redemption registered the same key first) rolls back and
+spends nothing. A key that was already registered never redeems (§4). Exhausted, expired or unknown → BYE `invite_invalid`.
 Add-key invites are always single-use. Admin invites (server host only) are single-use and
 last at most 24 hours (default 24 hours). `uses`/`ttl_ms` in `invite.create` need cap
 `team_invites` (servers without it ignore them and mint a 1-use, 7-day invite).
@@ -141,8 +153,17 @@ redemption either completed before it or fails with `invite_invalid`.
 **Key-bound invites** (cap `key_invites`). `invite.create {keys: [bin], key_src?: str}`
 binds an invite to SSH public keys (wire format, `ssh.PublicKey.Marshal`): only a joiner
 whose HELLO `pubkey` is one of them can redeem it, so a leaked code alone is useless. Any
-other key → BYE `invite_invalid` and nothing is spent. Rules (else `bad_request`, nothing
-stored):
+other key → BYE `invite_invalid` and nothing is spent. **Key hint:** if HELLO `caps`
+contains `key_hint`, that BYE also carries `keys`: the SHA256 fingerprints
+(`SHA256:<base64 without padding>` of the wire-format key, sorted) of every key the invite
+accepts, so a client holding several keys retries once with the right one instead of
+signing with each (hardware keys and password-manager agents prompt per signature). It is
+only sent for a live (unexpired, unspent, creator still allowed) key-bound invite and a
+HELLO whose signature verified; the fingerprints are of public keys the invitee published or
+handed over, so a token holder learns nothing secret. Without `key_hint` the BYE is as
+before (servers ignore unknown HELLO caps; clients ignore unknown BYE fields). `key_hint` is
+a request cap in HELLO only; servers don't echo it in WELCOME.
+Rules (else `bad_request`, nothing stored):
 - 1–32 keys, each at most 4096 bytes, canonically encoded, of a type tc logs in with:
   ed25519, ECDSA (nistp256/384/521), their `sk-` security-key forms, or RSA of
   2048–16384 bits. Duplicates collapse; the server stores only fingerprints.
@@ -177,6 +198,9 @@ The code is single-quoted; a code containing any byte outside `[A-Za-z0-9:/#.\-_
 tc://<host>:<port>/<token>#<pin>
 ```
 
+A server line without the token, `tc://<host>:<port>#<pin>` (an empty path, `/#`, too), is
+a client-side form for `tc login` (§4); it is not an invite, and invite parsers reject it.
+
 `token` = 16 random bytes, lowercase base32 without padding, compared in
 constant time. `pin` = base64url (no padding) SHA-256 SPKI pin.
 
@@ -192,6 +216,7 @@ Kinds:
 
 `auth_failed, invite_invalid, name_taken, key_exists, frame_too_large,
 handshake_timeout, protocol_error, slow_consumer, server_shutdown, revoked`.
+(`key_exists` now only when a concurrent redemption registered the key first, §4.)
 
 ## 5. Requests
 

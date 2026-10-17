@@ -227,6 +227,9 @@ type Ping struct {
 type Bye struct {
 	Code string `msgpack:"code"`
 	Msg  string `msgpack:"msg"`
+	// Keys: SHA256 fingerprints a key-bound invite accepts, in an
+	// invite_invalid for another key when HELLO carried cap key_hint (§4.1).
+	Keys []string `msgpack:"keys,omitempty"`
 }
 
 // ---- objects (PROTOCOL.md §8) ----

@@ -20,6 +20,7 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/skailama/tc/internal/client"
+	"github.com/skailama/tc/internal/identity"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/server"
 	"github.com/skailama/tc/internal/transport"
@@ -111,7 +112,9 @@ func TestJoinUsesAgentKey(t *testing.T) {
 	if err := runJoin(context.Background(), env, testInvite, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.calls) != 1 || f.calls[0].key != "" || f.calls[0].name != "ada" || f.calls[0].home != env.home {
+	agentPub, _ := ssh.NewPublicKey(priv.Public())
+	// The agent key is named by fingerprint, so the config keeps using it.
+	if len(f.calls) != 1 || f.calls[0].key != identity.Fingerprint(agentPub) || f.calls[0].name != "ada" || f.calls[0].home != env.home {
 		t.Fatalf("calls %+v", f.calls)
 	}
 	if !strings.Contains(out.String(), "ssh-agent key (SHA256:") {

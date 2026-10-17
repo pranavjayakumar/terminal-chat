@@ -431,6 +431,14 @@ func TestLoginAndSnapshot(t *testing.T) {
 func TestLoginBadInvite(t *testing.T) {
 	testEnv(t)
 	fs := newFakeServer(t)
+	// A v0.2.0 server answers invite_invalid to a spent invite even when
+	// the key is registered (a join retried after a lost WELCOME), so
+	// Login retries as a plain login...
+	if u, err := Login(context.Background(), t.TempDir(), proto.FormatInvite(fs.addr(), "bad", fs.pin), "x", writeKey(t)); err != nil || u.ID != users[0].ID {
+		t.Fatalf("plain-login fallback: %+v %v", u, err)
+	}
+	// ...and reports the invite error when that fails too.
+	fs.bye.Store(proto.ByeAuthFailed)
 	_, err := Login(context.Background(), t.TempDir(), proto.FormatInvite(fs.addr(), "bad", fs.pin), "x", writeKey(t))
 	var bye *ByeError
 	if !errors.As(err, &bye) || bye.Code != proto.ByeInviteInvalid {
@@ -1176,5 +1184,21 @@ func TestBotMessagesNeverMention(t *testing.T) {
 	waitFor(t, "events", func() bool { return lastSeq(t, c) == 33 })
 	if g := chanView(t, c, general); g.Unread != 2 || !g.Mention {
 		t.Errorf("general after bob = %+v", g)
+	}
+}
+
+// The v0.2.0 plain-login fallback re-signs only where it can help: not for
+// a key-bound invite refusing this key (the join loop moves on).
+func TestV020Retry(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	s, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !v020Retry(&ByeError{Code: proto.ByeInviteInvalid, Msg: "invite is invalid, used or expired"}, s) {
+		t.Fatal("spent invite: no retry")
+	}
+	if v020Retry(&ByeError{Code: proto.ByeInviteInvalid, Msg: "this invite is for other SSH keys; join with one of them (tc join --key path)"}, s) {
+		t.Fatal("key-bound mismatch: retried")
 	}
 }

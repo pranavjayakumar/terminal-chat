@@ -209,22 +209,37 @@ func Fingerprint(pk ssh.PublicKey) string {
 	return "SHA256:" + base64.RawStdEncoding.EncodeToString(sum[:])
 }
 
-// Load returns a signer for the user's key. If keyPath is set it is used
-// (via the agent if the agent holds it, otherwise read from disk). Otherwise
-// the first ed25519 key in the agent wins, then any agent key, then default files.
+// Load returns a signer for the user's key. keyPath is a key spec:
+//   - "": the first ed25519 key in the agent, then any agent key, then the
+//     default files in ~/.ssh;
+//   - "SHA256:…": the key with that fingerprint, from the agent or the
+//     default files (how a config remembers an agent-only key);
+//   - a path: a private key file (signed via the agent when the agent holds
+//     its .pub twin), or a public key file whose private half is in the
+//     agent (hardware keys, 1Password, Secretive).
 func Load(keyPath string) (ssh.Signer, error) {
 	agentSigners := fromAgent()
 
+	if strings.HasPrefix(keyPath, fpPrefix) {
+		return loadFingerprint(keyPath, agentSigners)
+	}
 	if keyPath != "" {
-		pub, _ := readPublic(keyPath + ".pub")
-		if pub != nil {
-			for _, s := range agentSigners {
-				if bytes.Equal(s.PublicKey().Marshal(), pub.Marshal()) {
-					return s, nil
-				}
+		if pub, _ := readPublic(keyPath + ".pub"); pub != nil {
+			if s := findAgentSigner(agentSigners, pub); s != nil {
+				return s, nil
 			}
 		}
-		return readPrivate(keyPath)
+		s, err := readPrivate(keyPath)
+		if err == nil {
+			return s, nil
+		}
+		if pub, perr := readPublic(keyPath); perr == nil {
+			if s := findAgentSigner(agentSigners, pub); s != nil {
+				return s, nil
+			}
+			return nil, fmt.Errorf("%s is a public key, and ssh-agent doesn't hold its private half (%s): unlock or add it in your agent", keyPath, Fingerprint(pub))
+		}
+		return nil, err
 	}
 
 	for _, s := range agentSigners {
@@ -235,13 +250,12 @@ func Load(keyPath string) (ssh.Signer, error) {
 	if len(agentSigners) > 0 {
 		return agentSigners[0], nil
 	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
+	dir := DefaultSSHDir()
+	if dir == "" {
 		return nil, ErrNoKey
 	}
 	for _, name := range []string{"id_ed25519", "id_ecdsa", "id_rsa"} {
-		s, err := readPrivate(filepath.Join(home, ".ssh", name))
+		s, err := readPrivate(filepath.Join(dir, name))
 		if err == nil {
 			return s, nil
 		}
@@ -250,6 +264,112 @@ func Load(keyPath string) (ssh.Signer, error) {
 		}
 	}
 	return nil, ErrNoKey
+}
+
+const fpPrefix = "SHA256:"
+
+func loadFingerprint(fp string, agentSigners []ssh.Signer) (ssh.Signer, error) {
+	for _, s := range agentSigners {
+		if Fingerprint(s.PublicKey()) == fp {
+			return s, nil
+		}
+	}
+	for _, c := range fileCandidates(DefaultSSHDir(), nil) {
+		if Fingerprint(c.Pub) == fp {
+			return c.Signer, c.Err
+		}
+	}
+	return nil, fmt.Errorf("the SSH key %s isn't in ssh-agent or ~/.ssh: start your agent or ssh-add it", fp)
+}
+
+func findAgentSigner(signers []ssh.Signer, pub ssh.PublicKey) ssh.Signer {
+	for _, s := range signers {
+		if bytes.Equal(s.PublicKey().Marshal(), pub.Marshal()) {
+			return s
+		}
+	}
+	return nil
+}
+
+// DefaultSSHDir is ~/.ssh, or "" without a home directory.
+func DefaultSSHDir() string {
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(h, ".ssh")
+}
+
+// Candidate is an SSH key tc could log in with.
+type Candidate struct {
+	Pub    ssh.PublicKey
+	Signer ssh.Signer // nil when the key can't sign here; Err says why
+	Path   string     // the private key file; "" for an agent key
+	Err    error
+}
+
+// Spec is the Load key spec that selects c again.
+func (c Candidate) Spec() string {
+	if c.Path != "" {
+		return c.Path
+	}
+	return Fingerprint(c.Pub)
+}
+
+// Describe names c for people.
+func (c Candidate) Describe() string {
+	if c.Path != "" {
+		return c.Path
+	}
+	return "ssh-agent key " + Fingerprint(c.Pub)
+}
+
+// candidateFiles are the private key files ssh itself tries, ed25519 first
+// (tc's preference).
+var candidateFiles = []string{"id_ed25519", "id_ecdsa", "id_ed25519_sk", "id_ecdsa_sk", "id_rsa"}
+
+// Candidates lists every key tc could log in with: all agent keys (any
+// type, including hardware and 1Password-held ones), then sshDir's id_*
+// files the agent doesn't already hold. A file that can't sign here (a
+// passphrase-protected key outside the agent, a security-key file) is
+// listed with Err when its .pub says which key it is, so callers can say
+// "that's the right key: ssh-add it".
+func Candidates(sshDir string) []Candidate {
+	var out []Candidate
+	agentSigners := fromAgent()
+	for _, s := range agentSigners {
+		out = append(out, Candidate{Pub: s.PublicKey(), Signer: s})
+	}
+	return append(out, fileCandidates(sshDir, agentSigners)...)
+}
+
+func fileCandidates(sshDir string, agentSigners []ssh.Signer) []Candidate {
+	if sshDir == "" {
+		return nil
+	}
+	var out []Candidate
+	for _, name := range candidateFiles {
+		p := filepath.Join(sshDir, name)
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		pub, _ := readPublic(p + ".pub")
+		if pub != nil && findAgentSigner(agentSigners, pub) != nil {
+			continue // already listed as the agent key
+		}
+		s, err := readPrivate(p)
+		if err == nil {
+			out = append(out, Candidate{Pub: s.PublicKey(), Signer: s, Path: p})
+			continue
+		}
+		if pub != nil {
+			if strings.HasPrefix(pub.Type(), "sk-") {
+				err = fmt.Errorf("%s is a security key: add it to ssh-agent (ssh-add %s)", p, p)
+			}
+			out = append(out, Candidate{Pub: pub, Path: p, Err: err})
+		}
+	}
+	return out
 }
 
 func fromAgent() []ssh.Signer {
