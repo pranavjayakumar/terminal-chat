@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/skailama/tc/internal/client"
+	"github.com/skailama/tc/internal/trust"
 )
 
 // Chaos during rotations (docs/E2E.md step 12): four clients in an
@@ -299,12 +300,30 @@ func TestChaosRotations(t *testing.T) {
 	}
 
 	// dave can't open anything stored after his removal.
+	// The removal epoch is the first one after he joined whose roster lacks him. Reading
+	// alice's head right after the remove can still see the epoch before it:
+	// a retried RemoveMember may have landed after its timeout, and the new
+	// bundle reaches alice's trust store after the member change.
 	if removedAt == 0 {
-		t.Fatal("removal epoch unknown")
+		t.Fatal("removal never observed")
 	}
-	ep, ok, _ := alice.Trust().Epoch(sid, ch.ID, removedAt)
-	if !ok || slices.Contains(ep.Roster, dave.Me().ID) || ep.Seq == 0 {
-		t.Fatalf("removal epoch %d: %+v", removedAt, ep)
+	removedAt = 0
+	var ep trust.Epoch
+	seenDave := false
+	for e := uint32(1); e <= h0.Epoch; e++ {
+		got, ok, _ := alice.Trust().Epoch(sid, ch.ID, e)
+		if !ok {
+			continue
+		}
+		if slices.Contains(got.Roster, dave.Me().ID) {
+			seenDave = true
+		} else if seenDave {
+			removedAt, ep = e, got
+			break
+		}
+	}
+	if removedAt == 0 || ep.Seq == 0 {
+		t.Fatalf("no epoch without dave up to head %d", h0.Epoch)
 	}
 	after := 0
 	for id, enc := range rawEncs(t, dir, ch.ID) {
