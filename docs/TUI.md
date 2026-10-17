@@ -76,7 +76,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 `/activity`, `/highlight [word…]`, `/unhighlight word…`, `/group name @a @b…` (admin), `/groups`,
 `/remind <when> <text>`, `/reminders`, `/remind-delete id`, `/snippet path[:range] [message]`,
 `/share-pane [pane]` (herdr only), `/verify @user [--github login]`, `/accept-key @user`, `/members`,
-`/alarm`, `/alarm-clear #name`, `/devices [@user]`, `/device-revoke id`, `/quit`.
+`/alarm`, `/alarm-clear #name`, `/devices [@user]`, `/device-revoke id`, `/disable @user` (admin), `/quit`.
 Unknown command → inline error, input kept.
 
 `/create #x --private` makes an end-to-end encrypted channel (🔒; the server never sees its text).
@@ -138,6 +138,18 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
   next message` (not over an error notice). A newly verified device of yours shows in red `new device of
   yours: ab12cd34 — not you? /devices to revoke it`. Several at once add `(+N more)`. Nothing is
   announced on a first sync.
+
+## Disabling an account (admins)
+
+- **`/disable @user`** shuts an account out for good, e.g. after its SSH key or a laptop holding it was
+  stolen. The question takes over the body, its first line in red (`disable @eve for good? y: disable ·
+  any other key: cancel`; under 60 columns `disable @eve? y: yes · other: no`), followed by what it
+  does: every session signed out now, none of their keys can sign in again, their unused invites and
+  webhooks deleted, encrypted channels they were in re-keyed; it can't be undone. A background notice
+  can't replace the question. Keys in the first 500 ms are ignored (Esc still cancels); `y` disables
+  (notice `✓ disabled @eve — signed out everywhere; none of their keys can sign in`), any other key
+  cancels (`not disabled`). Members get `only admins can disable users`; yourself, an unknown or an
+  already disabled user is an inline error with the input kept. From a shell: `tc users disable @eve`.
 
 ## Behavior
 

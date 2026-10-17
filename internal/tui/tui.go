@@ -69,6 +69,7 @@ type Backend interface {
 	Search(ctx context.Context, q string, ch uint64) ([]proto.Message, error)
 	CreateInvite(ctx context.Context, user uint64) (string, error)
 	CreateTeamInvite(ctx context.Context, uses int, ttl time.Duration) (proto.InviteRes, error)
+	DisableUser(ctx context.Context, user uint64) error
 	SendTyping(ch uint64) error
 	SetAway(away bool, status string) error
 	SetDisplay(ctx context.Context, display string) error

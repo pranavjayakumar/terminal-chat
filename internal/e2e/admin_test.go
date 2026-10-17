@@ -64,3 +64,38 @@ func TestCreatePrivateStoresCiphertext(t *testing.T) {
 		t.Fatalf("server messages in the private channel: %d plaintext, %d encrypted", plain, enc)
 	}
 }
+
+// B8: what /disable @bob does (DisableUser) cuts off every session of the
+// account at once (a thief's laptop and the owner's desktop alike), a fresh
+// login with the same key is refused, and the DM with bob gets a new key
+// that doesn't include him.
+func TestDisableStopsEveryDevice(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	s, addr := startServer(t, t.TempDir(), "127.0.0.1:0")
+	alice := login(t, s, addr, "alice", true)
+	bob := login(t, s, addr, "bob", false)
+	eventually(t, "online", func() bool { return alice.online() && bob.online() })
+	bob2 := openAs(t, bob)
+	eventually(t, "bob's second device online", bob2.online)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	dm, err := alice.OpenDM(ctx, []uint64{bob.Me().ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "dm keyed", func() bool { return alice.status(dm.ID).State == client.E2EOK })
+	epoch := alice.status(dm.ID).Epoch
+
+	if err := alice.DisableUser(ctx, bob.Me().ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range []*user{bob, bob2} {
+		eventually(t, "bob's device stopped", func() bool { return u.Status().Stopped })
+	}
+	again := openAs(t, bob)
+	eventually(t, "a new login is refused", func() bool { return again.Status().Stopped })
+	eventually(t, "dm rotated without bob", func() bool {
+		st := alice.status(dm.ID)
+		return st.State == client.E2EOK && st.Epoch > epoch
+	})
+}

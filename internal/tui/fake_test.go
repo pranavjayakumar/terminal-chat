@@ -50,6 +50,7 @@ type fakeClient struct {
 	remindErr  error
 	nextRemID  uint64
 	inviteCode string // CreateTeamInvite returns this when set
+	disableErr error  // disable_test.go
 }
 
 type remindCall struct {

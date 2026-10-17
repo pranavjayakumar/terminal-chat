@@ -77,6 +77,7 @@ var helpLines = [][2]string{
 	{"/members", "who's here; ? = not verified, ! = key changed"},
 	{"/devices [@user]", "your (or someone's) devices; d revokes a lost one"},
 	{"/device-revoke id", "revoke one of your devices (asks first)"},
+	{"/disable @user", "shut an account out for good, e.g. stolen key (admin; asks first)"},
 	{"/alarm", "why this channel's encryption is in alarm"},
 	{"/alarm-clear #name", "clear it (type the name to confirm; audited)"},
 	{"/topic text", "set the topic"},

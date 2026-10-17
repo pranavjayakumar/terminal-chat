@@ -478,6 +478,9 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 	if cmd, ok, err := m.devicesCommand(c); ok {
 		return cmd, err
 	}
+	if cmd, ok, err := m.disableCommand(c); ok {
+		return cmd, err
+	}
 	return nil, fmt.Errorf("unknown command /%s", sanitize.Line(c.name))
 }
 
