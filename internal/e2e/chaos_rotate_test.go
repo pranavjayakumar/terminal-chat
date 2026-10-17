@@ -36,6 +36,10 @@ func TestChaosRotations(t *testing.T) {
 	s, addr := startServerClock(t, dir, "127.0.0.1:0", func() time.Time { return time.Now().Add(time.Duration(skew.Load())) })
 	proxy := newChaosProxy(t, addr)
 	proxy.calm() // set up first, then chaos
+	// Under constant kills a slow runner's reconnects never got through
+	// sync, so clients stayed offline for minutes and nothing happened
+	// (alice "offline" for 180 s). Each connection gets a second first.
+	proxy.minAge = time.Second
 
 	names := []string{"alice", "bob", "carol", "dave"}
 	var us []*user
@@ -189,7 +193,7 @@ func TestChaosRotations(t *testing.T) {
 			cancel()
 			if err == nil {
 				rotations++
-			} else if testing.Verbose() {
+			} else {
 				t.Logf("rotate by %s: %v", u.Me().Name, err) // offline, stale, not a member yet: chaos
 			}
 		}
@@ -259,6 +263,11 @@ func TestChaosRotations(t *testing.T) {
 			for _, u := range members {
 				got, waiting, pending := view(u)
 				t.Logf("%s: %d shown, %d waiting, %d pending, status %+v", u.Me().Name, len(got), waiting, pending, u.status(ch.ID))
+				for _, m := range u.Messages(ch.ID, 1000) {
+					if m.ID == 0 {
+						t.Logf("  %s unsent %q: pending=%v failed=%q", u.Me().Name, m.Body, m.Pending, m.Failed)
+					}
+				}
 			}
 			t.Fatal("members did not converge")
 		}

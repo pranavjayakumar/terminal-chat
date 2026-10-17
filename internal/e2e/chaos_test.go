@@ -18,9 +18,18 @@ type chaosProxy struct {
 	upstream string
 
 	mu    sync.Mutex
-	conns map[net.Conn]net.Conn
+	conns map[net.Conn]proxied
 	kills int
 	chaos bool
+	// minAge spares connections younger than this from killRandom, so a
+	// reconnect can get through sync even when a loaded runner makes that
+	// take longer than the kill interval.
+	minAge time.Duration
+}
+
+type proxied struct {
+	up   net.Conn
+	born time.Time
 }
 
 func newChaosProxy(t *testing.T, upstream string) *chaosProxy {
@@ -28,7 +37,7 @@ func newChaosProxy(t *testing.T, upstream string) *chaosProxy {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &chaosProxy{ln: ln, upstream: upstream, conns: map[net.Conn]net.Conn{}, chaos: true}
+	p := &chaosProxy{ln: ln, upstream: upstream, conns: map[net.Conn]proxied{}, chaos: true}
 	go p.accept()
 	t.Cleanup(func() { ln.Close(); p.closeAll() })
 	return p
@@ -48,7 +57,7 @@ func (p *chaosProxy) accept() {
 			continue
 		}
 		p.mu.Lock()
-		p.conns[c] = up
+		p.conns[c] = proxied{up, time.Now()}
 		p.mu.Unlock()
 		go p.pipe(c, up)
 		go p.pipe(up, c)
@@ -76,26 +85,33 @@ func (p *chaosProxy) pipe(dst, src net.Conn) {
 	}
 	src.Close()
 	dst.Close()
+	p.mu.Lock() // gone already: not a candidate for killRandom
+	delete(p.conns, src)
+	delete(p.conns, dst)
+	p.mu.Unlock()
 }
 
-// killRandom closes one live connection pair.
+// killRandom closes one live connection pair (at least minAge old).
 func (p *chaosProxy) killRandom() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.chaos || len(p.conns) == 0 {
+	if !p.chaos {
 		return
 	}
-	i := rand.IntN(len(p.conns))
-	for c, up := range p.conns {
-		if i == 0 {
-			c.Close()
-			up.Close()
-			delete(p.conns, c)
-			p.kills++
-			return
+	var old []net.Conn
+	for c, pc := range p.conns {
+		if time.Since(pc.born) >= p.minAge {
+			old = append(old, c)
 		}
-		i--
 	}
+	if len(old) == 0 {
+		return
+	}
+	c := old[rand.IntN(len(old))]
+	c.Close()
+	p.conns[c].up.Close()
+	delete(p.conns, c)
+	p.kills++
 }
 
 func (p *chaosProxy) calm() {
@@ -107,9 +123,9 @@ func (p *chaosProxy) calm() {
 func (p *chaosProxy) closeAll() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for c, up := range p.conns {
+	for c, pc := range p.conns {
 		c.Close()
-		up.Close()
+		pc.up.Close()
 	}
 }
 
