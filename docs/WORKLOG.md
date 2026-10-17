@@ -26,3 +26,8 @@ The current resume point always lives in [STATUS.md](STATUS.md) → "Handoff".
 - 14:30 · Owner kept the name tc; released v0.2.0 (workflow draft → make release-sign with the owner's key → published) · clean-HOME one-line install verified (signature OK)
 - 14:35 · Droplet redeployed from the signed release (same pin) · owner admin invite + 15-use team invite generated
 - 14:40 · ONBOARDING.md written · PAUSED per owner
+
+## 2026-10-17 (session 4)
+
+- 11:34 · Resumed. Docs cleanup (M2 ✓ in CLAUDE.md, release tags in STATUS) · Claude · chore/docs-cleanup
+- 11:34 · Parallel run started (Claude subagents, worktrees, board in scratchpad COORDINATION.md): fix42 (#42), invites (member + github-key invites), devices (revoke UX), brew (tap from repo) → v0.3.0; voice (M5) → v0.4.0; pm (feature research) and p2p (serverless research) reports, no code
