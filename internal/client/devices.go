@@ -123,49 +123,9 @@ func (c *Client) ensureDevice(ctx context.Context, s *session, signer ssh.Signer
 	if full == 1 {
 		args.Users = []uint64{me}
 	}
-	var certs, revokes []proto.Signed
-	for {
-		raw, err := s.call(ctx, proto.OpDevicesList, args, nil)
-		if err != nil {
-			return err
-		}
-		var res proto.DevicesListRes
-		if err := proto.Unmarshal(raw, &res); err != nil {
-			return err
-		}
-		certs = append(certs, res.Certs...)
-		revokes = append(revokes, res.Revoked...)
-		if res.Next != 0 && res.Next <= args.After {
-			return errors.New("devices.list paging does not advance")
-		}
-		err = c.tx(func(tx *sql.Tx) error {
-			for _, sc := range res.Certs {
-				if err := storeDevice(tx, proto.Device{Cert: sc}); err != nil {
-					return err
-				}
-			}
-			for _, e := range res.Endorse {
-				if err := storeEndorse(tx, e); err != nil {
-					return err
-				}
-			}
-			for i, r := range res.Revoked {
-				if err := storeRevoke(tx, r, seqAt(res.RevokedSeqs, i)); err != nil {
-					return err
-				}
-			}
-			if res.Next == 0 && len(args.Users) == 0 {
-				return setMeta(tx, "devices_full", 1)
-			}
-			return nil
-		})
-		if err != nil {
-			return err
-		}
-		if res.Next == 0 {
-			break
-		}
-		args.After = res.Next
+	certs, revokes, err := c.fetchDevices(ctx, s, args)
+	if err != nil {
+		return err
 	}
 
 	mySSH := signer.PublicKey().Marshal()
@@ -193,6 +153,55 @@ func (c *Client) ensureDevice(ctx context.Context, s *session, signer ssh.Signer
 	}
 	s.devOnce.Do(func() { close(s.devReady) })
 	return nil
+}
+
+// fetchDevices pages through devices.list with args and stores everything
+// in the cache (unverified, like events). A complete list of everyone marks
+// the cache full. It returns the raw certs and revokes it got.
+func (c *Client) fetchDevices(ctx context.Context, s *session, args proto.DevicesListArgs) (certs, revokes []proto.Signed, err error) {
+	for {
+		raw, err := s.call(ctx, proto.OpDevicesList, args, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		var res proto.DevicesListRes
+		if err := proto.Unmarshal(raw, &res); err != nil {
+			return nil, nil, err
+		}
+		certs = append(certs, res.Certs...)
+		revokes = append(revokes, res.Revoked...)
+		if res.Next != 0 && res.Next <= args.After {
+			return nil, nil, errors.New("devices.list paging does not advance")
+		}
+		err = c.tx(func(tx *sql.Tx) error {
+			for _, sc := range res.Certs {
+				if err := storeDevice(tx, proto.Device{Cert: sc}); err != nil {
+					return err
+				}
+			}
+			for _, e := range res.Endorse {
+				if err := storeEndorse(tx, e); err != nil {
+					return err
+				}
+			}
+			for i, r := range res.Revoked {
+				if err := storeRevoke(tx, r, seqAt(res.RevokedSeqs, i)); err != nil {
+					return err
+				}
+			}
+			if res.Next == 0 && len(args.Users) == 0 {
+				return setMeta(tx, "devices_full", 1)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		if res.Next == 0 {
+			return certs, revokes, nil
+		}
+		args.After = res.Next
+	}
 }
 
 // ownRevoked reports whether dev has a revoke we can check ourselves: signed

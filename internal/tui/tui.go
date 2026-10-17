@@ -19,6 +19,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/skailama/tc/internal/client"
+	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/notify"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/release"
@@ -93,6 +94,11 @@ type Backend interface {
 	ConfirmGitHub(res client.GitHubCheck) error
 	Alarm(ch uint64) (client.AlarmInfo, bool)
 	ClearAlarm(ch uint64) error
+	// Devices (devices.go): local list, refresh and revoke.
+	Devices(user uint64) []client.DeviceInfo
+	FindDevice(user uint64, prefix string) (client.DeviceInfo, error)
+	RefreshDevices(ctx context.Context, user uint64) error
+	RevokeDevice(ctx context.Context, dev e2ecrypto.DevID, allowSelf bool) (int, error)
 }
 
 var _ Backend = (*client.Client)(nil)

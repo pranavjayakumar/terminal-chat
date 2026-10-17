@@ -76,7 +76,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 `/activity`, `/highlight [word…]`, `/unhighlight word…`, `/group name @a @b…` (admin), `/groups`,
 `/remind <when> <text>`, `/reminders`, `/remind-delete id`, `/snippet path[:range] [message]`,
 `/share-pane [pane]` (herdr only), `/verify @user [--github login]`, `/accept-key @user`, `/members`,
-`/alarm`, `/alarm-clear #name`, `/quit`.
+`/alarm`, `/alarm-clear #name`, `/devices [@user]`, `/device-revoke id`, `/quit`.
 Unknown command → inline error, input kept.
 
 ## Verifying people (encrypted channels)
@@ -109,6 +109,30 @@ Unknown command → inline error, input kept.
   trust store's audit log. For the server-wide alarm the list, prompt and result say "server-wide —
   clears the alarm for all encrypted channels". Alarms derived from current state (unconfirmed member)
   can't be cleared.
+
+## Devices
+
+- **`/devices [@user]`** opens an overlay listing the user's devices (default: yours), cached at once
+  and refreshed from the server in the background (the title says `· refreshing…`, or `· cached (…)`
+  when the refresh failed): `* ab12cd34  this device  added 2026-10-01`, then `active`,
+  `revoked 2026-10-17` and `unverified` (a cert no pinned key of the user signed: only the server's
+  claim) rows. The signing key's fingerprint is added only when it fits whole. ↑/↓ (k/j), PgUp/PgDn,
+  Home/End move, `r` refreshes, Esc, `q` or Enter closes. Another user's list is read-only.
+- In your own list, `d` on an active, verified device that isn't this one puts the question in the
+  title, in red (`revoke device ab12cd34 for good? y: revoke · any other key: cancel`; under 60 columns
+  `revoke ab12cd34? y: yes · other: no`). Unlike the trust overlays, any key other than `y` cancels
+  ("not revoked"). `y` revokes it (notice `✓ revoked device ab12cd34 — new keys in N encrypted
+  channels`) and the list refreshes. `d` on this device, a revoked or an unverified one says why not
+  instead. The overlay ignores keys except Esc for 500 ms after opening, like the trust overlays.
+- **`/device-revoke id`** (any unique prefix of the id `/devices` shows) opens the list with that
+  device's question already up. Revoking this device is only possible from the CLI
+  (`tc devices revoke id --self`).
+- Notices: when a verified revoke of a device this client already trusted arrives — in red `this device
+  was revoked — it re-registers with new keys when it reconnects`, or `your device ab12cd34 was revoked
+  — /devices`; otherwise `@bob revoked a device (ab12cd34) — encrypted channels get a new key before the
+  next message` (not over an error notice). A newly verified device of yours shows in red `new device of
+  yours: ab12cd34 — not you? /devices to revoke it`. Several at once add `(+N more)`. Nothing is
+  announced on a first sync.
 
 ## Behavior
 

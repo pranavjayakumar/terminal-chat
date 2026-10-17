@@ -42,6 +42,7 @@ type fakeClient struct {
 	e2eSt    map[uint64]client.E2EStatus
 	addErr   error
 	tr       fakeTrust
+	dv       fakeDevs // devices_test.go
 
 	groups     []proto.Group
 	reminders  []proto.Reminder

@@ -35,6 +35,7 @@ const (
 	modeViewer
 	modeList
 	modeVerify
+	modeDevices // devices.go
 )
 
 // pane is a scrollable message list: a channel (root 0) or a thread.
@@ -139,6 +140,7 @@ type Model struct {
 	keyChg     map[uint64][]uint64 // e2e channel → members with an unacknowledged key change
 	hinted     map[uint64]bool     // channels that showed the "?" hint this run
 	verify     verifyState
+	devs       devicesState
 	noticeDim  bool   // the notice is a quiet hint
 	newRelease string // newer release tag, shown in the sidebar title
 }
@@ -777,6 +779,8 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case verifyGHMsg:
 		m.gotVerifyGH(msg)
 		return m, nil
+	case devicesMsg:
+		return m, m.gotDevices(msg)
 	case snippetMsg:
 		m.gotSnippet(msg)
 		return m, nil
@@ -940,6 +944,7 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 		f := u.Failed[len(u.Failed)-1]
 		m.setNotice("message not sent: "+f.Failed, true, false, 0)
 	}
+	m.devicesNotice(u.Revoked, u.NewOwn)
 	cmds = append(cmds, m.notifyFor(u.New))
 	if m.mode == modeActivity && m.activityAffected(u) {
 		cmds = append(cmds, m.queueActivityRefresh())
@@ -995,6 +1000,8 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 	case modeVerify:
 		m.verifyKey(key)
 		return nil
+	case modeDevices:
+		return m.devicesKey(key)
 	case modeViewer:
 		if key == kSelCopy {
 			return m.copyCmd(strings.Join(m.view.lines, "\n"))
