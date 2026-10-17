@@ -6,6 +6,7 @@ Team chat that lives in your terminal (and your herdr panes). One small binary, 
 - Channels, private channels, DMs, threads, reactions, edits, search, pinned messages
 - Sign in with your existing SSH key. No passwords, no accounts to manage
 - Pipe anything into chat: `make test 2>&1 | tc send '#backend'`
+- Voice huddles in any channel or DM, end-to-end encrypted where the channel is
 
 ## Get started
 
@@ -56,7 +57,7 @@ user, server or chat data, but GitHub sees your IP address and that it runs tc.
 | `F1` or `/help` | all keys and commands |
 | `Ctrl-C` twice | quit |
 
-Commands: `/join #x` `/create #x [--private [--plaintext]]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/pins` `/activity` `/highlight [word…]` `/unhighlight word…` `/group name @a @b` (admin) `/groups` `/remind <when> <text>` `/reminders` `/remind-delete id` `/away [status]` `/back` `/snippet file[:range]` `/share-pane [pane]` `/invite [uses] [ttl]` `/invites` `/invite-revoke id` (admin) `/webhook name` `/webhooks` `/webhook-delete id` `/verify @user` `/accept-key @user` `/members` `/alarm` `/devices [@user]` `/device-revoke id` `/disable @user` (admin).
+Commands: `/join #x` `/create #x [--private [--plaintext]]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/pins` `/activity` `/highlight [word…]` `/unhighlight word…` `/group name @a @b` (admin) `/groups` `/remind <when> <text>` `/reminders` `/remind-delete id` `/away [status]` `/back` `/snippet file[:range]` `/share-pane [pane]` `/invite [uses] [ttl]` `/invites` `/invite-revoke id` (admin) `/webhook name` `/webhooks` `/webhook-delete id` `/verify @user` `/accept-key @user` `/members` `/alarm` `/devices [@user]` `/device-revoke id` `/disable @user` (admin) `/huddle` `/leave-huddle` `/notify …` `/dnd …` `/sounds`.
 
 Private channels are end-to-end encrypted; `--plaintext` opts out (needed only for webhooks/bots).
 Admins: `tc users` lists accounts and who invited them; `tc users disable @name` locks an account
@@ -128,6 +129,40 @@ history raises a `⚠ alarm` in that channel and tc stops sending there.
 
 Design and threat model: [docs/E2E.md](docs/E2E.md).
 
+## Voice huddles
+
+Voice needs the voice build (tc stays a small static binary without it). Add `--voice` to the
+install line, before the invite (Linux needs glibc 2.35+):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/install.sh | sh -s -- --voice 'tc://host:7443/abc…#pin…'
+```
+
+Already have tc? Re-run the install line with `--voice` (no invite needed); `tc update` keeps
+whichever build you have, and `tc version` shows `(voice)`.
+
+- `/huddle` joins the current channel's or DM's huddle (or starts it); `/leave-huddle` leaves.
+- Hold `ctrl+t` to talk; tap it for an open mic (tap again or `Esc` to close). `/talk` and `/mute`
+  do the same where ctrl+t doesn't reach tc (Zellij).
+- Huddles in DMs and private channels are end-to-end encrypted. A huddle started in a DM rings
+  the other person; channel huddles show a dim `🎧n` in the sidebar instead.
+- On macOS the first `/huddle` asks for microphone permission for your terminal app.
+
+Design: [docs/VOICE.md](docs/VOICE.md).
+
+## Notifications
+
+DMs, @mentions, your highlight words and replies in your threads notify you; the channel you're
+looking at doesn't. Per channel, on this device:
+
+- `/notify off` mutes a channel (`/notify off for 2h` for a while), `/notify all` notifies every
+  message, `/notify mentions` is the default.
+- `/dnd 2h` (or `/dnd until 9am`) pauses popups and sounds; `/notify quiet 22:00-08:00` every night.
+- `/notify content name` shows who wrote but not the text (popups stay in the OS history; use it
+  on shared machines).
+- `/sounds` lists the sounds and turns each on or off. `/notify test` plays one of each through
+  the real backend, so you can see what works on your setup.
+
 ## herdr
 
 Run tc in a herdr pane and it notices (`HERDR_ENV=1`):
@@ -136,7 +171,15 @@ Run tc in a herdr pane and it notices (`HERDR_ENV=1`):
 - the pane title shows your unread count, e.g. `tc · 3 unread · 1@`
 - `/share-pane` picks another pane in the workspace and, after a preview, posts its last 60 lines as a code block
 
-`TC_NOTIFY=auto|herdr|os|bell|off` picks the notification backend; `TC_AWAY_MIN=15` sets
+**herdr's popups are off by default** (`[ui.toast] delivery = "off"`): until you set
+`delivery = "terminal"` or `"system"` in herdr's config, tc's herdr notifications and their
+sounds are invisible and silent. herdr also hides popups for the tab you're looking at. Run
+`/notify test` to check.
+
+**Over SSH** in kitty, Ghostty, WezTerm, foot or iTerm2, notifications pop up on your own
+machine (terminal OSC notifications); in tmux add `set -g allow-passthrough on`.
+
+`TC_NOTIFY=auto|herdr|os|terminal|bell|off` picks the notification backend; `TC_AWAY_MIN=15` sets
 auto-away (0 disables). Details in [docs/TUI.md](docs/TUI.md).
 
 ## Webhooks
@@ -189,4 +232,5 @@ Wire details: [docs/PROTOCOL.md §12](docs/PROTOCOL.md).
 ## Development
 
 See [CLAUDE.md](CLAUDE.md). `make test` runs everything with the race detector; the wire
-protocol is specified in [docs/PROTOCOL.md](docs/PROTOCOL.md).
+protocol is specified in [docs/PROTOCOL.md](docs/PROTOCOL.md). Trying it by hand:
+[docs/TESTING.md](docs/TESTING.md).
