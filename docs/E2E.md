@@ -158,10 +158,14 @@ What a malicious server can and cannot do today, and what closes each gap:
   step 12 the other members wait 2 min for a key.share and then rotate past it, linking back to a
   random key: that epoch's messages are lost to them (a history gap), nothing else.
 - **Stolen device**: once revoked (`device.revoke`, signed by the user's SSH key or another of their
-  devices; the protocol and client support it, but there is no `tc` command for it yet), every client
+  devices: `tc devices revoke <id>` or `/devices`; the revoking client rotates such channels at once), every client
   rotates before sealing anything new in a channel whose epoch boxed it (step 12, not relying on the
   server's `stale_epoch`) and ignores revokes the stolen device signs afterwards. Disabling the user
-  (admin) also rotates them out. It keeps what it could already read.
+  (admin) also rotates them out. It keeps what it could already read. A device revoke does not remove
+  an SSH login key: a stolen device that holds the user's SSH private key signs in again and registers
+  as a new device, which every client trusts (its cert verifies under the pinned key). Clients announce
+  a new device of the user to the user's other devices, but the remedy is a new SSH key plus an admin
+  action (`user.disable`); there is no per-key removal yet.
 - **Lost devices**: K lives only on devices. Losing every device of a user loses their encrypted
   history (no backup in v1); a new device gets new messages, and older history only from a member's
   backlinks (the history of every epoch whose K a remaining member holds).

@@ -113,7 +113,7 @@ func TestDevicesOverlay(t *testing.T) {
 			t.Fatalf("%v: no confirmation", sz)
 		}
 		v = checkView(t, m, "confirm")
-		if !strings.Contains(v, "revoke device bbbbbbbb") && sz[0] >= 40 {
+		if !strings.Contains(v, "bbbbbbbb? y") && !strings.Contains(v, "bbbbbbbb for good? y") && sz[0] >= 40 {
 			t.Errorf("%v: confirm title missing:\n%s", sz, v)
 		}
 		press(m, "n")
@@ -142,10 +142,49 @@ func TestDevicesOverlay(t *testing.T) {
 			press(m, "down")
 			checkView(t, m, "scrolled")
 		}
-		press(m, "esc")
+		press(m, "enter")
 		if m.mode != modeNormal {
-			t.Fatalf("%v: Esc left mode %v", sz, m.mode)
+			t.Fatalf("%v: Enter left mode %v", sz, m.mode)
 		}
+	}
+}
+
+// A server's error text never reaches the terminal raw; the title says the
+// list is cached.
+func TestDevicesStaleSanitized(t *testing.T) {
+	for _, devs := range []bool{false, true} {
+		m, f := newTestModelFake(t, 80, 24)
+		if devs {
+			devFake(f)
+		}
+		f.dv.refreshErr = errors.New("bad\x1b]0;pwned\x07\x1b[31mred")
+		runInput(t, m, "/devices")
+		v := m.View()
+		if strings.Contains(v, "\x1b]0;") || strings.Contains(v, "\a") {
+			t.Fatalf("escape sequence leaked: %q", v)
+		}
+		if p := ansi.Strip(v); (!devs && !strings.Contains(p, "can't load the list: bad")) || (devs && !strings.Contains(p, "cached")) {
+			t.Fatalf("devs %v: no stale marker:\n%s", devs, p)
+		}
+		checkView(t, m, "stale")
+	}
+}
+
+// /device-revoke's question doesn't come back after the user declined it
+// while the refresh was still running.
+func TestDeviceRevokeDeclinedBeforeRefresh(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	devFake(f)
+	m.input.SetValue("/device-revoke bbbb")
+	_, cmd := m.Update(keyMsg("enter")) // hold the refresh
+	if !m.devs.confirm {
+		t.Fatal("no question")
+	}
+	pastDevTypeAhead(m)
+	press(m, "n", "up")
+	run(m, cmd)
+	if m.devs.confirm || m.devs.sel != 0 {
+		t.Fatalf("question came back: confirm %v sel %d", m.devs.confirm, m.devs.sel)
 	}
 }
 
@@ -237,4 +276,22 @@ func TestDeviceRevokedNotice(t *testing.T) {
 	if v := ansi.Strip(m.View()); strings.Contains(v, "\x1b") {
 		t.Fatal("escape leaked")
 	}
+
+	// Several at once: this device wins; mine before a new device before others.
+	m, f = newTestModelFake(t, 80, 24)
+	devFake(f)
+	run(m, m.applyUpdate(client.Update{Revoked: []client.DeviceRef{{User: 1, Dev: f.dv.list[1][0].ID}, {User: 2, Dev: f.dv.list[2][0].ID}}}))
+	if !strings.Contains(m.notice, "this device was revoked") {
+		t.Fatalf("notice %q", m.notice)
+	}
+	run(m, m.applyUpdate(client.Update{NewOwn: []client.DeviceRef{{User: 1, Dev: f.dv.list[1][3].ID}, {User: 1, Dev: f.dv.list[1][1].ID}}}))
+	if !m.noticeErr || !strings.Contains(m.notice, "new device of yours: dddddddd (+1 more)") {
+		t.Fatalf("notice %q", m.notice)
+	}
+	// An error notice isn't replaced by news about someone else.
+	run(m, m.applyUpdate(client.Update{Revoked: []client.DeviceRef{{User: 2, Dev: f.dv.list[2][0].ID}}}))
+	if !strings.Contains(m.notice, "new device of yours") {
+		t.Fatalf("notice %q", m.notice)
+	}
+	checkView(t, m, "notices")
 }

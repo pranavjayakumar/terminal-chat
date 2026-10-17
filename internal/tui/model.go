@@ -923,7 +923,7 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 		f := u.Failed[len(u.Failed)-1]
 		m.setNotice("message not sent: "+f.Failed, true, false, 0)
 	}
-	m.revokedNotice(u.Revoked)
+	m.devicesNotice(u.Revoked, u.NewOwn)
 	cmds = append(cmds, m.notifyFor(u.New))
 	if m.mode == modeActivity && m.activityAffected(u) {
 		cmds = append(cmds, m.queueActivityRefresh())

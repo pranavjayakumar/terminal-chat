@@ -11,6 +11,8 @@ import (
 
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/e2ecrypto"
+	"github.com/skailama/tc/internal/proto"
+	"github.com/skailama/tc/internal/sanitize"
 )
 
 // Devices (docs/TUI.md "Devices"): /devices [@user] lists a user's devices,
@@ -22,10 +24,16 @@ type devicesState struct {
 	devs    []client.DeviceInfo
 	sel     int
 	loading bool
-	stale   string // why the list may be out of date ("" if fresh)
+	stale   string // why the list may be out of date ("" if fresh), sanitized
 	confirm bool   // the revoke question for devs[sel] is up
-	busy    bool   // a revoke is in flight
 	opened  time.Time
+	// pendPick/pendAsk: /device-revoke's device, to select (and ask about)
+	// once the background refresh lands, unless a key was handled first.
+	pendPick e2ecrypto.DevID
+	pendAsk  bool
+	// busy: a revoke is in flight. It survives closing and reopening the
+	// overlay, so the same device can't be revoked twice meanwhile.
+	busy bool
 }
 
 // devicesMsg delivers a refreshed list (err: shown cached instead) or the
@@ -35,8 +43,6 @@ type devicesMsg struct {
 	devs    []client.DeviceInfo
 	err     error
 	revoked *revokeResult
-	pick    e2ecrypto.DevID // select (and confirm) this device once loaded
-	ask     bool
 }
 
 type revokeResult struct {
@@ -54,7 +60,7 @@ func (m *Model) devicesCommand(c command) (tea.Cmd, bool, error) {
 		case 1:
 			u, ok := m.findUser(c.args[0])
 			if !ok {
-				return nil, true, fmt.Errorf("unknown user %s", c.args[0])
+				return nil, true, fmt.Errorf("unknown user %s", sanitize.Line(c.args[0]))
 			}
 			user = u
 		default:
@@ -96,25 +102,26 @@ func revocable(d client.DeviceInfo) error {
 // openDevices shows the cached list at once and refreshes it in the background.
 func (m *Model) openDevices(user uint64, pick e2ecrypto.DevID, ask bool) tea.Cmd {
 	m.leaveSelect()
-	m.devs = devicesState{user: user, devs: m.c.Devices(user), loading: true, opened: m.now()}
+	m.devs = devicesState{user: user, devs: m.c.Devices(user), loading: true, opened: m.now(),
+		pendPick: pick, pendAsk: ask, busy: m.devs.busy}
 	m.devPick(pick, ask)
 	m.mode = modeDevices
-	return m.refreshDevices(user, pick, ask)
+	return m.refreshDevices(user)
 }
 
-func (m *Model) refreshDevices(user uint64, pick e2ecrypto.DevID, ask bool) tea.Cmd {
+func (m *Model) refreshDevices(user uint64) tea.Cmd {
 	be := m.c
 	ctx := m.ctx
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(ctx, reqTimeout)
 		defer cancel()
 		err := be.RefreshDevices(ctx, user)
-		return devicesMsg{user: user, devs: be.Devices(user), err: err, pick: pick, ask: ask}
+		return devicesMsg{user: user, devs: be.Devices(user), err: err}
 	}
 }
 
 // devPick selects device id (if listed) and, with ask, puts up its revoke
-// question.
+// question (only if it can still be revoked).
 func (m *Model) devPick(id e2ecrypto.DevID, ask bool) {
 	if id == (e2ecrypto.DevID{}) {
 		return
@@ -128,42 +135,67 @@ func (m *Model) devPick(id e2ecrypto.DevID, ask bool) {
 	}
 }
 
+// setDevs replaces the list, keeping the selected device (and its question,
+// while it can still be revoked).
+func (m *Model) setDevs(devs []client.DeviceInfo) {
+	s := &m.devs
+	var cur e2ecrypto.DevID
+	if s.sel < len(s.devs) {
+		cur = s.devs[s.sel].ID
+	}
+	confirm := s.confirm
+	s.devs, s.sel, s.confirm = devs, 0, false
+	m.devPick(cur, confirm)
+	s.sel = min(s.sel, max(len(s.devs)-1, 0))
+}
+
+// errText is err for showing: the server's code and message, sanitized.
+func errText(err error) string {
+	msg := err.Error()
+	var pe *proto.Error
+	switch {
+	case errors.Is(err, client.ErrOffline):
+		msg = "offline"
+	case errors.As(err, &pe):
+		msg = pe.Code
+		if pe.Msg != "" {
+			msg += ": " + pe.Msg
+		}
+	}
+	return sanitize.Line(msg)
+}
+
 func (m *Model) gotDevices(msg devicesMsg) tea.Cmd {
+	s := &m.devs
 	if r := msg.revoked; r != nil {
-		m.devs.busy = false
+		s.busy = false
 		if r.err != nil {
 			m.setErr("revoke", r.err)
 		} else {
-			s := "✓ revoked device " + r.short
+			t := "✓ revoked device " + r.short
 			if r.rotated > 0 {
-				s += fmt.Sprintf(" — new keys in %d encrypted %s", r.rotated, plural(r.rotated, "channel", "channels"))
+				t += fmt.Sprintf(" — new keys in %d encrypted %s", r.rotated, plural(r.rotated, "channel", "channels"))
 			}
-			m.setInfo(s)
+			m.setInfo(t)
 		}
-		if m.mode == modeDevices && m.devs.user == msg.user {
-			m.devs.loading = true
-			return m.refreshDevices(msg.user, e2ecrypto.DevID{}, false)
+		if m.mode == modeDevices && s.user == msg.user {
+			s.loading = true
+			return m.refreshDevices(msg.user)
 		}
 		return nil
 	}
-	if m.mode != modeDevices || m.devs.user != msg.user {
+	if m.mode != modeDevices || s.user != msg.user {
 		return nil
 	}
-	var cur e2ecrypto.DevID
-	if m.devs.sel < len(m.devs.devs) {
-		cur = m.devs.devs[m.devs.sel].ID
-	}
-	confirm := m.devs.confirm
-	m.devs.devs, m.devs.loading, m.devs.stale = msg.devs, false, ""
+	s.loading, s.stale = false, ""
 	if msg.err != nil {
-		m.devs.stale = "cached: " + msg.err.Error()
+		s.stale = errText(msg.err)
 	}
-	m.devs.sel, m.devs.confirm = 0, false
-	m.devPick(cur, confirm)
-	if !confirm {
-		m.devPick(msg.pick, msg.ask)
+	m.setDevs(msg.devs)
+	if s.pendPick != (e2ecrypto.DevID{}) && !s.confirm {
+		m.devPick(s.pendPick, s.pendAsk)
 	}
-	m.devs.sel = min(m.devs.sel, max(len(m.devs.devs)-1, 0))
+	s.pendPick, s.pendAsk = e2ecrypto.DevID{}, false
 	return nil
 }
 
@@ -172,10 +204,15 @@ func (m *Model) devicesKey(key string) tea.Cmd {
 	if m.now().Sub(s.opened) < typeAhead && key != kEsc {
 		return nil // a keystroke typed before the list appeared mustn't act on it
 	}
+	s.pendPick, s.pendAsk = e2ecrypto.DevID{}, false // the user has taken over
 	if s.confirm {
 		s.confirm = false
-		if key != kConfirmYes || s.sel >= len(s.devs) || s.busy {
+		if key != kConfirmYes || s.sel >= len(s.devs) {
 			m.setInfo("not revoked")
+			return nil
+		}
+		if s.busy {
+			m.setInfo("a revoke is still running")
 			return nil
 		}
 		d := s.devs[s.sel]
@@ -194,21 +231,26 @@ func (m *Model) devicesKey(key string) tea.Cmd {
 			return devicesMsg{user: user, revoked: &revokeResult{short: short, rotated: n, err: err}}
 		}
 	}
+	last := max(len(s.devs)-1, 0)
 	switch key {
-	case kEsc, "q":
+	case kEsc, "q", kEnter:
 		m.mode = modeNormal
 	case kUp, "k", "ctrl+p":
 		s.sel = max(s.sel-1, 0)
 	case kDown, "j", "ctrl+n":
-		s.sel = min(s.sel+1, max(len(s.devs)-1, 0))
+		s.sel = min(s.sel+1, last)
+	case kPgUp:
+		s.sel = max(s.sel-10, 0)
+	case kPgDown:
+		s.sel = min(s.sel+10, last)
 	case kHome, "g":
 		s.sel = 0
 	case kEnd, "G":
-		s.sel = max(len(s.devs)-1, 0)
+		s.sel = last
 	case "r":
 		if !s.loading {
 			s.loading = true
-			return m.refreshDevices(s.user, e2ecrypto.DevID{}, false)
+			return m.refreshDevices(s.user)
 		}
 	case kSelDelete:
 		if s.user != m.me.ID || s.sel >= len(s.devs) {
@@ -227,19 +269,42 @@ func (m *Model) devicesKey(key string) tea.Cmd {
 	return nil
 }
 
+func (m *Model) devicesTitle(w int) string {
+	s := &m.devs
+	narrow := w < 60
+	if s.confirm && s.sel < len(s.devs) {
+		if narrow {
+			return fmt.Sprintf("revoke %s? y: yes · other: no", s.devs[s.sel].Short())
+		}
+		return fmt.Sprintf("revoke device %s for good? y: revoke · any other key: cancel", s.devs[s.sel].Short())
+	}
+	var t string
+	switch {
+	case s.user == m.me.ID && narrow:
+		t = "devices · d revoke · Esc"
+	case s.user == m.me.ID:
+		t = "your devices — d: revoke · r: refresh · Esc closes"
+	case narrow:
+		t = m.atName(s.user) + " · Esc"
+	default:
+		t = "devices of " + m.atName(s.user) + " — r: refresh · Esc closes"
+	}
+	switch {
+	case s.loading:
+		t += " · refreshing…"
+	case s.stale != "":
+		t += " · cached (" + s.stale + ")"
+	}
+	return t
+}
+
 func (m *Model) devicesLines(w, h int) []string {
 	s := &m.devs
-	mine := s.user == m.me.ID
-	var title string
-	switch {
-	case s.confirm && s.sel < len(s.devs):
-		title = fmt.Sprintf("revoke device %s for good? y: revoke · any other key: cancel", s.devs[s.sel].Short())
-	case mine:
-		title = "your devices — d: revoke · r: refresh · Esc closes"
-	default:
-		title = "devices of " + m.atName(s.user) + " — r: refresh · Esc closes"
+	title := m.st.overlayTitle.Render(truncate(m.devicesTitle(w), w))
+	if s.confirm {
+		title = m.st.noticeErr.Render(truncate(m.devicesTitle(w), w))
 	}
-	out := []string{fit(m.st.overlayTitle.Render(truncate(title, w)), w)}
+	out := []string{fit(title, w)}
 	rows := m.deviceRows(w)
 	start, end := window(len(rows), s.sel, max(h-1, 0))
 	for i := start; i < end; i++ {
@@ -253,8 +318,7 @@ func (m *Model) devicesLines(w, h int) []string {
 	return padLines(out, w, h)
 }
 
-// deviceRows is one line per device ("" lines are never selectable: the
-// list has none, so sel indexes devs and rows alike).
+// deviceRows is one line per device, so sel indexes devs and rows alike.
 func (m *Model) deviceRows(w int) []string {
 	s := &m.devs
 	if len(s.devs) == 0 {
@@ -262,7 +326,7 @@ func (m *Model) deviceRows(w int) []string {
 		case s.loading:
 			return []string{" loading…"}
 		case s.stale != "":
-			return []string{" " + truncate(s.stale, max(w-1, 1))}
+			return []string{" can't load the list: " + s.stale}
 		}
 		return []string{" no devices registered for encryption"}
 	}
@@ -286,39 +350,65 @@ func (m *Model) deviceRows(w int) []string {
 		if d.This {
 			mark = "*"
 		}
-		row := fmt.Sprintf("%s %s  %s  %s", mark, d.Short(), strings.Join(tags, ", "), "added "+d.Created.Local().Format("2006-01-02"))
-		if w >= 70 && d.KeyFP != "" {
-			row += "  " + d.KeyFP
+		added := "added " + d.Created.Local().Format("2006-01-02")
+		if w < 50 {
+			added = d.Created.Local().Format("2006-01-02")
+		}
+		row := fmt.Sprintf("%s %s  %s  %s", mark, d.Short(), strings.Join(tags, ", "), added)
+		// A fingerprint is compared by eye: whole or not at all.
+		if fp := sanitize.Line(d.KeyFP); fp != "" && strWidth(row)+2+strWidth(fp) <= w {
+			row += "  " + fp
 		}
 		rows[i] = row
 	}
 	return rows
 }
 
-// revokedNotice says which devices were just revoked (Update.Revoked).
-func (m *Model) revokedNotice(rs []client.DeviceRef) {
-	if len(rs) == 0 {
+// devicesNotice says which devices were just revoked or newly appeared for
+// us (Update.Revoked, Update.NewOwn): this device's revoke first, then
+// ours, then other people's. It doesn't hide an error notice unless this
+// device was revoked.
+func (m *Model) devicesNotice(revoked, newOwn []client.DeviceRef) {
+	if len(revoked) == 0 && len(newOwn) == 0 {
 		return
 	}
-	r := rs[len(rs)-1]
-	this := false
-	if r.User == m.me.ID {
-		for _, d := range m.c.Devices(m.me.ID) {
-			if d.ID == r.Dev && d.This {
-				this = true
-			}
+	var this e2ecrypto.DevID
+	for _, d := range m.c.Devices(m.me.ID) {
+		if d.This {
+			this = d.ID
 		}
 	}
-	switch {
-	case this:
-		m.setNotice("this device was revoked — it re-registers with new keys when it reconnects", true, false, 0)
-	case r.User == m.me.ID:
-		m.setInfo("your device " + r.Short() + " was revoked — it gets no new encryption keys")
-	default:
-		m.setInfo(m.atName(r.User) + " revoked a device (" + r.Short() + ") — encrypted channels get a new key before the next message")
+	var mine, others []client.DeviceRef
+	thisGone := false
+	for _, r := range revoked {
+		switch {
+		case r.User == m.me.ID && r.Dev == this:
+			thisGone = true
+		case r.User == m.me.ID:
+			mine = append(mine, r)
+		default:
+			others = append(others, r)
+		}
 	}
-	if m.mode == modeDevices && !m.devs.loading && !m.devs.confirm {
-		m.devs.devs = m.c.Devices(m.devs.user)
-		m.devs.sel = min(m.devs.sel, max(len(m.devs.devs)-1, 0))
+	more := func(n int) string {
+		if n > 1 {
+			return fmt.Sprintf(" (+%d more)", n-1)
+		}
+		return ""
+	}
+	switch {
+	case thisGone:
+		m.setNotice("this device was revoked — it re-registers with new keys when it reconnects", true, false, 0)
+	case len(mine) > 0:
+		m.setNotice(fmt.Sprintf("your device %s was revoked%s — /devices", mine[0].Short(), more(len(mine))), true, false, 0)
+	case len(newOwn) > 0:
+		m.setNotice(fmt.Sprintf("new device of yours: %s%s — not you? /devices to revoke it", newOwn[0].Short(), more(len(newOwn))), true, false, 0)
+	case m.noticeErr && m.notice != "":
+	case len(others) > 0:
+		m.setInfo(fmt.Sprintf("%s revoked a device (%s)%s — encrypted channels get a new key before the next message",
+			m.atName(others[0].User), others[0].Short(), more(len(others))))
+	}
+	if m.mode == modeDevices && !m.devs.loading {
+		m.setDevs(m.c.Devices(m.devs.user))
 	}
 }
