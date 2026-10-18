@@ -18,7 +18,7 @@
 
 extern void tcVPIOCallback(uintptr_t handle, int16_t *out, int16_t *in, uint32_t n);
 
-#define RING (48000 / 2)      // 500 ms of mic audio
+#define RING 32768            // ~680 ms of mic audio; a power of two, so (w + i) % RING survives uint32 wrap
 #define MAX_LAG (48000 / 10)  // drop mic backlog beyond 100 ms
 #define MAX_FRAMES 8192
 

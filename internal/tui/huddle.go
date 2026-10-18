@@ -189,7 +189,7 @@ func (m *Model) huddleCommand(c command) (tea.Cmd, bool, error) {
 	}
 	if in && cur == ch {
 		m.refreshHuddle()
-		m.setNotice("in this huddle · "+aecLine(m.hud.aec)+" · /leave-huddle to leave", false, false, errTTL)
+		m.setNotice(aecLine(m.hud.aec)+" · /leave-huddle to leave", false, false, errTTL)
 		return nil, true, nil
 	}
 	prev := uint64(0)
@@ -254,6 +254,9 @@ func (m *Model) talkKey() (tea.Cmd, bool) {
 		return nil, true
 	default: // off: a fresh press
 		hb.SetTalking(true)
+		// Gateable until a repeat proves it's held: a tap's first 800 ms
+		// would otherwise send echo.
+		hb.SetOpenMic(true)
 		h.talk = talkPending
 	}
 	m.refreshHuddle()
@@ -287,16 +290,22 @@ func (m *Model) huddleMsg(msg tea.Msg) (tea.Cmd, bool) {
 		m.hud.talk = talkOff
 		m.hud.warned = nil // a new participation: its own warnings
 		m.refreshHuddle()
-		note := "in the huddle — hold ctrl+t to talk, tap for open mic (/talk, /mute)"
+		const talkHelp = "hold ctrl+t to talk, tap for open mic (/talk, /mute)"
+		if m.hud.in && m.hud.aec != "system" && !m.hud.aecHinted {
+			// Speakers into an open mic echo back to whoever talks. The
+			// hint leads so truncation eats the talk help, not the hint
+			// (the 🎧 head already says where we are).
+			m.hud.aecHinted = true
+			note := headphonesHint + " · " + talkHelp
+			if m.w < 60 {
+				note = headphonesShort + " · " + talkHelp
+			}
+			m.setNotice(note, false, false, errTTL)
+			return nil, true
+		}
+		note := "in the huddle — " + talkHelp
 		if msg.prev != 0 {
 			note = "left " + m.chanTitle(msg.prev) + " · " + note
-		}
-		if m.hud.in && m.hud.aec != "system" && !m.hud.aecHinted {
-			// Speakers into an open mic echo back to whoever talks.
-			m.hud.aecHinted = true
-			m.setNotice(note+" · "+headphonesHint, false, false, errTTL)
-			m.noticeDim = true
-			return nil, true
 		}
 		m.setInfo(note)
 		return nil, true
@@ -350,15 +359,22 @@ func (m *Model) huddleHead(compact bool) (head, roster string) {
 	return b.String(), " · " + strings.Join(names, " ")
 }
 
-const headphonesHint = "🎧 headphones recommended (no echo cancellation)"
+const (
+	headphonesHint = "no echo cancellation: use headphones"
+	// headphonesShort fits after the 🎧 head in a 40-column pane.
+	headphonesShort = "use headphones"
+)
 
-// aecLine describes the echo control for /huddle (docs/VOICE.md "Echo").
+// aecLine describes the echo control for /huddle (docs/VOICE.md "Echo"),
+// most useful words first.
 func aecLine(aec string) string {
 	switch aec {
 	case "system":
-		return "echo cancellation: system"
+		return "echo cancellation on (system)"
 	case "gate":
-		return "echo control: gate (open mic pauses while others talk) — headphones recommended"
+		return "no echo cancellation, use headphones (gate: open mic pauses while others talk)"
+	case "off":
+		return "echo cancellation off, use headphones"
 	}
-	return "echo cancellation: off — headphones recommended"
+	return "echo control: " + aec
 }

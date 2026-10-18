@@ -3,6 +3,8 @@
 package voice
 
 import (
+	"strings"
+
 	"github.com/gen2brain/malgo"
 )
 
@@ -34,8 +36,15 @@ func echoCancelDevices() (*malgo.AllocatedContext, devices, bool) {
 	if err1 == nil && err2 == nil {
 		ci, pi := echoCancelPair(pulseNames(caps), pulseNames(plays))
 		if ci < 0 {
-			// Descriptions, in case a config renamed the nodes.
-			ci, pi = echoCancelPair(descriptions(caps), descriptions(plays))
+			// Descriptions, in case a config renamed the nodes. Monitors
+			// go by name: their descriptions are translated.
+			ds := descriptions(caps)
+			for i, n := range pulseNames(caps) {
+				if strings.HasSuffix(n, ".monitor") {
+					ds[i] = ""
+				}
+			}
+			ci, pi = echoCancelPair(ds, descriptions(plays))
 		}
 		if ci >= 0 {
 			return ctx, devices{capture: &caps[ci].ID, playback: &plays[pi].ID, sys: true}, true

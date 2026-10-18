@@ -93,6 +93,34 @@ func TestGateIgnoresQuietFarEnd(t *testing.T) {
 	}
 }
 
+// A noisy far end (open mic, fan) lets the gate open once its floor is
+// learned, and their speech over that noise still shuts it.
+func TestGateLearnsFarNoiseFloor(t *testing.T) {
+	g := newGate()
+	noise := widen(tone440(FrameSamples, 600)) // ≈ −38 dBFS RMS, steady
+	for range 100 {                            // 2 s
+		g.far(noise)
+	}
+	if g.shut() {
+		t.Fatal("2 s of steady far-end noise still shuts the gate")
+	}
+	g.far(widen(tone440(FrameSamples, 4000)))
+	if !g.shut() {
+		t.Fatal("speech over the noise didn't shut the gate")
+	}
+	// Speech with pauses keeps the floor at the noise, not the voice.
+	for range 50 {
+		for range 10 {
+			g.far(widen(tone440(FrameSamples, 4000)))
+		}
+		g.far(noise)
+	}
+	g.far(widen(tone440(FrameSamples, 4000)))
+	if !g.shut() {
+		t.Fatal("floor crept up to the far talker's voice")
+	}
+}
+
 func TestGateHangover(t *testing.T) {
 	g := newGate()
 	g.far(widen(tone440(FrameSamples, 3000)))
@@ -335,6 +363,12 @@ func TestEchoCancelPair(t *testing.T) {
 		{[]string{"echo-cancel-source"}, []string{"alsa_output.analog-stereo"}, -1, -1},
 		// Only the sink's monitor: not a microphone.
 		{[]string{"echo-cancel-sink.monitor", "Monitor of Echo-Cancel Sink"}, []string{"echo-cancel-sink"}, -1, -1},
+		// A canceller whose master source is itself a monitor.
+		{[]string{"micsrc.monitor", "micsrc.monitor.echo-cancel", "spk.echo-cancel.monitor"},
+			[]string{"spk", "spk.echo-cancel"}, 1, 1},
+		// Two PipeWire cancellers: only same-stem pairs.
+		{[]string{"echo-cancel-source", "ec2-echo-cancel-source"},
+			[]string{"ec2-echo-cancel-sink", "echo-cancel-sink"}, -1, -1},
 		{nil, nil, -1, -1},
 	}
 	for _, c := range cases {

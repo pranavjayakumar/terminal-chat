@@ -71,14 +71,19 @@ func (p AECPref) resolve(system bool) AEC {
 	return AECOff
 }
 
-// Gate tuning. Far-end "active" is a 20 ms playout frame whose RMS is above
-// gateFarRMS (≈ −42 dBFS: well under speech at −30…−20 dBFS, above the
-// noise floor of a quiet room sent through Opus). The gate stays shut for
-// gateHang after the last such frame: device latency in and out plus the
-// room's reverb tail. Gain ramps (attack 2.5 ms, release 20 ms) avoid
-// clicks.
+// Gate tuning. Far-end "active" is a 20 ms playout frame whose mean square
+// is above both gateFarRMS² (≈ −42 dBFS: under speech at −30…−20 dBFS) and
+// gateOverFloor × the far end's noise floor, so a remote open mic in a
+// noisy room (fan, café) doesn't keep ours shut for the whole call. The
+// floor follows quieter frames at once and rises gateFloorRise per frame
+// (≈ 4 dB/s), so the pauses between words keep it at the noise, not the
+// voice. The gate stays shut for gateHang after the last active frame:
+// device latency in and out plus the room's reverb tail. Gain ramps
+// (attack 2.5 ms, release 20 ms) avoid clicks.
 const (
 	gateFarRMS     = 260
+	gateOverFloor  = 4 // 6 dB
+	gateFloorRise  = 1.01
 	gateHang       = SampleRate / 5 // 200 ms
 	gateAttackStep = 1.0 / (SampleRate / 400)
 	gateRelStep    = 1.0 / (SampleRate / 50)
@@ -88,19 +93,26 @@ const (
 // apply on Capture (under Engine.capMu); hang is their only shared state.
 // Neither allocates: both run on the audio thread.
 type gate struct {
-	hang atomic.Int64 // samples the gate stays shut for
-	gain float32      // capture side only
+	hang  atomic.Int64 // samples the gate stays shut for
+	floor float64      // far end's noise floor (mean square); Playout side only
+	gain  float32      // capture side only
 }
 
-func newGate() *gate { return &gate{gain: 1} }
+func newGate() *gate { return &gate{gain: 1, floor: gateFarRMS * gateFarRMS} }
 
 // far measures one frame of remote audio (Engine.mix) about to be played.
 func (g *gate) far(pcm []int32) {
-	var sum int64
-	for _, v := range pcm {
-		sum += int64(v) * int64(v)
+	if len(pcm) == 0 {
+		return
 	}
-	if len(pcm) > 0 && sum > int64(len(pcm))*gateFarRMS*gateFarRMS {
+	var sum float64
+	for _, v := range pcm {
+		sum += float64(v) * float64(v)
+	}
+	ms := sum / float64(len(pcm))
+	active := ms > gateFarRMS*gateFarRMS && ms > gateOverFloor*g.floor
+	g.floor = max(gateFarRMS*gateFarRMS, min(ms, g.floor*gateFloorRise))
+	if active {
 		g.hang.Store(gateHang)
 		return
 	}
@@ -118,8 +130,11 @@ func (g *gate) apply(pcm []int16) {
 	if g.shut() {
 		target, step = 0, gateAttackStep
 	}
-	if target == 1 && g.gain >= 1 {
-		return // open and settled: the common case
+	if g.gain == target {
+		if target == 0 {
+			clear(pcm)
+		}
+		return // settled: the common case
 	}
 	for i, v := range pcm {
 		switch {
@@ -132,41 +147,75 @@ func (g *gate) apply(pcm []int16) {
 	}
 }
 
-// reset opens the gate at once (the mic just opened with no far audio, or
-// the held key took over).
-func (g *gate) reset() { g.gain = 1 }
+// reset settles the gain where the gate is now: the mic just became
+// gateable, and must neither leak an attack ramp of echo nor fade in a
+// talker when nothing is playing.
+func (g *gate) reset() {
+	g.gain = 1
+	if g.shut() {
+		g.gain = 0
+	}
+}
 
 // echoCancelPair picks a PipeWire/PulseAudio echo-cancel source and sink
-// from device names (pulse names or descriptions), or -1s if there isn't
-// a pair. Both are needed: the canceller only sees the far end through its
-// sink. Monitors of the echo-cancel sink are not sources of our voice.
+// from device names (pulse names or descriptions), or -1s unless exactly
+// one pair is clear. Both are needed: the canceller only hears the far end
+// through its sink, so a source paired with some other sink cancels
+// nothing (and the gate would be off). Several cancellers: only a source
+// and sink with the same stem pair up (PipeWire's echo-cancel-source and
+// echo-cancel-sink); otherwise we'd rather gate than guess.
 func echoCancelPair(captures, playbacks []string) (ci, pi int) {
-	ci, pi = -1, -1
+	var cs, ps []int
 	for i, n := range captures {
-		if isEchoCancel(n) && !strings.HasSuffix(strings.ToLower(n), ".monitor") &&
-			!strings.HasPrefix(strings.ToLower(n), "monitor of") {
-			ci = i
-			break
+		// Monitors (of the canceller's sink, say) aren't microphones: by
+		// name "….monitor", by description "Monitor of …" ("Monitor von",
+		// "Moniteur de" …). A canceller whose master is a monitor is fine.
+		l := strings.ToLower(n)
+		if isEchoCancel(n) && !strings.HasSuffix(l, ".monitor") && !strings.HasPrefix(l, "monit") {
+			cs = append(cs, i)
 		}
 	}
 	for i, n := range playbacks {
 		if isEchoCancel(n) {
-			pi = i
-			break
+			ps = append(ps, i)
 		}
 	}
-	if ci < 0 || pi < 0 {
-		return -1, -1
+	if len(cs) == 1 && len(ps) == 1 {
+		return cs[0], ps[0]
+	}
+	ci, pi = -1, -1
+	for _, c := range cs {
+		for _, p := range ps {
+			if ecStem(captures[c]) != ecStem(playbacks[p]) {
+				continue
+			}
+			if ci >= 0 {
+				return -1, -1 // ambiguous
+			}
+			ci, pi = c, p
+		}
 	}
 	return ci, pi
 }
 
+// isEchoCancel matches what module-echo-cancel and
+// libpipewire-module-echo-cancel call their nodes by default, by name
+// ("echo-cancel-source", "<master>.echo-cancel") or description
+// ("Echo-Cancel Source", "… (echo cancelled with …)"). Not hardware that
+// merely advertises it ("Echo Cancelling Speakerphone"): that has no sink
+// of ours to hear the far end through.
 func isEchoCancel(name string) bool {
 	n := strings.ToLower(name)
-	for _, k := range []string{"echo-cancel", "echo_cancel", "echo cancel", "echocancel"} {
-		if strings.Contains(n, k) {
-			return true
-		}
+	return strings.Contains(n, "echo-cancel") && !strings.Contains(n, "echo-cancelling") ||
+		strings.Contains(n, "echo cancelled")
+}
+
+// ecStem is a node name without its direction, so a canceller's source and
+// sink compare equal.
+func ecStem(name string) string {
+	n := strings.ToLower(name)
+	for _, s := range []string{"-source", "-sink", " source", " sink", "_source", "_sink"} {
+		n = strings.ReplaceAll(n, s, "")
 	}
-	return false
+	return n
 }

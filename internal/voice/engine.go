@@ -138,11 +138,15 @@ func (e *Engine) SetTalking(on bool) {
 	if e.talking && !on {
 		e.ending = true
 	}
-	if on {
-		e.ending = false
-	} else {
+	switch {
+	case on:
+		// A new spurt starts held; the caller marks it open if it is.
+		e.ending, e.openMic = false, false
+	case !e.ending:
 		e.openMic = false
 	}
+	// Otherwise openMic stays until the end-of-spurt frame is out, so that
+	// frame is gated like the ones before it.
 	e.talking = on
 }
 
@@ -221,6 +225,7 @@ func (e *Engine) Capture(pcm []int16) {
 	defer e.capMu.Unlock()
 	if !e.talking && !e.ending {
 		e.capBuf = e.capBuf[:0]
+		e.openMic = false
 		return
 	}
 	start := len(e.capBuf)
