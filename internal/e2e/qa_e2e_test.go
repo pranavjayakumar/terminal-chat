@@ -24,11 +24,12 @@ func msgsUpdated(u *user, ch uint64, d time.Duration) bool {
 	}
 }
 
-func drainUpdates(u *user) {
+// drainUpdates discards u's updates until none came for quiet.
+func drainUpdates(u *user, quiet time.Duration) {
 	for {
 		select {
 		case <-u.Updates():
-		default:
+		case <-time.After(quiet):
 			return
 		}
 	}
@@ -54,9 +55,8 @@ func TestQAEncryptChannelUpdatesOpenView(t *testing.T) {
 	eventually(t, "bob has it", func() bool { sec, ok := bob.sec(ch.ID, "plain old"); return ok && sec == client.SecPlain })
 	eventually(t, "alice has it", func() bool { sec, ok := alice.sec(ch.ID, "plain old"); return ok && sec == client.SecPlain })
 	// Let both clients settle, then forget what they said so far.
-	time.Sleep(300 * time.Millisecond)
-	drainUpdates(alice)
-	drainUpdates(bob)
+	drainUpdates(alice, 500*time.Millisecond)
+	drainUpdates(bob, 500*time.Millisecond)
 	if err := alice.EncryptChannel(ctx, ch.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -64,6 +64,8 @@ func TestQAEncryptChannelUpdatesOpenView(t *testing.T) {
 		if !msgsUpdated(u, ch.ID, 5*time.Second) {
 			sec, _ := u.sec(ch.ID, "plain old")
 			t.Errorf("%s: no message update for the channel after /encrypt (old message is %s)", u.Me().Name, sec)
+		} else if sec, _ := u.sec(ch.ID, "plain old"); sec != client.SecLegacy {
+			t.Errorf("%s: after the update the old message is %s, want legacy", u.Me().Name, sec)
 		}
 	}
 }
