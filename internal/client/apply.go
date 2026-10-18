@@ -117,8 +117,10 @@ func (c *Client) applySnapshot(s *session, sn proto.Snapshot) error {
 			}
 		}
 		for _, ch := range sn.Chans {
-			if err := c.storeChanE2E(tx, ch); err != nil {
+			if relabeled, err := c.storeChanE2E(tx, ch); err != nil {
 				return err
+			} else if relabeled {
+				u.msgs(ch.ID)
 			}
 		}
 		for _, g := range sn.Groups {
@@ -386,8 +388,12 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		if !decode(&ch) || ch.ID == 0 {
 			return nil
 		}
-		if err := c.storeChanE2E(tx, ch); err != nil {
+		relabeled, err := c.storeChanE2E(tx, ch)
+		if err != nil {
 			return err
+		}
+		if relabeled {
+			u.msgs(ch.ID)
 		}
 		u.Channels = true
 	case proto.KChanJoin:
@@ -405,8 +411,10 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 			if !slices.Contains(d.Chan.Members, d.User) {
 				d.Chan.Members = append(d.Chan.Members, d.User)
 			}
-			if err := c.storeChanE2E(tx, d.Chan); err != nil {
+			if relabeled, err := c.storeChanE2E(tx, d.Chan); err != nil {
 				return err
+			} else if relabeled {
+				u.msgs(d.Chan.ID)
 			}
 		} else if err := setMember(tx, ev.Chan, d.User, true); err != nil {
 			return err
