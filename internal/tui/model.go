@@ -324,6 +324,14 @@ func (m *Model) reloadPresence() {
 
 func (m *Model) reloadChans() {
 	m.chans = m.c.Channels()
+	for _, v := range m.chans {
+		if !v.Member {
+			// Leaving drops the cached messages: a rejoin must fetch them
+			// again instead of trusting "history complete" from before.
+			delete(m.histDone, v.ID)
+			delete(m.limits, v.ID)
+		}
+	}
 	prev, hadPrev := m.e2e[m.active]
 	m.e2e = map[uint64]client.E2EStatus{}
 	for _, v := range m.chans {
@@ -598,6 +606,9 @@ func (m *Model) focus() *pane {
 func (m *Model) fetchHistory(ch uint64) tea.Cmd {
 	if ch == 0 || m.histBusy[ch] || m.histDone[ch] || m.status.State != client.Online {
 		return nil
+	}
+	if v, ok := m.chanView(ch); ok && !v.Member && v.Kind != proto.ChanPublic {
+		return nil // removed: the server would refuse; the cache is all we keep
 	}
 	var before uint64
 	for _, x := range m.main.msgs {
@@ -973,6 +984,9 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 		m.refreshDrafts()
 	}
 	if u.Reset {
+		// A snapshot reset may have replaced the cache: re-learn where
+		// each channel's history starts.
+		clear(m.histDone)
 		m.reloadAll()
 		cmds = append(cmds, m.openDefault())
 		if m.mode == modeActivity {

@@ -31,6 +31,7 @@ type fakeClient struct {
 	reads    map[uint64]uint64
 	history  int
 	histMore bool
+	histErr  error
 	calls    []string
 	aways    []bool
 	drafts   map[[2]uint64]string
@@ -230,7 +231,7 @@ func (f *fakeClient) History(ctx context.Context, ch, before uint64) (bool, erro
 	f.mu.Lock()
 	f.history++
 	f.mu.Unlock()
-	return f.histMore, nil
+	return f.histMore, f.histErr
 }
 func (f *fakeClient) Search(ctx context.Context, q string, ch uint64) ([]proto.Message, error) {
 	return []proto.Message{f.msgs[10][0].Message, f.threads[103][1].Message}, nil
