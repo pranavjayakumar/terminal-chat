@@ -189,6 +189,7 @@ func (m *Model) showInvite(s inviteShownMsg) {
 		build: func(w int) []string { return inviteLines(s, copied, w) },
 		copy:  s.line,
 		back:  modeNormal,
+		wide:  true,
 	}
 	m.mode = modeViewer
 	m.setInfo("invite created")
@@ -318,12 +319,11 @@ func (m *Model) inviteManageCommand(c command) (cmd tea.Cmd, ok bool, err error)
 		if len(invs) == 0 {
 			return infoMsg("no open invites"), nil
 		}
-		parts := make([]string, len(invs))
+		rows := make([]string, len(invs))
 		for i, inv := range invs {
-			parts[i] = describeInvite(inv, names)
+			rows[i] = describeInvite(inv, names) // id first: it survives a narrow pane
 		}
-		// Ids first so they survive truncation in narrow panes.
-		return infoMsg(strings.Join(parts, " · ") + " · revoke with /invite-revoke id"), nil
+		return listMsg{title: fmt.Sprintf("%d open %s · /invite-revoke id", len(invs), plural(len(invs), "invite", "invites")), rows: rows}, nil
 	}), true, nil
 }
 

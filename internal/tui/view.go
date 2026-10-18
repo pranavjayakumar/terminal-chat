@@ -30,6 +30,9 @@ type dims struct {
 const statusRows = 1
 
 func (m *Model) sidebarShown() bool {
+	if m.mode == modeViewer && m.view.wide {
+		return false // text to copy: a mouse selection mustn't pick up the sidebar
+	}
 	switch m.sidebar {
 	case 1:
 		return m.w >= minSidebarCols

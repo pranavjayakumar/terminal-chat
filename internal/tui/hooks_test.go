@@ -79,9 +79,10 @@ func TestWebhookCommands(t *testing.T) {
 		t.Fatalf("system clipboard: notice %q mode %v", m.notice, m.mode)
 	}
 	do("/webhooks")
-	if !strings.Contains(m.notice, "5 ci") || !strings.Contains(m.notice, "general") {
-		t.Fatalf("list notice %q", m.notice)
+	if m.mode != modeList || len(m.list.rows) != 1 || !strings.Contains(m.list.rows[0], "5 ci") || !strings.Contains(m.list.rows[0], "general") {
+		t.Fatalf("list %q", m.list.rows)
 	}
+	m.handleKey(keyMsg("esc"))
 	do("/webhook-delete 5")
 	if len(f.deleted) != 1 || f.deleted[0] != 5 {
 		t.Fatalf("deleted %v", f.deleted)

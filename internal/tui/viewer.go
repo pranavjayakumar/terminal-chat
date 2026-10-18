@@ -21,6 +21,7 @@ type viewer struct {
 	build func(w int) []string // re-lays lines out for the width; nil: static
 	// secret: the text is hidden until s (shown); Esc drops it for good.
 	secret, shown bool
+	wide          bool // full terminal width, no sidebar beside it
 }
 
 const viewerStep = 8

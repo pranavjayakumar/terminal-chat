@@ -95,15 +95,15 @@ func (m *Model) hookCommand(c command) (cmd tea.Cmd, ok bool, err error) {
 			if len(hooks) == 0 {
 				return infoMsg("no webhooks"), nil
 			}
-			parts := make([]string, len(hooks))
+			rows := make([]string, len(hooks))
 			for i, h := range hooks {
 				t := titles[h.Chan]
 				if t == "" {
 					t = "#?"
 				}
-				parts[i] = fmt.Sprintf("%d %s → %s", h.ID, h.Name, t)
+				rows[i] = fmt.Sprintf("%d %s → %s", h.ID, h.Name, t)
 			}
-			return infoMsg("webhooks (id name → channel): " + strings.Join(parts, " · ")), nil
+			return listMsg{title: fmt.Sprintf("%d %s — id name → channel · /webhook-delete id", len(hooks), plural(len(hooks), "webhook", "webhooks")), rows: rows}, nil
 		}), true, nil
 	default: // webhook-delete
 		if len(c.args) != 1 {
@@ -133,6 +133,7 @@ func (m *Model) showHook(h hookShownMsg) {
 		copy:   h.curl,
 		back:   modeNormal,
 		secret: true,
+		wide:   true,
 	}
 	m.view.build = func(w int) []string {
 		w = max(w, 8)

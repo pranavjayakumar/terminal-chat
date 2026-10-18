@@ -204,26 +204,35 @@ func TestInviteListRevokeCommands(t *testing.T) {
 	}
 	m := New(context.Background(), f, Options{Out: &syncBuf{}, styles: testStyles(true)})
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	listed := ""
 	do := func(in string) {
 		t.Helper()
 		m.input.SetValue(in)
 		run(m, m.submit())
+		listed = m.notice
+		if m.mode == modeList { // one invite per row
+			listed = m.list.title + "\n" + strings.Join(m.list.rows, "\n")
+		}
 	}
 
 	do("/invites")
+	if m.mode != modeList || len(m.list.rows) != 3 { // #111: a notice cut all but the first
+		t.Fatalf("/invites: mode %v rows %q", m.mode, m.list.rows)
+	}
 	for _, want := range []string{"0123456789ab team, 14 left, exp Mar 4 15:04, by @alice", "ba9876543210 admin, 1 left", "by server host", "by @bob"} {
-		if !strings.Contains(m.notice, want) {
-			t.Fatalf("missing %q in notice %q", want, m.notice)
+		if !strings.Contains(listed, want) {
+			t.Fatalf("missing %q in list %q", want, listed)
 		}
 	}
-	if strings.ContainsAny(m.notice, "\x1b\a") {
-		t.Fatalf("unsanitized server text in notice %q", m.notice)
+	if v := checkView(t, m, "invites"); strings.ContainsAny(v, "\x1b\a") {
+		t.Fatalf("unsanitized server text shown")
 	}
 	for _, sz := range [][2]int{{100, 30}, {40, 12}, {20, 6}} {
 		m.Update(tea.WindowSizeMsg{Width: sz[0], Height: sz[1]})
-		checkView(t, m, "invites notice")
+		checkView(t, m, "invites list")
 	}
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.mode = modeNormal
 
 	do("/invite-revoke 0123456789AB")
 	if len(f.revoked) != 1 || f.revoked[0] != "0123456789ab" || !strings.Contains(m.notice, "revoked") {
@@ -252,9 +261,10 @@ func TestInviteListRevokeCommands(t *testing.T) {
 	f.invites = []proto.InviteInfo{{ID: "0123456789ab", Kind: proto.InviteKindUser, UsesLeft: 1, Expires: exp, CreatedBy: 1,
 		Keys: 2, KeySrc: "github:carol\x1b[2J"}}
 	do("/invites")
-	if m.noticeErr || !strings.Contains(m.notice, "only (2 keys), 1 left") || strings.Contains(m.notice, "\x1b") {
-		t.Fatalf("member list: %q", m.notice)
+	if m.noticeErr || !strings.Contains(listed, "only (2 keys), 1 left") {
+		t.Fatalf("member list: %q", listed)
 	}
+	m.mode = modeNormal
 	do("/invite-revoke 0123456789ab")
 	if m.noticeErr || len(f.revoked) != 2 {
 		t.Fatalf("member revoke: %q %v", m.notice, f.revoked)
@@ -412,5 +422,22 @@ func TestInviteViewWrapsNarrow(t *testing.T) {
 	for _, sz := range [][2]int{{40, 12}, {30, 10}, {24, 8}} {
 		m.Update(tea.WindowSizeMsg{Width: sz[0], Height: sz[1]})
 		checkView(t, m, "invite narrow")
+	}
+}
+
+// The invite viewer takes the whole width, so selecting the install
+// command with the mouse doesn't pick up sidebar text.
+func TestInviteViewerFullWidth(t *testing.T) {
+	m, _ := newTestModelFake(t, 120, 30)
+	m.showInvite(inviteShownMsg{summary: "invite created", code: "tc://h:1/abc#pin", line: "curl -fsSL https://example.com/install.sh | sh -s -- 'tc://h:1/abc#pin'", how: "system"})
+	v := checkView(t, m, "invite")
+	for _, l := range strings.Split(v, "\n") {
+		if strings.Contains(l, "curl") && strings.Contains(l, "│") {
+			t.Fatalf("install command beside the sidebar: %q", l)
+		}
+	}
+	m.handleKey(keyMsg("esc"))
+	if !m.sidebarShown() {
+		t.Fatal("sidebar not back after Esc")
 	}
 }
