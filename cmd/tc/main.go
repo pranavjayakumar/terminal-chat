@@ -82,6 +82,11 @@ func errorText(err error) string {
 	lines := strings.Split(err.Error(), "\n")
 	for i, l := range lines {
 		lines[i] = sanitize.Line(l)
+		// Continuation lines are always indented, so text from a server
+		// can't pass for a separate "tc: …" line of our own.
+		if i > 0 && !strings.HasPrefix(lines[i], " ") {
+			lines[i] = "  " + lines[i]
+		}
 	}
 	return strings.Join(lines, "\n")
 }
