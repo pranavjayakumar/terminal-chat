@@ -100,8 +100,13 @@ func (m *Model) fillComp(v string) {
 			kind, query = w[0], strings.ToLower(string([]rune(w)[1:before]))
 		}
 	}
+	// Same query: keep the highlight on the same item, even if users or
+	// channels changed underneath (else Enter would insert someone else).
+	keep := ""
 	if kind != c.kind || query != c.query {
 		c.sel = 0
+	} else if c.sel >= 0 && c.sel < len(c.items) {
+		keep = c.items[c.sel].text
 	}
 	c.kind, c.query, c.val = kind, query, v
 	c.ch, c.root = m.focus().ch, m.focus().root
@@ -117,6 +122,11 @@ func (m *Model) fillComp(v string) {
 	slices.SortStableFunc(c.items, func(a, b compItem) int { return a.rank - b.rank })
 	if len(c.items) == 0 {
 		c.kind = 0
+	}
+	if keep != "" {
+		if i := slices.IndexFunc(c.items, func(it compItem) bool { return it.text == keep }); i >= 0 {
+			c.sel = i
+		}
 	}
 	c.sel = min(c.sel, max(len(c.items)-1, 0))
 }
@@ -298,7 +308,7 @@ func (m *Model) exactComp() bool {
 		return false
 	}
 	w, _, _ := m.cursorWord()
-	return w == c.items[c.sel].text
+	return strings.EqualFold(w, c.items[c.sel].text) // names are case-insensitive
 }
 
 // acceptComp puts the highlighted item into the input, followed by a space.

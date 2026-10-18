@@ -93,11 +93,11 @@ does the same for people (this channel's members first, then everyone else, then
 message list, above the status line (notices and connection state stay visible), with a dim `▏` gutter;
 it is never drawn outside normal mode.
 
-- `↑`/`↓` or `Ctrl-P`/`Ctrl-N` move the highlight (wrapping).
+- `↑`/`↓` or `Ctrl-P`/`Ctrl-N` move the highlight (wrapping). It stays on the same item when users or channels change under the open popup.
 - `Enter` or `Tab` puts the highlighted item into the input followed by a space (a whole `@`/`#` word is
   replaced, cursor mid-word included) and closes the popup. On the `/` menu `Enter` **never runs** the
   command — even when the text already equals the highlighted command; the next `Enter`, with the popup
-  closed, runs it as usual. For an `@`/`#` word that already equals the highlighted item (`thanks @bob`
+  closed, runs it as usual. For an `@`/`#` word that already equals the highlighted item, ignoring case (`thanks @bob`
   with `@bob` highlighted) there is nothing to complete, so `Enter` closes the popup and sends on the first
   press; `Tab` still completes (adds the space).
 - The popup follows edits, not cursor moves: moving the cursor (←/→, ↑/↓ in a multi-line draft, Home/End)
