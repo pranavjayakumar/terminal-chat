@@ -228,27 +228,32 @@ func (c *Client) noteE2EChan(q dbtx, ch proto.Channel) {
 }
 
 // storeChanE2E stores a channel from the server and, the first time it is
-// seen encrypted, records its legacy cutoff.
-func (c *Client) storeChanE2E(q dbtx, ch proto.Channel) error {
+// seen encrypted, records its legacy cutoff. relabeled reports that cached
+// messages of ch changed (a conversion made them legacy), so an open view
+// must reload them.
+func (c *Client) storeChanE2E(q dbtx, ch proto.Channel) (relabeled bool, err error) {
 	old, had, err := getChan(q, ch.ID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := storeChan(q, ch); err != nil {
-		return err
+		return false, err
 	}
 	c.noteE2EChan(q, ch)
 	if ch.E2E && had && !old.E2E {
 		// Converted (chan.encrypt): the plaintext we cached is legacy from
 		// this event on, not only once the e2e worker reclassifies it.
 		if cut, claimed, ok := c.legacyInfo(q, ch.ID); ok {
-			if _, err := q.Exec(`UPDATE msgs SET sec = ? WHERE chan = ? AND enc IS NULL AND deleted = 0 AND sec = ? AND id <= ?`,
-				legacySec(claimed), ch.ID, SecPlain, cut); err != nil {
-				return err
+			res, err := q.Exec(`UPDATE msgs SET sec = ? WHERE chan = ? AND enc IS NULL AND deleted = 0 AND sec = ? AND id <= ?`,
+				legacySec(claimed), ch.ID, SecPlain, cut)
+			if err != nil {
+				return false, err
 			}
+			n, _ := rowsAffected(res)
+			return n > 0, nil
 		}
 	}
-	return nil
+	return false, nil
 }
 
 // plainSec classifies plaintext message id in encrypted channel ch: at or

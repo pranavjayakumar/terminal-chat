@@ -214,7 +214,8 @@ func TestVerifyGitHub(t *testing.T) {
 			t.Errorf("login %q accepted", bad)
 		}
 	}
-	if _, err := c.VerifyGitHub(ctx, bob, "nobody"); err == nil || !strings.Contains(err.Error(), "404") {
+	if _, err := c.VerifyGitHub(ctx, bob, "nobody"); err == nil || !strings.Contains(err.Error(), "404") ||
+		!strings.Contains(err.Error(), "no GitHub account github.com/nobody") {
 		t.Fatalf("404: %v", err)
 	}
 	if _, err := c.VerifyGitHub(ctx, 77, "bob-gh"); !errors.Is(err, ErrNoKeys) {
