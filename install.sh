@@ -290,6 +290,10 @@ main() {
 		else
 			TC_INVITE=$invite "$dir/tc" join </dev/null
 		fi
+		# join's tips say "tc", which in this shell isn't ours yet.
+		if [ "$found" != "$dir/tc" ]; then
+			say "start chatting now with: $dir/tc (plain tc works once your PATH is set, see above)"
+		fi
 	else
 		say "next: $dir/tc join 'tc://…' with the invite your admin sent"
 	fi

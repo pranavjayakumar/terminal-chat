@@ -159,6 +159,10 @@ func TestInstallPicksArchAndJoins(t *testing.T) {
 		if err != nil || st.Mode().Perm() != 0o755 {
 			t.Fatalf("installed binary: %v %v", st, err)
 		}
+		// The join tips say "tc", which isn't ours yet in this shell.
+		if !strings.Contains(r.stderr, "start chatting now with: "+r.dir+"/tc") {
+			t.Fatalf("no full-path start hint:\n%s", r.stderr)
+		}
 		// Not on PATH: the exact line to add.
 		if !strings.Contains(r.stderr, `export PATH="`+r.dir+`:$PATH"`) || !strings.Contains(r.stderr, ".zshrc") {
 			t.Fatalf("no PATH hint:\n%s", r.stderr)
