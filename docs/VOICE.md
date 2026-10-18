@@ -172,9 +172,11 @@ exactly like public-channel text. The TUI marks encrypted huddles with the lock 
 - `/talk` and `/mute` open and close the mic where ctrl+t never arrives (Zellij) or key-repeat
   is off. Esc on an empty input closes an open mic.
 - Not talking = muted. `/leave-huddle` leaves.
-- A huddle that ends without `/leave-huddle` says why: "huddle ended: connection lost — /huddle
-  to rejoin", "huddle moved to your other device", "dropped from the huddle" (membership,
-  revoke, the server's liveness check), "huddle ended: the channel's encryption changed".
+- A huddle that ends without `/leave-huddle` says why, once: `🎧 #chan ended: connection lost`
+  (or `you were dropped`: membership, revoke, the server's liveness check; or `encryption
+  changed`), plus `· /huddle to rejoin` only when that would rejoin it (online, viewing that
+  channel, no ring up); `🎧 #chan moved to your other device`. It never replaces another error
+  notice and stays quiet when tc stopped (revoked, disabled), whose banner says more.
 - Builds without voice: `/huddle` says "this tc build has no voice: reinstall with install.sh
   --voice"; the roster indicator still works.
 - Repeated clock-skew drops (25+ authentic frames a second outside ±60 s) show a sticky

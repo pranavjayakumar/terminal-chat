@@ -43,8 +43,42 @@ func TestHuddleEndedReasonShown(t *testing.T) {
 	runInput(t, m, "/huddle")
 	m.clearNotice()
 	drop(client.ErrHuddleConnLost)
-	if !strings.Contains(m.notice, "connection lost") {
+	if !strings.Contains(m.notice, "#general ended: connection lost · /huddle to rejoin") {
 		t.Fatalf("notice %q", m.notice)
+	}
+	// Viewing another channel, /huddle wouldn't rejoin: don't suggest it.
+	gen := m.active
+	h.warn = nil
+	runInput(t, m, "/huddle")
+	m.active = 11
+	m.clearNotice()
+	drop(client.ErrHuddleDropped)
+	if !strings.Contains(m.notice, "#general ended: you were dropped") || strings.Contains(m.notice, "/huddle") {
+		t.Fatalf("notice %q", m.notice)
+	}
+	// An error already up (a failed send in the same drop) isn't replaced.
+	m.active = gen
+	h.warn = nil
+	runInput(t, m, "/huddle")
+	m.setNotice("message not sent: offline", true, false, 0)
+	drop(client.ErrHuddleConnLost)
+	if m.notice != "message not sent: offline" {
+		t.Fatalf("notice %q", m.notice)
+	}
+}
+
+// The ended notice fits and keeps the reason at narrow widths.
+func TestHuddleEndedReasonNarrow(t *testing.T) {
+	m, h := newHuddleModel(t, 40, 12)
+	runInput(t, m, "/huddle")
+	m.clearNotice()
+	h.hmu.Lock()
+	h.rosters[h.in] = nil
+	h.in, h.warn = 0, client.ErrHuddleConnLost
+	h.hmu.Unlock()
+	h.update(m)
+	if v := checkView(t, m, "narrow"); !strings.Contains(v, "ended: connection lost") {
+		t.Fatalf("reason cut at 40 cols:\n%s", v)
 	}
 }
 

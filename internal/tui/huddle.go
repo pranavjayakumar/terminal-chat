@@ -31,7 +31,8 @@ type HuddleBackend interface {
 	// Huddles counts people per channel huddle (the sidebar's 🎧 marker).
 	Huddles() map[uint64]int
 	// HuddleWarning is a problem with our huddle worth telling the user
-	// (repeated clock-skew drops), or nil.
+	// (repeated clock-skew drops), or nil; while we're in no huddle, why the
+	// last one ended without us leaving (#76), which the UI shows once.
 	HuddleWarning() error
 }
 
@@ -74,7 +75,8 @@ type huddleUI struct {
 	talking  bool
 	here     int // people in the open channel's huddle, when we're not in it
 	counts   map[uint64]int
-	warned   error // the HuddleWarning already shown
+	warned   error  // the HuddleWarning already shown
+	last     uint64 // the huddle we were in last
 	// seenActive is the channel here was computed for.
 	seenActive uint64
 }
@@ -96,6 +98,9 @@ func (m *Model) refreshHuddle() {
 		return
 	}
 	h := &m.hud
+	if h.in {
+		h.last = h.cur
+	}
 	h.cur, h.in = hb.InHuddle()
 	h.roster, h.speaking, h.talking, h.here = nil, nil, false, 0
 	h.counts = hb.Huddles()
@@ -119,8 +124,28 @@ func (m *Model) refreshHuddle() {
 		h.warned = nil
 	case !errors.Is(w, h.warned):
 		h.warned = w
-		m.setNotice(w.Error(), !errors.Is(w, client.ErrHuddleMoved), false, endedTTL)
+		// Stopped (revoked, disabled): the banner says more. Never hide
+		// another error notice (a failed send in the same drop) either.
+		if m.status.Stopped || (m.noticeErr && m.notice != "") {
+			return
+		}
+		m.setNotice(m.huddleEndedText(w), !errors.Is(w, client.ErrHuddleMoved), false, endedTTL)
 	}
+}
+
+// huddleEndedText names the huddle that ended and why. "/huddle" is only
+// suggested when it would rejoin that huddle: we're online, viewing its
+// channel and no ring would take the command.
+func (m *Model) huddleEndedText(why error) string {
+	where := m.chanTitle(m.hud.last)
+	if errors.Is(why, client.ErrHuddleMoved) {
+		return "🎧 " + where + " moved to your other device"
+	}
+	s := "🎧 " + where + " ended: " + why.Error()
+	if m.status.State == client.Online && m.hud.last == m.active && m.nt.ring.ch == 0 {
+		s += " · /huddle to rejoin"
+	}
+	return s
 }
 
 // endedTTL is how long "why the huddle ended" stays up.

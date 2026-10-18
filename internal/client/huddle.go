@@ -149,12 +149,13 @@ const skewWarnAfter = 25
 // ErrClockSkew is the HuddleWarning for repeated clock-skew drops.
 var ErrClockSkew = errors.New("clock skew: some huddle audio dropped — check NTP on both machines")
 
-// Why a huddle ended without the user leaving (HuddleWarning while not in one).
+// Why a huddle ended without the user leaving (HuddleWarning while not in
+// one); bare reasons, the UI names the channel and what to do.
 var (
-	ErrHuddleConnLost   = errors.New("huddle ended: connection lost — /huddle to rejoin")
-	ErrHuddleMoved      = errors.New("huddle moved to your other device")
-	ErrHuddleDropped    = errors.New("dropped from the huddle")
-	ErrHuddleEncChanged = errors.New("huddle ended: the channel's encryption changed — /huddle to rejoin")
+	ErrHuddleConnLost   = errors.New("connection lost")
+	ErrHuddleMoved      = errors.New("you joined from another device")
+	ErrHuddleDropped    = errors.New("you were dropped")
+	ErrHuddleEncChanged = errors.New("encryption changed")
 )
 
 // HuddleWarning is a problem with the current huddle the user should know
