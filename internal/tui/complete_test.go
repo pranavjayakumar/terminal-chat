@@ -477,18 +477,70 @@ func TestDigitsArentCompleted(t *testing.T) {
 	}
 }
 
-// A word that already equals the highlighted item still completes first
-// (the owner's rule): the second Enter sends.
-func TestExactMentionCompletesThenSends(t *testing.T) {
+// A word that already equals the highlighted item has nothing to complete:
+// Enter sends on the first press (the owner's rule). Tab still completes.
+func TestExactMentionSendsOnFirstEnter(t *testing.T) {
 	m, f := newTestModelFake(t, 80, 24)
 	typeKeys(m, "thanks @bob")
+	if !m.compShown() || m.comp.items[m.comp.sel].text != "@bob" {
+		t.Fatalf("@bob not highlighted: %v sel %d", compTexts(m), m.comp.sel)
+	}
+	press(m, "enter")
+	if len(f.sent) != 1 || f.sent[0].Body != "thanks @bob" {
+		t.Fatalf("first Enter: sent %+v input %q", f.sent, m.input.Value())
+	}
+	if m.input.Value() != "" || m.compShown() {
+		t.Fatalf("after send: input %q popup %v", m.input.Value(), m.compShown())
+	}
+	checkView(t, m, "sent")
+}
+
+func TestExactChannelSendsOnFirstEnter(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	typeKeys(m, "see #general")
+	if !m.compShown() || m.comp.items[m.comp.sel].text != "#general" {
+		t.Fatalf("#general not highlighted: %v sel %d", compTexts(m), m.comp.sel)
+	}
+	press(m, "enter")
+	if len(f.sent) != 1 || f.sent[0].Body != "see #general" || m.input.Value() != "" {
+		t.Fatalf("first Enter: sent %+v input %q", f.sent, m.input.Value())
+	}
+}
+
+func TestPrefixMentionEnterCompletes(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	typeKeys(m, "thanks @bo")
+	if !m.compShown() || m.comp.items[m.comp.sel].text != "@bob" {
+		t.Fatalf("@bob not highlighted: %v sel %d", compTexts(m), m.comp.sel)
+	}
 	press(m, "enter")
 	if len(f.sent) != 0 || m.input.Value() != "thanks @bob " {
-		t.Fatalf("first Enter: sent %+v input %q", f.sent, m.input.Value())
+		t.Fatalf("Enter on @bo: sent %+v input %q", f.sent, m.input.Value())
 	}
 	press(m, "enter")
 	if len(f.sent) != 1 || f.sent[0].Body != "thanks @bob" {
 		t.Fatalf("second Enter: %+v", f.sent)
+	}
+}
+
+func TestExactMentionTabCompletes(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	typeKeys(m, "thanks @bob")
+	press(m, "tab")
+	if len(f.sent) != 0 || m.input.Value() != "thanks @bob " || m.compShown() {
+		t.Fatalf("Tab on exact @bob: sent %+v input %q", f.sent, m.input.Value())
+	}
+}
+
+func TestExactCommandEnterCompletes(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	typeKeys(m, "/pins")
+	if !m.compShown() || m.comp.items[m.comp.sel].text != "/pins" {
+		t.Fatalf("/pins not highlighted: %v sel %d", compTexts(m), m.comp.sel)
+	}
+	press(m, "enter")
+	if v := m.input.Value(); v != "/pins " || m.mode != modeNormal || len(f.sent) != 0 {
+		t.Fatalf("exact /pins + Enter: %q mode %v sent %+v", v, m.mode, f.sent)
 	}
 }
 
@@ -543,4 +595,63 @@ func TestPopupFitsSplitThread(t *testing.T) {
 		typeKeys(m, "@")
 		checkView(t, m, "thread @")
 	}
+}
+
+// An exact name is highlighted whatever its membership or kind, so the first
+// Enter sends what was typed instead of rewriting it to a longer name.
+func TestExactNameRanksFirst(t *testing.T) {
+	t.Run("user not here", func(t *testing.T) {
+		m, f := newTestModelFake(t, 80, 24)
+		m.userList = append(m.userList, proto.User{ID: 5, Name: "bo"}) // not in #general; bob is
+		typeKeys(m, "hi @bo")
+		if got := compTexts(m); len(got) < 2 || got[0] != "@bo" || got[1] != "@bob" {
+			t.Fatalf("@bo: %v", got)
+		}
+		press(m, "enter")
+		if len(f.sent) != 1 || f.sent[0].Body != "hi @bo" {
+			t.Fatalf("Enter: sent %+v input %q", f.sent, m.input.Value())
+		}
+	})
+	t.Run("group before longer user", func(t *testing.T) {
+		m, f := newTestModelFake(t, 80, 24)
+		m.userList = append(m.userList, proto.User{ID: 5, Name: "oncall-x"})
+		m.groups = []proto.Group{{Name: "oncall", Members: []uint64{2, 3}}}
+		typeKeys(m, "ping @oncall")
+		if got := compTexts(m); len(got) < 2 || got[0] != "@oncall" {
+			t.Fatalf("@oncall: %v", got)
+		}
+		press(m, "enter")
+		if len(f.sent) != 1 || f.sent[0].Body != "ping @oncall" {
+			t.Fatalf("Enter: sent %+v input %q", f.sent, m.input.Value())
+		}
+	})
+	t.Run("unjoined channel", func(t *testing.T) {
+		m, f := newTestModelFake(t, 80, 24)
+		m.chans = append(m.chans,
+			client.ChannelView{Channel: proto.Channel{ID: 30, Name: "dev", Kind: proto.ChanPublic}, Display: "dev"},
+			client.ChannelView{Channel: proto.Channel{ID: 31, Name: "dev-ops", Kind: proto.ChanPublic, Members: []uint64{1}}, Display: "dev-ops", Member: true})
+		typeKeys(m, "see #dev")
+		if got := compTexts(m); len(got) < 2 || got[0] != "#dev" || got[1] != "#dev-ops" {
+			t.Fatalf("#dev: %v", got)
+		}
+		press(m, "enter")
+		if len(f.sent) != 1 || f.sent[0].Body != "see #dev" {
+			t.Fatalf("Enter: sent %+v input %q", f.sent, m.input.Value())
+		}
+	})
+	// The server refuses a group named like a user (PROTOCOL.md group.set),
+	// but should both arrive the order is still fixed: the user first.
+	t.Run("user and group same name", func(t *testing.T) {
+		m, f := newTestModelFake(t, 80, 24)
+		m.groups = []proto.Group{{Name: "bob", Members: []uint64{2, 3}}}
+		typeKeys(m, "hi @bob")
+		it := m.comp.items
+		if len(it) != 2 || it[0].text != "@bob" || it[0].desc != "" || !strings.HasPrefix(it[1].desc, "group") {
+			t.Fatalf("@bob: %+v", it)
+		}
+		press(m, "enter")
+		if len(f.sent) != 1 || f.sent[0].Body != "hi @bob" {
+			t.Fatalf("Enter: sent %+v input %q", f.sent, m.input.Value())
+		}
+	})
 }

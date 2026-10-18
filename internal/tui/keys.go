@@ -49,7 +49,7 @@ func isNextUnread(k string) bool { return k == "alt+shift+down" }
 var keyHelp = [][2]string{
 	{"Esc", "close / cancel; twice clears the draft"},
 	{"Enter", "send"},
-	{"/  @  #, Tab", "command / name / channel popup: ↑↓ pick, Enter or Tab completes"},
+	{"/  @  #, Tab", "popup: ↑↓ pick, Tab/Enter completes"},
 	{"Alt-Enter / Ctrl-J", "newline"},
 	{"Ctrl-K", "quick switcher"},
 	{"Alt-A, /activity", "mentions, replies, reactions, DMs"},

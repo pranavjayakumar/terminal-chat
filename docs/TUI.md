@@ -57,7 +57,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 
 | Key | Action |
 |---|---|
-| `Enter` | send (completes instead while the completion popup is open) |
+| `Enter` | send (completes instead while the completion popup is open, unless the `@`/`#` word already equals the highlighted item) |
 | `/`, `@`, `#` | completion popup above the input (see below) |
 | `Tab` | complete from the popup; reopens it after `Esc` |
 | `Ctrl-K` | quick switcher (fuzzy over channels + people; Enter opens; DMs created on demand) |
@@ -87,15 +87,18 @@ While the input is a bare `/command` (no space yet) a popup of up to 4 rows just
 matching commands (prefix matches first, then substring; an exact name first) with their argument hint and a
 dim one-line description; more matches scroll (`↑`/`↓` marks at the right). An `@` or `#` word at the cursor
 does the same for people (this channel's members first, then everyone else, then user groups like
-`@oncall`) and channels (joined ones first). For `@`/`#` a substring match needs two letters and never
-comes from digits alone, so `fixed in #12` isn't offered `#release-12`. The popup covers the bottom of the
+`@oncall`) and channels (joined ones first); a name equal to what was typed always comes first. For
+`@`/`#` a substring match needs two letters and never comes from digits alone, so `fixed in #12` isn't offered `#release-12`. The popup covers the bottom of the
 message list, above the status line (notices and connection state stay visible), with a dim `▏` gutter;
 it is never drawn outside normal mode.
 
 - `↑`/`↓` or `Ctrl-P`/`Ctrl-N` move the highlight (wrapping).
 - `Enter` or `Tab` puts the highlighted item into the input followed by a space (a whole `@`/`#` word is
-  replaced, cursor mid-word included) and closes the popup. **It never sends** — even when the text already
-  equals the highlighted command; the next `Enter`, with the popup closed, sends or runs as usual.
+  replaced, cursor mid-word included) and closes the popup. On the `/` menu `Enter` **never runs** the
+  command — even when the text already equals the highlighted command; the next `Enter`, with the popup
+  closed, runs it as usual. For an `@`/`#` word that already equals the highlighted item (`thanks @bob`
+  with `@bob` highlighted) there is nothing to complete, so `Enter` closes the popup and sends on the first
+  press; `Tab` still completes (adds the space).
 - The popup follows edits, not cursor moves: moving the cursor (←/→, ↑/↓ in a multi-line draft, Home/End)
   hides it and never opens it, so those keys and `Enter` keep their usual meaning. It also doesn't follow a
   draft into another channel or thread.

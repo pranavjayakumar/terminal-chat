@@ -16,7 +16,9 @@ import (
 // The completion popup sits just above the input. It opens by itself while
 // the input is a bare "/command" (no space yet) or the word at the cursor is
 // an @name or #channel. While it is shown, ↑/↓ (Ctrl-P/N) move, Enter or Tab
-// puts the highlighted item into the input (never sends), Esc closes it.
+// puts the highlighted item into the input, Esc closes it. Enter never sends
+// from the / menu; on an @/# word that already equals the highlighted item it
+// closes the popup and sends.
 // Once closed it stays closed until the input changes.
 
 // compRows is how many items the popup shows at once; more scroll.
@@ -119,6 +121,12 @@ func (m *Model) fillComp(v string) {
 	c.sel = min(c.sel, max(len(c.items)-1, 0))
 }
 
+// exactRank puts a name equal to what was typed first, whatever its
+// membership or kind, so it is highlighted and Enter sends instead of
+// rewriting it to another name. The server keeps user and group names apart;
+// were both to match, the stable sort leaves the user first.
+const exactRank = -1
+
 // matchRank is 0 for a prefix match, 1 for a substring match, -1 for none.
 func matchRank(q, s string) int {
 	switch {
@@ -152,7 +160,7 @@ func (m *Model) commandItems(q string) {
 		case r < 0:
 			continue
 		case c.name == q:
-			r = -1 // an exact name goes first, so Enter completes what was typed
+			r = exactRank // so Enter completes what was typed
 		}
 		m.comp.items = append(m.comp.items, compItem{text: "/" + c.name, hint: c.args, desc: c.desc, rank: r})
 	}
@@ -180,22 +188,29 @@ func (m *Model) userItems(q string) {
 		if r < 0 {
 			continue
 		}
-		cls := 1
-		if c.here[u.ID] {
-			cls = 0
+		rank := r * 3
+		switch {
+		case strings.ToLower(u.Name) == q:
+			rank = exactRank
+		case !c.here[u.ID]:
+			rank++
 		}
 		desc := ""
 		if d := sanitize.Line(u.Display); d != u.Name {
 			desc = d
 		}
-		m.comp.items = append(m.comp.items, compItem{text: "@" + sanitize.Line(u.Name), desc: desc, rank: r*3 + cls})
+		m.comp.items = append(m.comp.items, compItem{text: "@" + sanitize.Line(u.Name), desc: desc, rank: rank})
 	}
 	for _, g := range m.groups {
 		if r := wordRank(q, g.Name); r >= 0 {
+			rank := r*3 + 2
+			if strings.ToLower(g.Name) == q {
+				rank = exactRank
+			}
 			m.comp.items = append(m.comp.items, compItem{
 				text: "@" + sanitize.Line(g.Name),
 				desc: "group · " + strconv.Itoa(len(g.Members)) + " " + plural(len(g.Members), "person", "people"),
-				rank: r*3 + 2,
+				rank: rank,
 			})
 		}
 	}
@@ -215,7 +230,11 @@ func (m *Model) chanItems(q string) {
 		if !v.Member {
 			cls, desc = 1, "not joined"
 		}
-		m.comp.items = append(m.comp.items, compItem{text: "#" + sanitize.Line(v.Name), desc: desc, rank: r*2 + cls})
+		rank := r*2 + cls
+		if strings.ToLower(v.Name) == q {
+			rank = exactRank
+		}
+		m.comp.items = append(m.comp.items, compItem{text: "#" + sanitize.Line(v.Name), desc: desc, rank: rank})
 	}
 }
 
@@ -254,7 +273,14 @@ func (m *Model) compKey(key string) (tea.Cmd, bool) {
 		c.sel = (c.sel - 1 + len(c.items)) % len(c.items)
 	case kDown, "ctrl+n":
 		c.sel = (c.sel + 1) % len(c.items)
-	case kEnter, kTab:
+	case kEnter:
+		if m.exactComp() {
+			// Nothing to complete: Enter sends as if the popup weren't there.
+			m.closeComp()
+			return nil, false
+		}
+		m.acceptComp()
+	case kTab:
 		m.acceptComp()
 	case kEsc:
 		m.closeComp()
@@ -262,6 +288,17 @@ func (m *Model) compKey(key string) (tea.Cmd, bool) {
 		return nil, false
 	}
 	return nil, true
+}
+
+// exactComp reports whether the @/# word at the cursor already is the
+// highlighted item. Commands never count: Enter on the menu always completes.
+func (m *Model) exactComp() bool {
+	c := &m.comp
+	if c.kind == '/' || c.sel < 0 || c.sel >= len(c.items) {
+		return false
+	}
+	w, _, _ := m.cursorWord()
+	return w == c.items[c.sel].text
 }
 
 // acceptComp puts the highlighted item into the input, followed by a space.
