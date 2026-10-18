@@ -42,7 +42,7 @@ func joinErrorHint(inv proto.Invite, err error) error {
 		case proto.ByeInviteInvalid:
 			return fmt.Errorf("this invite doesn't work: it's mistyped, used up, revoked or expired. Ask whoever sent it for a new one (%w)", err)
 		case proto.ByeRevoked:
-			return fmt.Errorf("this account or device was shut out by an admin; ask them to invite you again (%w)", err)
+			return fmt.Errorf("%s (%w)", revokedHint, err)
 		}
 		return err
 	}

@@ -37,7 +37,7 @@ func TestJoinErrorsAreActionable(t *testing.T) {
 		{"down", goodPin, errors.Join(refused, errors.New("quic dial h:7443: timeout: no recent network activity")),
 			[]string{"can't reach the server at h:7443", "port 7443", "down"}},
 		{"disabled", goodPin, &client.ByeError{Code: proto.ByeRevoked},
-			[]string{"shut out by an admin"}},
+			[]string{"disabled by an admin", "new SSH key"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -57,5 +57,19 @@ func TestJoinErrorsAreActionable(t *testing.T) {
 				t.Errorf("underlying error not wrapped: %v", err)
 			}
 		})
+	}
+}
+
+// tc send/tail/users on a disabled account say why, not just "revoked".
+func TestStoppedErrorExplains(t *testing.T) {
+	for msg, want := range map[string]string{
+		(&client.ByeError{Code: proto.ByeRevoked}).Error():    "disabled by an admin",
+		(&client.ByeError{Code: proto.ByeAuthFailed}).Error(): "no longer accepts",
+		"tcp dial h:1: server certificate pin mismatch: got a, want b": "identity changed",
+		"something else": "something else",
+	} {
+		if got := stoppedError(msg).Error(); !strings.Contains(got, want) || !strings.Contains(got, msg) {
+			t.Errorf("%q -> %q, want %q", msg, got, want)
+		}
 	}
 }
