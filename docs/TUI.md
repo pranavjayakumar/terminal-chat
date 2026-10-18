@@ -355,6 +355,12 @@ and are not listed; they appear in the log as usual. Rows are kept for the newes
   a sync or channel join hands us (reconnects don't ring), nor for a late roster that already has
   several people. Esc closes an open mic first, then dismisses the ring. Channel huddle starts are silent at `mentions` (the sidebar
   `🎧n` shows them); at `all`, one popup per channel per 5 min.
+- **Echo control** (docs/VOICE.md "Echo"): joining a huddle without the platform's echo canceller
+  (mode `gate` or `off`) appends a dim `🎧 headphones recommended (no echo cancellation)` to the
+  join notice, once per run. `/huddle` in the huddle you're in shows the mode (`echo cancellation:
+  system`, `echo control: gate (open mic pauses while others talk)`, `echo cancellation: off`)
+  instead of an error. A ctrl+t press counts as open mic (gateable) only once it proves to be a tap;
+  a held key, including a repeat on a latched mic, is never gated. `/talk` is open mic.
 - **Privacy**: `/notify content full|name|none` (`TC_NOTIFY_CONTENT`): `name` shows who but not
   the text, `none` shows just `tc` / `new message`. Popups persist in the OS notification history
   (Notification Center, GNOME's tray): use `name` on shared machines.
