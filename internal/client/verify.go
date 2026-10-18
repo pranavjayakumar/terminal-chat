@@ -312,6 +312,9 @@ func getGitHubKeys(ctx context.Context, base, login string) ([]ssh.PublicKey, er
 		return nil, fmt.Errorf("fetching GitHub keys: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("no GitHub account github.com/%s (HTTP 404) — check the spelling", login)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetching GitHub keys: HTTP %d", resp.StatusCode)
 	}
