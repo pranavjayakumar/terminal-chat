@@ -99,8 +99,8 @@ type Model struct {
 	noticeTTL    time.Duration // 0: the default for the kind
 	noticeGen    int           // bumped on every change; expiry ticks carry it
 	noticeTimed  int           // generation that has an expiry tick scheduled
-	ctrlC        time.Time // first Ctrl-C; a second one within infoTTL quits
-	escAt        time.Time // first Esc on a non-empty draft
+	ctrlC        time.Time     // first Ctrl-C; a second one within infoTTL quits
+	escAt        time.Time     // first Esc on a non-empty draft
 	helpScroll   int
 	view         viewer
 
