@@ -18,7 +18,8 @@ import (
 // names that @mention me (mine, then my groups). The log's markers are laid
 // out again when they change.
 func (m *Model) refreshMentionNames() {
-	names := client.MentionNamesOf(m.me, m.c.Groups())
+	m.groups = m.c.Groups()
+	names := client.MentionNamesOf(m.me, m.groups)
 	if slices.Equal(names, m.mentionAs) {
 		return
 	}

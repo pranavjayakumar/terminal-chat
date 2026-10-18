@@ -132,8 +132,10 @@ type Model struct {
 	draftMark  map[uint64]bool     // channels with a draft not shown in the input
 	dk         draftKey            // where the input's text belongs
 
-	highlights []string // keywords that count like an @mention (lowercase)
-	mentionAs  []string // names that @mention me: mine, then my groups
+	highlights []string      // keywords that count like an @mention (lowercase)
+	mentionAs  []string      // names that @mention me: mine, then my groups
+	groups     []proto.Group // cached for @completion; refreshed with mentionAs
+	comp       completer     // the / command and @/# completion popup (complete.go)
 	list       listState
 
 	jump jumpState
@@ -1079,7 +1081,15 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 	key := keyName(k)
 	empty := m.input.Value() == ""
+	if m.compShown() {
+		// The popup's keys come first, Esc included (before the mic or a ring).
+		if cmd, ok := m.compKey(key); ok {
+			return cmd
+		}
+	}
 	switch {
+	case key == kTab && m.tabComplete():
+		return nil
 	case key == kSwitcher:
 		m.openSwitcher()
 		return nil
@@ -1167,8 +1177,12 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 		// Multi-rune input is text: the textarea's own keymap would read
 		// a typed "down" as cursor-down. InsertString sanitizes like typing.
 		m.input.InsertString(string(k.Runes))
+		// A paste (or a burst that may be one) never opens the popup, so a
+		// pasted line followed by Enter is sent, not completed.
+		m.closeComp()
 	} else {
 		m.input, cmd = m.input.Update(k)
+		m.refreshComp()
 	}
 	m.layoutInput()
 	if v := m.input.Value(); v != before && v != "" && !strings.HasPrefix(v, "/") && m.editing == 0 {
