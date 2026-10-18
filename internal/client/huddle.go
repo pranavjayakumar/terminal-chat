@@ -44,6 +44,9 @@ type huddleState struct {
 	// a channel we just joined (joinedAt).
 	liveAt   time.Time
 	joinedAt map[uint64]time.Time
+	// ended is why our last huddle ended without us leaving (#76); nil
+	// after a leave or a new join.
+	ended error
 }
 
 type participation struct {
@@ -146,12 +149,25 @@ const skewWarnAfter = 25
 // ErrClockSkew is the HuddleWarning for repeated clock-skew drops.
 var ErrClockSkew = errors.New("clock skew: some huddle audio dropped — check NTP on both machines")
 
+// Why a huddle ended without the user leaving (HuddleWarning while not in one).
+var (
+	ErrHuddleConnLost   = errors.New("huddle ended: connection lost — /huddle to rejoin")
+	ErrHuddleMoved      = errors.New("huddle moved to your other device")
+	ErrHuddleDropped    = errors.New("dropped from the huddle")
+	ErrHuddleEncChanged = errors.New("huddle ended: the channel's encryption changed — /huddle to rejoin")
+)
+
 // HuddleWarning is a problem with the current huddle the user should know
-// about (nil if none); the client posts Update{Huddle} when it appears.
+// about, or, while in none, why the last one ended without us leaving (nil
+// if none); the client posts Update{Huddle} when it appears.
 func (c *Client) HuddleWarning() error {
 	c.hud.mu.Lock()
 	defer c.hud.mu.Unlock()
-	if p := c.hud.cur; p != nil && p.skewed {
+	p := c.hud.cur
+	switch {
+	case p == nil:
+		return c.hud.ended
+	case p.skewed:
 		return ErrClockSkew
 	}
 	return nil
@@ -256,6 +272,7 @@ func (c *Client) JoinHuddle(ctx context.Context, ch uint64) error {
 	c.hud.mu.Lock()
 	c.hud.gen++
 	gen := c.hud.gen
+	c.hud.ended = nil
 	c.hud.mu.Unlock()
 
 	args := proto.HuddleJoinArgs{Chan: ch}
@@ -383,7 +400,7 @@ func (c *Client) watchHuddle(ctx context.Context, p *participation) {
 	for {
 		select {
 		case <-p.sess.done: // the server ends our participation with the connection
-			c.endHuddle(p)
+			c.endHuddle(p, ErrHuddleConnLost)
 			return
 		case <-ctx.Done():
 			return
@@ -408,7 +425,7 @@ func (c *Client) watchHuddle(ctx context.Context, p *participation) {
 				if !c.huddleStillValid(ctx, p) && ctx.Err() == nil {
 					// End p only: the user may have moved to another
 					// huddle while this check ran.
-					if c.endHuddle(p) {
+					if c.endHuddle(p, ErrHuddleEncChanged) {
 						_ = p.sess.fire(proto.OpHuddleLeave, struct{}{})
 					}
 					return
@@ -461,24 +478,27 @@ func (c *Client) huddleStillValid(ctx context.Context, p *participation) bool {
 func (c *Client) LeaveHuddle() {
 	c.hud.mu.Lock()
 	c.hud.gen++ // a join still in flight gives up
+	c.hud.ended = nil
 	p := c.hud.cur
 	c.hud.mu.Unlock()
 	if p == nil {
 		return
 	}
-	if c.endHuddle(p) {
+	if c.endHuddle(p, nil) {
 		_ = p.sess.fire(proto.OpHuddleLeave, struct{}{})
 	}
 }
 
-// endHuddle tears p down once; it reports whether it did.
-func (c *Client) endHuddle(p *participation) bool {
+// endHuddle tears p down once; it reports whether it did. why is the
+// reason shown to the user (nil: they left).
+func (c *Client) endHuddle(p *participation, why error) bool {
 	c.hud.mu.Lock()
 	if c.hud.cur != p {
 		c.hud.mu.Unlock()
 		return false
 	}
 	c.hud.cur = nil
+	c.hud.ended = why
 	c.hud.mu.Unlock()
 	p.cancel()
 	_ = p.vs.Close()
@@ -586,7 +606,13 @@ func (c *Client) huddleEphemeral(e proto.Ephemeral) {
 	c.hud.mu.Unlock()
 	if p != nil && p.ch == e.Chan {
 		if !slices.ContainsFunc(parts, func(q proto.Part) bool { return q.Src == p.src }) {
-			c.endHuddle(p) // the server dropped us (membership, another device took over)
+			// The server dropped us: another of our devices took over, or
+			// membership, a revoke, the liveness check.
+			why := ErrHuddleDropped
+			if slices.ContainsFunc(parts, func(q proto.Part) bool { return q.User == c.Me().ID }) {
+				why = ErrHuddleMoved
+			}
+			c.endHuddle(p, why)
 		} else {
 			c.applyRoster(p, parts)
 		}

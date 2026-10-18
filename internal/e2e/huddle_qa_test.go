@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -66,9 +67,9 @@ func TestHuddleTwoTalkersNoSelfEcho(t *testing.T) {
 
 // encDMHuddle puts alice and bob in an encrypted DM huddle over QUIC; alice
 // has a second device (laptop) that isn't in the call.
-func encDMHuddle(t *testing.T, ctx context.Context) (alice, laptop, bob *user, dm uint64, fa, fb *fakeAudio) {
+func encDMHuddle(t *testing.T, ctx context.Context) (s *srv, alice, laptop, bob *user, dm uint64, fa, fb *fakeAudio) {
 	t.Helper()
-	_, _, us := huddlersSrv(t, "quic", "alice", "bob")
+	s, _, us := huddlersSrv(t, "quic", "alice", "bob")
 	alice, bob = us[0], us[1]
 	laptop = secondDevice(t, alice)
 	sid := alice.sid(t)
@@ -100,12 +101,50 @@ func encDMHuddle(t *testing.T, ctx context.Context) (alice, laptop, bob *user, d
 	return
 }
 
+// A huddle that ends without the user leaving says why (#76): another of
+// their devices took the call, or the connection dropped.
+func TestHuddleEndReason(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	s, alice, laptop, _, dm, _, _ := encDMHuddle(t, ctx)
+	laptop.SetVoicePlatform((&fakeAudio{}).platform)
+	eventually(t, "laptop keyed", func() bool { return laptop.E2EStatus(dm).State == client.E2EOK })
+	if err := laptop.JoinHuddle(ctx, dm); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "call moved off alice's desktop", func() bool { _, in := alice.InHuddle(); return !in })
+	if err := alice.HuddleWarning(); !errors.Is(err, client.ErrHuddleMoved) {
+		t.Fatalf("desktop after the call moved: %v", err)
+	}
+	if laptop.HuddleWarning() != nil {
+		t.Fatalf("laptop warned: %v", laptop.HuddleWarning())
+	}
+	// Leaving by hand clears it and says nothing.
+	laptop.LeaveHuddle()
+	if laptop.HuddleWarning() != nil {
+		t.Fatalf("warning after /leave-huddle: %v", laptop.HuddleWarning())
+	}
+	// Joining again clears an old reason.
+	if err := alice.JoinHuddle(ctx, dm); err != nil {
+		t.Fatal(err)
+	}
+	if alice.HuddleWarning() != nil {
+		t.Fatalf("stale warning after rejoining: %v", alice.HuddleWarning())
+	}
+	// The connection drops (server restart): the huddle ends with a reason.
+	s.stop()
+	eventually(t, "huddle ended with the connection", func() bool { _, in := alice.InHuddle(); return !in })
+	if err := alice.HuddleWarning(); !errors.Is(err, client.ErrHuddleConnLost) {
+		t.Fatalf("after losing the connection: %v", err)
+	}
+}
+
 // Revoking a device mid-call rotates the key; audio keeps flowing both
 // ways after at most a short gap.
 func TestHuddleRevokeMidCallContinuity(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	alice, laptop, bob, dm, fa, fb := encDMHuddle(t, ctx)
+	_, alice, laptop, bob, dm, fa, fb := encDMHuddle(t, ctx)
 	sid := alice.sid(t)
 	lost, err := laptop.Trust().DeviceKeys(sid, alice.Me().ID)
 	if err != nil {
