@@ -58,7 +58,11 @@ func joinErrorHint(inv proto.Invite, err error) error {
 	}
 	if strings.Contains(err.Error(), " dial ") || strings.HasPrefix(err.Error(), "quic dial") || strings.HasPrefix(err.Error(), "tcp dial") {
 		_, port, _ := net.SplitHostPort(addr)
-		return fmt.Errorf("can't reach the server at %s: it may be down, or a firewall blocks port %s (TCP and UDP). Check the address with your admin, or try again later (%w)", a, sanitize.Line(port), err)
+		alt := ""
+		if port != "443" {
+			alt = "; if your network blocks that port, ask whether the server also answers on 443 and use :443 in the tc:// line"
+		}
+		return fmt.Errorf("can't reach the server at %s: it may be down, or a firewall blocks port %s (TCP and UDP). Check the address with your admin, or try again later%s (%w)", a, sanitize.Line(port), alt, err)
 	}
 	return err
 }

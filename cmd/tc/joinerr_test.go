@@ -35,7 +35,7 @@ func TestJoinErrorsAreActionable(t *testing.T) {
 		{"dns", goodPin, errors.Join(fmt.Errorf("quic dial h:7443: %w", &net.DNSError{Err: "no such host", Name: "h", IsNotFound: true})),
 			[]string{"can't find the server h:7443", "Check the host name"}},
 		{"down", goodPin, errors.Join(refused, errors.New("quic dial h:7443: timeout: no recent network activity")),
-			[]string{"can't reach the server at h:7443", "port 7443", "down"}},
+			[]string{"can't reach the server at h:7443", "port 7443", "down", "use :443"}},
 		{"disabled", goodPin, &client.ByeError{Code: proto.ByeRevoked},
 			[]string{"disabled by an admin", "new SSH key"}},
 	}
