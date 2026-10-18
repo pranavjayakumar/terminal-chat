@@ -35,7 +35,7 @@ var commandTable = []cmdSpec{
 	{name: "alarm-clear", args: "#name", desc: "clear it (type the name to confirm; audited)"},
 	{name: "topic", args: "text", desc: "set the topic"},
 	{name: "name", args: "Display Name", desc: "set your display name"},
-	{name: "dm", args: "@a @b", desc: "direct message"},
+	{name: "dm", args: "@a @b", desc: "direct message (@me: your notes, where reminders land)"},
 	{name: "search", args: "terms", desc: "search; Enter jumps"},
 	{name: "pins", desc: "pinned messages here; Enter jumps"},
 	{name: "highlight", args: "word…", desc: "mark messages with these words like a mention (none: list)"},

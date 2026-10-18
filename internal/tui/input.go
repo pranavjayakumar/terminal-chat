@@ -452,6 +452,9 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 		var ids []uint64
 		for _, a := range c.args {
 			id, ok := m.findUser(a)
+			if !ok && strings.EqualFold(strings.TrimPrefix(a, "@"), "me") {
+				id, ok = m.me.ID, true // "@me" unless someone is called me
+			}
 			if !ok {
 				return nil, fmt.Errorf("unknown user %s", sanitize.Line(a))
 			}
@@ -459,9 +462,7 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 				ids = append(ids, id)
 			}
 		}
-		if len(ids) == 0 {
-			return nil, errors.New("usage: /dm @user [@user...]")
-		}
+		// Only me: my notes, where reminders land (a DM with nobody else).
 		return m.openDM(ids), nil
 	case "invite":
 		return m.inviteCommand(c.args)

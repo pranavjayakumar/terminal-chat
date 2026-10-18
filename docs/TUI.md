@@ -73,7 +73,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 
 ## Slash commands
 
-`/join #x`, `/leave`, `/create #x [--private [--plaintext]]`, `/add @user`, `/topic text`, `/dm @a @b`,
+`/join #x`, `/leave`, `/create #x [--private [--plaintext]]`, `/add @user`, `/topic text`, `/dm @a @b` (`/dm @me`: my notes, also in `Ctrl-K`),
 `/invite` (admin; prints code), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps), `/pins` (overlay of this channel's pinned messages, newest pin first, as `author · preview`; Enter jumps, Esc closes),
 `/activity`, `/highlight [word…]`, `/unhighlight word…`, `/group name @a @b…` (admin), `/groups`,
 `/remind <when> <text>`, `/reminders`, `/remind-delete id`, `/snippet path[:range] [message]`,

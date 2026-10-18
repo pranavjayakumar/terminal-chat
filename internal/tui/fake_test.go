@@ -223,6 +223,7 @@ func (f *fakeClient) SetTopic(ctx context.Context, ch uint64, topic string) erro
 }
 func (f *fakeClient) OpenDM(ctx context.Context, users []uint64) (proto.Channel, error) {
 	f.record("dm")
+	f.record(fmt.Sprintf("dm:%v", users))
 	return proto.Channel{ID: 20}, nil
 }
 func (f *fakeClient) History(ctx context.Context, ch, before uint64) (bool, error) {
