@@ -57,7 +57,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 
 | Key | Action |
 |---|---|
-| `Enter` | send (completes instead while the completion popup is open) |
+| `Enter` | send (completes instead while the completion popup is open, unless the `@`/`#` word already equals the highlighted item) |
 | `/`, `@`, `#` | completion popup above the input (see below) |
 | `Tab` | complete from the popup; reopens it after `Esc` |
 | `Ctrl-K` | quick switcher (fuzzy over channels + people; Enter opens; DMs created on demand) |
@@ -94,8 +94,11 @@ it is never drawn outside normal mode.
 
 - `↑`/`↓` or `Ctrl-P`/`Ctrl-N` move the highlight (wrapping).
 - `Enter` or `Tab` puts the highlighted item into the input followed by a space (a whole `@`/`#` word is
-  replaced, cursor mid-word included) and closes the popup. **It never sends** — even when the text already
-  equals the highlighted command; the next `Enter`, with the popup closed, sends or runs as usual.
+  replaced, cursor mid-word included) and closes the popup. On the `/` menu `Enter` **never runs** the
+  command — even when the text already equals the highlighted command; the next `Enter`, with the popup
+  closed, runs it as usual. For an `@`/`#` word that already equals the highlighted item (`thanks @bob`
+  with `@bob` highlighted) there is nothing to complete, so `Enter` closes the popup and sends on the first
+  press; `Tab` still completes (adds the space).
 - The popup follows edits, not cursor moves: moving the cursor (←/→, ↑/↓ in a multi-line draft, Home/End)
   hides it and never opens it, so those keys and `Enter` keep their usual meaning. It also doesn't follow a
   draft into another channel or thread.
