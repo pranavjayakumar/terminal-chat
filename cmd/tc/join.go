@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mattn/go-isatty"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/skailama/tc/internal/client"
@@ -54,9 +55,10 @@ func osJoinEnv() joinEnv {
 	}
 }
 
+// isTerminal reports whether f is a terminal; /dev/null is a character
+// device too, so the file mode alone isn't enough.
 func isTerminal(f *os.File) bool {
-	st, err := f.Stat()
-	return err == nil && st.Mode()&os.ModeCharDevice != 0
+	return isatty.IsTerminal(f.Fd())
 }
 
 func gitUserName() string {

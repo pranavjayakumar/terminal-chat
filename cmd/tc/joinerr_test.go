@@ -63,8 +63,8 @@ func TestJoinErrorsAreActionable(t *testing.T) {
 // tc send/tail/users on a disabled account say why, not just "revoked".
 func TestStoppedErrorExplains(t *testing.T) {
 	for msg, want := range map[string]string{
-		(&client.ByeError{Code: proto.ByeRevoked}).Error():    "disabled by an admin",
-		(&client.ByeError{Code: proto.ByeAuthFailed}).Error(): "no longer accepts",
+		(&client.ByeError{Code: proto.ByeRevoked}).Error():             "disabled by an admin",
+		(&client.ByeError{Code: proto.ByeAuthFailed}).Error():          "no longer accepts",
 		"tcp dial h:1: server certificate pin mismatch: got a, want b": "identity changed",
 		"something else": "something else",
 	} {
