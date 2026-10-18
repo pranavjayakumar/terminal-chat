@@ -186,18 +186,20 @@ shows which):
 | Mode | When | What |
 |---|---|---|
 | `system` | macOS (the voice-processing unit starts); Linux with an echo-cancel source **and** sink loaded | The OS cancels echo. On macOS: `kAudioUnitSubType_VoiceProcessingIO` (Apple's AEC + AGC + noise suppression), via a small cgo shim (`vpio_darwin.c`) because miniaudio only opens the plain HAL unit. Other apps' audio is ducked as little as macOS 14+ allows. |
-| `gate` | no platform canceller (most Linux setups), or forced | Half-duplex gate in the engine: while remote audio plays above ≈ −42 dBFS (and for 200 ms after), an **open** mic is muted (2.5 ms attack, 20 ms release ramps). A held talk key is never gated: you are deliberately talking (barge-in = hold ctrl+t). |
+| `gate` | no platform canceller (most Linux setups), or forced | Half-duplex gate in the engine: while remote audio plays (above ≈ −42 dBFS and 6 dB above the far end's learned noise floor) and for 200 ms after, an **open** mic is muted (2.5 ms attack, 20 ms release ramps). A ctrl+t press is gateable until a key-repeat proves it held; a held key is never gated: you are deliberately talking (barge-in = hold ctrl+t). |
 | `off` | `TC_VOICE_AEC=off`, or `system` asked for and unavailable | Nothing. |
 
 `TC_VOICE_AEC=auto|system|gate|off` (default `auto` = system if available, else gate; `system`
 = system or nothing, for testing; an unknown value fails `/huddle` with a message). Without
-system echo cancellation the join notice adds a dim, once-per-run `🎧 headphones recommended (no
-echo cancellation)`.
+system echo cancellation the join notice starts with `no echo cancellation: use headphones`, once
+per run.
 
 - **Linux: enabling system echo cancellation.** tc never loads modules or changes audio settings;
   it looks (on the PulseAudio API, which PipeWire serves through pipewire-pulse) for a source and
-  sink whose name or description contains `echo-cancel` / `echo cancel` (monitors excluded) and
-  opens that pair; both are needed, since the canceller only hears the far end through its sink.
+  sink named like the modules' defaults (`echo-cancel-source`/`-sink`, `<master>.echo-cancel`,
+  descriptions `Echo-Cancel …` or `… (echo cancelled with …)`; monitors and hardware that merely says
+  "Echo Cancelling" excluded) and opens that pair; with several cancellers only a same-stem pair, else
+  the gate; both are needed, since the canceller only hears the far end through its sink.
   To enable one:
   - PipeWire: `~/.config/pipewire/pipewire.conf.d/echo-cancel.conf` with
     `context.modules = [ { name = libpipewire-module-echo-cancel args = { library.name = aec/libspa-aec-webrtc } } ]`,
@@ -206,7 +208,9 @@ echo cancellation)`.
     `load-module module-echo-cancel aec_method=webrtc` to `~/.config/pulse/default.pa`).
 - **The gate's limits.** It is half-duplex: in open mic you aren't heard while others talk (hold
   ctrl+t to talk over them), and the far end's background noise above the threshold keeps your
-  open mic shut. The threshold sits under speech and above typical room noise through Opus.
+  open mic shut only until its noise floor is learned (≈ 1 s; the floor follows quieter frames at
+  once and rises ≈ 4 dB/s, so pauses between words keep it at the noise). Bluetooth output adds
+  150–250 ms of latency the 200 ms hangover may not cover.
   Our own cues (join/leave, mic clicks) don't trigger it. It runs on the audio thread with no
   allocation (`TestGateNoAllocs`).
 - **Why not speexdsp's echo canceller.** Considered (BSD, small, could be built static like
