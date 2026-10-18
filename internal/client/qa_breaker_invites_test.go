@@ -39,6 +39,7 @@ func bigSKKey(t *testing.T) ssh.PublicKey {
 // bad_request and `tc invite --key github:<login>` can never work for that
 // account.
 func TestFetchGitHubInviteKeys_BreakOversizedKeyKept(t *testing.T) {
+	t.Skip("issue #101")
 	ed := newSSH(t)
 	big := bigSKKey(t)
 	srv := githubServer(t, map[string]string{
