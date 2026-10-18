@@ -57,7 +57,9 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 
 | Key | Action |
 |---|---|
-| `Enter` | send |
+| `Enter` | send (completes instead while the completion popup is open) |
+| `/`, `@`, `#` | completion popup above the input (see below) |
+| `Tab` | complete from the popup; reopens it after `Esc` |
 | `Ctrl-K` | quick switcher (fuzzy over channels + people; Enter opens; DMs created on demand) |
 | `Alt-A` | activity view (also `/activity`); `Ctrl-A` stays the textarea's line start |
 | `Alt-↑/↓` or `Ctrl-P/N` | previous / next channel |
@@ -65,7 +67,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 | `PgUp/PgDn`, mouse wheel | scroll history (fetches older via History at top) |
 | `↑` on empty input | select messages mode (↑/↓ moves selection) |
 | in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (prompt for emoji; `+1`, `:tada:` shortcuts), `y` copy body (OSC 52), `p` pin / unpin (notice "pinned" / "unpinned"), `Esc` leave |
-| `Esc` | close thread / switcher / select mode; never quits |
+| `Esc` | close the completion popup / thread / switcher / select mode; never quits |
 | `Ctrl-C` twice, or `/quit` | quit |
 | `F1` or `/help` | help overlay (`?` is just text, so messages can start with it) |
 
@@ -78,6 +80,28 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 `/share-pane [pane]` (herdr only), `/verify @user [--github login]`, `/accept-key @user`, `/members`,
 `/alarm`, `/alarm-clear #name`, `/devices [@user]`, `/device-revoke id`, `/disable @user` (admin), `/quit`.
 Unknown command → inline error, input kept.
+
+### Completion popup
+
+While the input is a bare `/command` (no space yet) a popup of up to 4 rows just above the input lists the
+matching commands (prefix matches first, then substring; an exact name first) with their argument hint and a
+dim one-line description; more matches scroll (`↑`/`↓` marks at the right). An `@` or `#` word at the cursor
+does the same for people (this channel's members first, then everyone else, then user groups like
+`@oncall`) and channels (joined ones first). The popup covers the bottom of the message list and the status
+line; it is never drawn outside normal mode.
+
+- `↑`/`↓` or `Ctrl-P`/`Ctrl-N` move the highlight (wrapping).
+- `Enter` or `Tab` puts the highlighted item into the input followed by a space (a whole `@`/`#` word is
+  replaced, cursor mid-word included) and closes the popup. **It never sends** — even when the text already
+  equals the highlighted command; the next `Enter`, with the popup closed, sends or runs as usual.
+- `Esc` closes it without touching the input; it stays closed until the input changes (cursor moves don't
+  count). `Tab` reopens it, completing at once when there is a single match. `Esc` order: popup, then the
+  open mic, then a ring, then the usual chain.
+- Pastes and multi-rune bursts never open it, so pasted text is sent by the first `Enter`. `//text`, text
+  being edited (`e`) and plain messages never get the command menu.
+- Admin-only commands are hidden from non-admins; `/talk`, `/mute` and `/leave-huddle` are hidden in builds
+  without voice (`/huddle` stays: it explains how to get voice).
+- The command list and `/help` come from one table (`commandTable`, internal/tui/commands.go).
 
 `/create #x --private` makes an end-to-end encrypted channel (🔒; the server never sees its text).
 `--plaintext` opts out, e.g. for a private channel webhooks post into (webhooks can't post into encrypted
