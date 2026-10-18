@@ -170,6 +170,10 @@ func runJoin(ctx context.Context, env joinEnv, code, name, keyPath string) error
 	if err != nil {
 		return err
 	}
+	return joinErrorHint(inv, joinWithKeys(ctx, env, inv, code, name, keyPath))
+}
+
+func joinWithKeys(ctx context.Context, env joinEnv, inv proto.Invite, code, name, keyPath string) error {
 	loginOnly := inv.Token == ""
 	keys, all, err := joinKeys(env, keyPath)
 	if err != nil {
