@@ -62,7 +62,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 | `Tab` | complete from the popup; reopens it after `Esc` |
 | `Ctrl-K` | quick switcher (fuzzy over channels + people; Enter opens; DMs created on demand) |
 | `Alt-A` | activity view (also `/activity`); `Ctrl-A` stays the textarea's line start |
-| `Alt-↑/↓` or `Ctrl-P/N` | previous / next channel |
+| `Alt-↑/↓` or `Ctrl-P/N` | previous / next channel (`Ctrl-P/N` move the completion popup's highlight while it is open) |
 | `Alt-Shift-↑/↓` | previous / next unread channel |
 | `PgUp/PgDn`, mouse wheel | scroll history (fetches older via History at top) |
 | `↑` on empty input | select messages mode (↑/↓ moves selection) |
@@ -87,15 +87,19 @@ While the input is a bare `/command` (no space yet) a popup of up to 4 rows just
 matching commands (prefix matches first, then substring; an exact name first) with their argument hint and a
 dim one-line description; more matches scroll (`↑`/`↓` marks at the right). An `@` or `#` word at the cursor
 does the same for people (this channel's members first, then everyone else, then user groups like
-`@oncall`) and channels (joined ones first). The popup covers the bottom of the message list and the status
-line; it is never drawn outside normal mode.
+`@oncall`) and channels (joined ones first). For `@`/`#` a substring match needs two letters and never
+comes from digits alone, so `fixed in #12` isn't offered `#release-12`. The popup covers the bottom of the
+message list, above the status line (notices and connection state stay visible), with a dim `▏` gutter;
+it is never drawn outside normal mode.
 
 - `↑`/`↓` or `Ctrl-P`/`Ctrl-N` move the highlight (wrapping).
 - `Enter` or `Tab` puts the highlighted item into the input followed by a space (a whole `@`/`#` word is
   replaced, cursor mid-word included) and closes the popup. **It never sends** — even when the text already
   equals the highlighted command; the next `Enter`, with the popup closed, sends or runs as usual.
-- `Esc` closes it without touching the input; it stays closed until the input changes (cursor moves don't
-  count). `Tab` reopens it, completing at once when there is a single match. `Esc` order: popup, then the
+- The popup follows edits, not cursor moves: moving the cursor (←/→, ↑/↓ in a multi-line draft, Home/End)
+  hides it and never opens it, so those keys and `Enter` keep their usual meaning. It also doesn't follow a
+  draft into another channel or thread.
+- `Esc` closes it without touching the input; it stays closed until the input changes. `Tab` reopens it, completing at once when there is a single match. `Esc` order: popup, then the
   open mic, then a ring, then the usual chain.
 - Pastes and multi-rune bursts never open it, so pasted text is sent by the first `Enter`. `//text`, text
   being edited (`e`) and plain messages never get the command menu.

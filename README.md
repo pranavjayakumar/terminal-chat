@@ -49,7 +49,7 @@ user, server or chat data, but GitHub sees your IP address and that it runs tc.
 | | |
 |---|---|
 | `Enter` / `Alt-Enter` | send / newline |
-| `/` · `Tab` | `/` shows commands, `Tab` completes @names and #channels (`Enter` also picks from the popup) |
+| `/` · `Tab` | `/` shows commands; `@`/`#` pop up names and channels — `Enter` or `Tab` completes, `Esc` hides |
 | `Ctrl-K` | jump to any channel or person |
 | `Alt-A` | activity: mentions, replies to you, reactions, DMs (Enter jumps) |
 | `Alt-↑/↓` | previous / next channel (`Alt-Shift` for unread) |
