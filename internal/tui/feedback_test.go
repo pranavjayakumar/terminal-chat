@@ -67,3 +67,32 @@ func TestErrorCodesReadable(t *testing.T) {
 		t.Errorf("with a message: %q", m.notice)
 	}
 }
+
+// /notify and /sounds list every setting on its own row, so nothing is cut
+// at 80 columns, and no usage text points at "?" (which is just text).
+func TestNotifySettingsReadable(t *testing.T) {
+	m := newTestModel(t, 80, 24)
+	submitText(m, "/notify")
+	v := checkView(t, m, "/notify")
+	for _, want := range []string{"#general: mentions (default)", "default: mentions", "content: full", "quiet hours: off", "do not disturb: off", "sounds: on"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("/notify at 80 cols lacks %q:\n%s", want, v)
+		}
+	}
+	press(m, "esc")
+	submitText(m, "/sounds")
+	v = checkView(t, m, "/sounds")
+	for _, want := range []string{"sounds: on", "mention: on", "mic: on", "huddle cue volume: 60"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("/sounds at 80 cols lacks %q:\n%s", want, v)
+		}
+	}
+	press(m, "esc")
+	for _, in := range []string{"/notify bogus", "/sounds bogus on", "/sounds on"} {
+		submitText(m, in)
+		if strings.Contains(m.notice, "?") || strings.Contains(m.notice, "popups still show") && in == "/sounds on" {
+			t.Errorf("%s: %q", in, m.notice)
+		}
+		press(m, "ctrl+u")
+	}
+}

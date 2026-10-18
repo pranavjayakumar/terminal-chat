@@ -364,7 +364,7 @@ and are not listed; they appear in the log as usual. Rows are kept for the newes
   sounds and rings but not badges or the activity view; the status line shows a dim `🔕 09:00`
   or `🔕 quiet` (times beyond today show the day). Nothing is replayed afterwards. A mention in a
   level-`all` channel never waits out its 30 s window.
-- **Commands**: `/notify` (current settings), `/notify all|mentions|off [#chan] [for 2h]`,
+- **Commands**: `/notify` (current settings, one per row in a list; Esc closes), `/notify all|mentions|off [#chan] [for 2h]`,
   `/notify default [#chan]`, `/notify global all|mentions|off`, `/notify content …`,
   `/notify quiet …`, `/notify test` (one sample per sound through the real backend, 2.5 s apart —
   shows whether herdr toasts, macOS permission or OSC support work), `/dnd …`, `/sounds`

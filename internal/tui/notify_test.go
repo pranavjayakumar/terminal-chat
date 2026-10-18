@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -239,9 +240,10 @@ func TestNotifyDNDQuietSounds(t *testing.T) {
 		t.Fatalf("mention sound off: %+v", n)
 	}
 	runInput(t, m, "/sounds")
-	if !strings.Contains(m.notice, "mention off") || !strings.Contains(m.notice, "ring on") {
-		t.Fatalf("/sounds: %q", m.notice)
+	if m.mode != modeList || !slices.Contains(m.list.rows, "mention: off") || !slices.Contains(m.list.rows, "ring: on") {
+		t.Fatalf("/sounds: %q", m.list.rows)
 	}
+	press(m, "esc")
 	for _, bad := range []string{"/sounds evil on", "/sounds volume 200", "/sounds maybe"} {
 		runInput(t, m, bad)
 		if !m.noticeErr {
@@ -261,11 +263,11 @@ func TestNotifyCommandsFit(t *testing.T) {
 		m, _ := newTestModelFake(t, sz[0], sz[1])
 		newClock(m)
 		runInput(t, m, "/notify")
-		if sz[0] >= 80 && (!strings.Contains(m.notice, "#general: mentions (default)") || !strings.Contains(m.notice, "this device")) ||
-			sz[0] < 80 && !strings.HasPrefix(m.notice, "mentions · dnd off") {
-			t.Fatalf("%d cols: summary %q", sz[0], m.notice)
+		if m.mode != modeList || !slices.Contains(m.list.rows, "#general: mentions (default)") || !strings.Contains(m.list.title, "this device") {
+			t.Fatalf("%d cols: summary %q %q", sz[0], m.list.title, m.list.rows)
 		}
 		checkView(t, m, "notify summary")
+		press(m, "esc")
 		runInput(t, m, "/notify test")
 		for range 3 {
 			m.Update(notifyTestMsg{})
