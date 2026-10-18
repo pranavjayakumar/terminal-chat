@@ -617,6 +617,16 @@ func TestInstallPathAdvice(t *testing.T) {
 		}
 	}
 
+	// A directory with shell syntax in it never becomes a line to paste.
+	odd := filepath.Join(t.TempDir(), "a$(touch pwned)`b`")
+	r0 := runInstall(t, srv, installOpts{unameS: "Linux", unameM: "x86_64", installDir: odd, env: []string{"SHELL=/bin/bash"}})
+	if r0.err != nil {
+		t.Fatalf("%v\n%s", r0.err, r0.stderr)
+	}
+	if strings.Contains(r0.stderr, "echo '") || !strings.Contains(r0.stderr, "at the front of PATH") {
+		t.Errorf("unsafe dir offered as a paste line:\n%s", r0.stderr)
+	}
+
 	// Another tc on PATH, and ours not on PATH at all.
 	r := runInstall(t, srv, installOpts{unameS: "Linux", unameM: "x86_64", env: []string{"SHELL=/bin/bash"},
 		stubs: map[string]string{"tc": "#!/bin/sh\n"}})

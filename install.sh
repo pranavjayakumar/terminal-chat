@@ -169,10 +169,16 @@ path_help() {
 		line="export PATH=\"$dir:\$PATH\""
 		;;
 	esac
-	say "$1 Run this once, then open a new terminal:"
-	case "$line$rc" in
-	*"'"*) printf '\n  %s\n\n  (add that line to %s)\n\n' "$line" "$rc" >&2 ;;
-	*) printf "\n  echo '%s' >> '%s'\n\n" "$line" "$rc" >&2 ;;
+	# Only plain paths become a line to paste: anything else ($, `, quotes)
+	# would run or break when the shell reads that startup file.
+	case "$dir$rc" in
+	*[!A-Za-z0-9/._~+-]*)
+		say "$1 Put $sdir at the front of PATH in $(printable "$rc"), then open a new terminal."
+		;;
+	*)
+		say "$1 Run this once, then open a new terminal:"
+		printf "\n  echo '%s' >> '%s'\n\n" "$line" "$rc" >&2
+		;;
 	esac
 }
 
@@ -209,6 +215,7 @@ main() {
 	base=${base%/}
 	check_base "$base"
 	dir=${TC_INSTALL_DIR:-${HOME:?HOME is not set}/.local/bin}
+	sdir=$(printable "$dir") # for messages: no control bytes
 	os=$(detect_os)
 	arch=$(detect_arch)
 
@@ -255,30 +262,30 @@ main() {
 		fi
 	fi
 
-	mkdir -p "$dir" || die "can't create $dir"
+	mkdir -p "$dir" || die "can't create $sdir"
 	# Copy next to the target, then rename: atomic, and a running tc keeps
 	# working. mktemp makes a new, unpredictable 0600 file (never a symlink
 	# someone planted in a shared dir), which cp then writes into.
-	new=$(mktemp "$dir/.tc.new.XXXXXX") || die "can't write to $dir"
+	new=$(mktemp "$dir/.tc.new.XXXXXX") || die "can't write to $sdir"
 	cp "$tmp/x/tc" "$new" && chmod 755 "$new" && mv -f "$new" "$dir/tc" || {
 		rm -f "$new"
-		die "can't install to $dir/tc"
+		die "can't install to $sdir/tc"
 	}
-	say "installed $dir/tc ($tag$flavor)"
+	say "installed $sdir/tc ($tag$flavor)"
 
 	found=$(command -v tc 2>/dev/null || true)
 	case ":${PATH:-}:" in
 	*":$dir:"*)
 		if [ -n "$found" ] && [ "$found" != "$dir/tc" ]; then
-			say "note: typing tc runs $found, $(other_tc "$found"), because it comes first on your PATH."
-			path_help "Put $dir before it:"
+			say "note: typing tc runs $(printable "$found"), $(other_tc "$found"), because it comes first on your PATH."
+			path_help "Put $sdir before it:"
 		fi
 		;;
 	*)
 		if [ -n "$found" ]; then
-			say "note: until then, typing tc runs $found, $(other_tc "$found"); $dir/tc always works."
+			say "note: until then, typing tc runs $(printable "$found"), $(other_tc "$found"); $sdir/tc always works."
 		fi
-		path_help "$dir is not on your PATH."
+		path_help "$sdir is not on your PATH."
 		;;
 	esac
 
@@ -292,10 +299,10 @@ main() {
 		fi
 		# join's tips say "tc", which in this shell isn't ours yet.
 		if [ "$found" != "$dir/tc" ]; then
-			say "start chatting now with: $dir/tc (plain tc works once your PATH is set, see above)"
+			say "start chatting now with: $sdir/tc (plain tc works once your PATH is set, see above)"
 		fi
 	else
-		say "next: $dir/tc join 'tc://…' with the invite your admin sent"
+		say "next: $sdir/tc join 'tc://…' with the invite your admin sent"
 	fi
 }
 

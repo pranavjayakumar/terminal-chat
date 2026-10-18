@@ -95,7 +95,7 @@ func cmdJoin(args []string) error {
 // account in home: what `tc login` takes on a second computer.
 func showLogin(out io.Writer, home string) error {
 	if _, err := os.Stat(filepath.Join(home, "config.json")); err != nil {
-		return errors.New("this computer isn't signed in to a tc server yet.\n" +
+		return multilineError("this computer isn't signed in to a tc server yet.\n" +
 			"  New to the team? Run the invite your admin sent: tc join 'tc://…'\n" +
 			"  Already have an account? Run tc login on a computer that's signed in; it prints the line to run here.")
 	}
@@ -426,7 +426,7 @@ func keyBoundError(fps []string, all []joinKey, keyPath string) error {
 	}
 	writeTried(&b, all)
 	b.WriteString("\n  if the key is elsewhere (another computer, a hardware key, a password manager), load it into ssh-agent or pass --key path/to/key(.pub); otherwise ask for a new invite")
-	return errors.New(b.String())
+	return multilineError(b.String())
 }
 
 // noKeyError explains a tc login with no registered key.
@@ -444,7 +444,7 @@ func noKeyError(all []joinKey, last error) error {
 			b.WriteString("\n  last error: " + last.Error())
 		}
 	}
-	return errors.New(b.String())
+	return multilineError(b.String())
 }
 
 func writeTried(b *strings.Builder, all []joinKey) {
