@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/sanitize"
 )
 
@@ -98,18 +99,40 @@ func (m *Model) refreshHuddle() {
 	h.cur, h.in = hb.InHuddle()
 	h.roster, h.speaking, h.talking, h.here = nil, nil, false, 0
 	h.counts = hb.Huddles()
+	w := hb.HuddleWarning()
 	if h.in {
 		h.roster = hb.Huddle(h.cur)
 		h.speaking = hb.Speaking()
 		h.talking = hb.Talking()
-		if w := hb.HuddleWarning(); w != nil && !errors.Is(w, h.warned) {
+		if w != nil && !errors.Is(w, h.warned) {
 			h.warned = w
 			m.setNotice(w.Error(), true, true, 0)
 		}
-	} else {
-		h.talk = talkOff
+		return
+	}
+	h.talk = talkOff
+	h.here = len(hb.Huddle(m.active))
+	// Out of a huddle the warning is why the last one ended without us
+	// leaving (#76): say it once.
+	switch {
+	case w == nil:
 		h.warned = nil
-		h.here = len(hb.Huddle(m.active))
+	case !errors.Is(w, h.warned):
+		h.warned = w
+		m.setNotice(w.Error(), !errors.Is(w, client.ErrHuddleMoved), false, endedTTL)
+	}
+}
+
+// endedTTL is how long "why the huddle ended" stays up.
+const endedTTL = 10 * time.Second
+
+// micOffNote is micOff's notice; opening the mic again clears it (#77).
+const micOffNote = "mic off"
+
+// micOn clears a "mic off" notice the mic just made stale.
+func (m *Model) micOn() {
+	if m.notice == micOffNote {
+		m.clearNotice()
 	}
 }
 
@@ -166,6 +189,7 @@ func (m *Model) huddleCommand(c command) (tea.Cmd, bool, error) {
 		m.hud.talk = talkOff
 		if on {
 			m.hud.talk = talkLatched
+			m.micOn()
 		}
 		m.refreshHuddle()
 		return nil, true, nil
@@ -201,7 +225,7 @@ func (m *Model) micOff() bool {
 	hb.SetTalking(false)
 	m.hud.talk = talkOff
 	m.refreshHuddle()
-	m.setNotice("mic off", false, false, 0)
+	m.setNotice(micOffNote, false, false, 0)
 	m.noticeDim = true
 	return true
 }
@@ -227,6 +251,7 @@ func (m *Model) talkKey() (tea.Cmd, bool) {
 		// before (a repeat right after a latch or unlatch is still a hold).
 		if !hb.Talking() {
 			hb.SetTalking(true)
+			m.micOn()
 		}
 		h.talk = talkHolding
 		wait = min(maxRelease, max(minRelease, 3*gap))
@@ -241,6 +266,7 @@ func (m *Model) talkKey() (tea.Cmd, bool) {
 		return nil, true
 	default: // off: a fresh press
 		hb.SetTalking(true)
+		m.micOn()
 		h.talk = talkPending
 	}
 	m.refreshHuddle()
