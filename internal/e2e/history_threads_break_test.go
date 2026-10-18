@@ -8,10 +8,10 @@ import (
 	"time"
 )
 
-// History gives up after maxReplyPages pages and reports more=true, but
-// the TUI's cursor (the oldest top-level message it shows) has not moved,
-// so every later call fetches the same 50 pages again: whatever is older
-// than a thread longer than 50 pages stays unreachable. 50 pages is 5000
+// History stops after maxReplyPages pages and reports more=true. The TUI's
+// cursor (the oldest top-level message it shows) hasn't moved, so the next
+// call must resume where History stopped, not fetch the same 50 pages again
+// (a thread longer than 50 pages would hide everything before it). 50 pages is 5000
 // short replies, or ~550 near-64 KiB ones (trimBytes cuts a page to 768
 // KiB, ~11 such messages).
 func TestHistoryPagesPastLongThread_BreakPageCap(t *testing.T) {
@@ -75,6 +75,8 @@ func TestHistoryPagesPastLongThread_BreakPageCap(t *testing.T) {
 		t.Fatalf("after 5 History calls bob still lacks the message before a 900-reply thread (cursor stuck at %d)", oldestTop())
 	}
 }
+
+// The same with 5100 short replies (51 pages).
 func TestHistoryPagesPastLongThread_BreakPageCapShort(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", "")
 	s, addr := startServerClock(t, t.TempDir(), "127.0.0.1:0", steppingClock())

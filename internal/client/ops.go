@@ -489,10 +489,23 @@ func (c *Client) SetTopic(ctx context.Context, ch uint64, topic string) error {
 // A page holds thread replies too, and callers page by the oldest top-level
 // message they show, so a page of nothing but replies (a busy thread) would
 // come back on every call and hide everything before it. History keeps going
-// until a page brings a top-level message, or there is nothing older.
+// until a page brings a top-level message, or there is nothing older. When
+// it stops at its page cap, the next call with the same before resumes where
+// it stopped, as long as that point is still in the cache (a reset or leave
+// drops it, so no gap is skipped).
 func (c *Client) History(ctx context.Context, ch, before uint64) (more bool, err error) {
+	from := before
+	c.mu.Lock()
+	r, ok := c.histResume[ch]
+	c.mu.Unlock()
+	if ok && r[0] == before && r[1] != 0 && (before == 0 || r[1] < before) {
+		var n int
+		if c.db.QueryRow(`SELECT COUNT(*) FROM msgs WHERE id = ? AND chan = ?`, r[1], ch).Scan(&n) == nil && n > 0 {
+			from = r[1]
+		}
+	}
 	for range maxReplyPages {
-		r, err := c.historyPage(ctx, ch, before)
+		r, err := c.historyPage(ctx, ch, from)
 		if err != nil || !r.More || len(r.Msgs) == 0 {
 			return r.More, err
 		}
@@ -503,8 +516,14 @@ func (c *Client) History(ctx context.Context, ch, before uint64) (more bool, err
 			}
 			oldest = min(oldest, m.ID)
 		}
-		before = oldest
+		from = oldest
 	}
+	c.mu.Lock()
+	if c.histResume == nil {
+		c.histResume = map[uint64][2]uint64{}
+	}
+	c.histResume[ch] = [2]uint64{before, from}
+	c.mu.Unlock()
 	return true, nil
 }
 

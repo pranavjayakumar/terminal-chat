@@ -185,8 +185,11 @@ type Client struct {
 	cancel  context.CancelFunc
 	ctx     context.Context // cancelled by Close
 
-	mu           sync.Mutex
-	status       Status
+	mu     sync.Mutex
+	status Status
+	// histResume: channel -> {before, where History stopped at its page
+	// cap} (ops.go).
+	histResume   map[uint64][2]uint64
 	sess         *session // set only while Online
 	me           proto.User
 	users        map[uint64]proto.User
