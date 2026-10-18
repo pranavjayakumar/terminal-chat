@@ -458,9 +458,9 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 		case "":
 			cur := sanitize.Line(m.me.Display)
 			if cur == "" {
-				cur = "none (people see @" + sanitize.Line(m.me.Name) + ")"
+				cur = "none"
 			}
-			m.setInfo("display name: " + cur + " · /name Display Name sets it, /name --clear removes it")
+			m.setInfo("display name: " + cur + " · /name Name sets, --clear removes")
 			return nil, nil
 		case "--clear":
 			display = ""
@@ -484,7 +484,7 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 			if cur == "" {
 				cur = "none"
 			}
-			m.setInfo("topic: " + cur + " · /topic text sets it, /topic --clear removes it")
+			m.setInfo("topic: " + cur + " · /topic text sets, --clear removes")
 			return nil, nil
 		case "--clear":
 			topic = ""
