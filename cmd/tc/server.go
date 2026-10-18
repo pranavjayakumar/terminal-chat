@@ -126,7 +126,7 @@ func cmdServer(args []string) error {
 		if err == nil {
 			fmt.Println("\nNo users yet. Admin invite for you (single use, 24 hours):")
 			printInvite(os.Stdout, inv, version)
-			fmt.Println("Then invite your team with: tc server invite --uses 15 --ttl 24h")
+			fmt.Println("Then invite your team with: " + serverInviteHint(*data))
 		}
 	}
 	return srv.Serve(ctx, ln)
@@ -204,6 +204,9 @@ func cmdServerInvite(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := requireServerData(c.data); err != nil {
+		return err
+	}
 	ctx, cancel := signalContext()
 	defer cancel()
 	if c.key != "" {
@@ -246,6 +249,37 @@ func cmdServerInvite(args []string) error {
 	}
 	printInvite(os.Stdout, inv, version)
 	return nil
+}
+
+// requireServerData fails unless data holds a server's database. Opening a
+// missing one would mint a brand-new server identity there and print an
+// invite whose address and pin match no running server.
+func requireServerData(data string) error {
+	if _, err := os.Stat(filepath.Join(data, "tc.db")); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("no tc server data in %s; pass --data with the directory your `tc server` uses (or set TC_DATA)", data)
+		}
+		return fmt.Errorf("reading server data in %s: %w", data, err)
+	}
+	return nil
+}
+
+// serverInviteHint is the command to make the team invite, with --data
+// when the server runs from a non-default directory.
+func serverInviteHint(data string) string {
+	cmd := "tc server invite --uses 15 --ttl 24h"
+	if data != defaultDataDir() {
+		cmd += " --data " + shellQuote(data)
+	}
+	return cmd
+}
+
+// shellQuote single-quotes s for sh unless it is plainly safe.
+func shellQuote(s string) string {
+	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-~") == "" && !strings.HasPrefix(s, "~") {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // printInvite shows an invite as the install one-liner (for people without
