@@ -18,32 +18,33 @@ import (
 
 // fakeClient is an in-memory Backend.
 type fakeClient struct {
-	mu       sync.Mutex
-	me       proto.User
-	status   client.Status
-	users    []proto.User
-	chans    []client.ChannelView
-	msgs     map[uint64][]client.Message
-	threads  map[uint64][]client.Message
-	typing   map[uint64][]uint64
-	updates  chan client.Update
-	sent     []client.Message
-	reads    map[uint64]uint64
-	history  int
-	histMore bool
-	histErr  error
-	calls    []string
-	aways    []bool
-	drafts   map[[2]uint64]string
-	words    []string
-	setErr   error // SetDraft fails with this
-	seen     int64 // activity seen time
-	activity []client.ActivityItem
-	pinOrder []uint64 // pinned message ids, newest pin first
-	e2eSt    map[uint64]client.E2EStatus
-	addErr   error
-	tr       fakeTrust
-	dv       fakeDevs // devices_test.go
+	mu          sync.Mutex
+	me          proto.User
+	status      client.Status
+	users       []proto.User
+	chans       []client.ChannelView
+	msgs        map[uint64][]client.Message
+	threads     map[uint64][]client.Message
+	typing      map[uint64][]uint64
+	updates     chan client.Update
+	sent        []client.Message
+	reads       map[uint64]uint64
+	history     int
+	histMore    bool
+	histErr     error
+	addErrAfter int // AddMember succeeds this many times before addErr
+	calls       []string
+	aways       []bool
+	drafts      map[[2]uint64]string
+	words       []string
+	setErr      error // SetDraft fails with this
+	seen        int64 // activity seen time
+	activity    []client.ActivityItem
+	pinOrder    []uint64 // pinned message ids, newest pin first
+	e2eSt       map[uint64]client.E2EStatus
+	addErr      error
+	tr          fakeTrust
+	dv          fakeDevs // devices_test.go
 
 	groups     []proto.Group
 	reminders  []proto.Reminder
@@ -208,6 +209,10 @@ func (f *fakeClient) AddMember(ctx context.Context, ch, user uint64) error {
 	f.record("add")
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.addErrAfter > 0 {
+		f.addErrAfter--
+		return nil
+	}
 	return f.addErr
 }
 func (f *fakeClient) RemoveMember(ctx context.Context, ch, user uint64) error {

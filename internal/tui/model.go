@@ -190,6 +190,7 @@ const (
 	infoTTL    = 4 * time.Second
 	errTTL     = 8 * time.Second
 	escWindow  = 2 * time.Second
+	ctrlCHint  = "press Ctrl-C again to quit"
 )
 
 // New builds the model and loads the cache.
@@ -687,13 +688,14 @@ var codeWords = map[string]string{
 // protoErrText is a server error for showing: its code and message, or
 // the code in words when there is no message.
 func protoErrText(pe *proto.Error) string {
+	w, ok := codeWords[pe.Code]
+	if !ok {
+		w = pe.Code
+	}
 	if pe.Msg != "" {
-		return pe.Code + ": " + pe.Msg
+		return w + ": " + pe.Msg
 	}
-	if w, ok := codeWords[pe.Code]; ok {
-		return w
-	}
-	return pe.Code
+	return w
 }
 
 // setInfo shows a notice that clears itself after infoTTL.
@@ -704,6 +706,9 @@ func (m *Model) setHint(s string) { m.setNotice(s, false, true, 0) }
 
 func (m *Model) setNotice(s string, isErr, sticky bool, ttl time.Duration) {
 	m.notice, m.noticeErr, m.noticeSticky, m.noticeTTL = sanitize.Line(s), isErr, sticky, ttl
+	if s != ctrlCHint {
+		m.ctrlC = time.Time{} // the hint is gone: a Ctrl-C now must not quit
+	}
 	m.noticeDim = false
 	m.noticeGen++
 }
@@ -852,6 +857,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.layoutInput()
 		m.clampScroll(&m.main)
 		m.clampScroll(&m.thread)
+		m.helpScroll = min(max(m.helpScroll, 0), m.helpMaxScroll()) // rows rewrap
 		return m, nil
 	case tea.FocusMsg:
 		m.focused = true
@@ -1047,7 +1053,7 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 			return tea.Quit
 		}
 		m.ctrlC = m.now()
-		m.setInfo("press Ctrl-C again to quit")
+		m.setInfo(ctrlCHint)
 		return nil
 	}
 	if !m.ctrlC.IsZero() {

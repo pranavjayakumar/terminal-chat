@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
 )
 
@@ -46,5 +47,44 @@ func TestDMMeNeverAnotherUser(t *testing.T) {
 	run(m, m.handleKey(keyMsg("enter")))
 	if !f.called("dm:[]") || f.called("dm:[77]") {
 		t.Fatalf("calls %v", f.calls)
+	}
+}
+
+// Typing /dm @me (or my own name) and Enter must open my notes, never
+// complete to another person whose name contains "me".
+func TestDMMeThroughPopup(t *testing.T) {
+	for _, in := range []string{"/dm @me", "/dm @alice", "/dm @Me"} {
+		m, f := newTestModelFake(t, 100, 30)
+		f.users = append(f.users, proto.User{ID: 77, Name: "james"}, proto.User{ID: 78, Name: "alicex"})
+		m.reloadUsers()
+		typeKeys(m, in)
+		for i := 0; i < 3 && m.input.Value() != ""; i++ {
+			run(m, m.handleKey(keyMsg("enter")))
+		}
+		if !f.called("dm:[]") {
+			t.Fatalf("%s: calls %v, input %q", in, f.calls, m.input.Value())
+		}
+	}
+	// In a plain message @me isn't offered: it means nothing there.
+	m, _ := newTestModelFake(t, 100, 30)
+	typeKeys(m, "hi @m")
+	for _, it := range m.comp.items {
+		if it.text == "@me" {
+			t.Fatal("@me offered outside /dm")
+		}
+	}
+}
+
+// Ctrl-K finds existing notes by "me" too.
+func TestSwitcherNotesByMe(t *testing.T) {
+	m, f := newTestModelFake(t, 100, 30)
+	f.chans = append(f.chans, client.ChannelView{Channel: proto.Channel{ID: 30, Kind: proto.ChanDM, Members: []uint64{1}}, Display: "alice (notes)", Member: true})
+	m.reloadChans()
+	m.handleKey(keyMsg("ctrl+k"))
+	for _, r := range "me" {
+		m.handleKey(keyMsg(string(r)))
+	}
+	if len(m.sw.shown) == 0 || m.sw.shown[0].ch != 30 {
+		t.Fatalf("shown %+v", m.sw.shown)
 	}
 }

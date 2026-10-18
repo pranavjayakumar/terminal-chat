@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 	"github.com/rivo/uniseg"
 
@@ -393,14 +394,21 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 			}
 			ids = append(ids, id)
 		}
-		names := m.atNames(ids)
+		each := make([]string, len(ids)) // resolved here: the Cmd runs off the UI goroutine
+		for i, id := range ids {
+			each[i] = m.atNames([]uint64{id})
+		}
+		names := strings.Join(each, ", ")
 		return m.callThen("add", func(ctx context.Context) (tea.Msg, error) {
-			for _, id := range ids {
+			for i, id := range ids {
 				if err := be.AddMember(ctx, ch, id); err != nil {
 					var ue *client.UnverifiedMembersError
 					if errors.As(err, &ue) {
 						// Names were sanitized by the client.
-						return nil, fmt.Errorf("not added: no verified device of %s — they can't get this channel's key yet", strings.Join(ue.Names, ", "))
+						err = fmt.Errorf("not added: no verified device of %s — they can't get this channel's key yet", strings.Join(ue.Names, ", "))
+					}
+					if i > 0 { // say who did get in
+						err = fmt.Errorf("added %s; %s: %s", strings.Join(each[:i], ", "), each[i], errText(err))
 					}
 					return nil, err
 				}
@@ -426,10 +434,17 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 			}
 			ids = append(ids, id)
 		}
-		names := m.atNames(ids)
+		each := make([]string, len(ids))
+		for i, id := range ids {
+			each[i] = m.atNames([]uint64{id})
+		}
+		names := strings.Join(each, ", ")
 		return m.callThen("remove", func(ctx context.Context) (tea.Msg, error) {
-			for _, id := range ids {
+			for i, id := range ids {
 				if err := be.RemoveMember(ctx, ch, id); err != nil {
+					if i > 0 {
+						err = fmt.Errorf("removed %s; %s: %s", strings.Join(each[:i], ", "), each[i], errText(err))
+					}
 					return nil, err
 				}
 			}
@@ -484,7 +499,14 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 			if cur == "" {
 				cur = "none"
 			}
-			m.setInfo("topic: " + cur + " · /topic text sets, --clear removes")
+			msg := "topic: " + cur + " · /topic text sets, --clear removes"
+			if w := m.dims().mainW; strWidth(msg) > w {
+				// Too long for the status line: the whole topic, wrapped.
+				rows := strings.Split(ansi.Wrap(cur, max(w-2, 1), ""), "\n")
+				m.showList("topic of "+m.chanTitle(ch), append(rows, "", "/topic text sets it, /topic --clear removes it"))
+				return nil, nil
+			}
+			m.setInfo(msg)
 			return nil, nil
 		case "--clear":
 			topic = ""

@@ -121,7 +121,11 @@ func (m *Model) switchItems() []switchItem {
 				haveNotes = true
 			}
 			name := sanitize.Line(v.Display)
-			items = append(items, switchItem{label: "@ " + name, match: name, ch: v.ID, unread: v.Unread, mention: v.Mention})
+			match := name
+			if len(others) == 0 {
+				match += " me" // my notes
+			}
+			items = append(items, switchItem{label: "@ " + name, match: match, ch: v.ID, unread: v.Unread, mention: v.Mention})
 			continue
 		}
 		if !v.Member && v.Kind != proto.ChanPublic {

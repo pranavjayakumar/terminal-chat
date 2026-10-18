@@ -138,10 +138,15 @@ func (m *Model) viewPane(p *pane, w, h int, unread int) []string {
 		return out
 	}
 	lines, _ := m.paneLines(p, w)
-	if len(lines) == 0 && p == &m.main && !m.histBusy[p.ch] && (m.histDone[p.ch] || m.status.State == client.Online) {
+	if len(lines) == 0 && p == &m.main && !m.histBusy[p.ch] && m.histDone[p.ch] {
 		// What a brand-new user sees first: say what to do, not a blank pane.
 		hint := "no messages yet — say hi · F1 help · Ctrl-K channels & people"
-		if w < 64 {
+		switch v, _ := m.chanView(p.ch); {
+		case v.Kind == proto.ChanDM && len(v.Members) == 1:
+			hint = "your notes — only you see them; /remind lands here"
+		case w < 26:
+			hint = "no messages yet"
+		case w < 64:
 			hint = "no messages yet · F1 help"
 		}
 		lines = []string{m.st.dim.Render(truncate(hint, w))}

@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/skailama/tc/internal/proto"
 )
 
@@ -40,8 +42,13 @@ func TestCommandFeedback(t *testing.T) {
 		if len(f.calls) != n {
 			t.Fatalf("%s called %v", in, f.calls[n:])
 		}
-		if !strings.Contains(m.notice, in+" ") {
-			t.Fatalf("%s: notice %q", in, m.notice)
+		shown := m.notice
+		if m.mode == modeList { // a long topic opens in the list, wrapped
+			shown = strings.Join(m.list.rows, " ")
+			press(m, "esc")
+		}
+		if !strings.Contains(shown, in+" ") {
+			t.Fatalf("%s: shown %q", in, shown)
 		}
 	}
 }
@@ -63,7 +70,7 @@ func TestErrorCodesReadable(t *testing.T) {
 		}
 	}
 	m.setErr("x", &proto.Error{Code: proto.ErrForbidden, Msg: "only admins"})
-	if m.notice != "x: forbidden: only admins" {
+	if m.notice != "x: not allowed: only admins" {
 		t.Errorf("with a message: %q", m.notice)
 	}
 }
@@ -114,5 +121,40 @@ func TestEmptyChannelHint(t *testing.T) {
 		if v := checkView(t, m, "loading"); strings.Contains(v, "no messages yet") {
 			t.Fatalf("hint while history loads:\n%s", v)
 		}
+	}
+}
+
+// Review follow-ups: a replaced Ctrl-C hint disarms; a failed history
+// fetch doesn't claim the channel is empty; hidden list rows are counted;
+// a partly failed /add says who got in.
+func TestReviewFollowUps(t *testing.T) {
+	m, f := newTestModelFake(t, 100, 30)
+	m.handleKey(keyMsg("ctrl+c"))
+	m.setInfo("added @bob")
+	if cmd := m.handleKey(keyMsg("ctrl+c")); cmd != nil {
+		if _, ok := cmd().(tea.QuitMsg); ok {
+			t.Fatal("quit after the hint was replaced")
+		}
+	}
+
+	f.msgs[11] = nil
+	run(m, m.openChannel(11))
+	m.histBusy[11], m.histDone[11] = false, false
+	if v := checkView(t, m, "unknown history"); strings.Contains(v, "no messages yet") {
+		t.Fatal("hint shown while history is unknown")
+	}
+
+	m2 := newTestModel(t, 40, 8)
+	m2.showList("t", []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"})
+	if v := checkView(t, m2, "list"); !strings.Contains(v, "more") {
+		t.Fatalf("no more marker:\n%s", v)
+	}
+
+	m3, f3 := newTestModelFake(t, 100, 30)
+	f3.addErrAfter = 1
+	f3.addErr = &proto.Error{Code: proto.ErrForbidden}
+	submitText(m3, "/add @bob @carol")
+	if !strings.Contains(m3.notice, "added @bob; @carol: not allowed") {
+		t.Fatalf("partial add: %q", m3.notice)
 	}
 }

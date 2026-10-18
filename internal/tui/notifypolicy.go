@@ -680,13 +680,19 @@ func (m *Model) notifySummary() []string {
 	if p.SoundOff {
 		sounds = "off"
 	}
+	hint := func(h string) string {
+		if m.dims().mainW < 50 { // narrow split: the values matter more
+			return ""
+		}
+		return " (" + h + ")"
+	}
 	return append(rows,
-		"default: "+string(def)+" (/notify global LEVEL)",
-		"content: "+content+" (/notify content full|name|none)",
-		"quiet hours: "+quiet+" (/notify quiet 22:00-08:00|off)",
-		"do not disturb: "+dnd+" (/dnd)",
-		"via: "+m.backendName()+" (/notify test)",
-		"sounds: "+sounds+" (/sounds)")
+		"default: "+string(def)+hint("/notify global LEVEL"),
+		"content: "+content+hint("/notify content full|name|none"),
+		"quiet hours: "+quiet+hint("/notify quiet 22:00-08:00|off"),
+		"do not disturb: "+dnd+hint("/dnd"),
+		"via: "+m.backendName()+hint("/notify test"),
+		"sounds: "+sounds+hint("/sounds"))
 }
 
 // showList opens the read-only list overlay.

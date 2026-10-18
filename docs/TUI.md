@@ -34,7 +34,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 - Pinned messages end with a dim `📌` on their footer line; the header shows a dim `📌 N` when the channel has pins.
 - Reactions on a line below: `👍 2  🎉 1` (your own reactions highlighted).
 - Thread roots show `↳ N replies`; threads open in a right pane (or full width below 100 cols).
-- An empty channel shows a dim `no messages yet — say hi · F1 help · Ctrl-K channels & people` (short form under 64 columns) once its history is known to be empty.
+- An empty channel shows a dim `no messages yet — say hi · F1 help · Ctrl-K channels & people` (shorter when the message pane is under 64 or 26 columns; in my notes `your notes — only you see them; /remind lands here`) once a history fetch said it is empty.
 - Typing line above the input; nothing when nobody is typing.
 - Input: single line that grows to max 6 lines; `Alt-Enter`/`Ctrl-J` inserts newline; `Enter` sends.
 
@@ -69,12 +69,12 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 | `↑` on empty input | select messages mode (↑/↓ moves selection) |
 | in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (prompt for emoji; `+1`, `:tada:` shortcuts), `y` copy body (OSC 52), `p` pin / unpin (notice "pinned" / "unpinned"), `Esc` leave |
 | `Esc` | close the completion popup / thread / switcher / select mode; never quits |
-| `Ctrl-C` twice, or `/quit` | quit |
+| `Ctrl-C` twice (the second while `press Ctrl-C again to quit` shows, 4 s), or `/quit` | quit |
 | `F1` or `/help` | help overlay (`?` is just text, so messages can start with it) |
 
 ## Slash commands
 
-`/join #x`, `/leave`, `/create #x [--private [--plaintext]]`, `/add @user`, `/topic text`, `/dm @a @b` (`/dm @me`: my notes, also in `Ctrl-K`),
+`/join #x`, `/leave`, `/create #x [--private [--plaintext]]`, `/add @user`, `/topic text`, `/dm @a @b` (`/dm @me` or my own name: my notes, also in `Ctrl-K`; `@me` is always me, even if an account is named `me`; after `/dm` the popup offers `@me` and my name),
 `/invite` (admin; prints code), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps), `/pins` (overlay of this channel's pinned messages, newest pin first, as `author · preview`; Enter jumps, Esc closes),
 `/activity`, `/highlight [word…]`, `/unhighlight word…`, `/group name @a @b…` (admin), `/groups`,
 `/remind <when> <text>`, `/reminders`, `/remind-delete id`, `/snippet path[:range] [message]`,
@@ -365,7 +365,7 @@ and are not listed; they appear in the log as usual. Rows are kept for the newes
   sounds and rings but not badges or the activity view; the status line shows a dim `🔕 09:00`
   or `🔕 quiet` (times beyond today show the day). Nothing is replayed afterwards. A mention in a
   level-`all` channel never waits out its 30 s window.
-- **Commands**: `/notify` (current settings, one per row in a list; Esc closes), `/notify all|mentions|off [#chan] [for 2h]`,
+- **Commands**: `/notify` (current settings, one per row in a list with the command that changes each, hints dropped under 50 columns; Esc closes; lists that don't fit end with `↑ N · ↓ N more`), `/notify all|mentions|off [#chan] [for 2h]`,
   `/notify default [#chan]`, `/notify global all|mentions|off`, `/notify content …`,
   `/notify quiet …`, `/notify test` (one sample per sound through the real backend, 2.5 s apart —
   shows whether herdr toasts, macOS permission or OSC support work), `/dnd …`, `/sounds`

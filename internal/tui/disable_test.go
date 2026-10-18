@@ -139,7 +139,7 @@ func TestDisableErrors(t *testing.T) {
 	runInput(t, m2, "/disable @bob")
 	pastDisableTypeAhead(m2)
 	press(m2, "y")
-	if !m2.noticeErr || !strings.Contains(m2.notice, "forbidden") {
+	if !m2.noticeErr || !strings.Contains(m2.notice, "not allowed: admins only") {
 		t.Errorf("refused: notice %q", m2.notice)
 	}
 }

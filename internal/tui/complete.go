@@ -187,8 +187,27 @@ func (m *Model) userItems(q string) {
 			}
 		}
 	}
+	// After /dm, "@me" and my own name open my notes: offer them, so Enter
+	// on them never completes to someone else whose name contains "me".
+	dm := strings.HasPrefix(strings.ToLower(m.input.Value()), "/dm ")
+	if dm {
+		if strings.HasPrefix("me", q) {
+			rank := 0
+			if q == "me" {
+				rank = exactRank
+			}
+			c.items = append(c.items, compItem{text: "@me", desc: "your notes", rank: rank})
+		}
+		if me := strings.ToLower(m.me.Name); me != "" && strings.HasPrefix(me, q) {
+			rank := 0
+			if me == q {
+				rank = exactRank
+			}
+			c.items = append(c.items, compItem{text: "@" + sanitize.Line(m.me.Name), desc: "you · your notes", rank: rank})
+		}
+	}
 	for _, u := range m.userList {
-		if u.ID == m.me.ID || u.Disabled {
+		if u.ID == m.me.ID || u.Disabled || dm && u.Name == "me" {
 			continue
 		}
 		r := wordRank(q, strings.ToLower(u.Name))
