@@ -130,6 +130,7 @@ func runInvite(ctx context.Context, cl *client.Client, c inviteCmd, out io.Write
 			cl.SetGitHubBase(testGitHubBase)
 		}
 		inv, err = cl.CreateGitHubInvite(ctx, c.key, c.ttl)
+		err = githubKeysErr(err, c.key)
 	} else {
 		inv, err = cl.CreateTeamInvite(ctx, c.uses, c.ttl)
 	}
@@ -161,6 +162,18 @@ func inviteErr(err error, what, id string) error {
 		if id != "" {
 			return fmt.Errorf("no open invite %s of yours (see tc invite --list)", id)
 		}
+	case proto.ErrConflict:
+		// The server's text points at the TUI's /invites.
+		return fmt.Errorf("%s: see them with tc invite --list and revoke one with tc invite --revoke ID", sanitize.Line(pe.Msg))
+	}
+	return err
+}
+
+// githubKeysErr explains a GitHub login that doesn't exist (the key fetch
+// answers 404) instead of printing the bare status.
+func githubKeysErr(err error, login string) error {
+	if err != nil && strings.HasSuffix(err.Error(), "HTTP 404") {
+		return fmt.Errorf("GitHub has no user %q; check the login (it's the name in github.com/<login>)", sanitize.Line(login))
 	}
 	return err
 }

@@ -214,7 +214,7 @@ func cmdServerInvite(args []string) error {
 		// server process itself never makes outbound requests.
 		keys, err := client.FetchGitHubInviteKeys(ctx, testGitHubBase, c.key)
 		if err != nil {
-			return err
+			return githubKeysErr(err, c.key)
 		}
 		c.opts.Keys, c.opts.KeySrc = keys, "github:"+c.key
 	}
