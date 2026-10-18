@@ -445,15 +445,18 @@ func TestQAChaosTeamScale(t *testing.T) {
 	if end.fds > base.fds+2*nUsers {
 		t.Errorf("open FDs %d → %d", base.fds, end.fds)
 	}
-	logs := logBuf.String()
-	for _, bad := range []string{"panic", "level=ERROR"} {
-		if strings.Contains(logs, bad) {
-			t.Errorf("server log contains %q", bad)
+	// An op cut short by a server restart logs "op failed" at ERROR with
+	// the context error or sql.ErrTxDone (issue #118): expected here,
+	// everything else isn't.
+	for _, l := range strings.Split(strings.TrimSpace(logBuf.String()), "\n") {
+		if l == "" {
+			continue
 		}
-	}
-	if n := strings.Count(logs, "\n"); n > 0 {
-		lines := strings.Split(strings.TrimSpace(logs), "\n")
-		t.Logf("server warn+ log lines: %d, last: %s", n, lines[len(lines)-1])
+		t.Logf("server log: %s", l)
+		cut := strings.Contains(l, `err="context canceled"`) || strings.Contains(l, "transaction has already been committed or rolled back")
+		if strings.Contains(l, "panic") || strings.Contains(l, "level=ERROR") && !cut {
+			t.Errorf("unexpected server log line: %s", l)
+		}
 	}
 	for _, q := range us {
 		filepath.WalkDir(q.get().home, func(p string, d os.DirEntry, err error) error {
