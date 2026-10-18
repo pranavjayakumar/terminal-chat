@@ -300,7 +300,13 @@ func joinWithKeys(ctx context.Context, env joinEnv, inv proto.Invite, code, name
 	}
 	if generated != "" {
 		keep = true
-		fmt.Fprintf(env.out, "No SSH key found, so tc made one just for itself: %s\n", generated)
+		if locked := unusableKeys(all); len(locked) > 0 {
+			fmt.Fprintf(env.out, "tc can't use your SSH key %s (passphrase-protected and not in ssh-agent, or unreadable), so it made one just for itself: %s\n",
+				strings.Join(locked, ", "), generated)
+			fmt.Fprintf(env.out, "To use yours instead, unlock it with ssh-add %s and run this join again with --key %s.\n", locked[0], locked[0])
+		} else {
+			fmt.Fprintf(env.out, "No SSH key found, so tc made one just for itself: %s\n", generated)
+		}
 		fmt.Fprintln(env.out, "It has no passphrase: anyone who can read that file can chat as you. (Prefer your own key? tc join --key ~/.ssh/id_ed25519.)")
 	}
 	if !loginOnly && (u.Name != name || preexisting(u, time.Now())) {
@@ -316,6 +322,18 @@ func joinWithKeys(ctx context.Context, env joinEnv, inv proto.Invite, code, name
 // after a lost WELCOME finds a minutes-old account and says nothing.
 func preexisting(u proto.User, now time.Time) bool {
 	return u.Created > 0 && now.Sub(time.UnixMilli(u.Created)) > 15*time.Minute
+}
+
+// unusableKeys lists the key files found that can't sign here, e.g. ones
+// with a passphrase that aren't in ssh-agent.
+func unusableKeys(all []joinKey) []string {
+	var out []string
+	for _, k := range all {
+		if k.Signer == nil && k.Path != "" {
+			out = append(out, sanitize.Line(k.Path))
+		}
+	}
+	return out
 }
 
 // maxBlindKeys is how many keys runJoin offers without a key hint.
