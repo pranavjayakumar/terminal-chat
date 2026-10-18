@@ -16,7 +16,9 @@ import (
 // The completion popup sits just above the input. It opens by itself while
 // the input is a bare "/command" (no space yet) or the word at the cursor is
 // an @name or #channel. While it is shown, ↑/↓ (Ctrl-P/N) move, Enter or Tab
-// puts the highlighted item into the input (never sends), Esc closes it.
+// puts the highlighted item into the input, Esc closes it. Enter never sends
+// from the / menu; on an @/# word that already equals the highlighted item it
+// closes the popup and sends.
 // Once closed it stays closed until the input changes.
 
 // compRows is how many items the popup shows at once; more scroll.
@@ -254,7 +256,14 @@ func (m *Model) compKey(key string) (tea.Cmd, bool) {
 		c.sel = (c.sel - 1 + len(c.items)) % len(c.items)
 	case kDown, "ctrl+n":
 		c.sel = (c.sel + 1) % len(c.items)
-	case kEnter, kTab:
+	case kEnter:
+		if m.exactComp() {
+			// Nothing to complete: Enter sends as if the popup weren't there.
+			m.closeComp()
+			return nil, false
+		}
+		m.acceptComp()
+	case kTab:
 		m.acceptComp()
 	case kEsc:
 		m.closeComp()
@@ -262,6 +271,17 @@ func (m *Model) compKey(key string) (tea.Cmd, bool) {
 		return nil, false
 	}
 	return nil, true
+}
+
+// exactComp reports whether the @/# word at the cursor already is the
+// highlighted item. Commands never count: Enter on the menu always completes.
+func (m *Model) exactComp() bool {
+	c := &m.comp
+	if c.kind == '/' || c.sel < 0 || c.sel >= len(c.items) {
+		return false
+	}
+	w, _, _ := m.cursorWord()
+	return w == c.items[c.sel].text
 }
 
 // acceptComp puts the highlighted item into the input, followed by a space.
