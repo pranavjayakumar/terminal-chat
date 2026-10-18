@@ -99,7 +99,7 @@ type Model struct {
 	noticeTTL    time.Duration // 0: the default for the kind
 	noticeGen    int           // bumped on every change; expiry ticks carry it
 	noticeTimed  int           // generation that has an expiry tick scheduled
-	ctrlC        bool
+	ctrlC        time.Time // first Ctrl-C; a second one within infoTTL quits
 	escAt        time.Time // first Esc on a non-empty draft
 	helpScroll   int
 	view         viewer
@@ -1006,15 +1006,16 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 	key := keyName(k)
 	if key == kQuit {
-		if m.ctrlC {
+		// Only while the hint is up: a stray Ctrl-C long after must not quit.
+		if !m.ctrlC.IsZero() && m.now().Sub(m.ctrlC) <= infoTTL {
 			return tea.Quit
 		}
-		m.ctrlC = true
+		m.ctrlC = m.now()
 		m.setInfo("press Ctrl-C again to quit")
 		return nil
 	}
-	if m.ctrlC {
-		m.ctrlC = false
+	if !m.ctrlC.IsZero() {
+		m.ctrlC = time.Time{}
 		if !m.noticeErr {
 			m.clearNotice()
 		}
