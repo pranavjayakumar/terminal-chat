@@ -79,6 +79,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 `/remind <when> <text>`, `/reminders`, `/remind-delete id`, `/snippet path[:range] [message]`,
 `/share-pane [pane]` (herdr only), `/verify @user [--github login]`, `/accept-key @user`, `/members`,
 `/alarm`, `/alarm-clear #name`, `/devices [@user]`, `/device-revoke id`, `/disable @user` (admin), `/quit`.
+`/topic` or `/name` alone shows the current topic or display name; `--clear` removes it. Commands that change something confirm it in the status line (`added @bob`, `topic set`, `away: lunch`).
 Unknown command → inline error, input kept.
 
 ### Completion popup
