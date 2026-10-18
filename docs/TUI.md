@@ -34,6 +34,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 - Pinned messages end with a dim `📌` on their footer line; the header shows a dim `📌 N` when the channel has pins.
 - Reactions on a line below: `👍 2  🎉 1` (your own reactions highlighted).
 - Thread roots show `↳ N replies`; threads open in a right pane (or full width below 100 cols).
+- An empty channel shows a dim `no messages yet — say hi · F1 help · Ctrl-K channels & people` (short form under 64 columns) once its history is known to be empty.
 - Typing line above the input; nothing when nobody is typing.
 - Input: single line that grows to max 6 lines; `Alt-Enter`/`Ctrl-J` inserts newline; `Enter` sends.
 

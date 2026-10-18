@@ -96,3 +96,23 @@ func TestNotifySettingsReadable(t *testing.T) {
 		press(m, "ctrl+u")
 	}
 }
+
+// An empty channel says so and how to get around, instead of a blank pane
+// (what a brand-new user sees first).
+func TestEmptyChannelHint(t *testing.T) {
+	for _, sz := range [][2]int{{120, 35}, {80, 24}, {40, 12}} {
+		m, f := newTestModelFake(t, sz[0], sz[1])
+		f.msgs[11] = nil
+		m.histDone[11] = true
+		run(m, m.openChannel(11))
+		v := checkView(t, m, "empty")
+		if !strings.Contains(v, "no messages yet") || sz[0] >= 80 && !strings.Contains(v, "F1 help") {
+			t.Fatalf("%v: no hint:\n%s", sz, v)
+		}
+		m.histDone[11] = false
+		m.histBusy[11] = true
+		if v := checkView(t, m, "loading"); strings.Contains(v, "no messages yet") {
+			t.Fatalf("hint while history loads:\n%s", v)
+		}
+	}
+}

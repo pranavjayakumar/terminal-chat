@@ -138,6 +138,14 @@ func (m *Model) viewPane(p *pane, w, h int, unread int) []string {
 		return out
 	}
 	lines, _ := m.paneLines(p, w)
+	if len(lines) == 0 && p == &m.main && !m.histBusy[p.ch] && (m.histDone[p.ch] || m.status.State == client.Online) {
+		// What a brand-new user sees first: say what to do, not a blank pane.
+		hint := "no messages yet — say hi · F1 help · Ctrl-K channels & people"
+		if w < 64 {
+			hint = "no messages yet · F1 help"
+		}
+		lines = []string{m.st.dim.Render(truncate(hint, w))}
+	}
 	total := len(lines)
 	scroll := min(max(p.scroll, 0), max(total-h, 0))
 	end := total - scroll
