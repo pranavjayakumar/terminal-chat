@@ -227,7 +227,7 @@ func TestParseRemindErrors(t *testing.T) {
 	for _, in := range []string{
 		"", "   ", "soon call", "call mom", "in", "at", "10 call", "0m x", "0h x", "-5m x", "5x x", "5s x", "1h30 x",
 		"25:00 x", "24:00 x", "9:60 x", "13pm x", "0am x", "9:5 x", "9:005 x", "123:00 x", "tomorrow", "tomorrow call mom",
-		"tomorrow 25:00 x", "366d x", "9999999m x", "1000000h x", ":30 x", "am x", "9am:30 x", "5 pm x",
+		"tomorrow 25:00 x", "366d x", "9999999m x", "1000000h x", "213504d x", "999999w x", "999999h999999h999999h x", ":30 x", "am x", "9am:30 x", "5 pm x",
 		"10m", "10m   ", "15:30", "tomorrow 9am", "in 10m", // no text
 	} {
 		if got, text, err := ParseRemind(in, now); err == nil {
