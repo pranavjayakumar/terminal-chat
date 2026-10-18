@@ -77,6 +77,9 @@ type huddleUI struct {
 	counts   map[uint64]int
 	warned   error  // the HuddleWarning already shown
 	last     uint64 // the huddle we were in last
+	// endedNote is the "huddle ended" notice shown; a better reason may
+	// replace it (dropped, then moved).
+	endedNote string
 	// seenActive is the channel here was computed for.
 	seenActive uint64
 }
@@ -126,10 +129,11 @@ func (m *Model) refreshHuddle() {
 		h.warned = w
 		// Stopped (revoked, disabled): the banner says more. Never hide
 		// another error notice (a failed send in the same drop) either.
-		if m.status.Stopped || (m.noticeErr && m.notice != "") {
+		if m.status.Stopped || (m.noticeErr && m.notice != "" && m.notice != h.endedNote) {
 			return
 		}
-		m.setNotice(m.huddleEndedText(w), !errors.Is(w, client.ErrHuddleMoved), false, endedTTL)
+		h.endedNote = m.huddleEndedText(w)
+		m.setNotice(h.endedNote, !errors.Is(w, client.ErrHuddleMoved), false, endedTTL)
 	}
 }
 

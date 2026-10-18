@@ -200,3 +200,69 @@ func TestHuddleRevokeMidCallContinuity(t *testing.T) {
 		t.Fatalf("audio gap too long across rotation: %v / %v", ga, gb)
 	}
 }
+
+// A plaintext huddle in a private channel that gets encrypted ends for
+// everyone; the reason shown must be the documented "the channel's
+// encryption changed — /huddle to rejoin" (docs/VOICE.md), not the generic
+// "dropped from the huddle" that tells the user nothing.
+func TestHuddleEndReason_BreakEncryptedChannelSaysDropped(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	us := huddlers(t, "quic", "alice", "bob")
+	alice, bob := us[0], us[1]
+	ch, err := alice.CreateChannel(ctx, "team", true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := alice.AddMember(ctx, ch.ID, bob.Me().ID); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "bob has the channel", func() bool { c, ok := bob.Channel(ch.ID); return ok && c.Member })
+	for _, u := range us {
+		u.SetVoicePlatform((&fakeAudio{}).platform)
+		if err := u.JoinHuddle(ctx, ch.ID); err != nil {
+			t.Fatalf("%s join: %v", u.Me().Name, err)
+		}
+	}
+	eventually(t, "roster", func() bool { return len(alice.Huddle(ch.ID)) == 2 && len(bob.Huddle(ch.ID)) == 2 })
+	if err := alice.EncryptChannel(ctx, ch.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range us {
+		eventually(t, "plaintext huddle ended", func() bool { _, in := u.InHuddle(); return !in })
+		if err := u.HuddleWarning(); !errors.Is(err, client.ErrHuddleEncChanged) {
+			t.Errorf("%s after the channel was encrypted: %v, want %v", u.Me().Name, err, client.ErrHuddleEncChanged)
+		}
+	}
+}
+
+// The call moving to another device says so even when that device joined
+// a huddle in a different channel: the server ends every participation of
+// the user (opHuddleJoin), so the desktop's huddle ended because the user
+// took a call on the laptop, not because the server dropped them.
+func TestHuddleEndReason_BreakMovedToOtherChannelSaysDropped(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	us := huddlers(t, "quic", "alice", "bob")
+	alice := us[0]
+	laptop := secondDevice(t, alice)
+	eventually(t, "laptop online", laptop.online)
+	gen := alice.channel("general")
+	other, err := alice.CreateChannel(ctx, "random", false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "laptop has the channel", func() bool { c, ok := laptop.Channel(other.ID); return ok && c.Member })
+	alice.SetVoicePlatform((&fakeAudio{}).platform)
+	laptop.SetVoicePlatform((&fakeAudio{}).platform)
+	if err := alice.JoinHuddle(ctx, gen); err != nil {
+		t.Fatal(err)
+	}
+	if err := laptop.JoinHuddle(ctx, other.ID); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "desktop out of the huddle", func() bool { _, in := alice.InHuddle(); return !in })
+	if err := alice.HuddleWarning(); !errors.Is(err, client.ErrHuddleMoved) {
+		t.Fatalf("desktop after the laptop took a call: %v, want %v", err, client.ErrHuddleMoved)
+	}
+}

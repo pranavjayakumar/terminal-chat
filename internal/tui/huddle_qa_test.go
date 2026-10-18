@@ -67,6 +67,27 @@ func TestHuddleEndedReasonShown(t *testing.T) {
 	}
 }
 
+// "dropped" upgraded to "moved" (the other device's roster came second)
+// replaces the first notice.
+func TestHuddleEndedReasonUpgraded(t *testing.T) {
+	m, h := newHuddleModel(t, 100, 24)
+	runInput(t, m, "/huddle")
+	m.clearNotice()
+	h.hmu.Lock()
+	h.rosters[h.in] = nil
+	h.in, h.warn = 0, client.ErrHuddleDropped
+	h.hmu.Unlock()
+	h.update(m)
+	if !strings.Contains(m.notice, "dropped") {
+		t.Fatalf("notice %q", m.notice)
+	}
+	h.warn = client.ErrHuddleMoved
+	h.update(m)
+	if !strings.Contains(m.notice, "moved to your other device") {
+		t.Fatalf("not upgraded: %q", m.notice)
+	}
+}
+
 // The ended notice fits and keeps the reason at narrow widths.
 func TestHuddleEndedReasonNarrow(t *testing.T) {
 	m, h := newHuddleModel(t, 40, 12)

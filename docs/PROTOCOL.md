@@ -500,6 +500,8 @@ All sizes are UTF-8 bytes.
   huddle sizes) are in §14.
 - Keepalive: the client sends PING after 20 s without sending anything. Either
   side closes after 45 s without receiving a frame. QUIC `MaxIdleTimeout` = 60 s.
+  While a session is in a huddle the server also PINGs it every 2 s and ends its participation
+  (not the connection; roster as in §14.2) after 10 s without receiving a frame from it.
 - On QUIC, BYE is followed by `CloseWithError(0, code)`.
 - Reconnect: exponential backoff 0.25 s → 30 s with jitter, reset on success.
 

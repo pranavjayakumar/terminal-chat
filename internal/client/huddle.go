@@ -46,7 +46,8 @@ type huddleState struct {
 	joinedAt map[uint64]time.Time
 	// ended is why our last huddle ended without us leaving (#76); nil
 	// after a leave or a new join.
-	ended error
+	ended   error
+	endedAt time.Time
 }
 
 type participation struct {
@@ -499,7 +500,7 @@ func (c *Client) endHuddle(p *participation, why error) bool {
 		return false
 	}
 	c.hud.cur = nil
-	c.hud.ended = why
+	c.hud.ended, c.hud.endedAt = why, time.Now()
 	c.hud.mu.Unlock()
 	p.cancel()
 	_ = p.vs.Close()
@@ -585,6 +586,7 @@ func (c *Client) huddleEphemeral(e proto.Ephemeral) {
 		parts = parts[:proto.MaxHuddleParts]
 	}
 	cv, ok := c.Channel(e.Chan)
+	me := c.Me().ID
 	c.hud.mu.Lock()
 	if c.hud.rosters == nil {
 		c.hud.rosters = map[uint64][]proto.Part{}
@@ -599,19 +601,30 @@ func (c *Client) huddleEphemeral(e proto.Ephemeral) {
 		live := !c.hud.liveAt.IsZero() && !now.Before(c.hud.liveAt) && now.Sub(c.hud.joinedAt[e.Chan]) > baselineFor
 		// A start has one participant; a longer roster arriving late
 		// after a reconnect is a huddle that was already going.
-		if !had && live && len(parts) == 1 && parts[0].User != c.Me().ID {
+		if !had && live && len(parts) == 1 && parts[0].User != me {
 			start = []HuddleStart{{Chan: e.Chan, By: parts[0].User}}
 		}
 	}
 	p := c.hud.cur
+	// Another device of ours joining a huddle in another channel drops us
+	// here too, and that roster may come right after ours: "dropped" just
+	// now becomes "moved" once it shows up.
+	if p == nil && errors.Is(c.hud.ended, ErrHuddleDropped) && time.Since(c.hud.endedAt) < movedWithin &&
+		slices.ContainsFunc(parts, func(q proto.Part) bool { return q.User == me }) {
+		c.hud.ended = ErrHuddleMoved
+	}
 	c.hud.mu.Unlock()
 	if p != nil && p.ch == e.Chan {
 		if !slices.ContainsFunc(parts, func(q proto.Part) bool { return q.Src == p.src }) {
-			// The server dropped us: another of our devices took over, or
+			// The server dropped us: another of our devices took over (in
+			// any channel), the channel's encryption changed, or
 			// membership, a revoke, the liveness check.
 			why := ErrHuddleDropped
-			if slices.ContainsFunc(parts, func(q proto.Part) bool { return q.User == c.Me().ID }) {
+			switch {
+			case c.otherDeviceInHuddle(me, p.src):
 				why = ErrHuddleMoved
+			case (c.E2EStatus(p.ch).State != E2EOff) != (p.keys != nil):
+				why = ErrHuddleEncChanged
 			}
 			c.endHuddle(p, why)
 		} else {
@@ -619,6 +632,23 @@ func (c *Client) huddleEphemeral(e proto.Ephemeral) {
 		}
 	}
 	c.post(Update{Huddle: true, HuddleStarted: start})
+}
+
+// movedWithin is how long after a drop a roster showing another device of
+// ours in a huddle still explains it.
+const movedWithin = 2 * time.Second
+
+// otherDeviceInHuddle reports whether some roster has us under a src that
+// isn't this participation's.
+func (c *Client) otherDeviceInHuddle(me uint64, src uint32) bool {
+	c.hud.mu.Lock()
+	defer c.hud.mu.Unlock()
+	for _, r := range c.hud.rosters {
+		if slices.ContainsFunc(r, func(q proto.Part) bool { return q.User == me && q.Src != src }) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) applyRoster(p *participation, parts []proto.Part) {
