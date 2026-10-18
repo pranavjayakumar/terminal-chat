@@ -485,7 +485,33 @@ func (c *Client) SetTopic(ctx context.Context, ch uint64, topic string) error {
 // History fetches up to 100 messages of ch older than before (0 = latest)
 // into the cache; Messages/Thread then include them. more reports whether
 // older ones exist.
+//
+// A page holds thread replies too, and callers page by the oldest top-level
+// message they show, so a page of nothing but replies (a busy thread) would
+// come back on every call and hide everything before it. History keeps going
+// until a page brings a top-level message, or there is nothing older.
 func (c *Client) History(ctx context.Context, ch, before uint64) (more bool, err error) {
+	for range maxReplyPages {
+		r, err := c.historyPage(ctx, ch, before)
+		if err != nil || !r.More || len(r.Msgs) == 0 {
+			return r.More, err
+		}
+		oldest := r.Msgs[0].ID
+		for _, m := range r.Msgs {
+			if m.Thread == 0 {
+				return true, nil
+			}
+			oldest = min(oldest, m.ID)
+		}
+		before = oldest
+	}
+	return true, nil
+}
+
+// maxReplyPages bounds one History call (100 messages a page).
+const maxReplyPages = 50
+
+func (c *Client) historyPage(ctx context.Context, ch, before uint64) (proto.HistoryRes, error) {
 	var r proto.HistoryRes
 	hook := func(res proto.Res) error {
 		var hr proto.HistoryRes
@@ -500,8 +526,8 @@ func (c *Client) History(ctx context.Context, ch, before uint64) (more bool, err
 		}
 		return err
 	}
-	err = c.call(ctx, proto.OpHistory, proto.HistoryArgs{Chan: ch, Before: before, Limit: 100}, &r, hook)
-	return r.More, err
+	err := c.call(ctx, proto.OpHistory, proto.HistoryArgs{Chan: ch, Before: before, Limit: 100}, &r, hook)
+	return r, err
 }
 
 // saveMsgs stores messages from a RES (history), judging encrypted ones.
