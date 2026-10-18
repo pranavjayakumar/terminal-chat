@@ -433,8 +433,8 @@ func (s *Server) huddleLiveness(sess *session) {
 	sess.recvMu.Unlock()
 	if idle > hs.deadAfter {
 		s.mu.Lock()
-		// Re-check under the lock: a leave and rejoin that got it first
-		// touched lastRecv, and that new participation is alive.
+		// Re-check under the lock: a rejoin that got it first touched
+		// lastRecv (dropWhere ignores a session no longer in a huddle).
 		sess.recvMu.Lock()
 		idle = time.Since(sess.lastRecv)
 		sess.recvMu.Unlock()
