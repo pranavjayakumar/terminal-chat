@@ -652,15 +652,37 @@ func (m *Model) setErr(what string, err error) {
 	}
 	var pe *proto.Error
 	if errors.As(err, &pe) {
-		msg = pe.Code
-		if pe.Msg != "" {
-			msg += ": " + pe.Msg
-		}
+		msg = protoErrText(pe)
 	}
 	if what != "" {
 		msg = what + ": " + msg
 	}
 	m.setNotice(msg, true, false, 0)
+}
+
+// codeWords says a bare server error code (PROTOCOL.md §5) in words.
+var codeWords = map[string]string{
+	proto.ErrBadRequest:   "the server refused that request",
+	proto.ErrUnauthorized: "not signed in",
+	proto.ErrForbidden:    "not allowed",
+	proto.ErrNotFound:     "not found",
+	proto.ErrConflict:     "conflicts with a change made meanwhile — try again",
+	proto.ErrRateLimited:  "too many requests — wait a moment",
+	proto.ErrTooLarge:     "too large",
+	proto.ErrUnknownOp:    "the server doesn't support this (older version?)",
+	proto.ErrInternal:     "server error",
+}
+
+// protoErrText is a server error for showing: its code and message, or
+// the code in words when there is no message.
+func protoErrText(pe *proto.Error) string {
+	if pe.Msg != "" {
+		return pe.Code + ": " + pe.Msg
+	}
+	if w, ok := codeWords[pe.Code]; ok {
+		return w
+	}
+	return pe.Code
 }
 
 // setInfo shows a notice that clears itself after infoTTL.

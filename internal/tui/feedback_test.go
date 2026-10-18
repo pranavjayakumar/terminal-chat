@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"github.com/skailama/tc/internal/proto"
 )
 
 // Commands that change something say so; a bare /topic or /name doesn't
@@ -41,5 +43,27 @@ func TestCommandFeedback(t *testing.T) {
 		if !strings.Contains(m.notice, in+" ") {
 			t.Fatalf("%s: notice %q", in, m.notice)
 		}
+	}
+}
+
+// A bare server error code reads as words, not as "not_found".
+func TestErrorCodesReadable(t *testing.T) {
+	m := newTestModel(t, 100, 30)
+	for code, want := range map[string]string{
+		proto.ErrNotFound:    "x: not found",
+		proto.ErrForbidden:   "x: not allowed",
+		proto.ErrRateLimited: "x: too many requests — wait a moment",
+	} {
+		m.setErr("x", &proto.Error{Code: code})
+		if m.notice != want {
+			t.Errorf("%s: %q, want %q", code, m.notice, want)
+		}
+		if got := errText(&proto.Error{Code: code}); got != strings.TrimPrefix(want, "x: ") {
+			t.Errorf("errText %s: %q", code, got)
+		}
+	}
+	m.setErr("x", &proto.Error{Code: proto.ErrForbidden, Msg: "only admins"})
+	if m.notice != "x: forbidden: only admins" {
+		t.Errorf("with a message: %q", m.notice)
 	}
 }

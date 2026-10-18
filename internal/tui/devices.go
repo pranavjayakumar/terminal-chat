@@ -160,10 +160,7 @@ func errText(err error) string {
 	case errors.Is(err, client.ErrOffline):
 		msg = "offline"
 	case errors.As(err, &pe):
-		msg = pe.Code
-		if pe.Msg != "" {
-			msg += ": " + pe.Msg
-		}
+		msg = protoErrText(pe)
 	}
 	return sanitize.Line(msg)
 }
