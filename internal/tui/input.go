@@ -501,9 +501,11 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 		}
 		var ids []uint64
 		for _, a := range c.args {
-			id, ok := m.findUser(a)
-			if !ok && strings.EqualFold(strings.TrimPrefix(a, "@"), "me") {
-				id, ok = m.me.ID, true // "@me" unless someone is called me
+			// "@me" is always me, even if an account is named "me": notes
+			// must never go to someone else.
+			id, ok := m.me.ID, true
+			if !strings.EqualFold(strings.TrimPrefix(a, "@"), "me") {
+				id, ok = m.findUser(a)
 			}
 			if !ok {
 				return nil, fmt.Errorf("unknown user %s", sanitize.Line(a))

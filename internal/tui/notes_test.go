@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"github.com/skailama/tc/internal/proto"
 )
 
 // My notes (the DM with only me, where reminders land) open with /dm @me,
@@ -32,5 +34,17 @@ func TestOpenNotes(t *testing.T) {
 	run(m, m.handleKey(keyMsg("enter")))
 	if !f.called("dm:[]") {
 		t.Fatalf("Ctrl-K notes: not opened, calls %v", f.calls)
+	}
+}
+
+// An account named "me" can't catch /dm @me: that is always my notes.
+func TestDMMeNeverAnotherUser(t *testing.T) {
+	m, f := newTestModelFake(t, 100, 30)
+	f.users = append(f.users, proto.User{ID: 77, Name: "me"})
+	m.reloadUsers()
+	m.input.SetValue("/dm @me")
+	run(m, m.handleKey(keyMsg("enter")))
+	if !f.called("dm:[]") || f.called("dm:[77]") {
+		t.Fatalf("calls %v", f.calls)
 	}
 }
