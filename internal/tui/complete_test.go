@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
 )
 
@@ -288,10 +289,10 @@ func TestAtCompletion(t *testing.T) {
 	typeKeys(m, "@ca x")
 	send(m, tea.KeyMsg{Type: tea.KeyLeft})
 	send(m, tea.KeyMsg{Type: tea.KeyLeft})
-	if !m.compShown() {
-		t.Fatal("popup not open with the cursor after @ca")
+	if m.compShown() {
+		t.Fatal("a cursor move opened the popup")
 	}
-	press(m, "tab")
+	press(m, "tab") // one match: completes at once
 	if v := m.input.Value(); v != "@carol x" {
 		t.Fatalf("mid-text: %q", v)
 	}
@@ -413,5 +414,133 @@ func TestEscMenuBeforeMicAndRing(t *testing.T) {
 	}
 	if m.input.Value() != "/hu" {
 		t.Fatalf("input changed: %q", m.input.Value())
+	}
+}
+
+// Cursor moves never open the popup: ↑/↓ keep moving the cursor and Enter
+// sends the draft as it is.
+func TestCursorMovesDontOpenPopup(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	typeKeys(m, "hi @bob")
+	press(m, "esc", "alt+enter")
+	typeKeys(m, "second line here")
+	press(m, "up")
+	if m.compShown() {
+		t.Fatal("↑ onto an @word opened the popup")
+	}
+	press(m, "down")
+	if m.input.Line() != 1 {
+		t.Fatalf("↓ didn't move the cursor back (line %d)", m.input.Line())
+	}
+	press(m, "up", "enter")
+	if len(f.sent) != 1 || f.sent[0].Body != "hi @bob\nsecond line here" {
+		t.Fatalf("sent %+v", f.sent)
+	}
+	typeKeys(m, "hey @bob can")
+	for range 5 {
+		send(m, tea.KeyMsg{Type: tea.KeyLeft})
+	}
+	press(m, "enter")
+	if len(f.sent) != 2 || f.sent[1].Body != "hey @bob can" {
+		t.Fatalf("← over a mention then Enter: %+v", f.sent)
+	}
+}
+
+// "#12" in a message isn't completed to #release-12 by a substring match.
+func TestDigitsArentCompleted(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	f.chans = append(f.chans, client.ChannelView{Channel: proto.Channel{ID: 14, Name: "release-12", Kind: proto.ChanPublic}, Display: "release-12", Member: true})
+	m.reloadChans()
+	typeKeys(m, "fixed in #12")
+	if m.compShown() {
+		t.Fatalf("popup for #12: %v", compTexts(m))
+	}
+	press(m, "enter")
+	if len(f.sent) != 1 || f.sent[0].Body != "fixed in #12" {
+		t.Fatalf("sent %+v", f.sent)
+	}
+	typeKeys(m, "#rel")
+	if got := compTexts(m); len(got) != 1 || got[0] != "#release-12" {
+		t.Fatalf("#rel: %v", got)
+	}
+	press(m, "ctrl+u")
+	typeKeys(m, "#e") // one letter: prefix matches only
+	for _, s := range compTexts(m) {
+		if !strings.HasPrefix(s, "#e") {
+			t.Fatalf("one-letter substring match %s", s)
+		}
+	}
+	press(m, "ctrl+u")
+	typeKeys(m, "#ase") // two letters: substring matches too
+	if got := compTexts(m); len(got) != 1 || got[0] != "#release-12" {
+		t.Fatalf("#ase: %v", got)
+	}
+}
+
+// A word that already equals the highlighted item still completes first
+// (the owner's rule): the second Enter sends.
+func TestExactMentionCompletesThenSends(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	typeKeys(m, "thanks @bob")
+	press(m, "enter")
+	if len(f.sent) != 0 || m.input.Value() != "thanks @bob " {
+		t.Fatalf("first Enter: sent %+v input %q", f.sent, m.input.Value())
+	}
+	press(m, "enter")
+	if len(f.sent) != 1 || f.sent[0].Body != "thanks @bob" {
+		t.Fatalf("second Enter: %+v", f.sent)
+	}
+}
+
+// The popup belongs to the place it was opened in: switching channels and
+// back doesn't bring it back, and a single-rune paste never opens it.
+func TestPopupDoesntFollowChannels(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	typeKeys(m, "/he")
+	if !m.compShown() {
+		t.Fatal("menu not open")
+	}
+	press(m, "alt+down")
+	if m.compShown() {
+		t.Fatal("menu shown in the next channel")
+	}
+	press(m, "alt+up")
+	if m.input.Value() != "/he" {
+		t.Fatalf("draft not restored: %q", m.input.Value())
+	}
+	if m.compShown() {
+		t.Fatal("stale menu came back with the draft")
+	}
+	press(m, "ctrl+u")
+	paste(m, "/")
+	if m.compShown() {
+		t.Fatal("single-rune paste opened the menu")
+	}
+	press(m, "ctrl+u")
+	// Items follow a reload while shown.
+	typeKeys(m, "@da")
+	if m.compShown() {
+		t.Fatal("no user da yet")
+	}
+	typeKeys(m, "v")
+	f.users = append(f.users, proto.User{ID: 9, Name: "dave"})
+	m.reloadUsers()
+	typeKeys(m, "e")
+	if got := compTexts(m); len(got) != 1 || got[0] != "@dave" {
+		t.Fatalf("after reload: %v", got)
+	}
+}
+
+func TestPopupFitsSplitThread(t *testing.T) {
+	for _, sz := range [][2]int{{40, 12}, {100, 14}, {200, 60}, {20, 6}} {
+		m := newTestModel(t, sz[0], sz[1])
+		run(m, m.openThread(103))
+		typeKeys(m, "/")
+		checkView(t, m, "thread /")
+		press(m, "up")
+		checkView(t, m, "thread / up")
+		press(m, "ctrl+u")
+		typeKeys(m, "@")
+		checkView(t, m, "thread @")
 	}
 }

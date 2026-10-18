@@ -192,10 +192,10 @@ func (m *Model) mainColumn(d dims) []string {
 	out = append(out, m.bodyLines(d)...)
 	out = append(out, fit(m.statusLine(w), w))
 	if m.compShown() {
-		// The popup covers the bottom of the body and the status line, so
-		// only the rule separates it from the input.
-		rows := m.compLines(w, min(d.bodyH+1, len(out)))
-		copy(out[len(out)-len(rows):], rows)
+		// The popup covers the bottom of the body, just above the status
+		// line (which keeps showing notices and connection state).
+		rows := m.compLines(w, d.bodyH)
+		copy(out[len(out)-1-len(rows):], rows)
 	}
 	out = append(out, m.st.border.Render(strings.Repeat("─", w)))
 	var in []string

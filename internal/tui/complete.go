@@ -38,11 +38,32 @@ type completer struct {
 
 	closed    bool   // closed by Esc, a completion or a paste...
 	closedVal string // ...at this input value: stays closed until it changes
+
+	ch, root uint64 // where the input was when the items were made
+
+	// here caches the members of channel hereCh for ranking @ candidates;
+	// reloadChans drops it.
+	hereCh uint64
+	here   map[uint64]bool
 }
 
 // compShown reports whether the popup is on screen (and owns its keys).
 func (m *Model) compShown() bool {
-	return m.comp.kind != 0 && len(m.comp.items) > 0 && m.mode == modeNormal && m.comp.val == m.input.Value()
+	p := m.focus()
+	return m.comp.kind != 0 && len(m.comp.items) > 0 && m.mode == modeNormal &&
+		m.comp.val == m.input.Value() && m.comp.ch == p.ch && m.comp.root == p.root
+}
+
+// hideComp takes the popup off screen without the Esc "stay closed": the
+// next edit may show it again.
+func (m *Model) hideComp() { m.comp.kind = 0 }
+
+// reloadComp redoes a shown popup's items after users, groups or channels
+// changed under it.
+func (m *Model) reloadComp() {
+	if m.compShown() {
+		m.fillComp(m.input.Value())
+	}
 }
 
 // closeComp hides the popup until the input changes.
@@ -51,7 +72,7 @@ func (m *Model) closeComp() {
 	m.comp.closed, m.comp.closedVal = true, m.input.Value()
 }
 
-// refreshComp recomputes the popup after the input (or the cursor) moved.
+// refreshComp recomputes the popup after the input changed.
 func (m *Model) refreshComp() {
 	v := m.input.Value()
 	if m.comp.closed && v == m.comp.closedVal {
@@ -81,6 +102,7 @@ func (m *Model) fillComp(v string) {
 		c.sel = 0
 	}
 	c.kind, c.query, c.val = kind, query, v
+	c.ch, c.root = m.focus().ch, m.focus().root
 	c.items = c.items[:0]
 	switch kind {
 	case '/':
@@ -108,6 +130,17 @@ func matchRank(q, s string) int {
 	return -1
 }
 
+// wordRank is matchRank for @ and # words, which turn up in ordinary text
+// ("fixed in #12"): substring matches need two letters, and never come
+// from digits alone, so Enter doesn't rewrite text that wasn't a mention.
+func wordRank(q, s string) int {
+	r := matchRank(q, s)
+	if r == 1 && (len(q) < 2 || strings.Trim(q, "0123456789") == "") {
+		return -1
+	}
+	return r
+}
+
 func (m *Model) commandItems(q string) {
 	voice := client.VoiceAvailable()
 	for _, c := range commandTable {
@@ -127,24 +160,28 @@ func (m *Model) commandItems(q string) {
 
 // userItems lists people (this channel's members first) and then groups.
 func (m *Model) userItems(q string) {
-	var here []uint64
-	if v, ok := m.chanView(m.focus().ch); ok {
-		here = v.Members
+	c := &m.comp
+	if ch := m.focus().ch; c.here == nil || c.hereCh != ch {
+		c.hereCh, c.here = ch, map[uint64]bool{}
+		if v, ok := m.chanView(ch); ok {
+			for _, u := range v.Members {
+				c.here[u] = true
+			}
+		}
 	}
 	for _, u := range m.userList {
 		if u.ID == m.me.ID || u.Disabled {
 			continue
 		}
-		name := strings.ToLower(u.Name)
-		r := matchRank(q, name)
-		if r < 0 && q != "" && strings.Contains(strings.ToLower(u.Display), q) {
+		r := wordRank(q, strings.ToLower(u.Name))
+		if r < 0 && u.Display != "" && wordRank(q, strings.ToLower(u.Display)) >= 0 {
 			r = 1
 		}
 		if r < 0 {
 			continue
 		}
 		cls := 1
-		if slices.Contains(here, u.ID) {
+		if c.here[u.ID] {
 			cls = 0
 		}
 		desc := ""
@@ -154,7 +191,7 @@ func (m *Model) userItems(q string) {
 		m.comp.items = append(m.comp.items, compItem{text: "@" + sanitize.Line(u.Name), desc: desc, rank: r*3 + cls})
 	}
 	for _, g := range m.groups {
-		if r := matchRank(q, g.Name); r >= 0 {
+		if r := wordRank(q, g.Name); r >= 0 {
 			m.comp.items = append(m.comp.items, compItem{
 				text: "@" + sanitize.Line(g.Name),
 				desc: "group · " + strconv.Itoa(len(g.Members)) + " " + plural(len(g.Members), "person", "people"),
@@ -170,7 +207,7 @@ func (m *Model) chanItems(q string) {
 		if v.Kind == proto.ChanDM || (!v.Member && v.Kind != proto.ChanPublic) {
 			continue
 		}
-		r := matchRank(q, v.Name)
+		r := wordRank(q, v.Name)
 		if r < 0 {
 			continue
 		}
@@ -280,9 +317,13 @@ func (m *Model) compLines(w, h int) []string {
 		return nil
 	}
 	start, end := window(len(c.items), c.sel, n)
-	mw := 0 // a column for the ↑/↓ scroll marks
-	if len(c.items) > n && w >= 30 {
+	mw := 0 // columns for the ↑/↓ scroll marks
+	switch {
+	case len(c.items) <= n:
+	case w >= 30:
 		mw = 2
+	case w >= 4:
+		mw = 1
 	}
 	bw := w - mw
 	out := make([]string, 0, n)
@@ -295,11 +336,12 @@ func (m *Model) compLines(w, h int) []string {
 		if it.desc != "" {
 			rest += "  " + it.desc
 		}
+		// A dim bar sets the popup apart from the messages under it.
 		var l string
 		if i == c.sel {
-			l = m.st.overlaySel.Render(fit(truncate(" "+it.text+rest, bw), bw))
+			l = m.st.overlaySel.Render(fit(truncate("▌"+it.text+rest, bw), bw))
 		} else {
-			l = fit(truncate(" "+m.st.bold.Render(it.text)+m.st.dim.Render(rest), bw), bw)
+			l = fit(truncate(m.st.dim.Render("▏")+m.st.bold.Render(it.text)+m.st.dim.Render(rest), bw), bw)
 		}
 		if mw > 0 {
 			mark := " "
@@ -309,7 +351,7 @@ func (m *Model) compLines(w, h int) []string {
 			case i == end-1 && end < len(c.items):
 				mark = "↓"
 			}
-			l += " " + m.st.dim.Render(mark)
+			l += spaces(mw-1) + m.st.dim.Render(mark)
 		}
 		out = append(out, fit(l, w))
 	}

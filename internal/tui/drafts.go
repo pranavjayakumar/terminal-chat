@@ -89,6 +89,7 @@ func (m *Model) syncDraft() {
 		prev := m.dk
 		m.setDraft(prev, val)
 		m.dk = key
+		m.hideComp() // a restored draft doesn't bring back a popup
 		if d := m.freshDraft(key); d != "" || prev.ch != 0 {
 			m.input.SetValue(d)
 			m.layoutInput()

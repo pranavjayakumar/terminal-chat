@@ -309,6 +309,7 @@ func (m *Model) reloadUsers() {
 	}
 	m.reloadPresence()
 	m.refreshMentionNames()
+	m.reloadComp()
 	m.rc.reset()
 	m.main.ver++
 	m.thread.ver++
@@ -338,6 +339,8 @@ func (m *Model) reloadChans() {
 	m.refreshTrust()
 	m.refreshHighlights()
 	m.refreshMentionNames()
+	m.comp.here = nil // members may have changed
+	m.reloadComp()
 	defer m.unverifiedHint()
 	if m.active != 0 {
 		if v, ok := m.chanView(m.active); !ok || (!v.Member && !v.Removed && v.Kind != proto.ChanPublic) {
@@ -1182,7 +1185,11 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 		m.closeComp()
 	} else {
 		m.input, cmd = m.input.Update(k)
-		m.refreshComp()
+		if m.input.Value() != before {
+			m.refreshComp()
+		} else {
+			m.hideComp() // a cursor move never opens it, so ↑/↓ and Enter stay theirs
+		}
 	}
 	m.layoutInput()
 	if v := m.input.Value(); v != before && v != "" && !strings.HasPrefix(v, "/") && m.editing == 0 {
@@ -1538,6 +1545,7 @@ func (m *Model) cancelEdit() {
 	}
 	m.editing = 0
 	m.input.SetValue(m.drafts[m.dk])
+	m.hideComp()
 	m.layoutInput()
 	m.clearNotice()
 }
