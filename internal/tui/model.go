@@ -100,6 +100,7 @@ type Model struct {
 	noticeGen    int           // bumped on every change; expiry ticks carry it
 	noticeTimed  int           // generation that has an expiry tick scheduled
 	ctrlC        time.Time     // first Ctrl-C; a second one within infoTTL quits
+	noticeCh     uint64        // nonzero: the notice is about this channel only
 	escAt        time.Time     // first Esc on a non-empty draft
 	helpScroll   int
 	view         viewer
@@ -471,6 +472,9 @@ func (m *Model) openChannel(ch uint64) tea.Cmd {
 		return nil
 	}
 	m.opened = true
+	if m.noticeCh != 0 && m.noticeCh != ch {
+		m.clearNotice()
+	}
 	if m.jump.wide != 0 && m.jump.wide != ch {
 		m.endWiden(false) // leaving the channel a jump widened
 	}
@@ -706,6 +710,7 @@ func (m *Model) setHint(s string) { m.setNotice(s, false, true, 0) }
 
 func (m *Model) setNotice(s string, isErr, sticky bool, ttl time.Duration) {
 	m.notice, m.noticeErr, m.noticeSticky, m.noticeTTL = sanitize.Line(s), isErr, sticky, ttl
+	m.noticeCh = 0
 	if s != ctrlCHint {
 		m.ctrlC = time.Time{} // the hint is gone: a Ctrl-C now must not quit
 	}
