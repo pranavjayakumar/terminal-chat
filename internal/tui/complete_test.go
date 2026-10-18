@@ -477,18 +477,70 @@ func TestDigitsArentCompleted(t *testing.T) {
 	}
 }
 
-// A word that already equals the highlighted item still completes first
-// (the owner's rule): the second Enter sends.
-func TestExactMentionCompletesThenSends(t *testing.T) {
+// A word that already equals the highlighted item has nothing to complete:
+// Enter sends on the first press (the owner's rule). Tab still completes.
+func TestExactMentionSendsOnFirstEnter(t *testing.T) {
 	m, f := newTestModelFake(t, 80, 24)
 	typeKeys(m, "thanks @bob")
+	if !m.compShown() || m.comp.items[m.comp.sel].text != "@bob" {
+		t.Fatalf("@bob not highlighted: %v sel %d", compTexts(m), m.comp.sel)
+	}
+	press(m, "enter")
+	if len(f.sent) != 1 || f.sent[0].Body != "thanks @bob" {
+		t.Fatalf("first Enter: sent %+v input %q", f.sent, m.input.Value())
+	}
+	if m.input.Value() != "" || m.compShown() {
+		t.Fatalf("after send: input %q popup %v", m.input.Value(), m.compShown())
+	}
+	checkView(t, m, "sent")
+}
+
+func TestExactChannelSendsOnFirstEnter(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	typeKeys(m, "see #general")
+	if !m.compShown() || m.comp.items[m.comp.sel].text != "#general" {
+		t.Fatalf("#general not highlighted: %v sel %d", compTexts(m), m.comp.sel)
+	}
+	press(m, "enter")
+	if len(f.sent) != 1 || f.sent[0].Body != "see #general" || m.input.Value() != "" {
+		t.Fatalf("first Enter: sent %+v input %q", f.sent, m.input.Value())
+	}
+}
+
+func TestPrefixMentionEnterCompletes(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	typeKeys(m, "thanks @bo")
+	if !m.compShown() || m.comp.items[m.comp.sel].text != "@bob" {
+		t.Fatalf("@bob not highlighted: %v sel %d", compTexts(m), m.comp.sel)
+	}
 	press(m, "enter")
 	if len(f.sent) != 0 || m.input.Value() != "thanks @bob " {
-		t.Fatalf("first Enter: sent %+v input %q", f.sent, m.input.Value())
+		t.Fatalf("Enter on @bo: sent %+v input %q", f.sent, m.input.Value())
 	}
 	press(m, "enter")
 	if len(f.sent) != 1 || f.sent[0].Body != "thanks @bob" {
 		t.Fatalf("second Enter: %+v", f.sent)
+	}
+}
+
+func TestExactMentionTabCompletes(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	typeKeys(m, "thanks @bob")
+	press(m, "tab")
+	if len(f.sent) != 0 || m.input.Value() != "thanks @bob " || m.compShown() {
+		t.Fatalf("Tab on exact @bob: sent %+v input %q", f.sent, m.input.Value())
+	}
+}
+
+func TestExactCommandEnterCompletes(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	typeKeys(m, "/pins")
+	if !m.compShown() || m.comp.items[m.comp.sel].text != "/pins" {
+		t.Fatalf("/pins not highlighted: %v sel %d", compTexts(m), m.comp.sel)
+	}
+	press(m, "enter")
+	if v := m.input.Value(); v != "/pins " || m.mode != modeNormal || len(f.sent) != 0 {
+		t.Fatalf("exact /pins + Enter: %q mode %v sent %+v", v, m.mode, f.sent)
 	}
 }
 
