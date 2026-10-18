@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/skailama/tc/internal/client"
@@ -49,4 +50,16 @@ func TestRemovedChannelNoHistoryError(t *testing.T) {
 		t.Fatalf("error notice %q", m.notice)
 	}
 	checkView(t, m, "removed")
+}
+
+// #106: a disabled account or revoked device is told what happened, not
+// just "revoked".
+func TestRevokedSaysWhy(t *testing.T) {
+	m, f := newTestModelFake(t, 120, 30)
+	f.status = client.Status{State: client.Offline, Stopped: true, Err: (&client.ByeError{Code: proto.ByeRevoked}).Error()}
+	m.Update(updateMsg(client.Update{Status: true}))
+	if !strings.Contains(m.notice, "account disabled") || !strings.Contains(m.notice, "ask an admin") {
+		t.Fatalf("notice %q", m.notice)
+	}
+	checkView(t, m, "revoked")
 }

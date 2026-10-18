@@ -980,7 +980,12 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 		prev := m.status
 		m.status = m.c.Status()
 		if m.status.Stopped && m.status.Err != "" && !prev.Stopped {
-			m.setNotice("disconnected: "+m.status.Err, true, false, 0)
+			msg := "disconnected: " + m.status.Err
+			if strings.HasPrefix(m.status.Err, (&client.ByeError{Code: proto.ByeRevoked}).Error()) {
+				// Same wording as the CLI: what happened, and the way back.
+				msg = "can't sign in: account disabled or device revoked · ask an admin (disabled: new invite and SSH key)"
+			}
+			m.setNotice(msg, true, true, 0)
 		}
 		if m.status.State == client.Online && prev.State != client.Online {
 			if len(m.main.msgs) < 30 {
