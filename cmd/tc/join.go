@@ -92,9 +92,14 @@ func cmdJoin(args []string) error {
 // showLogin prints the tokenless server line (tc://host:port#pin) of the
 // account in home: what `tc login` takes on a second computer.
 func showLogin(out io.Writer, home string) error {
+	if _, err := os.Stat(filepath.Join(home, "config.json")); err != nil {
+		return errors.New("this computer isn't signed in to a tc server yet.\n" +
+			"  New to the team? Run the invite your admin sent: tc join 'tc://…'\n" +
+			"  Already have an account? Run tc login on a computer that's signed in; it prints the line to run here.")
+	}
 	c, err := client.Open(home)
 	if err != nil {
-		return errUsage
+		return err
 	}
 	cfg := c.Config()
 	c.Close()
