@@ -22,7 +22,7 @@ const installInvite = "tc://chat.example.com:7443/abcdefghijklmnopqrstuvwxyz#Pin
 
 // stubTC logs its os/arch, its argv, then "TC_INVITE=<value>".
 func stubTC(osArch string) []byte {
-	return []byte("#!/bin/sh\nprintf '%s\\n' " + osArch + " \"$@\" \"TC_INVITE=${TC_INVITE-}\" > \"$TC_STUB_LOG\"\ncat > \"$TC_STUB_LOG.stdin\"\n")
+	return []byte("#!/bin/sh\n[ \"$1\" = version ] && { echo 'tc stub'; exit 0; }\nprintf '%s\\n' " + osArch + " \"$@\" \"TC_INVITE=${TC_INVITE-}\" > \"$TC_STUB_LOG\"\ncat > \"$TC_STUB_LOG.stdin\"\n")
 }
 
 func publishAll(t *testing.T, srv *releasetest.Server, tag string) {
@@ -535,5 +535,92 @@ func TestInstallSanitizesRedirectURL(t *testing.T) {
 	}
 	if strings.ContainsAny(r.stderr, "\x1b\x07") {
 		t.Fatalf("control bytes reached the terminal: %q", r.stderr)
+	}
+}
+
+// brokenTC is a binary that can't start here, like the glibc 2.35 voice
+// build on Ubuntu 20.04.
+const brokenTC = "#!/bin/sh\necho \"tc: /lib/libc.so.6: version 'GLIBC_2.34' not found\" >&2\nexit 1\n"
+
+// The voice build that can't run on this system falls back to the plain
+// build with an explanation; a plain build that can't run installs nothing.
+func TestInstallBrokenBinary(t *testing.T) {
+	srv := releasetest.New(t, "v0.4.0")
+	bins := map[string][]byte{}
+	for _, oa := range []string{"linux_amd64", "linux_arm64", "darwin_amd64", "darwin_arm64"} {
+		bins[oa] = stubTC(oa + "@v0.4.0")
+		bins["tc-voice_"+oa] = []byte(brokenTC)
+	}
+	srv.Publish(t, "v0.4.0", bins)
+	getconf := map[string]string{"getconf": "#!/bin/sh\necho 'glibc 2.31'\n"}
+	r := runInstall(t, srv, installOpts{unameS: "Linux", unameM: "x86_64", args: []string{"--voice", installInvite}, stubs: getconf})
+	if r.err != nil {
+		t.Fatalf("%v\n%s", r.err, r.stderr)
+	}
+	if got := r.stubLog(t); len(got) == 0 || got[0] != "linux_amd64@v0.4.0" {
+		t.Fatalf("ran %q, want the plain build\n%s", got, r.stderr)
+	}
+	for _, w := range []string{"glibc 2.35", "glibc 2.31", "plain build"} {
+		if !strings.Contains(r.stderr, w) {
+			t.Errorf("stderr lacks %q:\n%s", w, r.stderr)
+		}
+	}
+	if strings.Contains(r.stderr, "(voice build))") {
+		t.Errorf("claims the voice build:\n%s", r.stderr)
+	}
+
+	// The plain build itself can't run (say a wrong-arch download): nothing
+	// replaces the tc already there.
+	bins["linux_amd64"] = []byte(brokenTC)
+	srv.Publish(t, "v0.4.0", bins)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "tc"), []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r = runInstall(t, srv, installOpts{unameS: "Linux", unameM: "x86_64", installDir: dir, args: []string{installInvite}})
+	if r.err == nil || !strings.Contains(r.stderr, "doesn't run on this system") || !strings.Contains(r.stderr, "GLIBC_2.34") {
+		t.Fatalf("err %v\n%s", r.err, r.stderr)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "tc")); string(b) != "old" {
+		t.Fatalf("existing tc replaced: %q", b)
+	}
+}
+
+// The PATH advice is one line to paste for the user's shell, and a tc that
+// shadows ours (iproute2's /usr/sbin/tc) is named, never "remove it".
+func TestInstallPathAdvice(t *testing.T) {
+	srv := releasetest.New(t, "v0.4.0")
+	publishAll(t, srv, "v0.4.0")
+	for _, c := range []struct {
+		shell, unameS string
+		want          []string
+	}{
+		{"/usr/bin/fish", "Linux", []string{`echo 'set -gx PATH "DIR" $PATH' >> 'HOME/.config/fish/config.fish'`}},
+		{"/bin/bash", "Linux", []string{`echo 'export PATH="DIR:$PATH"' >> 'HOME/.bashrc'`}},
+		{"/bin/bash", "Darwin", []string{`echo 'export PATH="DIR:$PATH"' >> 'HOME/.bash_profile'`}},
+		{"/bin/zsh", "Darwin", []string{`echo 'export PATH="DIR:$PATH"' >> 'HOME/.zshrc'`}},
+		{"/bin/sh", "Linux", []string{`echo 'export PATH="DIR:$PATH"' >> 'HOME/.profile'`}},
+	} {
+		r := runInstall(t, srv, installOpts{unameS: c.unameS, unameM: "x86_64", env: []string{"SHELL=" + c.shell}})
+		if r.err != nil {
+			t.Fatalf("%s: %v\n%s", c.shell, r.err, r.stderr)
+		}
+		for _, w := range c.want {
+			w = strings.ReplaceAll(strings.ReplaceAll(w, "DIR", r.dir), "HOME", r.home)
+			if !strings.Contains(r.stderr, w) {
+				t.Errorf("%s on %s: stderr lacks %q:\n%s", c.shell, c.unameS, w, r.stderr)
+			}
+		}
+	}
+
+	// Another tc on PATH, and ours not on PATH at all.
+	r := runInstall(t, srv, installOpts{unameS: "Linux", unameM: "x86_64", env: []string{"SHELL=/bin/bash"},
+		stubs: map[string]string{"tc": "#!/bin/sh\n"}})
+	if r.err != nil {
+		t.Fatalf("%v\n%s", r.err, r.stderr)
+	}
+	if !strings.Contains(r.stderr, "typing tc runs ") || !strings.Contains(r.stderr, "another program called tc") ||
+		strings.Contains(r.stderr, "remove it") {
+		t.Errorf("no shadowing note:\n%s", r.stderr)
 	}
 }

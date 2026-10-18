@@ -127,6 +127,65 @@ verify_sig() {
 	say "release signature OK"
 }
 
+# get_asset downloads $1 into $tmp, checks it against checksums.txt and
+# unpacks the tc binary to $tmp/x/tc.
+get_asset() {
+	fetch -fsSL -o "$tmp/$1" "$base/download/$tag/$1" ||
+		die "can't download $1 for $tag"
+	want=$(awk -v f="$1" '$2 == f || $2 == "*" f {print $1; exit}' "$tmp/checksums.txt")
+	[ -n "$want" ] || die "checksums.txt has no entry for $1"
+	got=$(sha256_of "$tmp/$1")
+	if [ "$want" != "$got" ]; then
+		die "checksum mismatch for $1 (expected $want, got $got); not installing"
+	fi
+	rm -rf "$tmp/x"
+	mkdir -p "$tmp/x"
+	tar -xzf "$tmp/$1" -C "$tmp/x" tc || die "can't unpack $1"
+	# -f follows symlinks; a symlink member must not pass as the binary.
+	[ -f "$tmp/x/tc" ] && [ ! -L "$tmp/x/tc" ] || die "$1 has no tc binary"
+	chmod 755 "$tmp/x/tc"
+}
+
+# path_help prints how to put $dir first on PATH for the user's shell, as
+# a line they can paste.
+path_help() {
+	case "${SHELL:-}" in
+	*/fish)
+		rc="$HOME/.config/fish/config.fish"
+		line="set -gx PATH \"$dir\" \$PATH"
+		;;
+	*/zsh)
+		rc="$HOME/.zshrc"
+		line="export PATH=\"$dir:\$PATH\""
+		;;
+	*/bash)
+		# macOS terminals start login shells, which read .bash_profile.
+		rc="$HOME/.bashrc"
+		[ "$os" = darwin ] && rc="$HOME/.bash_profile"
+		line="export PATH=\"$dir:\$PATH\""
+		;;
+	*)
+		rc="$HOME/.profile"
+		line="export PATH=\"$dir:\$PATH\""
+		;;
+	esac
+	say "$1 Run this once, then open a new terminal:"
+	case "$line$rc" in
+	*"'"*) printf '\n  %s\n\n  (add that line to %s)\n\n' "$line" "$rc" >&2 ;;
+	*) printf "\n  echo '%s' >> '%s'\n\n" "$line" "$rc" >&2 ;;
+	esac
+}
+
+# other_tc describes a different tc that the shell finds first, typically
+# iproute2's traffic-control tool at /usr/sbin/tc on Linux.
+other_tc() {
+	what="another program called tc"
+	case "$1" in
+	/sbin/tc | /usr/sbin/tc | /bin/tc | /usr/bin/tc) what="Linux's traffic-control tool (iproute2), not tc chat" ;;
+	esac
+	printf '%s' "$what"
+}
+
 main() {
 	need curl
 	need tar
@@ -178,20 +237,23 @@ main() {
 	fetch -fsSL -o "$tmp/checksums.txt" "$base/download/$tag/checksums.txt" ||
 		die "can't download checksums.txt for $tag"
 	verify_sig "$tmp"
-	fetch -fsSL -o "$tmp/$asset" "$base/download/$tag/$asset" ||
-		die "can't download $asset for $tag"
-
-	want=$(awk -v f="$asset" '$2 == f || $2 == "*" f {print $1; exit}' "$tmp/checksums.txt")
-	[ -n "$want" ] || die "checksums.txt has no entry for $asset"
-	got=$(sha256_of "$tmp/$asset")
-	if [ "$want" != "$got" ]; then
-		die "checksum mismatch for $asset (expected $want, got $got); not installing"
+	get_asset "$asset"
+	# A binary that can't start here (the voice build on a too-old glibc or
+	# musl) must not replace a working tc.
+	if ! out=$("$tmp/x/tc" version 2>&1 </dev/null); then
+		if [ "$voice" = 1 ] && [ "$os" = linux ]; then
+			have=$(getconf GNU_LIBC_VERSION 2>/dev/null || echo "an unknown C library")
+			say "the voice build doesn't run on this system (it needs glibc 2.35 or newer; this one has $(printable "$have"))."
+			say "installing the plain build instead: everything but voice huddles."
+			asset="tc_${os}_${arch}.tar.gz"
+			flavor=""
+			get_asset "$asset"
+			out=$("$tmp/x/tc" version 2>&1 </dev/null) ||
+				die "the downloaded tc doesn't run on this system: $(printable "$out")"
+		else
+			die "the downloaded tc doesn't run on this system: $(printable "$out")"
+		fi
 	fi
-
-	mkdir -p "$tmp/x"
-	tar -xzf "$tmp/$asset" -C "$tmp/x" tc || die "can't unpack $asset"
-	# -f follows symlinks; a symlink member must not pass as the binary.
-	[ -f "$tmp/x/tc" ] && [ ! -L "$tmp/x/tc" ] || die "$asset has no tc binary"
 
 	mkdir -p "$dir" || die "can't create $dir"
 	# Copy next to the target, then rename: atomic, and a running tc keeps
@@ -204,22 +266,19 @@ main() {
 	}
 	say "installed $dir/tc ($tag$flavor)"
 
+	found=$(command -v tc 2>/dev/null || true)
 	case ":${PATH:-}:" in
 	*":$dir:"*)
-		found=$(command -v tc 2>/dev/null || true)
 		if [ -n "$found" ] && [ "$found" != "$dir/tc" ]; then
-			say "note: $found comes first on your PATH; remove it or put $dir before it"
+			say "note: typing tc runs $found, $(other_tc "$found"), because it comes first on your PATH."
+			path_help "Put $dir before it:"
 		fi
 		;;
 	*)
-		rc="your shell's startup file"
-		case "${SHELL:-}" in
-		*/zsh) rc="$HOME/.zshrc" ;;
-		*/bash) rc="$HOME/.bashrc" ;;
-		esac
-		say "$dir is not on your PATH. Add this line to $rc, then open a new terminal:"
-		# shellcheck disable=SC2016 # $PATH is meant literally
-		printf '\n  export PATH="%s:$PATH"\n\n' "$dir" >&2
+		if [ -n "$found" ]; then
+			say "note: until then, typing tc runs $found, $(other_tc "$found"); $dir/tc always works."
+		fi
+		path_help "$dir is not on your PATH."
 		;;
 	esac
 
