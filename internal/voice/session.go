@@ -12,7 +12,13 @@ type Platform struct {
 	// Open starts the device; cb gets each period's microphone samples
 	// and fills the speaker buffer (same length, mono int16).
 	Open func(cb func(out, in []int16)) (Duplex, error)
+	// AEC is the user's echo-control preference (TC_VOICE_AEC). Open
+	// honours its system part; the engine its gate part.
+	AEC AECPref
 }
+
+// systemAEC is a Duplex that may run the platform's echo canceller.
+type systemAEC interface{ SystemAEC() bool }
 
 // Session is an Engine attached to an audio device.
 type Session struct {
@@ -31,9 +37,17 @@ func Start(cfg Config, p Platform) (*Session, error) {
 		return nil, err
 	}
 	s := &Session{Engine: e}
+	// Gate until we know better: the device may call back before Open
+	// returns, and an open mic must not leak echo meanwhile.
+	e.setAEC(p.AEC.resolve(false))
 	if s.dev, err = p.Open(s.callback); err != nil {
 		return nil, err
 	}
+	sys := false
+	if a, ok := s.dev.(systemAEC); ok {
+		sys = a.SystemAEC()
+	}
+	e.setAEC(p.AEC.resolve(sys))
 	return s, nil
 }
 

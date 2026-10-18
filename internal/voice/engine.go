@@ -6,6 +6,7 @@ package voice
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/skailama/tc/internal/e2ecrypto"
@@ -92,7 +93,12 @@ type Engine struct {
 	seq     uint32
 	talking bool
 	ending  bool // send one more frame flagged end-of-spurt
+	openMic bool // talking is latched open, not a held key: gateable
 	opusBuf []byte
+
+	gate    *gate
+	useGate atomic.Bool
+	aec     atomic.Uint32 // AEC in use (Session.Start sets it)
 
 	mu      sync.Mutex
 	streams map[uint32]*stream
@@ -120,6 +126,7 @@ func NewEngine(cfg Config) (*Engine, error) {
 	return &Engine{
 		cfg: cfg, enc: enc, streams: map[uint32]*stream{}, wins: map[uint32]*window{},
 		opusBuf: make([]byte, maxOpus), mix: make([]int32, FrameSamples), pcm: make([]int16, FrameSamples),
+		gate: newGate(),
 	}, nil
 }
 
@@ -133,9 +140,32 @@ func (e *Engine) SetTalking(on bool) {
 	}
 	if on {
 		e.ending = false
+	} else {
+		e.openMic = false
 	}
 	e.talking = on
 }
+
+// SetOpenMic marks the mic as latched open (a tap, /talk) rather than a
+// held talk key. Only an open mic is gated against echo: someone holding
+// the key is deliberately talking, over the far end if need be.
+func (e *Engine) SetOpenMic(open bool) {
+	e.capMu.Lock()
+	defer e.capMu.Unlock()
+	if open != e.openMic {
+		e.gate.reset()
+	}
+	e.openMic = open
+}
+
+// setAEC picks the echo control for this participation.
+func (e *Engine) setAEC(a AEC) {
+	e.aec.Store(uint32(a))
+	e.useGate.Store(a == AECGate)
+}
+
+// AEC is the echo control in use.
+func (e *Engine) AEC() AEC { return AEC(e.aec.Load()) }
 
 // Talking reports whether the mic stream is on.
 func (e *Engine) Talking() bool {
@@ -193,7 +223,11 @@ func (e *Engine) Capture(pcm []int16) {
 		e.capBuf = e.capBuf[:0]
 		return
 	}
+	start := len(e.capBuf)
 	e.capBuf = append(e.capBuf, pcm...)
+	if e.openMic && e.useGate.Load() {
+		e.gate.apply(e.capBuf[start:])
+	}
 	for len(e.capBuf) >= FrameSamples && (e.talking || e.ending) {
 		e.sendFrame(e.capBuf[:FrameSamples])
 		e.capBuf = append(e.capBuf[:0], e.capBuf[FrameSamples:]...)
@@ -321,6 +355,11 @@ func (e *Engine) Playout() []int16 {
 		for i := range min(n, FrameSamples) {
 			e.mix[i] += int32(e.pcm[i])
 		}
+	}
+	// Cues are left out: our own clicks echoing back are harmless, and
+	// gating on the mic-on click would clip the first words.
+	if e.useGate.Load() {
+		e.gate.far(e.mix)
 	}
 	if len(e.cue) > 0 {
 		k := min(len(e.cue), FrameSamples)
