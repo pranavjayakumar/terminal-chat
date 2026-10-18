@@ -19,6 +19,8 @@ type viewer struct {
 	copy  string               // what y copies; "": the lines
 	back  mode                 // where Esc returns
 	build func(w int) []string // re-lays lines out for the width; nil: static
+	// secret: the text is hidden until s (shown); Esc drops it for good.
+	secret, shown bool
 }
 
 const viewerStep = 8
@@ -46,7 +48,14 @@ func (m *Model) viewerKey(key string) {
 	switch key {
 	case kEsc, "q", kEnter, kSelView:
 		m.mode = v.back
+		if v.secret {
+			m.view = viewer{} // nothing secret lingers in memory or on screen
+		}
 		return
+	case "s":
+		if v.secret {
+			v.shown = true
+		}
 	case kUp, "k":
 		v.y--
 	case kDown, "j":
@@ -82,6 +91,9 @@ func (m *Model) viewerLines(w, h int) []string {
 	hint := "←/→ ↑/↓ scroll · y copy · Esc closes"
 	if w < 50 {
 		hint = "y copy · Esc"
+	}
+	if v.secret && !v.shown {
+		hint = "s shows · y copy · Esc"
 	}
 	out := []string{fit(m.st.overlayTitle.Render(truncate(v.title+" — "+hint, w)), w)}
 	rows := h - 1

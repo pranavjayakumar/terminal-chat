@@ -888,6 +888,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case inviteShownMsg:
 		m.showInvite(msg)
 		return m, nil
+	case hookShownMsg:
+		m.showHook(msg)
+		return m, nil
 	case updateAvailMsg:
 		m.newRelease = string(msg)
 		return m, nil

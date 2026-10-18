@@ -65,11 +65,18 @@ func TestWebhookCommands(t *testing.T) {
 		t.Fatalf("created %v", f.created)
 	}
 	// The notice never shows the secret URL (L3).
-	if m.notice != "webhook ci-bot created · curl command copied" || strings.Contains(m.View(), "/hooks/") {
+	if m.notice != "webhook ci-bot created" || strings.Contains(m.View(), "/hooks/") {
 		t.Fatalf("notice %q", m.notice)
 	}
 	if !strings.Contains(m.opt.Out.(*syncBuf).String(), base64.StdEncoding.EncodeToString([]byte(fakeCurl))) {
 		t.Fatal("curl not copied via OSC 52")
+	}
+	m.handleKey(keyMsg("esc"))
+	// With a system clipboard it just says so.
+	m.opt.ExtCopy = func(context.Context, string) error { return nil }
+	do("/webhook ci2")
+	if m.notice != "webhook ci2-bot created · curl command copied" || m.mode != modeNormal {
+		t.Fatalf("system clipboard: notice %q mode %v", m.notice, m.mode)
 	}
 	do("/webhooks")
 	if !strings.Contains(m.notice, "5 ci") || !strings.Contains(m.notice, "general") {
@@ -109,5 +116,30 @@ func TestBotTag(t *testing.T) {
 		if strings.Contains(v, "bob bot") {
 			t.Fatalf("width %d: human tagged", w)
 		}
+	}
+}
+
+// #112: when only OSC 52 could carry the curl command (Terminal.app, tmux
+// without set-clipboard ignore it), the user can reveal it on request;
+// it is never on screen before they ask.
+func TestWebhookRevealWithoutSystemClipboard(t *testing.T) {
+	m, _ := newHookModel(t, 100, 30)
+	m.openChannel(10)
+	m.input.SetValue("/webhook ci")
+	run(m, m.submit())
+	if m.mode != modeViewer {
+		t.Fatalf("mode %v notice %q", m.mode, m.notice)
+	}
+	v := checkView(t, m, "webhook created")
+	if strings.Contains(v, "/hooks/") || !strings.Contains(v, "s shows") {
+		t.Fatalf("before s:\n%s", v)
+	}
+	m.handleKey(keyMsg("s"))
+	if v := checkView(t, m, "revealed"); !strings.Contains(strings.ReplaceAll(v, " \\", ""), "hooks") {
+		t.Fatalf("after s:\n%s", v)
+	}
+	m.handleKey(keyMsg("esc"))
+	if strings.Contains(m.View(), "/hooks/") || m.mode != modeNormal {
+		t.Fatal("secret still on screen after Esc")
 	}
 }

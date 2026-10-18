@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"strconv"
@@ -68,17 +67,20 @@ func (m *Model) hookCommand(c command) (cmd tea.Cmd, ok bool, err error) {
 		if m.active == 0 {
 			return nil, true, errors.New("no channel open")
 		}
-		ch, out := m.active, m.opt.Out
+		ch, opt := m.active, m.opt
 		return m.callThen("webhook", func(ctx context.Context) (tea.Msg, error) {
 			h, err := be.CreateHook(ctx, ch, name)
 			if err != nil {
 				return nil, err
 			}
-			if out != nil {
-				_, _ = out.Write([]byte("\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(h.Curl)) + "\a"))
+			how, _ := clip(ctx, opt, h.Curl)
+			if how == "system" {
+				// Never the URL unasked: it's the secret, and screens get shared.
+				return infoMsg("webhook " + sanitize.Line(h.Name) + " created · curl command copied"), nil
 			}
-			// Never the URL: it's the secret, and screens get shared.
-			return infoMsg("webhook " + sanitize.Line(h.Name) + " created · curl command copied"), nil
+			// Only OSC 52 (or nothing) carried it, which many terminals
+			// ignore: the server shows the URL once, so offer it on screen.
+			return hookShownMsg{name: sanitize.Line(h.Name), curl: h.Curl}, nil
 		}), true, nil
 	case "webhooks":
 		titles := make(map[uint64]string, len(m.chans))
@@ -118,4 +120,40 @@ func (m *Model) hookCommand(c command) (cmd tea.Cmd, ok bool, err error) {
 			return infoMsg("webhook deleted"), nil
 		}), true, nil
 	}
+}
+
+// hookShownMsg is a new webhook whose curl command may not have reached the
+// clipboard.
+type hookShownMsg struct{ name, curl string }
+
+// showHook opens the viewer with the curl command hidden until s.
+func (m *Model) showHook(h hookShownMsg) {
+	m.view = viewer{
+		title:  "webhook " + h.name,
+		copy:   h.curl,
+		back:   modeNormal,
+		secret: true,
+	}
+	m.view.build = func(w int) []string {
+		w = max(w, 8)
+		out := wrapWords("webhook "+h.name+" created. The curl command went to the terminal clipboard (OSC 52), which some terminals ignore (Terminal.app; tmux without set-clipboard on).", w)
+		out = append(out, "")
+		if !m.view.shown {
+			return append(out, wrapWords("s shows it here: it holds the webhook's secret URL, anyone with it can post as "+h.name+" — mind shared screens. y copies it again. Esc closes; it is never shown again.", w)...)
+		}
+		out = append(out, wrapWords("Lines are cut to fit; y copies the exact text. Esc closes; it is never shown again.", w)...)
+		out = append(out, "")
+		for _, l := range strings.Split(strings.TrimRight(sanitize.Text(h.curl), "\n"), "\n") {
+			for r := []rune(l); ; {
+				n := min(len(r), w)
+				out = append(out, string(r[:n]))
+				if r = r[n:]; len(r) == 0 {
+					break
+				}
+			}
+		}
+		return out
+	}
+	m.mode = modeViewer
+	m.setInfo("webhook " + h.name + " created")
 }
