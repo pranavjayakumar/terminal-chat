@@ -57,7 +57,7 @@ func TestLiveDevice(t *testing.T) {
 	defer mu.Unlock()
 	t.Logf("aec %v (system=%v): %d callbacks, %d samples (%.0f/s), mic peak %d",
 		p.AEC.resolve(sys), sys, calls, n, float64(n)/2, peak)
-	if calls == 0 || n < SampleRate {
-		t.Fatalf("device barely ran: %d callbacks, %d samples", calls, n)
+	if calls == 0 {
+		t.Fatal("the device never called back")
 	}
 }

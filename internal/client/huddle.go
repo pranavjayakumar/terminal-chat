@@ -497,6 +497,29 @@ func (c *Client) SetTalking(on bool) {
 	}
 }
 
+// SetOpenMic says whether the mic is latched open (tap, /talk) rather
+// than held: only an open mic is gated against echo (docs/VOICE.md "Echo").
+func (c *Client) SetOpenMic(open bool) {
+	c.hud.mu.Lock()
+	p := c.hud.cur
+	c.hud.mu.Unlock()
+	if p != nil {
+		p.vs.SetOpenMic(open)
+	}
+}
+
+// VoiceAEC is the echo control in our huddle: "system", "gate" or "off"
+// ("" when not in one).
+func (c *Client) VoiceAEC() string {
+	c.hud.mu.Lock()
+	p := c.hud.cur
+	c.hud.mu.Unlock()
+	if p == nil {
+		return ""
+	}
+	return p.vs.AEC().String()
+}
+
 // Talking reports whether our mic stream is on.
 func (c *Client) Talking() bool {
 	c.hud.mu.Lock()

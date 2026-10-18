@@ -32,6 +32,11 @@ type HuddleBackend interface {
 	// HuddleWarning is a problem with our huddle worth telling the user
 	// (repeated clock-skew drops), or nil.
 	HuddleWarning() error
+	// SetOpenMic: the mic is latched open (tap, /talk), not held; only an
+	// open mic is gated against echo.
+	SetOpenMic(open bool)
+	// VoiceAEC is our huddle's echo control: system, gate or off.
+	VoiceAEC() string
 }
 
 // Talk-key timing. Terminals report presses, not releases: a held key
@@ -74,6 +79,9 @@ type huddleUI struct {
 	here     int // people in the open channel's huddle, when we're not in it
 	counts   map[uint64]int
 	warned   error // the HuddleWarning already shown
+	aec      string
+	// aecHinted: the headphones hint was shown (once per run).
+	aecHinted bool
 	// seenActive is the channel here was computed for.
 	seenActive uint64
 }
@@ -102,6 +110,7 @@ func (m *Model) refreshHuddle() {
 		h.roster = hb.Huddle(h.cur)
 		h.speaking = hb.Speaking()
 		h.talking = hb.Talking()
+		h.aec = hb.VoiceAEC()
 		if w := hb.HuddleWarning(); w != nil && !errors.Is(w, h.warned) {
 			h.warned = w
 			m.setNotice(w.Error(), true, true, 0)
@@ -165,6 +174,7 @@ func (m *Model) huddleCommand(c command) (tea.Cmd, bool, error) {
 		hb.SetTalking(on)
 		m.hud.talk = talkOff
 		if on {
+			hb.SetOpenMic(true)
 			m.hud.talk = talkLatched
 		}
 		m.refreshHuddle()
@@ -178,7 +188,9 @@ func (m *Model) huddleCommand(c command) (tea.Cmd, bool, error) {
 		return nil, true, errors.New("no channel open")
 	}
 	if in && cur == ch {
-		return nil, true, errors.New("already in this huddle (/leave-huddle to leave)")
+		m.refreshHuddle()
+		m.setNotice("in this huddle · "+aecLine(m.hud.aec)+" · /leave-huddle to leave", false, false, errTTL)
+		return nil, true, nil
 	}
 	prev := uint64(0)
 	if in {
@@ -228,6 +240,7 @@ func (m *Model) talkKey() (tea.Cmd, bool) {
 		if !hb.Talking() {
 			hb.SetTalking(true)
 		}
+		hb.SetOpenMic(false) // held: never gated
 		h.talk = talkHolding
 		wait = min(maxRelease, max(minRelease, 3*gap))
 	case h.talk == talkPending:
@@ -262,6 +275,7 @@ func (m *Model) huddleMsg(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		switch m.hud.talk {
 		case talkPending: // no repeat came: a tap
+			hb.SetOpenMic(true)
 			m.hud.talk = talkLatched
 		case talkHolding: // repeats stopped: released
 			hb.SetTalking(false)
@@ -276,6 +290,13 @@ func (m *Model) huddleMsg(msg tea.Msg) (tea.Cmd, bool) {
 		note := "in the huddle — hold ctrl+t to talk, tap for open mic (/talk, /mute)"
 		if msg.prev != 0 {
 			note = "left " + m.chanTitle(msg.prev) + " · " + note
+		}
+		if m.hud.in && m.hud.aec != "system" && !m.hud.aecHinted {
+			// Speakers into an open mic echo back to whoever talks.
+			m.hud.aecHinted = true
+			m.setNotice(note+" · "+headphonesHint, false, false, errTTL)
+			m.noticeDim = true
+			return nil, true
 		}
 		m.setInfo(note)
 		return nil, true
@@ -327,4 +348,17 @@ func (m *Model) huddleHead(compact bool) (head, roster string) {
 		return b.String(), " · just you"
 	}
 	return b.String(), " · " + strings.Join(names, " ")
+}
+
+const headphonesHint = "🎧 headphones recommended (no echo cancellation)"
+
+// aecLine describes the echo control for /huddle (docs/VOICE.md "Echo").
+func aecLine(aec string) string {
+	switch aec {
+	case "system":
+		return "echo cancellation: system"
+	case "gate":
+		return "echo control: gate (open mic pauses while others talk) — headphones recommended"
+	}
+	return "echo cancellation: off — headphones recommended"
 }

@@ -28,6 +28,32 @@ type huddleFake struct {
 	speaking map[uint64]bool
 	joinErr  error
 	warn     error
+	openMic  bool
+	aec      string // "" = system
+}
+
+func (h *huddleFake) SetOpenMic(open bool) {
+	h.hmu.Lock()
+	defer h.hmu.Unlock()
+	h.openMic = open
+}
+
+func (h *huddleFake) VoiceAEC() string {
+	h.hmu.Lock()
+	defer h.hmu.Unlock()
+	if h.in == 0 {
+		return ""
+	}
+	if h.aec == "" {
+		return "system"
+	}
+	return h.aec
+}
+
+func (h *huddleFake) OpenMic() bool {
+	h.hmu.Lock()
+	defer h.hmu.Unlock()
+	return h.openMic
 }
 
 func (h *huddleFake) Huddles() map[uint64]int {
@@ -82,6 +108,9 @@ func (h *huddleFake) SetTalking(on bool) {
 	h.hmu.Lock()
 	defer h.hmu.Unlock()
 	h.talking = on
+	if !on {
+		h.openMic = false // as the engine does
+	}
 	h.talks = append(h.talks, on)
 }
 
@@ -148,7 +177,7 @@ func TestHuddleJoinTalkLeave(t *testing.T) {
 		t.Fatalf("status line:\n%s", v)
 	}
 	runInput(t, m, "/huddle")
-	if !m.noticeErr || !strings.Contains(m.notice, "already in this huddle") {
+	if m.noticeErr || !strings.Contains(m.notice, "in this huddle · echo cancellation: system") {
 		t.Fatalf("rejoin notice %q", m.notice)
 	}
 
@@ -371,5 +400,83 @@ func TestHuddleOpenMicVisible(t *testing.T) {
 		if got := m.badgeText(); strings.Contains(got, "●") {
 			t.Fatalf("badge %q after mic off", got)
 		}
+	}
+}
+
+// Echo control (docs/VOICE.md "Echo"): only a latched mic is marked open
+// (gateable); the headphones hint shows once per run without system AEC.
+func TestHuddleEchoControl(t *testing.T) {
+	m, h := newHuddleModel(t, 100, 24)
+	clk := newClock(m)
+	h.aec = "gate"
+	runInput(t, m, "/huddle")
+	if !m.noticeDim || !strings.Contains(m.notice, headphonesHint) {
+		t.Fatalf("no headphones hint: %q dim=%v", m.notice, m.noticeDim)
+	}
+	checkView(t, m, "hint")
+	runInput(t, m, "/huddle")
+	if m.noticeErr || !strings.Contains(m.notice, "echo control: gate") {
+		t.Fatalf("/huddle info %q", m.notice)
+	}
+
+	// Tap → latched → open mic.
+	clk.add(time.Second)
+	ctrlT(m)
+	if h.OpenMic() {
+		t.Fatal("a fresh press counts as open mic before it's known to be a tap")
+	}
+	m.Update(talkCheckMsg{m.hud.talkGen})
+	if !h.OpenMic() {
+		t.Fatal("tap didn't mark open mic")
+	}
+	// A repeat on the latched mic is a hold: not open any more.
+	clk.add(30 * time.Millisecond)
+	ctrlT(m)
+	if h.OpenMic() || !h.Talking() {
+		t.Fatalf("held key still gateable: open=%v talking=%v", h.OpenMic(), h.Talking())
+	}
+	m.Update(talkCheckMsg{m.hud.talkGen}) // released
+	if h.OpenMic() || h.Talking() {
+		t.Fatal("release left the mic on")
+	}
+	runInput(t, m, "/talk")
+	if !h.OpenMic() {
+		t.Fatal("/talk isn't open mic")
+	}
+	runInput(t, m, "/mute")
+	if h.OpenMic() {
+		t.Fatal("/mute left open mic set")
+	}
+
+	// Once per run: leaving and rejoining doesn't nag again.
+	runInput(t, m, "/leave-huddle")
+	runInput(t, m, "/huddle")
+	if strings.Contains(m.notice, headphonesHint) {
+		t.Fatalf("hint repeated: %q", m.notice)
+	}
+
+	// With system AEC: no hint at all.
+	m2, _ := newHuddleModel(t, 100, 24)
+	runInput(t, m2, "/huddle")
+	if strings.Contains(m2.notice, "headphones") {
+		t.Fatalf("hint despite system AEC: %q", m2.notice)
+	}
+	m3, f3 := newHuddleModel(t, 100, 24)
+	f3.aec = "off"
+	runInput(t, m3, "/huddle")
+	runInput(t, m3, "/huddle")
+	if !strings.Contains(m3.notice, "echo cancellation: off") {
+		t.Fatalf("off: %q", m3.notice)
+	}
+}
+
+func TestHuddleEchoHintFits(t *testing.T) {
+	for _, w := range []int{20, 40, 60, 80, 120} {
+		m, h := newHuddleModel(t, w, 12)
+		h.aec = "gate"
+		runInput(t, m, "/huddle")
+		checkView(t, m, "hint")
+		runInput(t, m, "/huddle")
+		checkView(t, m, "info")
 	}
 }
