@@ -1399,7 +1399,7 @@ func (m *Model) helpKey(key string) {
 	case kHome, "g":
 		m.helpScroll = 0
 	case kEnd, "G":
-		m.helpScroll = len(helpLines)
+		m.helpScroll = m.helpMaxScroll()
 	}
 	m.helpScroll = min(max(m.helpScroll, 0), m.helpMaxScroll())
 }

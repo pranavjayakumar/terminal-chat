@@ -77,7 +77,7 @@ func TestHelpOverlay(t *testing.T) {
 	if m.helpScroll == 0 {
 		t.Fatal("pgdown didn't scroll help")
 	}
-	for i := 0; i < len(helpLines); i++ {
+	for i := 0; i < 4*len(helpLines); i++ { // rows wrap at 40 columns
 		run(m, m.handleKey(keyMsg("down")))
 	}
 	if v := checkView(t, m, "help end"); strings.Contains(v, "↓ more") || !strings.Contains(v, "//text") {

@@ -401,7 +401,7 @@ func TestQuestionMarkStartsMessage(t *testing.T) {
 		t.Fatalf("sent %+v", f.sent)
 	}
 	run(m, m.handleKey(keyMsg("f1")))
-	if !strings.Contains(m.View(), "this help") {
+	if m.mode != modeHelp || !strings.Contains(m.View(), "help —") {
 		t.Fatal("F1 should open help")
 	}
 }

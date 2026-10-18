@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
@@ -622,12 +624,12 @@ func (m *Model) sideEntry(v client.ChannelView, w int) string {
 // ---- overlays ----
 
 func (m *Model) helpMaxScroll() int {
-	return max(len(helpLines)-(m.dims().bodyH-1), 0)
+	return max(len(m.helpRows(m.dims().mainW))-(m.dims().bodyH-1), 0)
 }
 
-// helpLines is the scrollable help overlay; a "↓ more" row marks a cut.
-func (m *Model) helpLines(w, h int) []string {
-	out := []string{fit(m.st.overlayTitle.Render(truncate("help — ↑/↓ PgUp/PgDn scroll, Esc closes", w)), w)}
+// helpRows is the help text laid out for width w: a key column, then the
+// description, wrapped (never cut) under itself.
+func (m *Model) helpRows(w int) []string {
 	// The key column fits the longest key plus a gap, up to half the width.
 	kw := 0
 	if w >= 60 {
@@ -638,25 +640,48 @@ func (m *Model) helpLines(w, h int) []string {
 		}
 		kw = min(max(kw, 24), w/2)
 	}
+	var out []string
+	for _, kv := range helpLines {
+		switch {
+		case kv[1] == "":
+			out = append(out, fit(kv[0], w))
+		case kw == 0: // narrow: "key: description", continued indented
+			for i, l := range strings.Split(ansi.Wrap(kv[0]+": "+kv[1], max(w-2, 1), ""), "\n") {
+				if i == 0 {
+					k, d, _ := strings.Cut(l, ": ")
+					if d != "" || strings.HasSuffix(l, ":") {
+						l = k + ": " + m.st.dim.Render(d)
+					}
+					out = append(out, fit(l, w))
+					continue
+				}
+				out = append(out, fit("  "+m.st.dim.Render(l), w))
+			}
+		default:
+			for i, l := range strings.Split(ansi.Wrap(kv[1], max(w-kw, 1), ""), "\n") {
+				key := ""
+				if i == 0 {
+					key = kv[0]
+				}
+				out = append(out, fit(fit(key, kw)+m.st.dim.Render(l), w))
+			}
+		}
+	}
+	return out
+}
+
+// helpLines is the scrollable help overlay; a "↓ more" row marks a cut.
+func (m *Model) helpLines(w, h int) []string {
+	out := []string{fit(m.st.overlayTitle.Render(truncate("help — ↑/↓ PgUp/PgDn scroll, Esc closes", w)), w)}
+	all := m.helpRows(w)
 	rows := h - 1
-	scroll := min(max(m.helpScroll, 0), max(len(helpLines)-rows, 0))
-	items := helpLines[scroll:]
+	scroll := min(max(m.helpScroll, 0), max(len(all)-rows, 0))
+	items := all[scroll:]
 	more := len(items) > rows
 	if more {
 		items = items[:max(rows-1, 0)]
 	}
-	for _, kv := range items {
-		var l string
-		switch {
-		case kv[1] == "":
-			l = kv[0]
-		case kw == 0:
-			l = kv[0] + ": " + m.st.dim.Render(kv[1])
-		default:
-			l = fit(kv[0], kw) + m.st.dim.Render(kv[1])
-		}
-		out = append(out, fit(l, w))
-	}
+	out = append(out, items...)
 	if more && rows > 0 {
 		out = append(out, fit(m.st.dim.Render(" ↓ more"), w))
 	}
