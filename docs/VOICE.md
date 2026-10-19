@@ -186,7 +186,7 @@ shows which):
 | Mode | When | What |
 |---|---|---|
 | `system` | macOS (the voice-processing unit starts); Linux with an echo-cancel source **and** sink loaded | The OS cancels echo. On macOS: `kAudioUnitSubType_VoiceProcessingIO` (Apple's AEC + AGC + noise suppression), via a small cgo shim (`vpio_darwin.c`) because miniaudio only opens the plain HAL unit. Other apps' audio is ducked as little as macOS 14+ allows. |
-| `gate` | no platform canceller (most Linux setups), or forced | Half-duplex gate in the engine: while remote audio plays (above ≈ −42 dBFS and 6 dB above the far end's learned noise floor) and for 200 ms after, an **open** mic is muted (2.5 ms attack, 20 ms release ramps). A ctrl+t press is gateable until a key-repeat proves it held; a held key is never gated: you are deliberately talking (barge-in = hold ctrl+t). |
+| `gate` | no platform canceller (most Linux setups), or forced | Half-duplex gate in the engine: while remote audio plays (above ≈ −42 dBFS and 6 dB above the far end's learned noise floor, or above ≈ −26 dBFS regardless) and for 200 ms after, an **open** mic is muted (2.5 ms attack, 20 ms release ramps). A ctrl+t press is gateable until a key-repeat proves it held; a held key is never gated: you are deliberately talking (barge-in = hold ctrl+t). |
 | `off` | `TC_VOICE_AEC=off`, or `system` asked for and unavailable | Nothing. |
 
 `TC_VOICE_AEC=auto|system|gate|off` (default `auto` = system if available, else gate; `system`
@@ -208,9 +208,12 @@ per run.
     `load-module module-echo-cancel aec_method=webrtc` to `~/.config/pulse/default.pa`).
 - **The gate's limits.** It is half-duplex: in open mic you aren't heard while others talk (hold
   ctrl+t to talk over them), and the far end's background noise above the threshold keeps your
-  open mic shut only until its noise floor is learned (≈ 1 s; the floor follows quieter frames at
-  once and rises ≈ 4 dB/s, so pauses between words keep it at the noise). Bluetooth output adds
-  150–250 ms of latency the 200 ms hangover may not cover.
+  open mic shut only until its noise floor is learned (a few seconds: the floor follows quieter
+  frames at once and rises ≈ 3 dB/s, so pauses between words keep it at the noise). The floor is
+  capped at ≈ −30 dBFS and anything above ≈ −26 dBFS always counts, so loud continuous audio
+  (music, a talker who never pauses) can't train it open; continuous far audio between ≈ −36 and
+  −26 dBFS can, after a few seconds. Far speech less than 6 dB over steady far noise doesn't count.
+  Bluetooth output adds 150–250 ms of latency the 200 ms hangover may not cover.
   Our own cues (join/leave, mic clicks) don't trigger it. It runs on the audio thread with no
   allocation (`TestGateNoAllocs`).
 - **Why not speexdsp's echo canceller.** Considered (BSD, small, could be built static like
@@ -222,11 +225,13 @@ per run.
 - **Never a monitor as the microphone.** A PulseAudio/PipeWire "Monitor of …" source records the
   speakers; as tc's input it would send everyone's voice straight back to them (no digital
   self-echo exists otherwise: the relay skips the sender and the engine never plays our own `src`).
-  If the default input is a monitor (by name `….monitor`, or a description starting "Monit…", which
-  covers translations), tc uses the first real microphone instead and says so on join and in
-  `/huddle`. `TC_VOICE_INPUT=<text>` picks the microphone whose name or description contains
-  `<text>` (case-insensitive); it skips the Linux echo-cancel pair and, on macOS, the
-  voice-processing unit (which only opens the default devices), so the gate applies.
+  If the default input is a monitor (by name `….monitor`, or a description "Monitor of …" and its
+  common translations), tc uses the first real microphone instead and says so on join and in
+  `/huddle`; with no real microphone it joins listen-only (captures silence). `TC_VOICE_INPUT=<text>`
+  picks the first non-monitor input whose name or description contains `<text>`
+  (case-insensitive; a monitor is never picked, even by name); it skips the Linux echo-cancel pair
+  and, on macOS, the voice-processing unit (which only opens the default devices), so the gate
+  applies.
 - Platform echo cancellation lives entirely on the client; the protocol is unchanged.
 
 ## Audio I/O library

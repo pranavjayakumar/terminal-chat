@@ -71,19 +71,25 @@ func (p AECPref) resolve(system bool) AEC {
 	return AECOff
 }
 
-// Gate tuning. Far-end "active" is a 20 ms playout frame whose mean square
-// is above both gateFarRMS² (≈ −42 dBFS: under speech at −30…−20 dBFS) and
-// gateOverFloor × the far end's noise floor, so a remote open mic in a
-// noisy room (fan, café) doesn't keep ours shut for the whole call. The
-// floor follows quieter frames at once and rises gateFloorRise per frame
-// (≈ 4 dB/s), so the pauses between words keep it at the noise, not the
-// voice. The gate stays shut for gateHang after the last active frame:
-// device latency in and out plus the room's reverb tail. Gain ramps
-// (attack 2.5 ms, release 20 ms) avoid clicks.
+// Gate tuning. Far-end "active" is a 20 ms playout frame whose RMS is above
+// gateFarRMS (≈ −42 dBFS: under speech at −30…−20 dBFS) and 6 dB above the
+// far end's noise floor, so a remote open mic in a noisy room (fan, café)
+// doesn't keep ours shut for the whole call. The floor follows quieter
+// frames at once and rises gateFloorRise per frame (≈ 3 dB/s), so the
+// pauses between words keep it at the noise, not the voice. It is capped
+// at gateFloorMaxRMS, and anything above gateLoudRMS is always active:
+// continuous loud audio (music, a talker who never pauses) can't teach
+// the floor to let it through. The gate stays shut for gateHang after the
+// last active frame: device latency in and out plus the room's reverb
+// tail. Gain ramps (attack 2.5 ms, release 20 ms) avoid clicks.
 const (
-	gateFarRMS     = 260
-	gateOverFloor  = 4 // 6 dB
-	gateFloorRise  = 1.01
+	gateFarRMS      = 260  // ≈ −42 dBFS
+	gateFloorMaxRMS = 1000 // ≈ −30 dBFS
+	gateLoudRMS     = 1600 // ≈ −26 dBFS
+	gateOverFloor   = 4    // 6 dB
+	gateFloorRise   = 1.015
+	// gateFloorMin keeps 6 dB over the floor at gateFarRMS when quiet.
+	gateFloorMin   = gateFarRMS * gateFarRMS / gateOverFloor
 	gateHang       = SampleRate / 5 // 200 ms
 	gateAttackStep = 1.0 / (SampleRate / 400)
 	gateRelStep    = 1.0 / (SampleRate / 50)
@@ -98,7 +104,7 @@ type gate struct {
 	gain  float32      // capture side only
 }
 
-func newGate() *gate { return &gate{gain: 1, floor: gateFarRMS * gateFarRMS} }
+func newGate() *gate { return &gate{gain: 1, floor: gateFloorMin} }
 
 // far measures one frame of remote audio (Engine.mix) about to be played.
 func (g *gate) far(pcm []int32) {
@@ -110,8 +116,8 @@ func (g *gate) far(pcm []int32) {
 		sum += float64(v) * float64(v)
 	}
 	ms := sum / float64(len(pcm))
-	active := ms > gateFarRMS*gateFarRMS && ms > gateOverFloor*g.floor
-	g.floor = max(gateFarRMS*gateFarRMS, min(ms, g.floor*gateFloorRise))
+	active := ms > gateFarRMS*gateFarRMS && (ms > gateOverFloor*g.floor || ms > gateLoudRMS*gateLoudRMS)
+	g.floor = min(gateFloorMaxRMS*gateFloorMaxRMS, max(gateFloorMin, min(ms, g.floor*gateFloorRise)))
 	if active {
 		g.hang.Store(gateHang)
 		return

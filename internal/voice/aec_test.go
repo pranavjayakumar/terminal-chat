@@ -102,7 +102,7 @@ func TestGateLearnsFarNoiseFloor(t *testing.T) {
 		g.far(noise)
 	}
 	if g.shut() {
-		t.Fatal("2 s of steady far-end noise still shuts the gate")
+		t.Fatal("5 s of steady far-end noise still shuts the gate")
 	}
 	g.far(widen(tone440(FrameSamples, 4000)))
 	if !g.shut() {

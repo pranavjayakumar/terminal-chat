@@ -18,14 +18,14 @@ func TestChooseCapture(t *testing.T) {
 		idx  int
 		note string // substring; "" = no note
 	}{
-		{"monitor default skipped", pulse, "", 1, "records the speakers"},
+		{"monitor default skipped", pulse, "", 1, "mic: Built-in Audio Analog Stereo · default input is a speaker monitor"},
 		{"env picks by description", pulse, "yeti", 2, ""},
 		{"env picks by id", pulse, "alsa_input.pci", 1, ""},
-		{"env matches nothing, monitor default", pulse, "nope", 1, "matches no microphone"},
-		{"localized monitor", []capDev{{id: "x", desc: "Monitor von Lautsprecher", def: true}, {id: "mic", desc: "Mikrofon"}}, "", 1, "records the speakers"},
-		{"only a monitor", []capDev{{id: "spk.monitor", def: true}}, "", -1, "no other microphone"},
+		{"env matches nothing, monitor default", pulse, "nope", 1, "matched no microphone"},
+		{"localized monitor", []capDev{{id: "x", desc: "Monitor von Lautsprecher", def: true}, {id: "mic", desc: "Mikrofon"}}, "", 1, "mic: Mikrofon"},
+		{"only a monitor", []capDev{{id: "spk.monitor", def: true}}, "", noMic, "no microphone, listening only"},
 		{"normal default", []capDev{{id: "mic", desc: "Mic", def: true}, {id: "spk.monitor"}}, "", -1, ""},
-		{"env matches nothing, fine default", []capDev{{id: "mic", def: true}}, "yeti", -1, "matches no microphone"},
+		{"env matches nothing, fine default", []capDev{{id: "mic", def: true}}, "yeti", -1, "mic: default · TC_VOICE_INPUT"},
 		{"nothing listed", nil, "", -1, ""},
 	}
 	for _, c := range cases {

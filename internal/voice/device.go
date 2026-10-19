@@ -51,6 +51,7 @@ func (d *duplex) Note() string    { return d.note }
 type devices struct {
 	capture, playback *malgo.DeviceID
 	sys               bool
+	mute              bool // nothing safe to record: capture silence
 	note              string
 }
 
@@ -71,6 +72,7 @@ func openDuplex(cb func(out, in []int16), input string) (Duplex, error) {
 		if i >= 0 {
 			devs.capture = &caps[i].ID
 		}
+		devs.mute = i == noMic
 		devs.note = note
 	}
 	return startDuplex(ctx, devs, cb)
@@ -119,6 +121,9 @@ func startDuplex(ctx *malgo.AllocatedContext, devs devices, cb func(out, in []in
 		}
 		o := unsafe.Slice((*int16)(unsafe.Pointer(&out[0])), n)
 		i := unsafe.Slice((*int16)(unsafe.Pointer(&in[0])), n)
+		if devs.mute {
+			clear(i)
+		}
 		cb(o, i)
 	}
 	dev, err := malgo.InitDevice(ctx.Context, cfg, malgo.DeviceCallbacks{Data: data})

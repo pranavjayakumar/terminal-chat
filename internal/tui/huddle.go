@@ -86,6 +86,10 @@ type huddleUI struct {
 	note     string
 	// aecHinted: the headphones hint was shown (once per run).
 	aecHinted bool
+	// followUp is shown when the notice of generation followGen expires
+	// untouched (the headphones hint after a device note).
+	followUp  string
+	followGen int
 	// seenActive is the channel here was computed for.
 	seenActive uint64
 }
@@ -194,11 +198,12 @@ func (m *Model) huddleCommand(c command) (tea.Cmd, bool, error) {
 	}
 	if in && cur == ch {
 		m.refreshHuddle()
-		s := aecLine(m.hud.aec) + " · /leave-huddle to leave"
+		// What was asked (echo control) first, then the device note.
+		s := aecLine(m.hud.aec)
 		if m.hud.note != "" {
-			s = m.hud.note + " · " + s
+			s += " · " + m.hud.note
 		}
-		m.setNotice(s, false, false, errTTL)
+		m.setNotice(s+" · /leave-huddle to leave", false, false, errTTL)
 		return nil, true, nil
 	}
 	prev := uint64(0)
@@ -299,30 +304,40 @@ func (m *Model) huddleMsg(msg tea.Msg) (tea.Cmd, bool) {
 		m.hud.talk = talkOff
 		m.hud.warned = nil // a new participation: its own warnings
 		m.refreshHuddle()
-		const talkHelp = "hold ctrl+t to talk, tap for open mic (/talk, /mute)"
-		if m.hud.in && m.hud.note != "" {
-			// Which microphone we're using beats any tip: a monitor
-			// default would have sent everyone's voice back to them.
-			m.setNotice(m.hud.note, false, false, errTTL)
-			return nil, true
-		}
-		if m.hud.in && m.hud.aec != "system" && !m.hud.aecHinted {
-			// Speakers into an open mic echo back to whoever talks. The
-			// hint leads so truncation eats the talk help, not the hint
-			// (the 🎧 head already says where we are).
+		// Most important first, since narrow panes truncate notices: the
+		// device note (which mic, or none), the headphones hint (once per
+		// run), the huddle we left, then the talk help. A device note and
+		// the hint don't both fit in 80 columns, so then the hint follows
+		// as its own notice when the note's expires.
+		talkHelp := "hold ctrl+t to talk, tap for open mic (/talk, /mute)"
+		hint := m.hud.in && m.hud.aec != "system" && !m.hud.aecHinted
+		var parts []string
+		switch {
+		case m.hud.in && m.hud.note != "":
+			parts = append(parts, m.hud.note)
+		case hint:
 			m.hud.aecHinted = true
-			note := headphonesHint + " · " + talkHelp
 			if m.w < 60 {
-				note = headphonesShort + " · " + talkHelp
+				parts = append(parts, headphonesShort)
+			} else {
+				parts = append(parts, headphonesHint)
 			}
-			m.setNotice(note, false, false, errTTL)
-			return nil, true
+		default:
+			talkHelp = "in the huddle — " + talkHelp
 		}
-		note := "in the huddle — " + talkHelp
 		if msg.prev != 0 {
-			note = "left " + m.chanTitle(msg.prev) + " · " + note
+			parts = append(parts, "left "+m.chanTitle(msg.prev))
 		}
-		m.setInfo(note)
+		parts = append(parts, talkHelp)
+		ttl := time.Duration(0)
+		if len(parts) > 1 {
+			ttl = errTTL // more to read
+		}
+		m.setNotice(strings.Join(parts, " · "), false, false, ttl)
+		m.hud.followUp, m.hud.followGen = "", 0
+		if hint && !m.hud.aecHinted {
+			m.hud.followUp, m.hud.followGen = headphonesHint+" · "+talkHelp, m.noticeGen
+		}
 		return nil, true
 	}
 	return nil, false
@@ -387,9 +402,29 @@ func aecLine(aec string) string {
 	case "system":
 		return "echo cancellation on (system)"
 	case "gate":
-		return "no echo cancellation, use headphones (gate: open mic pauses while others talk)"
+		return "echo: gate only, use headphones"
 	case "off":
 		return "echo cancellation off, use headphones"
 	}
 	return "echo control: " + aec
+}
+
+// huddleFollowUp shows the notice queued behind the one of generation gen
+// (now expired), if we're still in the huddle.
+func (m *Model) huddleFollowUp(gen int) bool {
+	h := &m.hud
+	if h.followUp == "" || h.followGen != gen {
+		return false
+	}
+	s := h.followUp
+	h.followUp = ""
+	if !h.in || m.notice != "" {
+		return false
+	}
+	if m.w < 60 {
+		s = headphonesShort
+	}
+	h.aecHinted = true
+	m.setNotice(s, false, false, errTTL)
+	return true
 }

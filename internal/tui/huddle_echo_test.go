@@ -23,7 +23,7 @@ func TestHuddleEchoControl(t *testing.T) {
 		t.Fatal("hint dims the talk help")
 	}
 	runInput(t, m, "/huddle")
-	if m.noticeErr || !strings.Contains(plain(m), "no echo cancellation, use headphones") {
+	if m.noticeErr || !strings.Contains(plain(m), "echo: gate only, use headphones") {
 		t.Fatalf("/huddle info %q", m.notice)
 	}
 
@@ -90,15 +90,39 @@ func TestHuddleEchoControl(t *testing.T) {
 
 // A device note (monitor default skipped) shows on join and in /huddle.
 func TestHuddleVoiceNote(t *testing.T) {
-	m, h := newHuddleModel(t, 100, 24)
-	h.note = `default input "Monitor of Speakers" records the speakers; using "Mic"`
-	runInput(t, m, "/huddle")
-	if !strings.Contains(plain(m), "records the speakers") {
-		t.Fatalf("note not shown:\n%s", plain(m))
+	// The realistic PulseAudio note (voice.chooseCapture), gate mode: the
+	// chosen mic and the headphones hint must both be on screen at 80
+	// columns with the sidebar, and /huddle answers about echo first.
+	const note = "mic: Built-in Audio Analog Stereo · default input is a speaker monitor · TC_VOICE_INPUT picks another"
+	for _, w := range []int{80, 120} {
+		m, h := newHuddleModel(t, w, 24)
+		h.note, h.aec = note, "gate"
+		runInput(t, m, "/huddle")
+		if v := plain(m); !strings.Contains(v, "mic: Built-in Audio Analog Stereo") {
+			t.Fatalf("%d cols: note not on screen:\n%s", w, v)
+		}
+		if m.hud.aecHinted {
+			t.Fatal("hint recorded as shown before it was")
+		}
+		// The note's notice expires: the headphones hint follows.
+		m.Update(noticeExpireMsg{m.noticeGen})
+		if v := plain(m); !strings.Contains(v, headphonesHint) || !m.hud.aecHinted {
+			t.Fatalf("%d cols: hint didn't follow the note:\n%s", w, v)
+		}
+		runInput(t, m, "/huddle")
+		want := "echo: gate only, use headphones"
+		if w >= 120 {
+			want += " · mic: Built-in"
+		}
+		if v := plain(m); !strings.Contains(v, want) {
+			t.Fatalf("%d cols: /huddle:\n%s", w, v)
+		}
 	}
+	m, h := newHuddleModel(t, 40, 12)
+	h.note = "no microphone, listening only · default input is a speaker monitor"
 	runInput(t, m, "/huddle")
-	if !strings.Contains(m.notice, "records the speakers") || !strings.Contains(m.notice, "echo cancellation on") {
-		t.Fatalf("/huddle: %q", m.notice)
+	if v := ansi.Strip(checkView(t, m, "no mic")); !strings.Contains(v, "no microphone") {
+		t.Fatalf("40 cols: listen-only not on screen:\n%s", v)
 	}
 }
 
