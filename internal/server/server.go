@@ -219,6 +219,11 @@ func (s *Server) write(ctx context.Context, fn func(tx *sql.Tx) ([]proto.Event, 
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
+		if ctx.Err() != nil {
+			// The context ended after fn: database/sql rolled the
+			// transaction back itself, so Commit only says sql.ErrTxDone.
+			return nil, ctx.Err()
+		}
 		return nil, err
 	}
 	for _, ev := range evs {

@@ -53,10 +53,21 @@ type huddles struct {
 	nextSrc uint32
 
 	relayed, dropped atomic.Uint64
+
+	// Liveness (#75): push-to-talk makes silence normal, so a participant's
+	// client is PINGed every pingEvery and dropped from the huddle (not the
+	// connection) after deadAfter without any frame from it.
+	pingEvery, deadAfter time.Duration
 }
 
+const (
+	huddlePingEvery = 2 * time.Second
+	huddleDeadAfter = 10 * time.Second
+)
+
 func newHuddles() *huddles {
-	return &huddles{byChan: map[uint64]*huddle{}, bySess: map[*session]*participant{}}
+	return &huddles{byChan: map[uint64]*huddle{}, bySess: map[*session]*participant{},
+		pingEvery: huddlePingEvery, deadAfter: huddleDeadAfter}
 }
 
 // removeLocked ends p's participation and returns the huddle's channel.
@@ -236,7 +247,11 @@ func (s *Server) opHuddleJoin(ctx context.Context, sess *session, a proto.Huddle
 	h.parts = append(h.parts, p)
 	hs.bySess[sess] = p
 	hs.mu.Unlock()
-	c.add(a.Chan, 0)
+	// The new roster goes out before the ones we just left (maps don't
+	// keep order), so our other devices already see us there when their
+	// own participation disappears and can say the call moved (#76).
+	s.broadcastHuddlesLocked(changed{a.Chan: c[a.Chan]})
+	delete(c, a.Chan)
 	s.broadcastHuddlesLocked(c)
 	return proto.HuddleJoinRes{Src: p.src}, nil
 }
@@ -372,8 +387,12 @@ func (sess *session) startDatagrams(ctx context.Context, dg transport.DatagramCo
 	sess.dgOut = make(chan dgItem, dgQueueLen)
 	hs := sess.srv.hud
 	go func() {
+		live := time.NewTicker(hs.pingEvery)
+		defer live.Stop()
 		for {
 			select {
+			case <-live.C:
+				sess.srv.huddleLiveness(sess)
 			case it := <-sess.dgOut:
 				// Queued for or from a participation that has since ended
 				// (left, removed, revoked): never deliver it (§14.1).
@@ -399,6 +418,41 @@ func (sess *session) startDatagrams(ctx context.Context, dg transport.DatagramCo
 			sess.srv.relay(sess, b)
 		}
 	}()
+}
+
+// huddleLiveness PINGs sess while it is in a huddle and ends its
+// participation once nothing has come from it for deadAfter (#75): a
+// crashed or unplugged client would otherwise stay in everyone's roster
+// until the connection's idle timeout.
+func (s *Server) huddleLiveness(sess *session) {
+	hs := s.hud
+	hs.mu.RLock()
+	_, in := hs.bySess[sess]
+	hs.mu.RUnlock()
+	if !in {
+		return
+	}
+	sess.recvMu.Lock()
+	idle := time.Since(sess.lastRecv)
+	sess.recvMu.Unlock()
+	if idle > hs.deadAfter {
+		s.mu.Lock()
+		// Re-check under the lock: a rejoin that got it first touched
+		// lastRecv (dropWhere ignores a session no longer in a huddle).
+		sess.recvMu.Lock()
+		idle = time.Since(sess.lastRecv)
+		sess.recvMu.Unlock()
+		if idle > hs.deadAfter {
+			s.huddleGoneLocked(sess)
+		}
+		s.mu.Unlock()
+		return
+	}
+	// Every client answers PING with PONG (PROTOCOL.md §2), which counts
+	// as a frame received.
+	if payload, err := proto.Marshal(proto.Ping{T: time.Now().UnixMilli()}); err == nil {
+		sess.push(outFrame{t: proto.TPing, payload: payload})
+	}
 }
 
 // relay forwards one datagram to the sender's huddle (PROTOCOL.md §14.3).

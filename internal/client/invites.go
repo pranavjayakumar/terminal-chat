@@ -24,6 +24,11 @@ func inviteKeys(keys []ssh.PublicKey) [][]byte {
 	var out [][]byte
 	for _, pk := range keys {
 		b := pk.Marshal()
+		// The server refuses the whole invite over one oversized key
+		// (§4.1), e.g. a security key with a long application string.
+		if len(b) > proto.MaxInviteKeyLen {
+			continue
+		}
 		if _, err := identity.InviteKey(b); err != nil {
 			continue
 		}
