@@ -46,6 +46,8 @@ var (
 	ErrPendingChanged = errors.New("the pending key changes changed — review them again")
 	// ErrNotMatched means a GitHub check didn't match, so there's nothing to confirm.
 	ErrNotMatched = errors.New("the GitHub keys don't match — nothing to confirm")
+	// ErrNoGitHubUser means GitHub answered 404 for the login's keys.
+	ErrNoGitHubUser = errors.New("no GitHub account")
 )
 
 // keyChangeReason is the failure an outbox entry is held with while a
@@ -313,7 +315,7 @@ func getGitHubKeys(ctx context.Context, base, login string) ([]ssh.PublicKey, er
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("no GitHub account github.com/%s (HTTP 404) — check the spelling", login)
+		return nil, fmt.Errorf("%w github.com/%s (HTTP 404) — check the spelling", ErrNoGitHubUser, login)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetching GitHub keys: HTTP %d", resp.StatusCode)
