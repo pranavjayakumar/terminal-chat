@@ -33,7 +33,9 @@ func TestParseUsers(t *testing.T) {
 		{[]string{"disable", "@bob"}, usersArgs{disable: "bob"}, true},
 		{[]string{"disable", "@bob", "--yes"}, usersArgs{disable: "bob", yes: true}, true},
 		{[]string{"disable"}, usersArgs{}, false},
-		{[]string{"disable", "bob"}, usersArgs{}, false},
+		{[]string{"disable", "bob"}, usersArgs{disable: "bob"}, true}, // the @ is optional
+		{[]string{"disable", "bob", "--yes"}, usersArgs{disable: "bob", yes: true}, true},
+		{[]string{"disable", "Bob!"}, usersArgs{}, false},
 		{[]string{"disable", "@bob", "@carol"}, usersArgs{}, false},
 		{[]string{"@bob"}, usersArgs{}, false},
 		{[]string{"enable", "@bob"}, usersArgs{}, false},
@@ -224,5 +226,29 @@ func TestUsersRealServer(t *testing.T) {
 		if u.Name == "bob" && !u.Disabled {
 			t.Fatal("bob not disabled")
 		}
+	}
+}
+
+// Without a terminal (in == nil) disable never prompts: it says to pass --yes
+// and fails, instead of printing a [y/N] nobody can answer and exiting 0.
+func TestUsersDisableNoTerminal(t *testing.T) {
+	res := proto.UsersRes{Users: []proto.User{{ID: 1, Name: "alice", Admin: true}, {ID: 2, Name: "bob"}}}
+	admin := &fakeUsers{me: res.Users[0], res: res}
+	var out bytes.Buffer
+	err := users(context.Background(), admin, []string{"disable", "bob"}, nil, &out)
+	if err == nil || !strings.Contains(err.Error(), "--yes") || strings.Contains(out.String(), "[y/N]") {
+		t.Fatalf("err %v, out %q", err, out.String())
+	}
+}
+
+// /dev/null is a character device but not a terminal.
+func TestDevNullIsNotATerminal(t *testing.T) {
+	f, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if isTerminal(f) {
+		t.Fatal("/dev/null counted as a terminal")
 	}
 }

