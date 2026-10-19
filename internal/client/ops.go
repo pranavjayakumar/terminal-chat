@@ -486,7 +486,62 @@ func (c *Client) SetTopic(ctx context.Context, ch uint64, topic string) error {
 // History fetches up to 100 messages of ch older than before (0 = latest)
 // into the cache; Messages/Thread then include them. more reports whether
 // older ones exist.
+//
+// A page holds thread replies too, and callers page by the oldest top-level
+// message they show, so a page of nothing but replies (a busy thread) would
+// come back on every call and hide everything before it. History keeps going
+// until a page brings a top-level message, or there is nothing older. When
+// it stops at its page cap, the next call with the same before resumes where
+// it stopped, as long as that point is still in the cache (a reset or leave
+// drops the point, and the resume with it, so no gap is skipped).
 func (c *Client) History(ctx context.Context, ch, before uint64) (more bool, err error) {
+	from := before
+	c.mu.Lock()
+	r, ok := c.histResume[ch]
+	c.mu.Unlock()
+	if ok && r[0] == before && r[1] != 0 && (before == 0 || r[1] < before) {
+		var n int
+		if c.db.QueryRow(`SELECT COUNT(*) FROM msgs WHERE id = ? AND chan = ?`, r[1], ch).Scan(&n) == nil && n > 0 {
+			from = r[1]
+		}
+	}
+	for range c.timing.historyPages {
+		r, err := c.historyPage(ctx, ch, from)
+		if err != nil {
+			return r.More, err
+		}
+		if !r.More || len(r.Msgs) == 0 {
+			c.dropHistResume(ch)
+			return r.More, nil
+		}
+		oldest := r.Msgs[0].ID
+		for _, m := range r.Msgs {
+			if m.Thread == 0 {
+				c.dropHistResume(ch)
+				return true, nil
+			}
+			oldest = min(oldest, m.ID)
+		}
+		from = oldest
+		// Saved after every page, so a call that times out on a slow link
+		// still moves the next one forward.
+		c.mu.Lock()
+		if c.histResume == nil {
+			c.histResume = map[uint64][2]uint64{}
+		}
+		c.histResume[ch] = [2]uint64{before, from}
+		c.mu.Unlock()
+	}
+	return true, nil
+}
+
+func (c *Client) dropHistResume(ch uint64) {
+	c.mu.Lock()
+	delete(c.histResume, ch)
+	c.mu.Unlock()
+}
+
+func (c *Client) historyPage(ctx context.Context, ch, before uint64) (proto.HistoryRes, error) {
 	var r proto.HistoryRes
 	hook := func(res proto.Res) error {
 		var hr proto.HistoryRes
@@ -501,8 +556,8 @@ func (c *Client) History(ctx context.Context, ch, before uint64) (more bool, err
 		}
 		return err
 	}
-	err = c.call(ctx, proto.OpHistory, proto.HistoryArgs{Chan: ch, Before: before, Limit: 100}, &r, hook)
-	return r.More, err
+	err := c.call(ctx, proto.OpHistory, proto.HistoryArgs{Chan: ch, Before: before, Limit: 100}, &r, hook)
+	return r, err
 }
 
 // saveMsgs stores messages from a RES (history), judging encrypted ones.

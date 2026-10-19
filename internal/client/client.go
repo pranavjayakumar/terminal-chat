@@ -185,8 +185,11 @@ type Client struct {
 	cancel  context.CancelFunc
 	ctx     context.Context // cancelled by Close
 
-	mu           sync.Mutex
-	status       Status
+	mu     sync.Mutex
+	status Status
+	// histResume: channel -> {before, where History stopped at its page
+	// cap} (ops.go).
+	histResume   map[uint64][2]uint64
 	sess         *session // set only while Online
 	me           proto.User
 	users        map[uint64]proto.User
@@ -241,6 +244,7 @@ type timing struct {
 	keyNeed, autoEpoch            time.Duration // §13.7: ≤ 1 key.need per channel per keyNeed
 	devWait                       time.Duration // how long an encrypted send waits for device registration
 	poisonWait                    time.Duration // how long a provably bad box waits for a key.share before rotating past it
+	historyPages                  int           // pages one History call walks at most (ops.go)
 }
 
 var defaultTiming = timing{
@@ -248,7 +252,7 @@ var defaultTiming = timing{
 	backoffMin: 250 * time.Millisecond, backoffMax: 30 * time.Second,
 	dial: 15 * time.Second, handshake: 30 * time.Second, retry: 2 * time.Second,
 	type_: 6 * time.Second, keyNeed: 30 * time.Second, autoEpoch: time.Minute,
-	devWait: 15 * time.Second, poisonWait: 2 * time.Minute,
+	devWait: 15 * time.Second, poisonWait: 2 * time.Minute, historyPages: 50,
 }
 
 // DefaultHome is $TC_HOME, else ~/.config/tc.
