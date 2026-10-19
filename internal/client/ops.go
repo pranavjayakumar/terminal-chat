@@ -504,7 +504,7 @@ func (c *Client) History(ctx context.Context, ch, before uint64) (more bool, err
 			from = r[1]
 		}
 	}
-	for range maxReplyPages {
+	for range c.timing.historyPages {
 		r, err := c.historyPage(ctx, ch, from)
 		if err != nil {
 			return r.More, err
@@ -539,9 +539,6 @@ func (c *Client) dropHistResume(ch uint64) {
 	delete(c.histResume, ch)
 	c.mu.Unlock()
 }
-
-// maxReplyPages bounds one History call (100 messages a page).
-const maxReplyPages = 50
 
 func (c *Client) historyPage(ctx context.Context, ch, before uint64) (proto.HistoryRes, error) {
 	var r proto.HistoryRes
