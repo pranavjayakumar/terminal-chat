@@ -305,9 +305,12 @@ func (m *Model) huddleStarted(starts []client.HuddleStart) tea.Cmd {
 			continue
 		}
 		popup, cue := decide(m.nt.prefs, now, s.Chan, noteHuddle)
-		if !popup || now.Sub(m.nt.huddleAt[s.Chan]) < huddleNoteGap {
+		// The 2 s cap covers these too; the sidebar's 🎧 still shows a
+		// start that is skipped here.
+		if !popup || now.Sub(m.nt.huddleAt[s.Chan]) < huddleNoteGap || now.Sub(m.lastNotify) < notifyEvery {
 			continue
 		}
+		m.lastNotify = now
 		if m.nt.huddleAt == nil {
 			m.nt.huddleAt = map[uint64]time.Time{}
 		}

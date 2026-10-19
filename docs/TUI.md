@@ -313,14 +313,14 @@ and are not listed; they appear in the log as usual. Rows are kept for the newes
 
 ## Notifications & herdr
 
-- **When**: a DM or a message that @mentions me or contains one of my highlight words, not my own and not from a webhook bot
+- **When**: a DM or a message that @mentions me (outside fenced code blocks, like highlight words) or contains one of my highlight words, not my own and not from a webhook bot
   (bot messages count as unread but never as mentions — their text comes from outside),
   and either the terminal is blurred (focus reporting) or the message is in a channel that
   isn't the active one.
 - **What**: title `#chan · alice` or `alice (DM)`, body = first non-empty line. Title ≤ 60 runes,
   body ≤ 160, both through `sanitize.Line`.
 - **Coalescing**: the first message in a channel notifies at once and opens a 5 s window; more
-  messages in that window become one `N new messages` notification when it closes. At most one
+  messages in that window become one `N new messages` notification when it closes. A message shown alone when its window closes is re-read first: deleted meanwhile, nothing pops up; edited, the popup shows the new text. A mention in a level-`all` window opens its own window; soft messages not yet announced are counted in it. At most one
   notification per 2 s overall (a message over the cap waits for its window). Opening the channel
   drops what's pending for it.
 - **Backend** (`internal/notify`), chosen by `TC_NOTIFY=auto|herdr|os|terminal|bell|off` (default `auto`):
@@ -358,7 +358,7 @@ and are not listed; they appear in the log as usual. Rows are kept for the newes
   starter must be a member of the DM (rosters aren't end-to-end authenticated). Never for rosters
   a sync or channel join hands us (reconnects don't ring), nor for a late roster that already has
   several people. Esc closes an open mic first, then dismisses the ring. Channel huddle starts are silent at `mentions` (the sidebar
-  `🎧n` shows them); at `all`, one popup per channel per 5 min.
+  `🎧n` shows them); at `all`, one popup per channel per 5 min, within the 2 s cap.
 - **Privacy**: `/notify content full|name|none` (`TC_NOTIFY_CONTENT`): `name` shows who but not
   the text, `none` shows just `tc` / `new message`. Popups persist in the OS notification history
   (Notification Center, GNOME's tray): use `name` on shared machines.
