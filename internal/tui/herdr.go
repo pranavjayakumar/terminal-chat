@@ -71,7 +71,7 @@ type pendingNote struct {
 	title, body string
 	group       string // title for a summary
 	cue         notify.Cue
-	kind        noteKind // the strongest in the window
+	kind        noteKind      // the strongest in the window
 	last        proto.Message // the message title/body show, re-read before showing
 }
 
