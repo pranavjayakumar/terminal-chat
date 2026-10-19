@@ -305,9 +305,12 @@ func (m *Model) huddleStarted(starts []client.HuddleStart) tea.Cmd {
 			continue
 		}
 		popup, cue := decide(m.nt.prefs, now, s.Chan, noteHuddle)
-		if !popup || now.Sub(m.nt.huddleAt[s.Chan]) < huddleNoteGap {
+		// The 2 s cap covers these too; the sidebar's 🎧 still shows a
+		// start that is skipped here.
+		if !popup || now.Sub(m.nt.huddleAt[s.Chan]) < huddleNoteGap || now.Sub(m.lastNotify) < notifyEvery {
 			continue
 		}
+		m.lastNotify = now
 		if m.nt.huddleAt == nil {
 			m.nt.huddleAt = map[uint64]time.Time{}
 		}
@@ -529,7 +532,7 @@ func (m *Model) untilClock(s string) (int64, error) {
 
 func (m *Model) notifyCmd(nb NotifyBackend, args []string) (tea.Cmd, error) {
 	if len(args) == 0 {
-		m.setNotice(m.notifySummary(), false, true, 0)
+		m.showList("notifications — this device", m.notifySummary())
 		return nil, nil
 	}
 	switch strings.ToLower(args[0]) {
@@ -595,7 +598,7 @@ func (m *Model) notifyCmd(nb NotifyBackend, args []string) (tea.Cmd, error) {
 	if word != "default" {
 		l, err := client.ParseLevel(word)
 		if err != nil {
-			return nil, errors.New("usage: /notify all|mentions|off|default [#chan] [for 2h] (see ?)")
+			return nil, errors.New("usage: /notify all|mentions|off|default [#chan] [for 2h] (more: F1)")
 		}
 		lvl = l
 	}
@@ -647,16 +650,18 @@ func (m *Model) backendName() string {
 	return "?"
 }
 
-func (m *Model) notifySummary() string {
+// notifySummary is the /notify settings, one per row: a status-line notice
+// would be cut at 80 columns.
+func (m *Model) notifySummary() []string {
 	p, now := m.nt.prefs, m.now()
-	var b strings.Builder
+	var rows []string
 	if m.active != 0 {
 		lvl, over := p.Level(m.active, now)
-		fmt.Fprintf(&b, "%s: %s", m.chanTitle(m.active), lvl)
+		r := m.chanTitle(m.active) + ": " + string(lvl)
 		if !over {
-			b.WriteString(" (default)")
+			r += " (default)"
 		}
-		b.WriteString(" · ")
+		rows = append(rows, r)
 	}
 	def := p.Default
 	if def == client.LevelDefault {
@@ -678,12 +683,25 @@ func (m *Model) notifySummary() string {
 	if p.SoundOff {
 		sounds = "off"
 	}
-	if m.w < 80 { // narrow: the essentials, short
-		lvl, _ := p.Level(m.active, now)
-		return fmt.Sprintf("%s · dnd %s · sounds %s · ? for more", lvl, dnd, sounds)
+	hint := func(h string) string {
+		if m.dims().mainW < 50 { // narrow split: the values matter more
+			return ""
+		}
+		return " (" + h + ")"
 	}
-	fmt.Fprintf(&b, "default %s · content %s · quiet %s · dnd %s · via %s · sounds %s — this device", def, content, quiet, dnd, m.backendName(), sounds)
-	return b.String()
+	return append(rows,
+		"default: "+string(def)+hint("/notify global LEVEL"),
+		"content: "+content+hint("/notify content full|name|none"),
+		"quiet hours: "+quiet+hint("/notify quiet 22:00-08:00|off"),
+		"do not disturb: "+dnd+hint("/dnd"),
+		"via: "+m.backendName()+hint("/notify test"),
+		"sounds: "+sounds+hint("/sounds"))
+}
+
+// showList opens the read-only list overlay.
+func (m *Model) showList(title string, rows []string) {
+	m.list = listState{title: title, rows: rows}
+	m.mode = modeList
 }
 
 func (m *Model) notifyTestNext() tea.Cmd {
@@ -738,7 +756,7 @@ func (m *Model) dndCmd(nb NotifyBackend, args []string) error {
 }
 
 func (m *Model) soundsCmd(nb NotifyBackend, args []string) error {
-	usage := errors.New("usage: /sounds [CUE] on|off, /sounds volume N (see ?)")
+	usage := errors.New("usage: /sounds [CUE] on|off, /sounds volume N (more: F1)")
 	for i := range args {
 		args[i] = strings.ToLower(args[i])
 	}
@@ -746,33 +764,20 @@ func (m *Model) soundsCmd(nb NotifyBackend, args []string) error {
 	switch {
 	case len(args) == 0:
 		p := m.nt.prefs
-		var parts []string
+		master := "on"
+		if p.SoundOff {
+			master = "off"
+		}
+		rows := []string{"sounds: " + master + " (/sounds on|off)"}
 		for _, c := range client.SoundCues {
 			st := "on"
 			if !p.Sound(c) {
 				st = "off"
 			}
-			parts = append(parts, c+" "+st)
+			rows = append(rows, c+": "+st)
 		}
-		master := "on"
-		if p.SoundOff {
-			master = "off"
-		}
-		var off []string
-		for _, c := range client.SoundCues {
-			if !p.Sound(c) {
-				off = append(off, c)
-			}
-		}
-		if m.w < 80 {
-			s := "sounds " + master
-			if len(off) > 0 && !p.SoundOff {
-				s += " · off: " + strings.Join(off, " ")
-			}
-			m.setNotice(s, false, true, 0)
-			return nil
-		}
-		m.setNotice(fmt.Sprintf("sounds %s · %s · huddle cue volume %d", master, strings.Join(parts, " · "), p.Volume), false, true, 0)
+		rows = append(rows, fmt.Sprintf("huddle cue volume: %d (/sounds volume 0-100)", p.Volume))
+		m.showList("sounds — /sounds CUE on|off", rows)
 		return nil
 	case len(args) == 1 && (args[0] == "on" || args[0] == "off"):
 		v := ""
@@ -782,7 +787,11 @@ func (m *Model) soundsCmd(nb NotifyBackend, args []string) error {
 		if err := set("sound.all", v); err != nil {
 			return err
 		}
-		m.setInfo("sounds " + args[0] + " (popups still show)")
+		if args[0] == "off" {
+			m.setInfo("sounds off (popups still show)")
+		} else {
+			m.setInfo("sounds on")
+		}
 		return nil
 	case len(args) == 2 && args[0] == "volume":
 		n, err := strconv.Atoi(args[1])

@@ -85,6 +85,13 @@ type Model struct {
 	limits   map[uint64]int
 	histBusy map[uint64]bool
 	histDone map[uint64]bool
+	// histGens/histEpoch bump when a channel's cache may have been dropped
+	// (left, reset), so a reply to a fetch started before is ignored.
+	histGens  map[uint64]int
+	histEpoch int
+	// afterSecret holds results that arrived while a one-time secret was
+	// on screen.
+	afterSecret []tea.Msg
 
 	input   textarea.Model
 	line    textinput.Model // switcher query and react prompt
@@ -99,8 +106,9 @@ type Model struct {
 	noticeTTL    time.Duration // 0: the default for the kind
 	noticeGen    int           // bumped on every change; expiry ticks carry it
 	noticeTimed  int           // generation that has an expiry tick scheduled
-	ctrlC        bool
-	escAt        time.Time // first Esc on a non-empty draft
+	ctrlC        time.Time     // first Ctrl-C; a second one within infoTTL quits
+	noticeCh     uint64        // nonzero: the notice is about this channel only
+	escAt        time.Time     // first Esc on a non-empty draft
 	helpScroll   int
 	view         viewer
 
@@ -164,6 +172,7 @@ type (
 		ch   uint64
 		more bool
 		err  error
+		gen  histGen // the channel's history state when the fetch started
 	}
 	openChanMsg struct{ ch uint64 }
 	listMsg     listState
@@ -190,6 +199,7 @@ const (
 	infoTTL    = 4 * time.Second
 	errTTL     = 8 * time.Second
 	escWindow  = 2 * time.Second
+	ctrlCHint  = "press Ctrl-C again to quit"
 )
 
 // New builds the model and loads the cache.
@@ -323,7 +333,18 @@ func (m *Model) reloadPresence() {
 }
 
 func (m *Model) reloadChans() {
+	was := make(map[uint64]bool, len(m.chans))
+	for _, v := range m.chans {
+		was[v.ID] = v.Member
+	}
 	m.chans = m.c.Channels()
+	for _, v := range m.chans {
+		if !v.Member && was[v.ID] {
+			// Leaving drops the cached messages: a rejoin must fetch them
+			// again instead of trusting "history complete" from before.
+			m.forgetHistory(v.ID)
+		}
+	}
 	prev, hadPrev := m.e2e[m.active]
 	m.e2e = map[uint64]client.E2EStatus{}
 	for _, v := range m.chans {
@@ -462,6 +483,9 @@ func (m *Model) openChannel(ch uint64) tea.Cmd {
 		return nil
 	}
 	m.opened = true
+	if m.noticeCh != 0 && m.noticeCh != ch {
+		m.clearNotice()
+	}
 	if m.jump.wide != 0 && m.jump.wide != ch {
 		m.endWiden(false) // leaving the channel a jump widened
 	}
@@ -595,9 +619,28 @@ func (m *Model) focus() *pane {
 
 // ---- history ----
 
+type histGen struct{ epoch, ch int }
+
+func (m *Model) histGen(ch uint64) histGen { return histGen{m.histEpoch, m.histGens[ch]} }
+
+// forgetHistory says ch's cached messages may be gone: fetch afresh, and
+// drop any reply to a fetch already under way.
+func (m *Model) forgetHistory(ch uint64) {
+	if m.histGens == nil {
+		m.histGens = map[uint64]int{}
+	}
+	m.histGens[ch]++
+	delete(m.histDone, ch)
+	delete(m.histBusy, ch)
+	delete(m.limits, ch)
+}
+
 func (m *Model) fetchHistory(ch uint64) tea.Cmd {
 	if ch == 0 || m.histBusy[ch] || m.histDone[ch] || m.status.State != client.Online {
 		return nil
+	}
+	if v, ok := m.chanView(ch); ok && !v.Member && v.Kind != proto.ChanPublic {
+		return nil // removed: the server would refuse; the cache is all we keep
 	}
 	var before uint64
 	for _, x := range m.main.msgs {
@@ -607,12 +650,13 @@ func (m *Model) fetchHistory(ch uint64) tea.Cmd {
 		}
 	}
 	m.histBusy[ch] = true
+	gen := m.histGen(ch)
 	c, ctx := m.c, m.ctx
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(ctx, reqTimeout)
 		defer cancel()
 		more, err := c.History(ctx, ch, before)
-		return historyMsg{ch, more, err}
+		return historyMsg{ch, more, err, gen}
 	}
 }
 
@@ -652,15 +696,38 @@ func (m *Model) setErr(what string, err error) {
 	}
 	var pe *proto.Error
 	if errors.As(err, &pe) {
-		msg = pe.Code
-		if pe.Msg != "" {
-			msg += ": " + pe.Msg
-		}
+		msg = protoErrText(pe)
 	}
 	if what != "" {
 		msg = what + ": " + msg
 	}
 	m.setNotice(msg, true, false, 0)
+}
+
+// codeWords says a bare server error code (PROTOCOL.md §5) in words.
+var codeWords = map[string]string{
+	proto.ErrBadRequest:   "the server refused that request",
+	proto.ErrUnauthorized: "not signed in",
+	proto.ErrForbidden:    "not allowed",
+	proto.ErrNotFound:     "not found",
+	proto.ErrConflict:     "conflicts with a change made meanwhile — try again",
+	proto.ErrRateLimited:  "too many requests — wait a moment",
+	proto.ErrTooLarge:     "too large",
+	proto.ErrUnknownOp:    "the server doesn't support this (older version?)",
+	proto.ErrInternal:     "server error",
+}
+
+// protoErrText is a server error for showing: its code and message, or
+// the code in words when there is no message.
+func protoErrText(pe *proto.Error) string {
+	w, ok := codeWords[pe.Code]
+	if !ok {
+		w = pe.Code
+	}
+	if pe.Msg != "" {
+		return w + ": " + pe.Msg
+	}
+	return w
 }
 
 // setInfo shows a notice that clears itself after infoTTL.
@@ -671,6 +738,10 @@ func (m *Model) setHint(s string) { m.setNotice(s, false, true, 0) }
 
 func (m *Model) setNotice(s string, isErr, sticky bool, ttl time.Duration) {
 	m.notice, m.noticeErr, m.noticeSticky, m.noticeTTL = sanitize.Line(s), isErr, sticky, ttl
+	m.noticeCh = 0
+	if s != ctrlCHint {
+		m.ctrlC = time.Time{} // the hint is gone: a Ctrl-C now must not quit
+	}
 	m.noticeDim = false
 	m.noticeGen++
 }
@@ -680,6 +751,7 @@ func (m *Model) clearNotice() {
 		return
 	}
 	m.notice, m.noticeErr, m.noticeSticky, m.noticeDim = "", false, false, false
+	m.ctrlC, m.noticeCh = time.Time{}, 0 // the Ctrl-C hint went with it
 	m.noticeGen++
 }
 
@@ -757,6 +829,14 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if cmd, ok := m.huddleMsg(msg); ok {
 		return m, cmd
 	}
+	switch msg.(type) {
+	case inviteShownMsg, hookShownMsg, listMsg, searchMsg, pinsMsg:
+		if m.mode == modeViewer && m.view.secret {
+			// Never cover a secret shown once: it waits until Esc.
+			m.afterSecret = append(m.afterSecret, msg)
+			return m, nil
+		}
+	}
 	switch msg := msg.(type) {
 	case noticeExpireMsg:
 		if msg.gen == m.noticeGen {
@@ -819,6 +899,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.layoutInput()
 		m.clampScroll(&m.main)
 		m.clampScroll(&m.thread)
+		m.helpScroll = min(max(m.helpScroll, 0), m.helpMaxScroll()) // rows rewrap
 		return m, nil
 	case tea.FocusMsg:
 		m.focused = true
@@ -849,12 +930,21 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case inviteShownMsg:
 		m.showInvite(msg)
 		return m, nil
+	case hookShownMsg:
+		m.showHook(msg)
+		return m, nil
 	case updateAvailMsg:
 		m.newRelease = string(msg)
 		return m, nil
 	case historyMsg:
+		if msg.gen != m.histGen(msg.ch) {
+			return m, nil // started before a leave or reset: stale
+		}
 		m.histBusy[msg.ch] = false
 		if msg.err != nil {
+			if v, ok := m.chanView(msg.ch); ok && !v.Member && v.Kind != proto.ChanPublic {
+				return m, nil // removed meanwhile: the header says so
+			}
 			if !errors.Is(msg.err, client.ErrOffline) {
 				m.setErr("history", msg.err)
 			}
@@ -938,7 +1028,12 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 		prev := m.status
 		m.status = m.c.Status()
 		if m.status.Stopped && m.status.Err != "" && !prev.Stopped {
-			m.setNotice("disconnected: "+m.status.Err, true, false, 0)
+			msg := "disconnected: " + m.status.Err
+			if strings.HasPrefix(m.status.Err, (&client.ByeError{Code: proto.ByeRevoked}).Error()) {
+				// Same wording as the CLI: what happened, and the way back.
+				msg = "can't sign in: account disabled or device revoked · ask an admin (disabled: new invite and SSH key)"
+			}
+			m.setNotice(msg, true, true, 0)
 		}
 		if m.status.State == client.Online && prev.State != client.Online {
 			if len(m.main.msgs) < 30 {
@@ -951,6 +1046,11 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 		m.refreshDrafts()
 	}
 	if u.Reset {
+		// A snapshot reset may have replaced the cache: re-learn where
+		// each channel's history starts.
+		clear(m.histDone)
+		clear(m.histBusy)
+		m.histEpoch++
 		m.reloadAll()
 		cmds = append(cmds, m.openDefault())
 		if m.mode == modeActivity {
@@ -1006,15 +1106,16 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 	key := keyName(k)
 	if key == kQuit {
-		if m.ctrlC {
+		// Only while the hint is up: a stray Ctrl-C long after must not quit.
+		if !m.ctrlC.IsZero() && m.now().Sub(m.ctrlC) <= infoTTL {
 			return tea.Quit
 		}
-		m.ctrlC = true
-		m.setInfo("press Ctrl-C again to quit")
+		m.ctrlC = m.now()
+		m.setInfo(ctrlCHint)
 		return nil
 	}
-	if m.ctrlC {
-		m.ctrlC = false
+	if !m.ctrlC.IsZero() {
+		m.ctrlC = time.Time{}
 		if !m.noticeErr {
 			m.clearNotice()
 		}
@@ -1056,6 +1157,16 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 			return m.copyCmd(strings.Join(m.view.lines, "\n"))
 		}
 		m.viewerKey(key)
+		if m.mode != modeViewer && len(m.afterSecret) > 0 {
+			// Results that waited behind a one-time secret: show them now.
+			held := m.afterSecret
+			m.afterSecret = nil
+			cmds := make([]tea.Cmd, len(held))
+			for i, msg := range held {
+				cmds[i] = func() tea.Msg { return msg }
+			}
+			return tea.Batch(cmds...)
+		}
 		return nil
 	case modeConfirmDelete:
 		m.mode = modeSelect
@@ -1376,7 +1487,7 @@ func (m *Model) helpKey(key string) {
 	case kHome, "g":
 		m.helpScroll = 0
 	case kEnd, "G":
-		m.helpScroll = len(helpLines)
+		m.helpScroll = m.helpMaxScroll()
 	}
 	m.helpScroll = min(max(m.helpScroll, 0), m.helpMaxScroll())
 }

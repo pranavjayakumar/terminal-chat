@@ -71,7 +71,8 @@ type pendingNote struct {
 	title, body string
 	group       string // title for a summary
 	cue         notify.Cue
-	kind        noteKind // the strongest in the window
+	kind        noteKind      // the strongest in the window
+	last        proto.Message // the message title/body show, re-read before showing
 }
 
 // shouldNotify is the mention-class trigger (DMs, mentions, highlights,
@@ -132,14 +133,19 @@ func (m *Model) notifyFor(news []client.Message) tea.Cmd {
 
 func (m *Model) queueNote(x proto.Message, kind noteKind, cue notify.Cue, window time.Duration) tea.Cmd {
 	title, body, group := m.noteText(x)
+	var soft *pendingNote
 	if p := m.notes[x.Chan]; p != nil && kind == noteMention && p.kind < noteMention {
 		// A mention never waits out a level-all channel's 30 s window: it
-		// opens its own (the soft messages before it are folded in).
+		// opens its own, and the soft messages still unannounced are
+		// announced when that one closes.
 		delete(m.notes, x.Chan)
+		if p.n > 0 {
+			soft = p
+		}
 	}
 	if p := m.notes[x.Chan]; p != nil {
 		p.n++
-		p.title, p.body, p.group = title, body, group
+		p.title, p.body, p.group, p.last = title, body, group, x
 		if cueRank(cue) > cueRank(p.cue) {
 			p.cue = cue
 		}
@@ -147,12 +153,21 @@ func (m *Model) queueNote(x proto.Message, kind noteKind, cue notify.Cue, window
 		return nil
 	}
 	m.noteGen++
-	p := &pendingNote{gen: m.noteGen, title: title, body: body, group: group, cue: cue, kind: kind}
+	p := &pendingNote{gen: m.noteGen, title: title, body: body, group: group, cue: cue, kind: kind, last: x}
 	m.notes[x.Chan] = p
 	if m.now().Sub(m.lastNotify) >= notifyEvery {
 		m.fire(x.Chan, title, body, 1, cue)
+		if soft != nil {
+			p.n = soft.n
+			if soft.n == 1 { // the window ends with the soft one, not a repeat
+				p.title, p.body, p.last = soft.title, soft.body, soft.last
+			}
+		}
 	} else {
 		p.n = 1 // over the global cap: say it when the window closes
+		if soft != nil {
+			p.n += soft.n
+		}
 	}
 	return m.noteTimer(x.Chan, p.gen, window)
 }
@@ -193,6 +208,15 @@ func (m *Model) flushNote(msg notifyFlushMsg) tea.Cmd {
 		return nil
 	}
 	if p.n == 1 {
+		// It may have been deleted or edited while it waited: never show
+		// text its author took back.
+		cur, ok := m.currentMessage(p.last)
+		if ok && cur.Deleted {
+			return nil
+		}
+		if ok && cur.Body != p.last.Body {
+			p.title, p.body, _ = m.noteText(cur)
+		}
 		m.fire(msg.ch, p.title, p.body, 1, cue)
 	} else {
 		m.fire(msg.ch, p.group, strconv.Itoa(p.n)+" new messages", p.n, cue)
@@ -586,4 +610,20 @@ func stripANSI(s string) string {
 		b.WriteByte(c)
 	}
 	return sanitize.Text(b.String())
+}
+
+// currentMessage is x as the cache has it now; ok is false when it's gone.
+func (m *Model) currentMessage(x proto.Message) (proto.Message, bool) {
+	var list []client.Message
+	if x.Thread != 0 {
+		list = m.c.Thread(x.Thread)
+	} else {
+		list = m.c.Messages(x.Chan, pageLimit)
+	}
+	for _, c := range list {
+		if c.ID == x.ID && x.ID != 0 {
+			return c.Message, true
+		}
+	}
+	return proto.Message{}, false
 }

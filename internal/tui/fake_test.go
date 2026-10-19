@@ -18,31 +18,33 @@ import (
 
 // fakeClient is an in-memory Backend.
 type fakeClient struct {
-	mu       sync.Mutex
-	me       proto.User
-	status   client.Status
-	users    []proto.User
-	chans    []client.ChannelView
-	msgs     map[uint64][]client.Message
-	threads  map[uint64][]client.Message
-	typing   map[uint64][]uint64
-	updates  chan client.Update
-	sent     []client.Message
-	reads    map[uint64]uint64
-	history  int
-	histMore bool
-	calls    []string
-	aways    []bool
-	drafts   map[[2]uint64]string
-	words    []string
-	setErr   error // SetDraft fails with this
-	seen     int64 // activity seen time
-	activity []client.ActivityItem
-	pinOrder []uint64 // pinned message ids, newest pin first
-	e2eSt    map[uint64]client.E2EStatus
-	addErr   error
-	tr       fakeTrust
-	dv       fakeDevs // devices_test.go
+	mu          sync.Mutex
+	me          proto.User
+	status      client.Status
+	users       []proto.User
+	chans       []client.ChannelView
+	msgs        map[uint64][]client.Message
+	threads     map[uint64][]client.Message
+	typing      map[uint64][]uint64
+	updates     chan client.Update
+	sent        []client.Message
+	reads       map[uint64]uint64
+	history     int
+	histMore    bool
+	histErr     error
+	addErrAfter int // AddMember succeeds this many times before addErr
+	calls       []string
+	aways       []bool
+	drafts      map[[2]uint64]string
+	words       []string
+	setErr      error // SetDraft fails with this
+	seen        int64 // activity seen time
+	activity    []client.ActivityItem
+	pinOrder    []uint64 // pinned message ids, newest pin first
+	e2eSt       map[uint64]client.E2EStatus
+	addErr      error
+	tr          fakeTrust
+	dv          fakeDevs // devices_test.go
 
 	groups     []proto.Group
 	reminders  []proto.Reminder
@@ -207,6 +209,10 @@ func (f *fakeClient) AddMember(ctx context.Context, ch, user uint64) error {
 	f.record("add")
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.addErrAfter > 0 {
+		f.addErrAfter--
+		return nil
+	}
 	return f.addErr
 }
 func (f *fakeClient) RemoveMember(ctx context.Context, ch, user uint64) error {
@@ -223,13 +229,14 @@ func (f *fakeClient) SetTopic(ctx context.Context, ch uint64, topic string) erro
 }
 func (f *fakeClient) OpenDM(ctx context.Context, users []uint64) (proto.Channel, error) {
 	f.record("dm")
+	f.record(fmt.Sprintf("dm:%v", users))
 	return proto.Channel{ID: 20}, nil
 }
 func (f *fakeClient) History(ctx context.Context, ch, before uint64) (bool, error) {
 	f.mu.Lock()
 	f.history++
 	f.mu.Unlock()
-	return f.histMore, nil
+	return f.histMore, f.histErr
 }
 func (f *fakeClient) Search(ctx context.Context, q string, ch uint64) ([]proto.Message, error) {
 	return []proto.Message{f.msgs[10][0].Message, f.threads[103][1].Message}, nil

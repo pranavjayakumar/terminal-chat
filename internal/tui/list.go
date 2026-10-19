@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/skailama/tc/internal/sanitize"
 )
 
@@ -35,7 +38,12 @@ func (m *Model) listKey(key string) {
 func (m *Model) listLines(w, h int) []string {
 	s := &m.list
 	out := []string{fit(m.st.overlayTitle.Render(truncate(sanitize.Line(s.title)+" — Esc closes", w)), w)}
-	start, end := window(len(s.rows), s.sel, h-1)
+	rows := h - 1
+	cut := len(s.rows) > rows && rows > 1
+	if cut {
+		rows-- // a last row says what is hidden, as help's "↓ more" does
+	}
+	start, end := window(len(s.rows), s.sel, rows)
 	for i := start; i < end; i++ {
 		l := truncate(" "+sanitize.Line(s.rows[i]), w)
 		if i == s.sel {
@@ -43,6 +51,16 @@ func (m *Model) listLines(w, h int) []string {
 		} else {
 			out = append(out, fit(l, w))
 		}
+	}
+	if cut {
+		var more []string
+		if start > 0 {
+			more = append(more, fmt.Sprintf("↑ %d", start))
+		}
+		if end < len(s.rows) {
+			more = append(more, fmt.Sprintf("↓ %d", len(s.rows)-end))
+		}
+		out = append(out, fit(m.st.dim.Render(truncate(" "+strings.Join(more, " · ")+" more", w)), w))
 	}
 	return padLines(out, w, h)
 }

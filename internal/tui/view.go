@@ -5,6 +5,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
@@ -28,6 +31,9 @@ type dims struct {
 const statusRows = 1
 
 func (m *Model) sidebarShown() bool {
+	if m.mode == modeViewer && m.view.wide {
+		return false // text to copy: a mouse selection mustn't pick up the sidebar
+	}
 	switch m.sidebar {
 	case 1:
 		return m.w >= minSidebarCols
@@ -136,6 +142,19 @@ func (m *Model) viewPane(p *pane, w, h int, unread int) []string {
 		return out
 	}
 	lines, _ := m.paneLines(p, w)
+	if len(lines) == 0 && p == &m.main && !m.histBusy[p.ch] && m.histDone[p.ch] {
+		// What a brand-new user sees first: say what to do, not a blank pane.
+		hint := "no messages yet — say hi · F1 help · Ctrl-K channels & people"
+		switch v, _ := m.chanView(p.ch); {
+		case v.Kind == proto.ChanDM && len(v.Members) == 1:
+			hint = "your notes — only you see them; /remind lands here"
+		case w < 26:
+			hint = "no messages yet"
+		case w < 64:
+			hint = "no messages yet · F1 help"
+		}
+		lines = []string{m.st.dim.Render(truncate(hint, w))}
+	}
 	total := len(lines)
 	scroll := min(max(p.scroll, 0), max(total-h, 0))
 	end := total - scroll
@@ -200,9 +219,9 @@ func (m *Model) mainColumn(d dims) []string {
 	out = append(out, m.st.border.Render(strings.Repeat("─", w)))
 	var in []string
 	if m.mode == modeReact {
-		in = []string{m.line.View()}
+		in = []string{dropBidi(m.line.View())}
 	} else {
-		in = strings.Split(m.input.View(), "\n")
+		in = strings.Split(dropBidi(m.input.View()), "\n")
 	}
 	for i := 0; i < d.inputH; i++ {
 		l := ""
@@ -622,12 +641,12 @@ func (m *Model) sideEntry(v client.ChannelView, w int) string {
 // ---- overlays ----
 
 func (m *Model) helpMaxScroll() int {
-	return max(len(helpLines)-(m.dims().bodyH-1), 0)
+	return max(len(m.helpRows(m.dims().mainW))-(m.dims().bodyH-1), 0)
 }
 
-// helpLines is the scrollable help overlay; a "↓ more" row marks a cut.
-func (m *Model) helpLines(w, h int) []string {
-	out := []string{fit(m.st.overlayTitle.Render(truncate("help — ↑/↓ PgUp/PgDn scroll, Esc closes", w)), w)}
+// helpRows is the help text laid out for width w: a key column, then the
+// description, wrapped (never cut) under itself.
+func (m *Model) helpRows(w int) []string {
 	// The key column fits the longest key plus a gap, up to half the width.
 	kw := 0
 	if w >= 60 {
@@ -638,25 +657,48 @@ func (m *Model) helpLines(w, h int) []string {
 		}
 		kw = min(max(kw, 24), w/2)
 	}
+	var out []string
+	for _, kv := range helpLines {
+		switch {
+		case kv[1] == "":
+			out = append(out, fit(kv[0], w))
+		case kw == 0: // narrow: "key: description", continued indented
+			for i, l := range strings.Split(ansi.Wrap(kv[0]+": "+kv[1], max(w-2, 1), ""), "\n") {
+				if i == 0 {
+					k, d, _ := strings.Cut(l, ": ")
+					if d != "" || strings.HasSuffix(l, ":") {
+						l = k + ": " + m.st.dim.Render(d)
+					}
+					out = append(out, fit(l, w))
+					continue
+				}
+				out = append(out, fit("  "+m.st.dim.Render(l), w))
+			}
+		default:
+			for i, l := range strings.Split(ansi.Wrap(kv[1], max(w-kw, 1), ""), "\n") {
+				key := ""
+				if i == 0 {
+					key = kv[0]
+				}
+				out = append(out, fit(fit(key, kw)+m.st.dim.Render(l), w))
+			}
+		}
+	}
+	return out
+}
+
+// helpLines is the scrollable help overlay; a "↓ more" row marks a cut.
+func (m *Model) helpLines(w, h int) []string {
+	out := []string{fit(m.st.overlayTitle.Render(truncate("help — ↑/↓ PgUp/PgDn scroll, Esc closes", w)), w)}
+	all := m.helpRows(w)
 	rows := h - 1
-	scroll := min(max(m.helpScroll, 0), max(len(helpLines)-rows, 0))
-	items := helpLines[scroll:]
+	scroll := min(max(m.helpScroll, 0), max(len(all)-rows, 0))
+	items := all[scroll:]
 	more := len(items) > rows
 	if more {
 		items = items[:max(rows-1, 0)]
 	}
-	for _, kv := range items {
-		var l string
-		switch {
-		case kv[1] == "":
-			l = kv[0]
-		case kw == 0:
-			l = kv[0] + ": " + m.st.dim.Render(kv[1])
-		default:
-			l = fit(kv[0], kw) + m.st.dim.Render(kv[1])
-		}
-		out = append(out, fit(l, w))
-	}
+	out = append(out, items...)
 	if more && rows > 0 {
 		out = append(out, fit(m.st.dim.Render(" ↓ more"), w))
 	}
@@ -686,7 +728,7 @@ func window(n, sel, h int) (int, int) {
 }
 
 func (m *Model) switcherLines(w, h int) []string {
-	out := []string{fit(m.line.View(), w)}
+	out := []string{fit(dropBidi(m.line.View()), w)}
 	if len(m.sw.shown) == 0 && h > 1 {
 		out = append(out, fit(m.st.dim.Render(" no matches"), w))
 	}
@@ -775,3 +817,21 @@ func (m *Model) sharePreviewLines(w, h int) []string {
 	}
 	return padLines(out, w, h)
 }
+
+// dropBidi removes bidi controls from what an editor draws (it keeps its
+// own cursor styling, so sanitize.Text can't be used): typed or pasted
+// overrides would make the screen differ from what Enter sends. They are
+// zero-width, so the cursor math is unchanged.
+func dropBidi(s string) string {
+	if !strings.ContainsFunc(s, isBidi) {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if isBidi(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+func isBidi(r rune) bool { return unicode.Is(unicode.Bidi_Control, r) }

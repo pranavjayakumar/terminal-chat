@@ -150,7 +150,7 @@ func TestRemindersOverlayAndDelete(t *testing.T) {
 		t.Fatalf("left %v", f.reminders)
 	}
 	runInput(t, m, "/remind-delete 2")
-	if !m.noticeErr || !strings.Contains(m.notice, "not_found") {
+	if !m.noticeErr || !strings.Contains(m.notice, "remind-delete: not found") {
 		t.Fatalf("unknown id: %q err=%v", m.notice, m.noticeErr)
 	}
 	for _, line := range []string{"/remind-delete", "/remind-delete x", "/remind-delete 0", "/remind-delete 1 2"} {

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -400,7 +401,7 @@ func TestQuestionMarkStartsMessage(t *testing.T) {
 		t.Fatalf("sent %+v", f.sent)
 	}
 	run(m, m.handleKey(keyMsg("f1")))
-	if !strings.Contains(m.View(), "this help") {
+	if m.mode != modeHelp || !strings.Contains(m.View(), "help —") {
 		t.Fatal("F1 should open help")
 	}
 }
@@ -429,5 +430,31 @@ func TestOpenThreadFetchesHistory(t *testing.T) {
 	run(m, m.handleKey(keyMsg("r")))
 	if !m.thread.open() || !f.called("thread-history:10:103") {
 		t.Fatal("thread opened without fetching its history")
+	}
+}
+
+// The second Ctrl-C quits only while "press Ctrl-C again" is on screen: a
+// Ctrl-C long after the notice expired arms again instead of quitting.
+func TestCtrlCArmExpires(t *testing.T) {
+	m := newTestModel(t, 80, 24)
+	now := time.Now()
+	m.now = func() time.Time { return now }
+	m.handleKey(keyMsg("ctrl+c"))
+	now = now.Add(infoTTL + time.Second)
+	if cmd := m.handleKey(keyMsg("ctrl+c")); cmd != nil {
+		if _, ok := cmd().(tea.QuitMsg); ok {
+			t.Fatal("a Ctrl-C after the notice expired quit")
+		}
+	}
+	if !strings.Contains(m.notice, "Ctrl-C again") {
+		t.Fatalf("notice = %q, want the Ctrl-C hint again", m.notice)
+	}
+	now = now.Add(time.Second)
+	cmd := m.handleKey(keyMsg("ctrl+c"))
+	if cmd == nil {
+		t.Fatal("second Ctrl-C within the window didn't quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("second Ctrl-C within the window didn't quit")
 	}
 }

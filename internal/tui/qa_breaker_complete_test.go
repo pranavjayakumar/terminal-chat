@@ -15,7 +15,6 @@ import (
 // The highlighted item must stay the same person when the list is rebuilt
 // under the popup (a member leaves/joins, a reconnect reloads users).
 func TestPopupSelectionFollowsReload_Break(t *testing.T) {
-	t.Skip("issue #102")
 	m, f := newTestModelFake(t, 80, 24)
 	typeKeys(m, "hi @")
 	if got := strings.Join(compTexts(m), " "); got != "@bob @carol @averyveryverylongusername" {
@@ -43,7 +42,6 @@ func TestPopupSelectionFollowsReload_Break(t *testing.T) {
 // Same, triggered by a new user arriving (reloadUsers) while ↓ is held on a
 // name.
 func TestPopupSelectionFollowsNewUser_Break(t *testing.T) {
-	t.Skip("issue #102")
 	m, f := newTestModelFake(t, 80, 24)
 	typeKeys(m, "ping @")
 	press(m, "down", "down")
@@ -60,7 +58,6 @@ func TestPopupSelectionFollowsNewUser_Break(t *testing.T) {
 // Mentioning yourself by your exact name ("as @alice said") is an exact
 // name like any other: Enter must not rewrite it to a longer name.
 func TestExactSelfMentionNotRewritten_Break(t *testing.T) {
-	t.Skip("issue #116")
 	m, f := newTestModelFake(t, 80, 24)
 	f.users = append(f.users, proto.User{ID: 9, Name: "alice-bot"})
 	m.reloadUsers()
@@ -181,7 +178,6 @@ func TestCompleteMidLine_Break(t *testing.T) {
 // line, so what is on screen is not what Enter sends (or which command it
 // runs). Everything rendered is supposed to go through internal/sanitize.
 func TestInputLineBidiOverride_Break(t *testing.T) {
-	t.Skip("issue #117")
 	for _, in := range []string{"/join \u202e", "see \u202elareneg# and \u2066x\u2069", "@bo\u202e"} {
 		m, _ := newTestModelFake(t, 80, 24)
 		paste(m, in)

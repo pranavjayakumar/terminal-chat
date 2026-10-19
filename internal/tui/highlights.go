@@ -103,14 +103,14 @@ func (m *Model) refreshHighlights() {
 // highlight words. The caller has already excluded my own, deleted and bot
 // messages.
 func (m *Model) concernsMe(body string) bool {
-	return client.Mentioned(body, m.mentionAs) || client.Highlighted(body, m.highlights)
+	return client.Mentioned(outsideCode(body), m.mentionAs) || client.Highlighted(body, m.highlights)
 }
 
 // concernMark is the log gutter for a message by someone else: "▎" for an
 // @mention, "*" when only a highlight word matched, blank otherwise.
 func (m *Model) concernMark(body string) string {
 	switch {
-	case client.Mentioned(body, m.mentionAs):
+	case client.Mentioned(outsideCode(body), m.mentionAs):
 		return m.st.mentionMark.Render("▎")
 	case client.Highlighted(body, m.highlights):
 		return m.st.mentionMark.Render("*")
@@ -124,4 +124,25 @@ func joinWords(ss []string) string {
 		out[i] = sanitize.Line(s)
 	}
 	return strings.Join(out, ", ")
+}
+
+// outsideCode is body without its fenced code blocks (the renderer's fence
+// rule): a pasted package.json full of "@alice/utils" isn't a mention, just
+// as highlight words don't match inside code.
+func outsideCode(body string) string {
+	if !strings.Contains(body, "```") {
+		return body
+	}
+	var keep []string
+	in := false
+	for _, ln := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(ln), "```") {
+			in = !in
+			continue
+		}
+		if !in {
+			keep = append(keep, ln)
+		}
+	}
+	return strings.Join(keep, "\n")
 }

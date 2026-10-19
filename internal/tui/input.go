@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 	"github.com/rivo/uniseg"
 
@@ -268,6 +269,19 @@ func (m *Model) findChan(name string) (uint64, bool) {
 	return 0, false
 }
 
+// atNames is "@a, @b" for users ids.
+func (m *Model) atNames(ids []uint64) string {
+	names := make([]string, 0, len(ids))
+	for _, id := range ids {
+		for _, u := range m.userList {
+			if u.ID == id {
+				names = append(names, "@"+sanitize.Line(u.Name))
+			}
+		}
+	}
+	return strings.Join(names, ", ")
+}
+
 func (m *Model) findUser(name string) (uint64, bool) {
 	name = strings.ToLower(strings.TrimPrefix(name, "@"))
 	for _, u := range m.userList {
@@ -380,18 +394,26 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 			}
 			ids = append(ids, id)
 		}
-		return m.call("add", func(ctx context.Context) error {
-			for _, id := range ids {
+		each := make([]string, len(ids)) // resolved here: the Cmd runs off the UI goroutine
+		for i, id := range ids {
+			each[i] = m.atNames([]uint64{id})
+		}
+		names := strings.Join(each, ", ")
+		return m.callThen("add", func(ctx context.Context) (tea.Msg, error) {
+			for i, id := range ids {
 				if err := be.AddMember(ctx, ch, id); err != nil {
 					var ue *client.UnverifiedMembersError
 					if errors.As(err, &ue) {
 						// Names were sanitized by the client.
-						return fmt.Errorf("not added: no verified device of %s — they can't get this channel's key yet", strings.Join(ue.Names, ", "))
+						err = fmt.Errorf("not added: no verified device of %s — they can't get this channel's key yet", strings.Join(ue.Names, ", "))
 					}
-					return err
+					if i > 0 { // say who did get in
+						err = fmt.Errorf("added %s; %s: %s", strings.Join(each[:i], ", "), each[i], errText(err))
+					}
+					return nil, err
 				}
 			}
-			return nil
+			return infoMsg("added " + names), nil
 		}), nil
 	case "remove":
 		if err := need(1, "/remove @user"); err != nil {
@@ -412,13 +434,21 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 			}
 			ids = append(ids, id)
 		}
-		return m.call("remove", func(ctx context.Context) error {
-			for _, id := range ids {
+		each := make([]string, len(ids))
+		for i, id := range ids {
+			each[i] = m.atNames([]uint64{id})
+		}
+		names := strings.Join(each, ", ")
+		return m.callThen("remove", func(ctx context.Context) (tea.Msg, error) {
+			for i, id := range ids {
 				if err := be.RemoveMember(ctx, ch, id); err != nil {
-					return err
+					if i > 0 {
+						err = fmt.Errorf("removed %s; %s: %s", strings.Join(each[:i], ", "), each[i], errText(err))
+					}
+					return nil, err
 				}
 			}
-			return nil
+			return infoMsg("removed " + names), nil
 		}), nil
 	case "encrypt":
 		ch, err := needChan()
@@ -436,22 +466,69 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 			return infoMsg("🔒 now end-to-end encrypted — earlier messages are marked legacy"), be.EncryptChannel(ctx, ch)
 		}), nil
 	case "name":
+		// Bare /name shows the name: clearing it takes --clear, so a stray
+		// Enter can't wipe it.
 		display := c.rest
-		return m.call("name", func(ctx context.Context) error { return be.SetDisplay(ctx, display) }), nil
+		switch display {
+		case "":
+			cur := sanitize.Line(m.me.Display)
+			if cur == "" {
+				cur = "none"
+			}
+			m.setInfo("display name: " + cur + " · /name Name sets, --clear removes")
+			return nil, nil
+		case "--clear":
+			display = ""
+		}
+		return m.callThen("name", func(ctx context.Context) (tea.Msg, error) {
+			if display == "" {
+				return infoMsg("display name cleared"), be.SetDisplay(ctx, "")
+			}
+			return infoMsg("display name: " + display), be.SetDisplay(ctx, display)
+		}), nil
 	case "topic":
 		ch, err := needChan()
 		if err != nil {
 			return nil, err
 		}
 		topic := c.rest
-		return m.call("topic", func(ctx context.Context) error { return be.SetTopic(ctx, ch, topic) }), nil
+		switch topic {
+		case "":
+			v, _ := m.chanView(ch)
+			cur := sanitize.Line(v.Topic)
+			if cur == "" {
+				cur = "none"
+			}
+			msg := "topic: " + cur + " · /topic text sets, --clear removes"
+			if w := m.dims().mainW; strWidth(msg) > w {
+				// Too long for the status line: the whole topic, wrapped.
+				rows := strings.Split(ansi.Wrap(cur, max(w-2, 1), ""), "\n")
+				m.showList("topic of "+m.chanTitle(ch), append(rows, "", "/topic text sets it, /topic --clear removes it"))
+				return nil, nil
+			}
+			m.setInfo(msg)
+			return nil, nil
+		case "--clear":
+			topic = ""
+		}
+		return m.callThen("topic", func(ctx context.Context) (tea.Msg, error) {
+			if topic == "" {
+				return infoMsg("topic cleared"), be.SetTopic(ctx, ch, "")
+			}
+			return infoMsg("topic set"), be.SetTopic(ctx, ch, topic)
+		}), nil
 	case "dm":
 		if err := need(1, "/dm @user [@user...]"); err != nil {
 			return nil, err
 		}
 		var ids []uint64
 		for _, a := range c.args {
-			id, ok := m.findUser(a)
+			// "@me" is always me, even if an account is named "me": notes
+			// must never go to someone else.
+			id, ok := m.me.ID, true
+			if !strings.EqualFold(strings.TrimPrefix(a, "@"), "me") {
+				id, ok = m.findUser(a)
+			}
 			if !ok {
 				return nil, fmt.Errorf("unknown user %s", sanitize.Line(a))
 			}
@@ -459,19 +536,24 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 				ids = append(ids, id)
 			}
 		}
-		if len(ids) == 0 {
-			return nil, errors.New("usage: /dm @user [@user...]")
-		}
+		// Only me: my notes, where reminders land (a DM with nobody else).
 		return m.openDM(ids), nil
 	case "invite":
 		return m.inviteCommand(c.args)
 	case "away":
 		status := c.rest
 		m.manualAway, m.autoAway = true, false
-		return m.call("away", func(context.Context) error { return be.SetAway(true, status) }), nil
+		return m.callThen("away", func(context.Context) (tea.Msg, error) {
+			if status == "" {
+				return infoMsg("away · /back when you're back"), be.SetAway(true, "")
+			}
+			return infoMsg("away: " + status + " · /back when you're back"), be.SetAway(true, status)
+		}), nil
 	case "back":
 		m.manualAway, m.autoAway = false, false
-		return tea.Batch(m.call("back", func(context.Context) error { return be.SetAway(false, "") }), m.awayTick()), nil
+		return tea.Batch(m.callThen("back", func(context.Context) (tea.Msg, error) {
+			return infoMsg("back"), be.SetAway(false, "")
+		}), m.awayTick()), nil
 	case "snippet":
 		return m.shareSnippet(c.args)
 	case "share-pane":

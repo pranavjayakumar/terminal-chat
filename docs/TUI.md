@@ -34,6 +34,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 - Pinned messages end with a dim `📌` on their footer line; the header shows a dim `📌 N` when the channel has pins.
 - Reactions on a line below: `👍 2  🎉 1` (your own reactions highlighted).
 - Thread roots show `↳ N replies`; threads open in a right pane (or full width below 100 cols).
+- An empty channel shows a dim `no messages yet — say hi · F1 help · Ctrl-K channels & people` (shorter when the message pane is under 64 or 26 columns; in my notes `your notes — only you see them; /remind lands here`) once a history fetch said it is empty.
 - Typing line above the input; nothing when nobody is typing.
 - Input: single line that grows to max 6 lines; `Alt-Enter`/`Ctrl-J` inserts newline; `Enter` sends.
 
@@ -52,6 +53,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
   `-` red, `@@` dim cyan, file headers dim bold; under `NO_COLOR` only the `+`/`-` markers remain. The full-message
   viewer (`v`) colors diffs the same way. `git diff | tc send` produces a diff block automatically.
 - Width math uses display width (runewidth), never byte or rune counts.
+- The input line and the switcher/react prompts never draw bidi controls (they would reorder the line on screen).
 
 ## Keys
 
@@ -68,17 +70,20 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 | `↑` on empty input | select messages mode (↑/↓ moves selection) |
 | in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (prompt for emoji; `+1`, `:tada:` shortcuts), `y` copy body (OSC 52), `p` pin / unpin (notice "pinned" / "unpinned"), `Esc` leave |
 | `Esc` | close the completion popup / thread / switcher / select mode; never quits |
-| `Ctrl-C` twice, or `/quit` | quit |
+| `Ctrl-C` twice (the second while `press Ctrl-C again to quit` shows, 4 s), or `/quit` | quit |
 | `F1` or `/help` | help overlay (`?` is just text, so messages can start with it) |
 
 ## Slash commands
 
-`/join #x`, `/leave`, `/create #x [--private [--plaintext]]`, `/add @user`, `/topic text`, `/dm @a @b`,
+`/join #x`, `/leave`, `/create #x [--private [--plaintext]]`, `/add @user`, `/topic text`, `/dm @a @b` (`/dm @me` or my own name: my notes, also in `Ctrl-K`; `@me` is always me, even if an account is named `me`; after `/dm` the popup offers `@me` and my name),
 `/invite` (admin; prints code), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps), `/pins` (overlay of this channel's pinned messages, newest pin first, as `author · preview`; Enter jumps, Esc closes),
 `/activity`, `/highlight [word…]`, `/unhighlight word…`, `/group name @a @b…` (admin), `/groups`,
 `/remind <when> <text>`, `/reminders`, `/remind-delete id`, `/snippet path[:range] [message]`,
 `/share-pane [pane]` (herdr only), `/verify @user [--github login]`, `/accept-key @user`, `/members`,
 `/alarm`, `/alarm-clear #name`, `/devices [@user]`, `/device-revoke id`, `/disable @user` (admin), `/quit`.
+`/invites` and `/webhooks` open a list, one per row. The invite and webhook viewers take the full width (no sidebar) so a mouse selection copies only the command.
+`/webhook name` copies the curl command; when no system clipboard tool took it (only OSC 52, which Terminal.app and tmux without `set-clipboard on` ignore) a viewer opens with the command hidden: `s` shows it (it holds the secret URL), `y` copies again, Esc closes and forgets it.
+`/topic` or `/name` alone shows the current topic or display name; `--clear` removes it. Commands that change something confirm it in the status line (`added @bob`, `topic set`, `away: lunch`).
 Unknown command → inline error, input kept.
 
 ### Completion popup
@@ -87,16 +92,16 @@ While the input is a bare `/command` (no space yet) a popup of up to 4 rows just
 matching commands (prefix matches first, then substring; an exact name first) with their argument hint and a
 dim one-line description; more matches scroll (`↑`/`↓` marks at the right). An `@` or `#` word at the cursor
 does the same for people (this channel's members first, then everyone else, then user groups like
-`@oncall`) and channels (joined ones first); a name equal to what was typed always comes first. For
+`@oncall`) and channels (joined ones first); a name equal to what was typed always comes first (my own name too, so `as @alice said` sends on Enter). For
 `@`/`#` a substring match needs two letters and never comes from digits alone, so `fixed in #12` isn't offered `#release-12`. The popup covers the bottom of the
 message list, above the status line (notices and connection state stay visible), with a dim `▏` gutter;
 it is never drawn outside normal mode.
 
-- `↑`/`↓` or `Ctrl-P`/`Ctrl-N` move the highlight (wrapping).
+- `↑`/`↓` or `Ctrl-P`/`Ctrl-N` move the highlight (wrapping). It stays on the same item when users or channels change under the open popup.
 - `Enter` or `Tab` puts the highlighted item into the input followed by a space (a whole `@`/`#` word is
   replaced, cursor mid-word included) and closes the popup. On the `/` menu `Enter` **never runs** the
   command — even when the text already equals the highlighted command; the next `Enter`, with the popup
-  closed, runs it as usual. For an `@`/`#` word that already equals the highlighted item (`thanks @bob`
+  closed, runs it as usual. For an `@`/`#` word that already equals the highlighted item, ignoring case (`thanks @bob`
   with `@bob` highlighted) there is nothing to complete, so `Enter` closes the popup and sends on the first
   press; `Tab` still completes (adds the space).
 - The popup follows edits, not cursor moves: moving the cursor (←/→, ↑/↓ in a multi-line draft, Home/End)
@@ -309,21 +314,21 @@ and are not listed; they appear in the log as usual. Rows are kept for the newes
 
 ## Notifications & herdr
 
-- **When**: a DM or a message that @mentions me or contains one of my highlight words, not my own and not from a webhook bot
+- **When**: a DM or a message that @mentions me (outside fenced code blocks, like highlight words) or contains one of my highlight words, not my own and not from a webhook bot
   (bot messages count as unread but never as mentions — their text comes from outside),
   and either the terminal is blurred (focus reporting) or the message is in a channel that
   isn't the active one.
 - **What**: title `#chan · alice` or `alice (DM)`, body = first non-empty line. Title ≤ 60 runes,
   body ≤ 160, both through `sanitize.Line`.
 - **Coalescing**: the first message in a channel notifies at once and opens a 5 s window; more
-  messages in that window become one `N new messages` notification when it closes. At most one
+  messages in that window become one `N new messages` notification when it closes. A message shown alone when its window closes is re-read first: deleted meanwhile, nothing pops up; edited, the popup shows the new text. A mention in a level-`all` window opens its own window; soft messages not yet announced are counted in it. At most one
   notification per 2 s overall (a message over the cap waits for its window). Opening the channel
   drops what's pending for it.
 - **Backend** (`internal/notify`), chosen by `TC_NOTIFY=auto|herdr|os|terminal|bell|off` (default `auto`):
-  auto = `herdr notification show` when `HERDR_ENV=1` and `herdr` is in PATH; else, **over SSH**
+  auto = `herdr notification show` (a title starting with `-` gets a `tc · ` prefix so it can't read as an option) when `HERDR_ENV=1` and `herdr` is in PATH; else, **over SSH**
   (`SSH_CONNECTION`/`SSH_TTY`) with a terminal known to support it, the `terminal` backend; else
   the OS (`osascript` on macOS — text passed as argv to an `on run argv` script, never
-  interpolated; `notify-send` on Linux), else the terminal bell. `TC_BELL=0` still turns the bell
+  interpolated; `notify-send` on Linux, body markup-escaped (`&`, `<`, `>`) since servers may render it as markup), else the terminal bell. `TC_BELL=0` still turns the bell
   off. Every exec backend runs via argv (no shell), async, 2 s timeout, one at a time (extra ones
   dropped); a ring has its own slot so a hung popup can't swallow it.
 - **Terminal backend** (OSC; the local terminal shows it, so it works over SSH): OSC 99 for
@@ -354,7 +359,7 @@ and are not listed; they appear in the log as usual. Rows are kept for the newes
   starter must be a member of the DM (rosters aren't end-to-end authenticated). Never for rosters
   a sync or channel join hands us (reconnects don't ring), nor for a late roster that already has
   several people. Esc closes an open mic first, then dismisses the ring. Channel huddle starts are silent at `mentions` (the sidebar
-  `🎧n` shows them); at `all`, one popup per channel per 5 min.
+  `🎧n` shows them); at `all`, one popup per channel per 5 min, within the 2 s cap.
 - **Privacy**: `/notify content full|name|none` (`TC_NOTIFY_CONTENT`): `name` shows who but not
   the text, `none` shows just `tc` / `new message`. Popups persist in the OS notification history
   (Notification Center, GNOME's tray): use `name` on shared machines.
@@ -363,7 +368,7 @@ and are not listed; they appear in the log as usual. Rows are kept for the newes
   sounds and rings but not badges or the activity view; the status line shows a dim `🔕 09:00`
   or `🔕 quiet` (times beyond today show the day). Nothing is replayed afterwards. A mention in a
   level-`all` channel never waits out its 30 s window.
-- **Commands**: `/notify` (current settings), `/notify all|mentions|off [#chan] [for 2h]`,
+- **Commands**: `/notify` (current settings, one per row in a list with the command that changes each, hints dropped under 50 columns; Esc closes; lists that don't fit end with `↑ N · ↓ N more`), `/notify all|mentions|off [#chan] [for 2h]`,
   `/notify default [#chan]`, `/notify global all|mentions|off`, `/notify content …`,
   `/notify quiet …`, `/notify test` (one sample per sound through the real backend, 2.5 s apart —
   shows whether herdr toasts, macOS permission or OSC support work), `/dnd …`, `/sounds`
