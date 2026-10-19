@@ -61,7 +61,7 @@ func connected(ctx context.Context) (*client.Client, error) {
 		}
 		if st.Stopped {
 			c.Close()
-			return nil, errors.New(st.Err)
+			return nil, stoppedError(st.Err)
 		}
 		select {
 		case <-ctx.Done():
@@ -69,14 +69,33 @@ func connected(ctx context.Context) (*client.Client, error) {
 			return nil, ctx.Err()
 		case <-deadline:
 			c.Close()
+			addr := sanitize.Line(c.Config().Addr)
 			if st.Err != "" {
-				return nil, fmt.Errorf("can't reach server: %s", st.Err)
+				return nil, fmt.Errorf("can't reach the server at %s: it may be down or blocked by a firewall; try again later or ask your admin (%s)", addr, st.Err)
 			}
-			return nil, errors.New("can't reach server")
+			return nil, fmt.Errorf("can't reach the server at %s: it may be down or blocked by a firewall; try again later or ask your admin", addr)
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
 }
+
+// stoppedError explains why the client gave up for good. Status carries
+// only the error text, so the server's stable bye codes are matched on it.
+func stoppedError(msg string) error {
+	switch msg {
+	case (&client.ByeError{Code: proto.ByeRevoked}).Error():
+		return fmt.Errorf("%s: %s", revokedHint, msg)
+	case (&client.ByeError{Code: proto.ByeAuthFailed}).Error():
+		return fmt.Errorf("the server no longer accepts this computer's SSH key; if you joined with a different key, run tc login with it (%s)", msg)
+	}
+	if strings.Contains(msg, "pin mismatch") {
+		return fmt.Errorf("the server's identity changed since you joined (its pin doesn't match): if your admin reinstalled it, ask for a fresh invite; otherwise something may be intercepting the connection (%s)", msg)
+	}
+	return errors.New(msg)
+}
+
+// revokedHint is what a disabled account or revoked device is told.
+const revokedHint = "this account was disabled by an admin, or this device was revoked, so it can't sign in. Ask an admin; a disabled account needs a new invite and a new SSH key"
 
 // resolve turns "#chan" or "@user" into a channel id, opening a DM if needed.
 func resolve(ctx context.Context, c *client.Client, target string) (uint64, error) {

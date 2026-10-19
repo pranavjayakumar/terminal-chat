@@ -24,6 +24,29 @@ apt-get update && apt-get -y install unattended-upgrades   # security updates
 
 On DigitalOcean you can do the same with a cloud firewall (inbound `22/tcp`, `7443/tcp`, `7443/udp`).
 
+### Serve on 443 too (optional)
+
+Some networks (offices, hotels, phone hotspots) block outbound 7443, and teammates there see
+`can't reach the server at SERVER_IP:7443`. tc speaks QUIC on UDP and TLS on TCP, both of which pass
+on 443, so redirect 443 to 7443 in the kernel and keep the server where it is. Add this block at the
+very top of `/etc/ufw/before.rules`, above the `*filter` line:
+
+```
+# tc: answer on 443 as well as 7443
+*nat
+:PREROUTING ACCEPT [0:0]
+-A PREROUTING -p tcp --dport 443 -j REDIRECT --to-ports 7443
+-A PREROUTING -p udp --dport 443 -j REDIRECT --to-ports 7443
+COMMIT
+```
+
+then `ufw reload`. The redirect happens before filtering, so the `7443` rules above already admit
+it (on a DigitalOcean cloud firewall, also allow inbound `443/tcp` and `443/udp`). Check from a
+laptop with `tc login 'tc://SERVER_IP:443#PIN'`. The pin doesn't depend on the port, so any invite
+works on either port: teammates whose network blocks 7443 change `:7443` to `:443` in it. To put
+443 in every new invite instead, start the server once with `--public SERVER_IP:443` (step 3).
+Nothing else may be listening on 443 (a web server, for instance).
+
 ## 2. Get the binary
 
 Either the release build (on the server):
