@@ -85,6 +85,13 @@ type Model struct {
 	limits   map[uint64]int
 	histBusy map[uint64]bool
 	histDone map[uint64]bool
+	// histGens/histEpoch bump when a channel's cache may have been dropped
+	// (left, reset), so a reply to a fetch started before is ignored.
+	histGens  map[uint64]int
+	histEpoch int
+	// afterSecret holds results that arrived while a one-time secret was
+	// on screen.
+	afterSecret []tea.Msg
 
 	input   textarea.Model
 	line    textinput.Model // switcher query and react prompt
@@ -165,6 +172,7 @@ type (
 		ch   uint64
 		more bool
 		err  error
+		gen  histGen // the channel's history state when the fetch started
 	}
 	openChanMsg struct{ ch uint64 }
 	listMsg     listState
@@ -325,13 +333,16 @@ func (m *Model) reloadPresence() {
 }
 
 func (m *Model) reloadChans() {
+	was := make(map[uint64]bool, len(m.chans))
+	for _, v := range m.chans {
+		was[v.ID] = v.Member
+	}
 	m.chans = m.c.Channels()
 	for _, v := range m.chans {
-		if !v.Member {
+		if !v.Member && was[v.ID] {
 			// Leaving drops the cached messages: a rejoin must fetch them
 			// again instead of trusting "history complete" from before.
-			delete(m.histDone, v.ID)
-			delete(m.limits, v.ID)
+			m.forgetHistory(v.ID)
 		}
 	}
 	prev, hadPrev := m.e2e[m.active]
@@ -608,6 +619,22 @@ func (m *Model) focus() *pane {
 
 // ---- history ----
 
+type histGen struct{ epoch, ch int }
+
+func (m *Model) histGen(ch uint64) histGen { return histGen{m.histEpoch, m.histGens[ch]} }
+
+// forgetHistory says ch's cached messages may be gone: fetch afresh, and
+// drop any reply to a fetch already under way.
+func (m *Model) forgetHistory(ch uint64) {
+	if m.histGens == nil {
+		m.histGens = map[uint64]int{}
+	}
+	m.histGens[ch]++
+	delete(m.histDone, ch)
+	delete(m.histBusy, ch)
+	delete(m.limits, ch)
+}
+
 func (m *Model) fetchHistory(ch uint64) tea.Cmd {
 	if ch == 0 || m.histBusy[ch] || m.histDone[ch] || m.status.State != client.Online {
 		return nil
@@ -623,12 +650,13 @@ func (m *Model) fetchHistory(ch uint64) tea.Cmd {
 		}
 	}
 	m.histBusy[ch] = true
+	gen := m.histGen(ch)
 	c, ctx := m.c, m.ctx
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(ctx, reqTimeout)
 		defer cancel()
 		more, err := c.History(ctx, ch, before)
-		return historyMsg{ch, more, err}
+		return historyMsg{ch, more, err, gen}
 	}
 }
 
@@ -723,6 +751,7 @@ func (m *Model) clearNotice() {
 		return
 	}
 	m.notice, m.noticeErr, m.noticeSticky, m.noticeDim = "", false, false, false
+	m.ctrlC, m.noticeCh = time.Time{}, 0 // the Ctrl-C hint went with it
 	m.noticeGen++
 }
 
@@ -799,6 +828,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if cmd, ok := m.huddleMsg(msg); ok {
 		return m, cmd
+	}
+	switch msg.(type) {
+	case inviteShownMsg, hookShownMsg, listMsg, searchMsg, pinsMsg:
+		if m.mode == modeViewer && m.view.secret {
+			// Never cover a secret shown once: it waits until Esc.
+			m.afterSecret = append(m.afterSecret, msg)
+			return m, nil
+		}
 	}
 	switch msg := msg.(type) {
 	case noticeExpireMsg:
@@ -900,8 +937,14 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.newRelease = string(msg)
 		return m, nil
 	case historyMsg:
+		if msg.gen != m.histGen(msg.ch) {
+			return m, nil // started before a leave or reset: stale
+		}
 		m.histBusy[msg.ch] = false
 		if msg.err != nil {
+			if v, ok := m.chanView(msg.ch); ok && !v.Member && v.Kind != proto.ChanPublic {
+				return m, nil // removed meanwhile: the header says so
+			}
 			if !errors.Is(msg.err, client.ErrOffline) {
 				m.setErr("history", msg.err)
 			}
@@ -1006,6 +1049,8 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 		// A snapshot reset may have replaced the cache: re-learn where
 		// each channel's history starts.
 		clear(m.histDone)
+		clear(m.histBusy)
+		m.histEpoch++
 		m.reloadAll()
 		cmds = append(cmds, m.openDefault())
 		if m.mode == modeActivity {
@@ -1112,6 +1157,16 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 			return m.copyCmd(strings.Join(m.view.lines, "\n"))
 		}
 		m.viewerKey(key)
+		if m.mode != modeViewer && len(m.afterSecret) > 0 {
+			// Results that waited behind a one-time secret: show them now.
+			held := m.afterSecret
+			m.afterSecret = nil
+			cmds := make([]tea.Cmd, len(held))
+			for i, msg := range held {
+				cmds[i] = func() tea.Msg { return msg }
+			}
+			return tea.Batch(cmds...)
+		}
 		return nil
 	case modeConfirmDelete:
 		m.mode = modeSelect

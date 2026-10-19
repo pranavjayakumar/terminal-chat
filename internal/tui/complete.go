@@ -198,7 +198,7 @@ func (m *Model) userItems(q string) {
 			}
 			c.items = append(c.items, compItem{text: "@me", desc: "your notes", rank: rank})
 		}
-		if me := strings.ToLower(m.me.Name); me != "" && strings.HasPrefix(me, q) {
+		if me := strings.ToLower(m.me.Name); me != "" && me != "me" && strings.HasPrefix(me, q) {
 			rank := 0
 			if me == q {
 				rank = exactRank
