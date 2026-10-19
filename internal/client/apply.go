@@ -83,6 +83,7 @@ func (c *Client) afterReset() error {
 	if u, ok := users[c.me.ID]; ok {
 		c.me = u
 	}
+	c.histResume = nil // the cache no longer holds what History walked
 	c.mu.Unlock()
 	c.post(Update{Reset: true, Channels: true, Users: true})
 	return nil
@@ -523,6 +524,7 @@ func (c *Client) msgChan(tx *sql.Tx, id, fallback uint64) uint64 {
 // forgetChan drops a channel we left: its messages and read marker go; a
 // public channel stays listed (it is still visible and joinable) without us.
 func (c *Client) forgetChan(tx *sql.Tx, id, me uint64) error {
+	c.dropHistResume(id)
 	for _, q := range []string{`DELETE FROM reacts WHERE msg IN (SELECT id FROM msgs WHERE chan = ?)`,
 		`DELETE FROM rencs WHERE msg IN (SELECT id FROM msgs WHERE chan = ?)`, `DELETE FROM msgs WHERE chan = ?`, `DELETE FROM reads WHERE chan = ?`, `DELETE FROM drafts WHERE chan = ?`, `DELETE FROM epochs WHERE chan = ?`, `DELETE FROM key_shares WHERE chan = ?`, `DELETE FROM pins WHERE chan = ?`} {
 		if _, err := tx.Exec(q, id); err != nil {

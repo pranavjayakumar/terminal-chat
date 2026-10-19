@@ -128,7 +128,13 @@ func parseDuration(s string) (time.Duration, bool) {
 		default:
 			return 0, false
 		}
-		total += time.Duration(n) * unit
+		// Saturate just past the limit: 213504d would overflow and wrap
+		// around to 25 minutes.
+		if time.Duration(n) > maxAhead/unit || total+time.Duration(n)*unit > maxAhead {
+			total = maxAhead + 1
+		} else {
+			total += time.Duration(n) * unit
+		}
 		s = s[i+1:]
 	}
 	return total, true
