@@ -247,7 +247,11 @@ func (s *Server) opHuddleJoin(ctx context.Context, sess *session, a proto.Huddle
 	h.parts = append(h.parts, p)
 	hs.bySess[sess] = p
 	hs.mu.Unlock()
-	c.add(a.Chan, 0)
+	// The new roster goes out before the ones we just left (maps don't
+	// keep order), so our other devices already see us there when their
+	// own participation disappears and can say the call moved (#76).
+	s.broadcastHuddlesLocked(changed{a.Chan: c[a.Chan]})
+	delete(c, a.Chan)
 	s.broadcastHuddlesLocked(c)
 	return proto.HuddleJoinRes{Src: p.src}, nil
 }
