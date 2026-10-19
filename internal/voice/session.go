@@ -20,6 +20,10 @@ type Platform struct {
 // systemAEC is a Duplex that may run the platform's echo canceller.
 type systemAEC interface{ SystemAEC() bool }
 
+// noter is a Duplex with something to tell the user about its device
+// choice (a monitor default skipped, TC_VOICE_INPUT matching nothing).
+type noter interface{ Note() string }
+
 // Session is an Engine attached to an audio device.
 type Session struct {
 	*Engine
@@ -27,6 +31,7 @@ type Session struct {
 
 	mu   sync.Mutex // device callback vs Close
 	fifo []int16
+	note string
 }
 
 // Start opens the device and runs cfg's engine on it.
@@ -48,8 +53,14 @@ func Start(cfg Config, p Platform) (*Session, error) {
 		sys = a.SystemAEC()
 	}
 	e.setAEC(p.AEC.resolve(sys))
+	if n, ok := s.dev.(noter); ok {
+		s.note = n.Note()
+	}
 	return s, nil
 }
+
+// Note is what the device layer wants the user to know ("" if nothing).
+func (s *Session) Note() string { return s.note }
 
 func (s *Session) callback(out, in []int16) {
 	s.Capture(in)

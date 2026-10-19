@@ -88,6 +88,20 @@ func TestHuddleEchoControl(t *testing.T) {
 	}
 }
 
+// A device note (monitor default skipped) shows on join and in /huddle.
+func TestHuddleVoiceNote(t *testing.T) {
+	m, h := newHuddleModel(t, 100, 24)
+	h.note = `default input "Monitor of Speakers" records the speakers; using "Mic"`
+	runInput(t, m, "/huddle")
+	if !strings.Contains(plain(m), "records the speakers") {
+		t.Fatalf("note not shown:\n%s", plain(m))
+	}
+	runInput(t, m, "/huddle")
+	if !strings.Contains(m.notice, "records the speakers") || !strings.Contains(m.notice, "echo cancellation on") {
+		t.Fatalf("/huddle: %q", m.notice)
+	}
+}
+
 // The hint must be on screen wherever it shows, sidebar or not, also when
 // switching from another huddle.
 func TestHuddleEchoHintFits(t *testing.T) {

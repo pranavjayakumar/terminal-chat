@@ -29,8 +29,9 @@ func Native() (Platform, error) {
 	if err != nil {
 		return Platform{}, err
 	}
+	input := os.Getenv("TC_VOICE_INPUT")
 	return Platform{Codec: opusCodec{}, AEC: pref, Open: func(cb func(out, in []int16)) (Duplex, error) {
-		return openPlatform(cb, pref)
+		return openPlatform(cb, pref, input)
 	}}, nil
 }
 
@@ -39,24 +40,51 @@ type duplex struct {
 	dev  *malgo.Device
 	ids  []unsafe.Pointer // C copies of chosen device ids
 	sys  bool             // both directions go through an echo canceller
+	note string           // device choice worth telling the user
 	once sync.Once
 }
 
 func (d *duplex) SystemAEC() bool { return d.sys }
+func (d *duplex) Note() string    { return d.note }
 
 // devices names non-default devices on a context (nil: the default).
 type devices struct {
 	capture, playback *malgo.DeviceID
 	sys               bool
+	note              string
 }
 
-// openDuplex opens miniaudio's default devices on its default backends.
-func openDuplex(cb func(out, in []int16)) (Duplex, error) {
+// openDuplex opens miniaudio's default backends: the default speaker and
+// the microphone chooseCapture picks (TC_VOICE_INPUT, never a monitor).
+func openDuplex(cb func(out, in []int16), input string) (Duplex, error) {
 	ctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
 	if err != nil {
 		return nil, err
 	}
-	return startDuplex(ctx, devices{}, cb)
+	var devs devices
+	if caps, err := ctx.Devices(malgo.Capture); err == nil {
+		list := make([]capDev, len(caps))
+		for i := range caps {
+			list[i] = capDev{id: idString(&caps[i].ID), desc: caps[i].Name(), def: caps[i].IsDefault != 0}
+		}
+		i, note := chooseCapture(list, input)
+		if i >= 0 {
+			devs.capture = &caps[i].ID
+		}
+		devs.note = note
+	}
+	return startDuplex(ctx, devs, cb)
+}
+
+// idString is a device id as text: the backend's name for the device
+// (PulseAudio source name, CoreAudio UID, ALSA id), NUL-terminated.
+func idString(id *malgo.DeviceID) string {
+	b := id[:]
+	n := 0
+	for n < len(b) && b[n] != 0 {
+		n++
+	}
+	return string(b[:n])
 }
 
 // cID copies a device id into C memory: miniaudio's config may not hold Go
@@ -69,7 +97,7 @@ func cID(id *malgo.DeviceID) unsafe.Pointer {
 
 // startDuplex starts a device on ctx, which it then owns (freed on error).
 func startDuplex(ctx *malgo.AllocatedContext, devs devices, cb func(out, in []int16)) (Duplex, error) {
-	d := &duplex{ctx: ctx, sys: devs.sys}
+	d := &duplex{ctx: ctx, sys: devs.sys, note: devs.note}
 	cfg := malgo.DefaultDeviceConfig(malgo.Duplex)
 	if devs.capture != nil {
 		cfg.Capture.DeviceID = cID(devs.capture)

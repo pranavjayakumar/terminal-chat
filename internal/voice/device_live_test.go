@@ -49,6 +49,9 @@ func TestLiveDevice(t *testing.T) {
 	if a, ok := d.(systemAEC); ok {
 		sys = a.SystemAEC()
 	}
+	if n, ok := d.(noter); ok && n.Note() != "" {
+		t.Logf("note: %s", n.Note())
+	}
 	time.Sleep(2 * time.Second)
 	if err := d.Close(); err != nil {
 		t.Fatal(err)

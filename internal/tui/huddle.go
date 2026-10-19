@@ -37,6 +37,9 @@ type HuddleBackend interface {
 	SetOpenMic(open bool)
 	// VoiceAEC is our huddle's echo control: system, gate or off.
 	VoiceAEC() string
+	// VoiceNote is a device problem worth saying (the default input is a
+	// speaker monitor, TC_VOICE_INPUT matched nothing), or "".
+	VoiceNote() string
 }
 
 // Talk-key timing. Terminals report presses, not releases: a held key
@@ -80,6 +83,7 @@ type huddleUI struct {
 	counts   map[uint64]int
 	warned   error // the HuddleWarning already shown
 	aec      string
+	note     string
 	// aecHinted: the headphones hint was shown (once per run).
 	aecHinted bool
 	// seenActive is the channel here was computed for.
@@ -111,6 +115,7 @@ func (m *Model) refreshHuddle() {
 		h.speaking = hb.Speaking()
 		h.talking = hb.Talking()
 		h.aec = hb.VoiceAEC()
+		h.note = hb.VoiceNote()
 		if w := hb.HuddleWarning(); w != nil && !errors.Is(w, h.warned) {
 			h.warned = w
 			m.setNotice(w.Error(), true, true, 0)
@@ -189,7 +194,11 @@ func (m *Model) huddleCommand(c command) (tea.Cmd, bool, error) {
 	}
 	if in && cur == ch {
 		m.refreshHuddle()
-		m.setNotice(aecLine(m.hud.aec)+" · /leave-huddle to leave", false, false, errTTL)
+		s := aecLine(m.hud.aec) + " · /leave-huddle to leave"
+		if m.hud.note != "" {
+			s = m.hud.note + " · " + s
+		}
+		m.setNotice(s, false, false, errTTL)
 		return nil, true, nil
 	}
 	prev := uint64(0)
@@ -291,6 +300,12 @@ func (m *Model) huddleMsg(msg tea.Msg) (tea.Cmd, bool) {
 		m.hud.warned = nil // a new participation: its own warnings
 		m.refreshHuddle()
 		const talkHelp = "hold ctrl+t to talk, tap for open mic (/talk, /mute)"
+		if m.hud.in && m.hud.note != "" {
+			// Which microphone we're using beats any tip: a monitor
+			// default would have sent everyone's voice back to them.
+			m.setNotice(m.hud.note, false, false, errTTL)
+			return nil, true
+		}
 		if m.hud.in && m.hud.aec != "system" && !m.hud.aecHinted {
 			// Speakers into an open mic echo back to whoever talks. The
 			// hint leads so truncation eats the talk help, not the hint

@@ -520,6 +520,19 @@ func (c *Client) VoiceAEC() string {
 	return p.vs.AEC().String()
 }
 
+// VoiceNote is what the audio layer wants the user to know about our
+// huddle's devices (a monitor default skipped, TC_VOICE_INPUT matching
+// nothing), or "".
+func (c *Client) VoiceNote() string {
+	c.hud.mu.Lock()
+	p := c.hud.cur
+	c.hud.mu.Unlock()
+	if p == nil {
+		return ""
+	}
+	return p.vs.Note()
+}
+
 // Talking reports whether our mic stream is on.
 func (c *Client) Talking() bool {
 	c.hud.mu.Lock()

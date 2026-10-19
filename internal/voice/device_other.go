@@ -2,4 +2,6 @@
 
 package voice
 
-func openPlatform(cb func(out, in []int16), _ AECPref) (Duplex, error) { return openDuplex(cb) }
+func openPlatform(cb func(out, in []int16), _ AECPref, input string) (Duplex, error) {
+	return openDuplex(cb, input)
+}

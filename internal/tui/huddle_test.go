@@ -30,12 +30,22 @@ type huddleFake struct {
 	warn     error
 	openMic  bool
 	aec      string // "" = system
+	note     string
 }
 
 func (h *huddleFake) SetOpenMic(open bool) {
 	h.hmu.Lock()
 	defer h.hmu.Unlock()
 	h.openMic = open
+}
+
+func (h *huddleFake) VoiceNote() string {
+	h.hmu.Lock()
+	defer h.hmu.Unlock()
+	if h.in == 0 {
+		return ""
+	}
+	return h.note
 }
 
 func (h *huddleFake) VoiceAEC() string {

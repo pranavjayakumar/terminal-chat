@@ -12,15 +12,16 @@ import (
 // PipeWire or PulseAudio has one loaded (docs/VOICE.md "Echo"): tc never
 // loads modules or changes audio settings itself. Otherwise the default
 // devices on miniaudio's default backends, with the engine's gate.
-func openPlatform(cb func(out, in []int16), pref AECPref) (Duplex, error) {
-	if pref.wantsSystem() {
+// TC_VOICE_INPUT (a microphone by name) skips the echo-cancel pair.
+func openPlatform(cb func(out, in []int16), pref AECPref, input string) (Duplex, error) {
+	if pref.wantsSystem() && input == "" {
 		if ctx, devs, ok := echoCancelDevices(); ok {
 			if d, err := startDuplex(ctx, devs, cb); err == nil {
 				return d, nil
 			}
 		}
 	}
-	return openDuplex(cb)
+	return openDuplex(cb, input)
 }
 
 // echoCancelDevices looks for an echo-cancel pair on the PulseAudio API
@@ -60,12 +61,7 @@ func echoCancelDevices() (*malgo.AllocatedContext, devices, bool) {
 func pulseNames(ds []malgo.DeviceInfo) []string {
 	out := make([]string, len(ds))
 	for i := range ds {
-		id := ds[i].ID[:]
-		n := 0
-		for n < len(id) && id[n] != 0 {
-			n++
-		}
-		out[i] = string(id[:n])
+		out[i] = idString(&ds[i].ID)
 	}
 	return out
 }
