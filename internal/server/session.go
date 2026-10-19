@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -499,12 +500,21 @@ func (sess *session) touch() {
 	sess.recvMu.Unlock()
 }
 
+// opErrLevel is how loudly an unexpected op error is logged: an op cut short
+// because its session closed or the server is stopping is routine.
+func opErrLevel(err error) slog.Level {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return slog.LevelDebug
+	}
+	return slog.LevelError
+}
+
 func (sess *session) respond(id uint32, data any, err error) {
 	res := proto.Res{ID: id, OK: err == nil}
 	if err != nil {
 		var pe *proto.Error
 		if !errors.As(err, &pe) {
-			sess.srv.log.Error("op failed", "user", sess.user.Name, "err", err)
+			sess.srv.log.Log(context.Background(), opErrLevel(err), "op failed", "user", sess.user.Name, "err", err)
 			pe = proto.Errf(proto.ErrInternal, "")
 		}
 		res.Err = pe
