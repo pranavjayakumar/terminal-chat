@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/sanitize"
 )
 
@@ -30,7 +31,8 @@ type HuddleBackend interface {
 	// Huddles counts people per channel huddle (the sidebar's 🎧 marker).
 	Huddles() map[uint64]int
 	// HuddleWarning is a problem with our huddle worth telling the user
-	// (repeated clock-skew drops), or nil.
+	// (repeated clock-skew drops), or nil; while we're in no huddle, why the
+	// last one ended without us leaving (#76), which the UI shows once.
 	HuddleWarning() error
 }
 
@@ -73,7 +75,11 @@ type huddleUI struct {
 	talking  bool
 	here     int // people in the open channel's huddle, when we're not in it
 	counts   map[uint64]int
-	warned   error // the HuddleWarning already shown
+	warned   error  // the HuddleWarning already shown
+	last     uint64 // the huddle we were in last
+	// endedNote is the "huddle ended" notice shown; a better reason may
+	// replace it (dropped, then moved).
+	endedNote string
 	// seenActive is the channel here was computed for.
 	seenActive uint64
 }
@@ -95,21 +101,67 @@ func (m *Model) refreshHuddle() {
 		return
 	}
 	h := &m.hud
+	if h.in {
+		h.last = h.cur
+	}
 	h.cur, h.in = hb.InHuddle()
 	h.roster, h.speaking, h.talking, h.here = nil, nil, false, 0
 	h.counts = hb.Huddles()
+	w := hb.HuddleWarning()
 	if h.in {
 		h.roster = hb.Huddle(h.cur)
 		h.speaking = hb.Speaking()
 		h.talking = hb.Talking()
-		if w := hb.HuddleWarning(); w != nil && !errors.Is(w, h.warned) {
+		if w != nil && !errors.Is(w, h.warned) {
 			h.warned = w
 			m.setNotice(w.Error(), true, true, 0)
 		}
-	} else {
-		h.talk = talkOff
+		return
+	}
+	h.talk = talkOff
+	h.here = len(hb.Huddle(m.active))
+	// Out of a huddle the warning is why the last one ended without us
+	// leaving (#76): say it once.
+	switch {
+	case w == nil:
 		h.warned = nil
-		h.here = len(hb.Huddle(m.active))
+	case !errors.Is(w, h.warned):
+		h.warned = w
+		// Stopped (revoked, disabled): the banner says more. Never hide
+		// another error notice (a failed send in the same drop) either.
+		if m.status.Stopped || (m.noticeErr && m.notice != "" && m.notice != h.endedNote) {
+			return
+		}
+		h.endedNote = m.huddleEndedText(w)
+		m.setNotice(h.endedNote, !errors.Is(w, client.ErrHuddleMoved), false, endedTTL)
+	}
+}
+
+// huddleEndedText names the huddle that ended and why. "/huddle" is only
+// suggested when it would rejoin that huddle: we're online, viewing its
+// channel and no ring would take the command.
+func (m *Model) huddleEndedText(why error) string {
+	where := m.chanTitle(m.hud.last)
+	if errors.Is(why, client.ErrHuddleMoved) {
+		return "🎧 " + where + " moved to your other device"
+	}
+	s := "🎧 " + where + " ended: " + why.Error()
+	if m.status.State == client.Online && m.hud.last == m.active && m.nt.ring.ch == 0 {
+		s += " · /huddle to rejoin"
+	}
+	return s
+}
+
+// endedTTL is how long "why the huddle ended" stays up.
+const endedTTL = 10 * time.Second
+
+// micOffNote is micOff's notice; opening the mic again clears it (#77).
+const micOffNote = "mic off"
+
+// micOn clears a "mic off" notice the mic just made stale.
+func (m *Model) micOn() {
+	if m.notice == micOffNote {
+		m.clearNotice()
 	}
 }
 
@@ -166,6 +218,7 @@ func (m *Model) huddleCommand(c command) (tea.Cmd, bool, error) {
 		m.hud.talk = talkOff
 		if on {
 			m.hud.talk = talkLatched
+			m.micOn()
 		}
 		m.refreshHuddle()
 		return nil, true, nil
@@ -201,7 +254,7 @@ func (m *Model) micOff() bool {
 	hb.SetTalking(false)
 	m.hud.talk = talkOff
 	m.refreshHuddle()
-	m.setNotice("mic off", false, false, 0)
+	m.setNotice(micOffNote, false, false, 0)
 	m.noticeDim = true
 	return true
 }
@@ -227,6 +280,7 @@ func (m *Model) talkKey() (tea.Cmd, bool) {
 		// before (a repeat right after a latch or unlatch is still a hold).
 		if !hb.Talking() {
 			hb.SetTalking(true)
+			m.micOn()
 		}
 		h.talk = talkHolding
 		wait = min(maxRelease, max(minRelease, 3*gap))
@@ -241,6 +295,7 @@ func (m *Model) talkKey() (tea.Cmd, bool) {
 		return nil, true
 	default: // off: a fresh press
 		hb.SetTalking(true)
+		m.micOn()
 		h.talk = talkPending
 	}
 	m.refreshHuddle()

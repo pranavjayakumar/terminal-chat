@@ -26,6 +26,10 @@ Status: **shipped in v0.4.0**. Wire format: PROTOCOL.md §14 (cap `voice1`).
 - A **session** (one connection = one device) is in at most one huddle. A **user** is in at
   most one huddle: joining from another session or channel moves them (the old participation
   ends, the old session sees itself leave). This matches Slack: you can't be in two calls.
+- Liveness: push-to-talk makes silence normal, so while a session is in a huddle the server
+  PINGs it every 2 s and ends its participation (not the connection) after 10 s without any
+  frame from it. A crashed, sleeping or unplugged client leaves everyone's roster within ~10 s
+  instead of at the connection's 45 s idle timeout.
 - The server assigns each participation a `src` (u32, unique on the server while it lives,
   never 0, never reused within a server process) that tags its datagrams.
 - Huddle state is **ephemeral** (never stored): a server restart ends every huddle and clients
@@ -168,6 +172,11 @@ exactly like public-channel text. The TUI marks encrypted huddles with the lock 
 - `/talk` and `/mute` open and close the mic where ctrl+t never arrives (Zellij) or key-repeat
   is off. Esc on an empty input closes an open mic.
 - Not talking = muted. `/leave-huddle` leaves.
+- A huddle that ends without `/leave-huddle` says why, once: `🎧 #chan ended: connection lost`
+  (or `you were dropped`: membership, revoke, the server's liveness check; or `encryption
+  changed`), plus `· /huddle to rejoin` only when that would rejoin it (online, viewing that
+  channel, no ring up); `🎧 #chan moved to your other device`. It never replaces another error
+  notice and stays quiet when tc stopped (revoked, disabled), whose banner says more.
 - Builds without voice: `/huddle` says "this tc build has no voice: reinstall with install.sh
   --voice"; the roster indicator still works.
 - Repeated clock-skew drops (25+ authentic frames a second outside ±60 s) show a sticky

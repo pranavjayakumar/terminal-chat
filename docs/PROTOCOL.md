@@ -500,6 +500,10 @@ All sizes are UTF-8 bytes.
   huddle sizes) are in §14.
 - Keepalive: the client sends PING after 20 s without sending anything. Either
   side closes after 45 s without receiving a frame. QUIC `MaxIdleTimeout` = 60 s.
+  While a session is in a huddle the server also PINGs it every 2 s and ends its participation
+  (not the connection; roster as in §14.2) after 10 s (checked every 2 s) without receiving a
+  frame from it (datagrams don't count). The PING queues behind the session's other output, so
+  more than ~10 s of queued output on a slow link can drop a healthy client too.
 - On QUIC, BYE is followed by `CloseWithError(0, code)`.
 - Reconnect: exponential backoff 0.25 s → 30 s with jitter, reset on success.
 
@@ -1350,7 +1354,9 @@ whether or not their build can play audio (rosters are useful on their own).
   while joining.
 - `huddle.join` counts as a write op for rate limits (§9). `huddle.leave` is exempt: refusing a
   cleanup would leave a listener the client no longer plays to.
-- A participation also ends when its session closes; when the user stops being a member of the
+- A participation also ends when its session closes or has sent no frame for 10 s (§9
+  keepalive; the user, still a member, gets the roster without their `src`, which clients treat
+  as being dropped); when the user stops being a member of the
   channel (`chan.leave`, `chan.remove`) or is disabled; when its `dev` is revoked
   (`device.revoke`); and when the channel becomes encrypted (`chan.encrypt`: everyone rejoins
   with device keys). This happens in the same critical section that applies the event, and
