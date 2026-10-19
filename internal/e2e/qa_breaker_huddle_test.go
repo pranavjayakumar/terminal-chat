@@ -16,7 +16,6 @@ import (
 // roster on chan.join when no huddle runs) the stale roster is shown as a
 // live huddle with someone in it.
 func TestHuddle_BreakStaleRosterAfterLeavingChannel(t *testing.T) {
-	t.Skip("issue #105")
 	us := huddlers(t, "quic", "ana", "bo")
 	ana, bo := us[0], us[1]
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -59,7 +58,6 @@ func TestHuddle_BreakStaleRosterAfterLeavingChannel(t *testing.T) {
 // after bo rejoined, the client thinks one was already running (had=true)
 // and never reports the start.
 func TestHuddle_BreakStaleRosterSwallowsNextStart(t *testing.T) {
-	t.Skip("issue #105")
 	us := huddlers(t, "quic", "ana", "bo")
 	ana, bo := us[0], us[1]
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
@@ -109,7 +107,6 @@ func TestHuddle_BreakStaleRosterSwallowsNextStart(t *testing.T) {
 // the huddle and the relay keeps sending us their audio until we
 // disconnect.
 func TestHuddle_BreakLeaveDuringJoinLeavesGhost(t *testing.T) {
-	t.Skip("issue #104")
 	us := huddlers(t, "quic", "ana", "bo")
 	ana, bo := us[0], us[1]
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
