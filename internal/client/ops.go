@@ -426,7 +426,8 @@ func (c *Client) chanHook(r proto.Res) error {
 		if _, ok, err := getChan(tx, cr.Chan.ID); err != nil || ok {
 			return err
 		}
-		return c.storeChanE2E(tx, cr.Chan)
+		_, err := c.storeChanE2E(tx, cr.Chan)
+		return err
 	})
 	if err == nil {
 		c.post(Update{Channels: true})

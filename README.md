@@ -32,6 +32,11 @@ to confirm. Then `tc`. Prefer Homebrew? `brew tap pranavjayakumar/tc https://git
 on the other with the same SSH key (re-running your original install command works too). If the join
 was interrupted, just run it again: a key that's already registered logs in and the invite stays unused.
 
+**Network blocks 7443?** Some office, hotel and phone networks only let 80/443 out; the join then
+fails with `can't reach the server … a firewall blocks port 7443`. If your server also answers on 443
+([docs/DEPLOY.md](docs/DEPLOY.md#serve-on-443-too-optional)), change `:7443` to `:443` in the invite
+(`tc://host:443/…#…`) and run it again; the pin stays the same.
+
 Already have tc? `tc join 'tc://…'` (`TC_INVITE='tc://…' tc join` keeps the code out of `ps`). Keep
 invites short-lived (a day is plenty) and revoke leftovers with `/invite-revoke` or `tc invite --revoke`.
 Any member can invite inside tc with `/invite [uses] [ttl]` (e.g. `/invite 5 1d`; members get up to 10
@@ -58,7 +63,7 @@ user, server or chat data, but GitHub sees your IP address and that it runs tc.
 | `F1` or `/help` | all keys and commands |
 | `Ctrl-C` twice | quit |
 
-Commands: `/join #x` `/create #x [--private [--plaintext]]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/pins` `/activity` `/highlight [word…]` `/unhighlight word…` `/group name @a @b` (admin) `/groups` `/remind <when> <text>` `/reminders` `/remind-delete id` `/away [status]` `/back` `/snippet file[:range]` `/share-pane [pane]` `/invite [uses] [ttl]` `/invites` `/invite-revoke id` (admin) `/webhook name` `/webhooks` `/webhook-delete id` `/verify @user` `/accept-key @user` `/members` `/alarm` `/devices [@user]` `/device-revoke id` `/disable @user` (admin) `/huddle` `/leave-huddle` `/notify …` `/dnd …` `/sounds`.
+Commands: `/join #x` `/create #x [--private [--plaintext]]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/pins` `/activity` `/highlight [word…]` `/unhighlight word…` `/group name @a @b` (admin) `/groups` `/remind <when> <text>` `/reminders` `/remind-delete id` `/away [status]` `/back` `/snippet file[:range]` `/share-pane [pane]` `/invite [uses] [ttl]` `/invites` `/invite-revoke id` (yours; admins: any) `/webhook name` `/webhooks` `/webhook-delete id` `/verify @user` `/accept-key @user` `/members` `/alarm` `/devices [@user]` `/device-revoke id` `/disable @user` (admin) `/huddle` `/leave-huddle` `/notify …` `/dnd …` `/sounds`.
 
 Private channels are end-to-end encrypted; `--plaintext` opts out (needed only for webhooks/bots).
 Admins: `tc users` lists accounts and who invited them; `tc users disable @name` locks an account
