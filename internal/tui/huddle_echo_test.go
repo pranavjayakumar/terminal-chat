@@ -1,11 +1,14 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/skailama/tc/internal/client"
 )
 
 // Echo control (docs/VOICE.md "Echo"): a mic is gateable (open) unless a
@@ -144,4 +147,54 @@ func TestHuddleEchoHintFits(t *testing.T) {
 	h.aec = "gate"
 	runInput(t, m, "/huddle")
 	checkView(t, m, "hint")
+}
+
+// The join reply arriving after the huddle already ended keeps the end
+// reason (merged with #121's end reasons), naming the joined channel.
+func TestHuddleJoinReplyAfterEnd(t *testing.T) {
+	m, h := newHuddleModel(t, 100, 24)
+	h.aec = "gate"
+	ch := m.active
+	if err := h.JoinHuddle(context.Background(), ch); err != nil {
+		t.Fatal(err)
+	}
+	h.hmu.Lock()
+	h.rosters[ch] = nil
+	h.in, h.warn = 0, client.ErrHuddleDropped
+	h.hmu.Unlock()
+	m.Update(huddleJoinMsg{ch: ch})
+	if strings.Contains(m.notice, "in the huddle") || !strings.Contains(m.notice, "dropped") ||
+		!strings.Contains(m.notice, m.chanTitle(ch)) {
+		t.Fatalf("notice %q", m.notice)
+	}
+	if m.hud.aecHinted {
+		t.Fatal("hint spent on a huddle that never started")
+	}
+}
+
+// A sticky clock-skew warning neither hides why the huddle ended nor
+// outlives it; /huddle keeps it in its report.
+func TestHuddleSkewThenEnd(t *testing.T) {
+	m, h := newHuddleModel(t, 120, 24)
+	runInput(t, m, "/huddle")
+	h.warn = client.ErrClockSkew
+	h.update(m)
+	if !strings.Contains(m.notice, "clock skew") {
+		t.Fatalf("skew not shown: %q", m.notice)
+	}
+	runInput(t, m, "/huddle")
+	if !strings.Contains(m.notice, "echo cancellation on") || !strings.Contains(m.notice, "clock skew") {
+		t.Fatalf("/huddle report lost the warning: %q", m.notice)
+	}
+	h.warn = client.ErrClockSkew
+	h.update(m)
+	m.setNotice(client.ErrClockSkew.Error(), true, true, 0) // as shown
+	h.hmu.Lock()
+	h.rosters[h.in] = nil
+	h.in, h.warn = 0, client.ErrHuddleDropped
+	h.hmu.Unlock()
+	h.update(m)
+	if strings.Contains(m.notice, "clock skew") || !strings.Contains(m.notice, "dropped") {
+		t.Fatalf("notice after the end %q (sticky=%v)", m.notice, m.noticeSticky)
+	}
 }

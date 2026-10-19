@@ -88,6 +88,7 @@ type huddleUI struct {
 	// endedNote is the "huddle ended" notice shown; a better reason may
 	// replace it (dropped, then moved).
 	endedNote string
+	warnNote  string // the sticky in-huddle warning shown, if any
 	aec       string
 	note      string
 	// aecHinted: the headphones hint was shown (once per run).
@@ -132,11 +133,19 @@ func (m *Model) refreshHuddle() {
 		h.note = hb.VoiceNote()
 		if w != nil && !errors.Is(w, h.warned) {
 			h.warned = w
-			m.setNotice(w.Error(), true, true, 0)
+			h.warnNote = w.Error()
+			m.setNotice(h.warnNote, true, true, 0)
 		}
 		return
 	}
 	h.talk = talkOff
+	h.aec, h.note, h.followUp = "", "", ""
+	// A sticky in-huddle warning (clock skew) means nothing once the
+	// huddle is gone, and mustn't hide why it ended.
+	if h.warnNote != "" && m.notice == h.warnNote {
+		m.clearNotice()
+	}
+	h.warnNote = ""
 	h.here = len(hb.Huddle(m.active))
 	// Out of a huddle the warning is why the last one ended without us
 	// leaving (#76): say it once.
@@ -256,6 +265,9 @@ func (m *Model) huddleCommand(c command) (tea.Cmd, bool, error) {
 		if m.hud.note != "" {
 			s += " · " + m.hud.note
 		}
+		if m.hud.warnNote != "" {
+			s += " · " + m.hud.warnNote // the report replaces it on screen
+		}
 		m.setNotice(s+" · /leave-huddle to leave", false, false, errTTL)
 		return nil, true, nil
 	}
@@ -358,17 +370,23 @@ func (m *Model) huddleMsg(msg tea.Msg) (tea.Cmd, bool) {
 	case huddleJoinMsg:
 		m.hud.talk = talkOff
 		m.hud.warned = nil // a new participation: its own warnings
+		m.hud.last = msg.ch
 		m.refreshHuddle()
+		if !m.hud.in {
+			// It ended before the reply got here: refreshHuddle said why.
+			return nil, true
+		}
 		// Most important first, since narrow panes truncate notices: the
 		// device note (which mic, or none), the headphones hint (once per
 		// run), the huddle we left, then the talk help. A device note and
 		// the hint don't both fit in 80 columns, so then the hint follows
 		// as its own notice when the note's expires.
 		talkHelp := "hold ctrl+t to talk, tap for open mic (/talk, /mute)"
-		hint := m.hud.in && m.hud.aec != "system" && !m.hud.aecHinted
+		// "" = the participation went away mid-refresh: unknown, no hint.
+		hint := m.hud.aec != "" && m.hud.aec != "system" && !m.hud.aecHinted
 		var parts []string
 		switch {
-		case m.hud.in && m.hud.note != "":
+		case m.hud.note != "":
 			parts = append(parts, m.hud.note)
 		case hint:
 			m.hud.aecHinted = true
@@ -461,6 +479,9 @@ func aecLine(aec string) string {
 	case "off":
 		return "echo cancellation off, use headphones"
 	}
+	if aec == "" {
+		return "in this huddle"
+	}
 	return "echo control: " + aec
 }
 
@@ -473,7 +494,7 @@ func (m *Model) huddleFollowUp(gen int) bool {
 	}
 	s := h.followUp
 	h.followUp = ""
-	if !h.in || m.notice != "" {
+	if !h.in {
 		return false
 	}
 	if m.w < 60 {
