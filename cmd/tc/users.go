@@ -34,7 +34,11 @@ func cmdUsers(args []string) error {
 		return err
 	}
 	defer c.Close()
-	return users(ctx, c, args, os.Stdin, os.Stdout)
+	var in io.Reader
+	if isTerminal(os.Stdin) {
+		in = os.Stdin
+	}
+	return users(ctx, c, args, in, os.Stdout)
 }
 
 type usersArgs struct {
@@ -59,6 +63,8 @@ func parseUsers(args []string) (usersArgs, error) {
 			a.yes = true
 		case strings.HasPrefix(x, "@") && len(x) > 1 && a.disable == "":
 			a.disable = x[1:]
+		case proto.ValidName(x) && a.disable == "":
+			a.disable = x
 		default:
 			return a, errUsage
 		}
@@ -69,6 +75,7 @@ func parseUsers(args []string) (usersArgs, error) {
 	return a, nil
 }
 
+// users runs tc users; in is nil when stdin isn't a terminal (no prompts).
 func users(ctx context.Context, c usersBackend, args []string, in io.Reader, out io.Writer) error {
 	a, err := parseUsers(args)
 	if err != nil {
@@ -97,6 +104,9 @@ func users(ctx context.Context, c usersBackend, args []string, in io.Reader, out
 	case u.Disabled:
 		fmt.Fprintf(out, "@%s is already disabled.\n", sanitize.Line(u.Name))
 		return nil
+	}
+	if !a.yes && in == nil {
+		return fmt.Errorf("not disabled: no terminal to confirm on; run tc users disable @%s --yes", sanitize.Line(u.Name))
 	}
 	if !a.yes {
 		fmt.Fprintf(out, "Disable @%s? They are signed out at once, none of their SSH keys can sign in again, and their "+

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mattn/go-isatty"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/skailama/tc/internal/client"
@@ -54,9 +55,10 @@ func osJoinEnv() joinEnv {
 	}
 }
 
+// isTerminal reports whether f is a terminal; /dev/null is a character
+// device too, so the file mode alone isn't enough.
 func isTerminal(f *os.File) bool {
-	st, err := f.Stat()
-	return err == nil && st.Mode()&os.ModeCharDevice != 0
+	return isatty.IsTerminal(f.Fd())
 }
 
 func gitUserName() string {
@@ -92,9 +94,14 @@ func cmdJoin(args []string) error {
 // showLogin prints the tokenless server line (tc://host:port#pin) of the
 // account in home: what `tc login` takes on a second computer.
 func showLogin(out io.Writer, home string) error {
+	if _, err := os.Stat(filepath.Join(home, "config.json")); err != nil {
+		return multilineError("this computer isn't signed in to a tc server yet.\n" +
+			"  New to the team? Run the invite your admin sent: tc join 'tc://…'\n" +
+			"  Already have an account? Run tc login on a computer that's signed in; it prints the line to run here.")
+	}
 	c, err := client.Open(home)
 	if err != nil {
-		return errUsage
+		return err
 	}
 	cfg := c.Config()
 	c.Close()
@@ -170,6 +177,10 @@ func runJoin(ctx context.Context, env joinEnv, code, name, keyPath string) error
 	if err != nil {
 		return err
 	}
+	return joinErrorHint(inv, joinWithKeys(ctx, env, inv, code, name, keyPath))
+}
+
+func joinWithKeys(ctx context.Context, env joinEnv, inv proto.Invite, code, name, keyPath string) error {
 	loginOnly := inv.Token == ""
 	keys, all, err := joinKeys(env, keyPath)
 	if err != nil {
@@ -296,7 +307,13 @@ func runJoin(ctx context.Context, env joinEnv, code, name, keyPath string) error
 	}
 	if generated != "" {
 		keep = true
-		fmt.Fprintf(env.out, "No SSH key found, so tc made one just for itself: %s\n", generated)
+		if locked := unusableKeys(all); len(locked) > 0 {
+			fmt.Fprintf(env.out, "tc can't use your SSH key %s (passphrase-protected and not in ssh-agent, or unreadable), so it made one just for itself: %s\n",
+				strings.Join(locked, ", "), generated)
+			fmt.Fprintf(env.out, "To use yours instead, unlock it with ssh-add %s and run this join again with --key %s.\n", locked[0], locked[0])
+		} else {
+			fmt.Fprintf(env.out, "No SSH key found, so tc made one just for itself: %s\n", generated)
+		}
 		fmt.Fprintln(env.out, "It has no passphrase: anyone who can read that file can chat as you. (Prefer your own key? tc join --key ~/.ssh/id_ed25519.)")
 	}
 	if !loginOnly && (u.Name != name || preexisting(u, time.Now())) {
@@ -312,6 +329,18 @@ func runJoin(ctx context.Context, env joinEnv, code, name, keyPath string) error
 // after a lost WELCOME finds a minutes-old account and says nothing.
 func preexisting(u proto.User, now time.Time) bool {
 	return u.Created > 0 && now.Sub(time.UnixMilli(u.Created)) > 15*time.Minute
+}
+
+// unusableKeys lists the key files found that can't sign here, e.g. ones
+// with a passphrase that aren't in ssh-agent.
+func unusableKeys(all []joinKey) []string {
+	var out []string
+	for _, k := range all {
+		if k.Signer == nil && k.Path != "" {
+			out = append(out, sanitize.Line(k.Path))
+		}
+	}
+	return out
 }
 
 // maxBlindKeys is how many keys runJoin offers without a key hint.
@@ -397,7 +426,7 @@ func keyBoundError(fps []string, all []joinKey, keyPath string) error {
 	}
 	writeTried(&b, all)
 	b.WriteString("\n  if the key is elsewhere (another computer, a hardware key, a password manager), load it into ssh-agent or pass --key path/to/key(.pub); otherwise ask for a new invite")
-	return errors.New(b.String())
+	return multilineError(b.String())
 }
 
 // noKeyError explains a tc login with no registered key.
@@ -415,7 +444,7 @@ func noKeyError(all []joinKey, last error) error {
 			b.WriteString("\n  last error: " + last.Error())
 		}
 	}
-	return errors.New(b.String())
+	return multilineError(b.String())
 }
 
 func writeTried(b *strings.Builder, all []joinKey) {
