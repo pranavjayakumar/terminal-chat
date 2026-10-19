@@ -172,7 +172,7 @@ func inviteErr(err error, what, id string) error {
 // githubKeysErr explains a GitHub login that doesn't exist (the key fetch
 // answers 404) instead of printing the bare status.
 func githubKeysErr(err error, login string) error {
-	if err != nil && strings.HasSuffix(err.Error(), "HTTP 404") {
+	if errors.Is(err, client.ErrNoGitHubUser) {
 		return fmt.Errorf("GitHub has no user %q; check the login (it's the name in github.com/<login>)", sanitize.Line(login))
 	}
 	return err
