@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/skailama/tc/internal/sanitize"
 	"github.com/skailama/tc/internal/server"
@@ -70,8 +71,32 @@ func main() {
 		os.Exit(2)
 	}
 	if err != nil {
-		// Errors can carry server-supplied text.
-		fmt.Fprintln(os.Stderr, "tc:", sanitize.Line(err.Error()))
+		fmt.Fprintln(os.Stderr, "tc:", errorText(err))
 		os.Exit(1)
 	}
+}
+
+// multilineError is an explanation tc itself wrote over several lines (any
+// remote text in it is already sanitized). Only these keep their newlines.
+type multilineError string
+
+func (e multilineError) Error() string { return string(e) }
+
+// errorText renders err for the terminal. Errors can carry server-supplied
+// text, so everything is sanitized to one line, except tc's own multi-line
+// explanations, whose lines are sanitized one by one and whose
+// continuation lines are indented.
+func errorText(err error) string {
+	var ml multilineError
+	if !errors.As(err, &ml) {
+		return sanitize.Line(err.Error())
+	}
+	lines := strings.Split(err.Error(), "\n")
+	for i, l := range lines {
+		lines[i] = sanitize.Line(l)
+		if i > 0 && !strings.HasPrefix(lines[i], " ") {
+			lines[i] = "  " + lines[i]
+		}
+	}
+	return strings.Join(lines, "\n")
 }
