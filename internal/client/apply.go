@@ -425,6 +425,9 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		if !decode(&d) || ev.Chan == 0 {
 			return nil
 		}
+		if d.User == me {
+			c.huddleForget(ev.Chan)
+		}
 		if d.User == me && ev.Actor != me && ev.Actor != 0 {
 			// Removed by someone else: keep what we had, say so.
 			if cv, ok, err := getChan(tx, ev.Chan); err != nil {

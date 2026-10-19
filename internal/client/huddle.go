@@ -48,6 +48,8 @@ type huddleState struct {
 	// after a leave or a new join.
 	ended   error
 	endedAt time.Time
+	// left: the newest join-or-leave was a leave.
+	left bool
 }
 
 type participation struct {
@@ -275,6 +277,7 @@ func (c *Client) JoinHuddle(ctx context.Context, ch uint64) error {
 	c.hud.gen++
 	gen := c.hud.gen
 	c.hud.ended = nil
+	c.hud.left = false
 	c.hud.mu.Unlock()
 
 	args := proto.HuddleJoinArgs{Chan: ch}
@@ -331,6 +334,13 @@ func (c *Client) JoinHuddle(ctx context.Context, ch uint64) error {
 	dropped := !slices.ContainsFunc(roster, func(q proto.Part) bool { return q.Src == res.Src })
 	if !stale && !dropped {
 		c.hud.cur = p
+	}
+	// A leave that came while the device opened found nothing to leave
+	// (#104): the server has us in the huddle, so leave for it — unless a
+	// newer join followed, which moved us already and which a leave would
+	// end. Sent under hud.mu so that newer join's REQ can't overtake it.
+	if stale && c.hud.left {
+		_ = s.fire(proto.OpHuddleLeave, struct{}{})
 	}
 	c.hud.mu.Unlock()
 	if stale || dropped {
@@ -481,6 +491,7 @@ func (c *Client) LeaveHuddle() {
 	c.hud.mu.Lock()
 	c.hud.gen++ // a join still in flight gives up
 	c.hud.ended = nil
+	c.hud.left = true
 	p := c.hud.cur
 	c.hud.mu.Unlock()
 	if p == nil {
@@ -564,6 +575,15 @@ const baselineFor = 2 * time.Second
 func (c *Client) huddlesLive(now time.Time) {
 	c.hud.mu.Lock()
 	c.hud.liveAt = now
+	c.hud.mu.Unlock()
+}
+
+// huddleForget drops ch's roster when we stop being a member: the server
+// tells only participants when a huddle ends (§14.2), so a kept roster
+// would show a 🎧 that's gone and swallow the next start there (#105).
+func (c *Client) huddleForget(ch uint64) {
+	c.hud.mu.Lock()
+	delete(c.hud.rosters, ch)
 	c.hud.mu.Unlock()
 }
 
