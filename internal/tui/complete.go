@@ -206,6 +206,11 @@ func (m *Model) userItems(q string) {
 			c.items = append(c.items, compItem{text: "@" + sanitize.Line(m.me.Name), desc: "you · your notes", rank: rank})
 		}
 	}
+	if me := strings.ToLower(m.me.Name); !dm && me != "" && me == q {
+		// "as @alice said": my exact name is an exact name like any other,
+		// so Enter sends instead of completing to a longer one.
+		c.items = append(c.items, compItem{text: "@" + sanitize.Line(m.me.Name), desc: "you", rank: exactRank})
+	}
 	for _, u := range m.userList {
 		if u.ID == m.me.ID || u.Disabled || dm && u.Name == "me" {
 			continue

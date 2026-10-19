@@ -53,6 +53,7 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
   `-` red, `@@` dim cyan, file headers dim bold; under `NO_COLOR` only the `+`/`-` markers remain. The full-message
   viewer (`v`) colors diffs the same way. `git diff | tc send` produces a diff block automatically.
 - Width math uses display width (runewidth), never byte or rune counts.
+- The input line and the switcher/react prompts never draw bidi controls (they would reorder the line on screen).
 
 ## Keys
 
@@ -91,7 +92,7 @@ While the input is a bare `/command` (no space yet) a popup of up to 4 rows just
 matching commands (prefix matches first, then substring; an exact name first) with their argument hint and a
 dim one-line description; more matches scroll (`↑`/`↓` marks at the right). An `@` or `#` word at the cursor
 does the same for people (this channel's members first, then everyone else, then user groups like
-`@oncall`) and channels (joined ones first); a name equal to what was typed always comes first. For
+`@oncall`) and channels (joined ones first); a name equal to what was typed always comes first (my own name too, so `as @alice said` sends on Enter). For
 `@`/`#` a substring match needs two letters and never comes from digits alone, so `fixed in #12` isn't offered `#release-12`. The popup covers the bottom of the
 message list, above the status line (notices and connection state stay visible), with a dim `▏` gutter;
 it is never drawn outside normal mode.

@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/x/ansi"
 
@@ -218,9 +219,9 @@ func (m *Model) mainColumn(d dims) []string {
 	out = append(out, m.st.border.Render(strings.Repeat("─", w)))
 	var in []string
 	if m.mode == modeReact {
-		in = []string{m.line.View()}
+		in = []string{dropBidi(m.line.View())}
 	} else {
-		in = strings.Split(m.input.View(), "\n")
+		in = strings.Split(dropBidi(m.input.View()), "\n")
 	}
 	for i := 0; i < d.inputH; i++ {
 		l := ""
@@ -727,7 +728,7 @@ func window(n, sel, h int) (int, int) {
 }
 
 func (m *Model) switcherLines(w, h int) []string {
-	out := []string{fit(m.line.View(), w)}
+	out := []string{fit(dropBidi(m.line.View()), w)}
 	if len(m.sw.shown) == 0 && h > 1 {
 		out = append(out, fit(m.st.dim.Render(" no matches"), w))
 	}
@@ -816,3 +817,21 @@ func (m *Model) sharePreviewLines(w, h int) []string {
 	}
 	return padLines(out, w, h)
 }
+
+// dropBidi removes bidi controls from what an editor draws (it keeps its
+// own cursor styling, so sanitize.Text can't be used): typed or pasted
+// overrides would make the screen differ from what Enter sends. They are
+// zero-width, so the cursor math is unchanged.
+func dropBidi(s string) string {
+	if !strings.ContainsFunc(s, isBidi) {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if isBidi(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+func isBidi(r rune) bool { return unicode.Is(unicode.Bidi_Control, r) }
