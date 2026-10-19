@@ -255,6 +255,9 @@ func (n *Notifier) argv(nt Note) []string {
 	switch n.backend {
 	case Herdr:
 		// herdr takes the positional first and options after it.
+		if strings.HasPrefix(title, "-") {
+			title = "tc · " + title // a positional: never let it read as an option
+		}
 		a := []string{"herdr", "notification", "show", title}
 		if body != "" {
 			a = append(a, "--body="+body) // one element: a body like "-1" can't read as a flag
@@ -285,10 +288,15 @@ func (n *Notifier) argv(nt Note) []string {
 		if nt.Tag != "" { // a channel's newer popup replaces its older one
 			a = append(a, "--hint=string:x-dunst-stack-tag:"+nt.Tag, "--hint=string:x-canonical-private-synchronous:"+nt.Tag)
 		}
-		return append(a, "--", title, body)
+		// The body may be read as markup (<b>, <a href>, <img>) by the
+		// notification server; the spec says to escape it. The summary is
+		// plain text.
+		return append(a, "--", title, markupEscaper.Replace(body))
 	}
 	return nil
 }
+
+var markupEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 
 // clean makes remote text safe as a single argv element: one line, no
 // controls, at most n runes.

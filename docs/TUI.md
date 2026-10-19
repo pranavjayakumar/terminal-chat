@@ -324,10 +324,10 @@ and are not listed; they appear in the log as usual. Rows are kept for the newes
   notification per 2 s overall (a message over the cap waits for its window). Opening the channel
   drops what's pending for it.
 - **Backend** (`internal/notify`), chosen by `TC_NOTIFY=auto|herdr|os|terminal|bell|off` (default `auto`):
-  auto = `herdr notification show` when `HERDR_ENV=1` and `herdr` is in PATH; else, **over SSH**
+  auto = `herdr notification show` (a title starting with `-` gets a `tc · ` prefix so it can't read as an option) when `HERDR_ENV=1` and `herdr` is in PATH; else, **over SSH**
   (`SSH_CONNECTION`/`SSH_TTY`) with a terminal known to support it, the `terminal` backend; else
   the OS (`osascript` on macOS — text passed as argv to an `on run argv` script, never
-  interpolated; `notify-send` on Linux), else the terminal bell. `TC_BELL=0` still turns the bell
+  interpolated; `notify-send` on Linux, body markup-escaped (`&`, `<`, `>`) since servers may render it as markup), else the terminal bell. `TC_BELL=0` still turns the bell
   off. Every exec backend runs via argv (no shell), async, 2 s timeout, one at a time (extra ones
   dropped); a ring has its own slot so a hung popup can't swallow it.
 - **Terminal backend** (OSC; the local terminal shows it, so it works over SSH): OSC 99 for
