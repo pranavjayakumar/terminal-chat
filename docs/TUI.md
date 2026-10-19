@@ -362,6 +362,8 @@ and are not listed; they appear in the log as usual. Rows are kept for the newes
   cancellation, use headphones (gate: open mic pauses while others talk)` or `echo cancellation off,
   use headphones`, then `· /leave-huddle to leave`. The mic is gateable (open) from a fresh ctrl+t
   press until a key-repeat proves it held; a held key is never gated. `/talk` is open mic.
+  A device note (the default input was a speaker monitor and another microphone is used,
+  `TC_VOICE_INPUT` matched nothing) replaces the join notice and leads `/huddle`'s.
 - **Privacy**: `/notify content full|name|none` (`TC_NOTIFY_CONTENT`): `name` shows who but not
   the text, `none` shows just `tc` / `new message`. Popups persist in the OS notification history
   (Notification Center, GNOME's tray): use `name` on shared machines.
