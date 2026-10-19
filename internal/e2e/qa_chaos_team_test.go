@@ -445,16 +445,14 @@ func TestQAChaosTeamScale(t *testing.T) {
 	if end.fds > base.fds+2*nUsers {
 		t.Errorf("open FDs %d → %d", base.fds, end.fds)
 	}
-	// An op cut short by a server restart logs "op failed" at ERROR with
-	// the context error or sql.ErrTxDone (issue #118): expected here,
-	// everything else isn't.
+	// An op cut short by a server restart is logged at debug, not ERROR
+	// (issue #118): any ERROR here is a real failure.
 	for _, l := range strings.Split(strings.TrimSpace(logBuf.String()), "\n") {
 		if l == "" {
 			continue
 		}
 		t.Logf("server log: %s", l)
-		cut := strings.Contains(l, `err="context canceled"`) || strings.Contains(l, "transaction has already been committed or rolled back")
-		if strings.Contains(l, "panic") || strings.Contains(l, "level=ERROR") && !cut {
+		if strings.Contains(l, "panic") || strings.Contains(l, "level=ERROR") {
 			t.Errorf("unexpected server log line: %s", l)
 		}
 	}
