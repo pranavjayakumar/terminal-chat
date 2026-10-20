@@ -225,11 +225,7 @@ func TestPinsEnterJumps(t *testing.T) {
 }
 
 func TestHelpMentionsPins(t *testing.T) {
-	var all []string
-	for _, l := range helpLines {
-		all = append(all, l[0]+" "+l[1])
-	}
-	h := strings.Join(all, "\n")
+	h := strings.Join(sheetPlain(100), "\n")
 	if !strings.Contains(h, "/pins") || !strings.Contains(h, "pin") {
 		t.Fatal("help lacks pins")
 	}

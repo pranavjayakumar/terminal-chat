@@ -36,6 +36,7 @@ const (
 	modeVerify
 	modeDevices // devices.go
 	modeDisable // disable.go
+	modeSettings
 )
 
 // pane is a scrollable message list: a channel (root 0) or a thread.
@@ -47,9 +48,9 @@ type pane struct {
 
 	// memo of the last layout, owned by View/Update on the event loop.
 	ver                     int
-	memoVer, memoW, memoSel int
-	memoMode                mode
-	memoLines               []string
+	memoVer, memoW, memoDay int
+	memoCompact             bool
+	memoLines               []prow
 	memoOwner               []int
 }
 
@@ -64,7 +65,6 @@ type Model struct {
 	ctx    context.Context
 	st     *styles
 	r      renderer
-	rc     renderCache
 	opt    Options
 
 	w, h      int
@@ -98,7 +98,6 @@ type Model struct {
 	mode    mode
 	editing uint64 // message id whose edit is in the input
 	target  client.Message
-	sidebar int // 0 auto, 1 forced on, -1 forced off
 
 	notice       string
 	noticeErr    bool
@@ -156,6 +155,20 @@ type Model struct {
 	dis        disableState
 	noticeDim  bool   // the notice is a quiet hint
 	newRelease string // newer release tag, shown in the sidebar title
+
+	ui         uiPrefs    // look and feel, TC_HOME/ui.json (uiprefs.go)
+	fx         fxState    // animations (anim.go)
+	blocks     blockCache // drawn messages (msgview.go)
+	pal        palState   // command palette (palette.go)
+	set        setState   // settings dialog (settings.go)
+	boot       bool       // first run: the loading screen shows (boot.go)
+	noticeAt   time.Time  // when the notice appeared (its toast fades from it)
+	hover      string     // the action under the mouse pointer
+	drag       bool       // the sidebar edge is being dragged
+	dragX      int
+	lastCanvas *canvas // the last frame, for clicks and the theme cross-fade
+	lastFrame  string
+	reuseFrame bool // nothing changed since lastFrame (pointer motion)
 }
 
 // ---- tea messages ----
@@ -204,15 +217,18 @@ const (
 
 // New builds the model and loads the cache.
 func New(ctx context.Context, c Backend, o Options) *Model {
+	ui := loadUIPrefs(o.UIPrefs)
+	th := themeNamed(ui.themeName())
 	st := o.styles
-	if st == nil {
-		if o.Out != nil {
-			st = defaultStyles(o.Out)
-		} else {
-			st = defaultStyles(os.Stdout)
-		}
+	switch {
+	case st == nil && o.Out != nil:
+		st = defaultStyles(o.Out, th)
+	case st == nil:
+		st = defaultStyles(os.Stdout, th)
+	case st.th != th:
+		st = newStyles(st.color, st.prof, th)
 	}
-	m := &Model{
+	m := &Model{ui: ui,
 		c: c, ctx: ctx, st: st, opt: o,
 		limits: map[uint64]int{}, histBusy: map[uint64]bool{}, histDone: map[uint64]bool{},
 		focused: true, now: time.Now,
@@ -220,6 +236,9 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 		notes: map[uint64]*pendingNote{}, badge: &badgeWriter{},
 	}
 	m.lastKey = m.now()
+	m.fx.init()
+	// Tests (o.styles set) run without motion unless they ask for it.
+	m.fx.off = ui.NoMotion || (o.styles != nil && !o.motion)
 	m.r = renderer{st: st, name: func(id uint64) string { return m.users[id].Name },
 		bot: func(id uint64) bool { return m.users[id].Bot }}
 	m.input = newInput(st)
@@ -231,6 +250,8 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 		m.openChannel(ch)
 	}
 	m.syncDraft()
+	m.applyCursorMode()
+	m.boot = len(m.chans) == 0 && m.status.State != client.Online
 	return m
 }
 
@@ -320,7 +341,7 @@ func (m *Model) reloadUsers() {
 	m.reloadPresence()
 	m.refreshMentionNames()
 	m.reloadComp()
-	m.rc.reset()
+	m.blocks.reset()
 	m.main.ver++
 	m.thread.ver++
 }
@@ -334,10 +355,17 @@ func (m *Model) reloadPresence() {
 
 func (m *Model) reloadChans() {
 	was := make(map[uint64]bool, len(m.chans))
+	before := make(map[uint64]client.ChannelView, len(m.chans))
 	for _, v := range m.chans {
 		was[v.ID] = v.Member
+		before[v.ID] = v
 	}
 	m.chans = m.c.Channels()
+	for _, v := range m.chans {
+		if b, ok := before[v.ID]; ok && v.Mention && v.Unread > b.Unread && !m.fx.off {
+			m.fx.pulse[v.ID] = m.now() // the mention badge pulses
+		}
+	}
 	for _, v := range m.chans {
 		if !v.Member && was[v.ID] {
 			// Leaving drops the cached messages: a rejoin must fetch them
@@ -415,6 +443,15 @@ func (m *Model) reloadPane(p *pane) {
 	}
 	old := lastID(p.msgs)
 	w := m.paneWidth(p)
+	var snap []msgSnap
+	rowsBefore := -1
+	if !m.fx.off && len(p.msgs) > 0 {
+		snap = m.snapshot(p.msgs)
+		if w > 0 {
+			rows, _ := m.paneLines(p, w)
+			rowsBefore = len(rows)
+		}
+	}
 	var before int
 	if p.scroll > 0 && w > 0 {
 		before = m.suffixLines(p, w, old)
@@ -425,6 +462,15 @@ func (m *Model) reloadPane(p *pane) {
 		p.msgs = m.c.Messages(p.ch, m.limit(p.ch))
 	}
 	p.ver++
+	if snap != nil {
+		m.noteChanges(snap, m.snapshot(p.msgs), old)
+		if rowsBefore >= 0 && p.scroll == 0 {
+			rows, _ := m.paneLines(p, w)
+			if n := len(rows) - rowsBefore; n > 0 && n <= 12 {
+				m.fx.slideN, m.fx.slideAt = n, m.now() // the list glides up
+			}
+		}
+	}
 	if p.scroll > 0 && w > 0 {
 		p.scroll += m.suffixLines(p, w, old) - before
 		p.scroll = max(p.scroll, 0)
@@ -739,6 +785,7 @@ func (m *Model) setHint(s string) { m.setNotice(s, false, true, 0) }
 func (m *Model) setNotice(s string, isErr, sticky bool, ttl time.Duration) {
 	m.notice, m.noticeErr, m.noticeSticky, m.noticeTTL = sanitize.Line(s), isErr, sticky, ttl
 	m.noticeCh = 0
+	m.noticeAt = m.now()
 	if s != ctrlCHint {
 		m.ctrlC = time.Time{} // the hint is gone: a Ctrl-C now must not quit
 	}
@@ -822,6 +869,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if t := m.badgeTick(); t != nil {
 		cmd = tea.Batch(cmd, t)
 	}
+	m.endBoot()
+	if t := m.frameTick(); t != nil {
+		cmd = tea.Batch(cmd, t)
+	}
 	return m, cmd
 }
 
@@ -838,6 +889,11 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	switch msg := msg.(type) {
+	case frameMsg:
+		if msg.gen == m.fx.gen {
+			m.fx.running = false
+		}
+		return m, nil
 	case noticeExpireMsg:
 		if msg.gen == m.noticeGen {
 			m.clearNotice()
@@ -1002,20 +1058,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reloadTyping()
 		return m, m.typingTick()
 	case tea.MouseMsg:
-		if msg.Action != tea.MouseActionPress {
-			return m, nil
-		}
-		if m.mode == modeActivity { // the overlay covers the log: scroll its list
-			m.activityWheel(msg.Button)
-			return m, nil
-		}
-		switch msg.Button {
-		case tea.MouseButtonWheelUp:
-			return m, m.scrollBy(m.focus(), 3)
-		case tea.MouseButtonWheelDown:
-			return m, m.scrollBy(m.focus(), -3)
-		}
-		return m, nil
+		return m, m.mouse(msg)
 	case tea.KeyMsg:
 		return m, m.handleKey(msg)
 	}
@@ -1152,6 +1195,8 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 		return m.devicesKey(key)
 	case modeDisable:
 		return m.disableKey(key)
+	case modeSettings:
+		return m.settingsKey(key)
 	case modeViewer:
 		if key == kSelCopy {
 			if m.view.copy != "" {
@@ -1214,18 +1259,10 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 		m.openActivity()
 		return nil
 	case key == kSidebar || key == kSidebarAlt:
-		switch {
-		case m.sidebarShown():
-			m.sidebar = -1
-		case m.w < minSidebarCols:
-			m.setInfo("too narrow for sidebar")
-			return nil
-		default:
-			m.sidebar = 1
-		}
-		m.layoutInput()
-		m.clampScroll(&m.main)
-		m.clampScroll(&m.thread)
+		m.cycleSidebar()
+		return nil
+	case key == kSettings:
+		m.openSettings("")
 		return nil
 	case key == kHelpAlt:
 		m.openHelp()
@@ -1472,10 +1509,12 @@ func (m *Model) openHelp() {
 	m.leaveSelect()
 	m.mode = modeHelp
 	m.helpScroll = 0
+	m.fx.dialogAt = m.now()
 }
 
 func (m *Model) helpKey(key string) {
-	page := max(m.dims().bodyH-2, 1)
+	_, sh := m.keySheetSize()
+	page := max(sh-1, 1)
 	switch key {
 	case kEsc, kHelp, kHelpAlt, "q", kEnter:
 		m.mode = modeNormal

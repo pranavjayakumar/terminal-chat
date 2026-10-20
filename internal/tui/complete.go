@@ -159,12 +159,21 @@ func wordRank(q, s string) int {
 	return r
 }
 
-func (m *Model) commandItems(q string) {
+// compCommands are the commands this user can run in this build.
+func (m *Model) compCommands() []cmdSpec {
 	voice := client.VoiceAvailable()
+	var out []cmdSpec
 	for _, c := range commandTable {
 		if c.name == "" || c.more || (c.admin && !m.me.Admin) || (c.voice && !voice) {
 			continue
 		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func (m *Model) commandItems(q string) {
+	for _, c := range m.compCommands() {
 		r := matchRank(q, c.name)
 		switch {
 		case r < 0:

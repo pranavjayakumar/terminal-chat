@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -258,12 +259,7 @@ func TestCtrlAIsLineStartNotActivity(t *testing.T) {
 	if got := m.input.Value(); got != "Xhello" {
 		t.Fatalf("input = %q, want the cursor at line start", got)
 	}
-	if !strings.Contains(strings.Join(func() (s []string) {
-		for _, l := range helpLines {
-			s = append(s, l[0])
-		}
-		return
-	}(), "\n"), "Alt-A") {
+	if !strings.Contains(strings.Join(sheetPlain(100), "\n"), "⌥A") {
 		t.Fatal("help doesn't mention Alt-A")
 	}
 }
@@ -356,7 +352,7 @@ func TestActivityMarksItemsNewerThanLastOpen(t *testing.T) {
 	activityFake(f)
 	dots := func() (n int) {
 		for _, l := range strings.Split(checkView(t, m, "dots"), "\n") {
-			if strings.Contains(l, "│•") {
+			if regexp.MustCompile(`•[@↳»🎉]`).MatchString(l) {
 				n++
 			}
 		}
@@ -377,7 +373,7 @@ func TestActivityMarksItemsNewerThanLastOpen(t *testing.T) {
 	if got := dots(); got != 1 {
 		t.Fatalf("%d dots, want 1 (only the new item)\n%s", got, checkView(t, m, "x"))
 	}
-	if row := activityRowOf(t, checkView(t, m, "x"), "brand new"); !strings.Contains(row, "│•") {
+	if row := activityRowOf(t, checkView(t, m, "x"), "brand new"); !regexp.MustCompile(`•[@↳»🎉]`).MatchString(row) {
 		t.Fatalf("the new item has no dot: %q", row)
 	}
 	if f.seen != fresh.Time {
@@ -393,7 +389,7 @@ func TestActivityMarksItemsNewerThanLastOpen(t *testing.T) {
 	f.activity = append([]client.ActivityItem{late}, f.activity...)
 	clk.add(2 * time.Second)
 	m.Update(updateMsg(client.Update{Msgs: map[uint64]bool{20: true}}))
-	if row := activityRowOf(t, checkView(t, m, "x"), "late one"); !strings.Contains(row, "│•") {
+	if row := activityRowOf(t, checkView(t, m, "x"), "late one"); !regexp.MustCompile(`•[@↳»🎉]`).MatchString(row) {
 		t.Fatalf("live item has no dot: %q", row)
 	}
 	if f.seen != late.Time {

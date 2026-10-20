@@ -168,55 +168,6 @@ func (m *Model) switchItems() []switchItem {
 	return items
 }
 
-func (m *Model) openSwitcher() {
-	m.leaveSelect()
-	m.mode = modeSwitcher
-	m.line.Reset()
-	m.line.Prompt = "> "
-	m.line.Placeholder = "jump to a channel or person"
-	m.line.Focus()
-	m.sw = switcher{items: m.switchItems()}
-	m.sw.filter("")
-}
-
-func (m *Model) switcherKey(k tea.KeyMsg) tea.Cmd {
-	switch keyName(k) {
-	case kEsc, kSwitcher:
-		m.mode = modeNormal
-		return nil
-	case kUp, "ctrl+p", kShiftTab:
-		if m.sw.sel > 0 {
-			m.sw.sel--
-		}
-		return nil
-	case kDown, "ctrl+n", kTab:
-		if m.sw.sel < len(m.sw.shown)-1 {
-			m.sw.sel++
-		}
-		return nil
-	case kEnter:
-		m.mode = modeNormal
-		if m.sw.sel >= len(m.sw.shown) {
-			return nil
-		}
-		it := m.sw.shown[m.sw.sel]
-		if it.ch != 0 {
-			return m.openChannel(it.ch)
-		}
-		if it.user == m.me.ID {
-			return m.openDM(nil) // my notes
-		}
-		return m.openDM([]uint64{it.user})
-	}
-	before := m.line.Value()
-	var cmd tea.Cmd
-	m.line, cmd = m.line.Update(k)
-	if m.line.Value() != before {
-		m.sw.filter(m.line.Value())
-	}
-	return cmd
-}
-
 // ---- search results ----
 
 type searchState struct {

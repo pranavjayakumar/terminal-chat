@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
@@ -25,23 +24,6 @@ type HookBackend interface {
 }
 
 const botTag = " bot"
-
-// nameCell renders an author name padded to nameW cells, with a dim bot tag
-// for webhook authors (the name gives up room for it).
-func (r *renderer) nameCell(as lipgloss.Style, name string, nameW int, bot bool) string {
-	room := nameW
-	if bot && nameW > len(botTag) {
-		room -= len(botTag)
-	} else {
-		bot = false
-	}
-	n := truncate(name, room)
-	out := as.Render(n)
-	if bot {
-		out += r.st.dim.Render(botTag)
-	}
-	return out + spaces(room-min(strWidth(n), room))
-}
 
 // hookCommand runs /webhook, /webhooks and /webhook-delete; ok is false for
 // other commands.

@@ -122,31 +122,3 @@ func (s *styles) diffStyle(k diffKind) lipgloss.Style {
 	}
 	return s.code
 }
-
-// codeLines renders a block's lines (without the bar), each cut to w cells,
-// styled as code or diff. The label, if any, is right-aligned on the first
-// line when it fits next to that line's text.
-func (r *renderer) codeLines(sg seg, w int, pending bool) []string {
-	var ks []diffKind
-	if sg.diff {
-		ks = classifyDiff(sg.lines)
-	}
-	out := make([]string, len(sg.lines))
-	for i, ln := range sg.lines {
-		st := r.style(fCode, pending)
-		if sg.diff {
-			st = r.st.diffStyle(ks[i])
-			if pending {
-				st = st.Faint(true)
-			}
-		}
-		ln = truncate(ln, w)
-		out[i] = st.Render(ln)
-		if i == 0 && sg.info != "" {
-			if gap := w - strWidth(ln) - strWidth(sg.info); gap >= 2 {
-				out[i] += spaces(gap) + r.st.dim.Render(sg.info)
-			}
-		}
-	}
-	return out
-}

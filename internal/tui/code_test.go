@@ -16,58 +16,54 @@ import (
 
 const sampleDiff = "diff --git a/x.go b/x.go\n--- a/x.go\n+++ b/x.go\n@@ -1,3 +1,3 @@\n ctx\n-old\n+new"
 
-func bodyOf(color bool, text string, bw int) []string {
-	r := renderer{st: testStyles(color), me: proto.User{Name: "alice"}}
-	return r.body(client.Message{Message: proto.Message{ID: 1, Author: 1, Body: text}}, bw)
+// codeRows draws text as bob's message at block width bw+6 and returns the
+// block and its rows.
+func codeRows(color bool, text string, bw int) (*Model, *canvas, []string) {
+	m := blockModel(color)
+	b, rows := block(m, client.Message{Message: proto.Message{ID: 1, Author: 2, Body: text}}, bw+6, false)
+	return m, b, rows
 }
 
 func TestDiffRendering(t *testing.T) {
 	for _, body := range []string{"```diff\n" + sampleDiff + "\n```", "```\n" + sampleDiff + "\n```"} {
-		lines := bodyOf(true, body, 60)
-		if len(lines) != 7 {
-			t.Fatalf("want 7 lines, got %d: %q", len(lines), lines)
+		m, b, rows := codeRows(true, body, 60)
+		th := m.st.th
+		if !strings.Contains(rows[0], "diff  +1 −1") {
+			t.Fatalf("header: %q", rows)
 		}
-		add, del, hunk, hdr := testStyles(true).diffAdd, testStyles(true).diffDel, testStyles(true).diffHunk, testStyles(true).diffHdr
 		want := []struct {
-			i    int
-			text string
-			sty  func(...string) string
+			text   string
+			fg, bg rgb
 		}{
-			{0, "diff --git a/x.go b/x.go", hdr.Render},
-			{1, "--- a/x.go", hdr.Render},
-			{2, "+++ b/x.go", hdr.Render},
-			{3, "@@ -1,3 +1,3 @@", hunk.Render},
-			{5, "-old", del.Render},
-			{6, "+new", add.Render},
+			{"diff --git a/x.go b/x.go", th.dim, th.panel},
+			{"--- a/x.go", th.dim, th.panel},
+			{"+++ b/x.go", th.dim, th.panel},
+			{"@@ -1,3 +1,3 @@", th.hunk, th.panel},
+			{"-old", th.del, th.delBg},
+			{"+new", th.add, th.addBg},
+			{" ctx", th.fg, th.panel},
 		}
 		for _, w := range want {
-			if !strings.Contains(lines[w.i], w.sty(w.text)) {
-				t.Errorf("line %d = %q, want styled %q", w.i, lines[w.i], w.sty(w.text))
+			y := rowWith(rows, w.text)
+			c := cellAt(b, rows, y, strings.TrimSpace(w.text)[:1])
+			if c == nil || c.fg != w.fg || c.bg != w.bg {
+				t.Errorf("%q: %+v, want fg %v bg %v", w.text, c, w.fg, w.bg)
 			}
 		}
-		if !strings.Contains(lines[5], "\x1b[") || strings.Contains(lines[4], "\x1b[31m") {
-			t.Errorf("styling: %q / %q", lines[4], lines[5])
+	}
+	// Not a diff: plain code. A labeled "go" block holding diff-looking
+	// text is not a diff either.
+	for _, body := range []string{"```\n-not diff\n+really\n```", "```go\n" + sampleDiff + "\n```"} {
+		m, b, rows := codeRows(true, body, 60)
+		y := rowWith(rows, "+")
+		if c := cellAt(b, rows, y, "+"); c == nil || c.fg != m.st.th.fg || c.bg != m.st.th.panel {
+			t.Errorf("%q colored as a diff: %+v", body, c)
 		}
-		if lines[5] == lines[6] {
-			t.Error("add and del styled the same")
-		}
 	}
-
-	// Not a diff: plain code styling, and an unlabeled non-diff stays plain.
-	st := testStyles(true)
-	plain := bodyOf(true, "```\n-not diff\n+really\n```", 60)
-	if !strings.HasSuffix(plain[0], st.code.Render("-not diff")) {
-		t.Errorf("non-diff colored as diff: %q", plain[0])
-	}
-	// A labeled "go" block holding diff-looking text is not a diff.
-	g := bodyOf(true, "```go\n"+sampleDiff+"\n```", 60)
-	if !strings.Contains(g[5], st.code.Render("-old")) {
-		t.Errorf("go block treated as diff: %q", g[5])
-	}
-	// Hand-written ```diff with no headers: +/- still colored, not headers.
-	h := bodyOf(true, "```diff\n-a\n+b\n```", 40)
-	if !strings.Contains(h[0], st.diffDel.Render("-a")) || !strings.HasSuffix(h[1], st.diffAdd.Render("+b")) {
-		t.Errorf("bare diff: %q", h)
+	// Hand-written ```diff with no headers: +/- still colored.
+	m, b, rows := codeRows(true, "```diff\n-a\n+b\n```", 40)
+	if c := cellAt(b, rows, rowWith(rows, "-a"), "-"); c == nil || c.fg != m.st.th.del {
+		t.Errorf("bare diff: %q", rows)
 	}
 	// A deletion of a line starting with "-- " inside a hunk is a deletion.
 	k := classifyDiff(strings.Split("@@ -1 +1 @@\n--- sql comment\n+x", "\n"))
@@ -82,17 +78,16 @@ func TestDiffRendering(t *testing.T) {
 }
 
 func TestDiffNoColor(t *testing.T) {
-	lines := bodyOf(false, "```diff\n"+sampleDiff+"\n```", 60)
-	for i, l := range lines {
-		if strings.Contains(l, "\x1b[3") || strings.Contains(l, "\x1b[9") {
-			t.Errorf("line %d has color under NO_COLOR: %q", i, l)
-		}
+	m, b, rows := codeRows(false, "```diff\n"+sampleDiff+"\n```", 60)
+	if out := b.encode(m.st.enc); strings.Contains(out, "38;") || strings.Contains(out, "48;") {
+		t.Errorf("color under NO_COLOR: %q", out)
 	}
-	if !strings.HasSuffix(lines[5], "-old") || !strings.HasSuffix(lines[6], "+new") {
-		t.Errorf("markers lost: %q", lines[5:])
+	if rowWith(rows, "-old") < 0 || rowWith(rows, "+new") < 0 {
+		t.Errorf("markers lost: %q", rows)
 	}
 }
 
+// A huge paste draws a bounded block (v shows it all), quickly.
 func TestHugeDiffRenders(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("```diff\n" + sampleDiff + "\n")
@@ -100,57 +95,48 @@ func TestHugeDiffRenders(t *testing.T) {
 		b.WriteString("+added line with some length to it\n-removed line\n")
 	}
 	b.WriteString("```")
-	lines := bodyOf(true, b.String(), 50)
-	if len(lines) != 7+40000 {
-		t.Fatalf("lines=%d", len(lines))
+	_, blk, rows := codeRows(true, b.String(), 50)
+	if blk.h > maxBlockRows+4 || rowWith(rows, "more lines · v views all") < 0 {
+		t.Fatalf("rows=%d, last %q", blk.h, rows[len(rows)-1])
 	}
-	for _, l := range lines {
-		if strWidth(l) > 50 {
+	for _, l := range rows {
+		if strWidth(l) > 56 {
 			t.Fatalf("overwide: %d", strWidth(l))
 		}
+	}
+	long := strings.Repeat("word ", 20000)
+	if _, blk, rows := codeRows(true, long, 50); blk.h > maxBlockRows+4 || rowWith(rows, "v views all") < 0 {
+		t.Fatalf("long text: %d rows", blk.h)
 	}
 }
 
 func TestLanguageLabel(t *testing.T) {
-	label := func(bw int, text string) []string {
-		var out []string
-		for _, l := range bodyOf(true, text, bw) {
-			out = append(out, ansi.Strip(l))
+	head := func(bw int, text string) string {
+		_, _, rows := codeRows(true, text, bw)
+		return strings.TrimSpace(strings.TrimPrefix(rows[0], "│"))
+	}
+	if got := head(30, "```go\nfunc main() {}\nsecond\n```"); !strings.HasPrefix(got, "go") || !strings.HasSuffix(got, "copy") {
+		t.Errorf("label: %q", got)
+	}
+	if _, _, rows := codeRows(true, "```go\nfunc main() {}\nsecond\n```", 30); len(rows) != 3 || strings.Contains(strings.Join(rows, ""), "```") {
+		t.Errorf("fence lines must not render: %q", rows)
+	}
+	// No info string or an odd one: "code".
+	for _, text := range []string{"```\nx\n```", "```<script>\nx\n```"} {
+		if got := head(30, text); !strings.HasPrefix(got, "code") {
+			t.Errorf("%q: %q", text, got)
 		}
-		return out
-	}
-	got := label(30, "```go\nfunc main() {}\nsecond\n```")
-	if len(got) != 2 {
-		t.Fatalf("fence lines must not render: %q", got)
-	}
-	if want := "┃ func main() {}" + strings.Repeat(" ", 30-2-len("func main() {}")-2) + "go"; got[0] != want {
-		t.Errorf("label placement:\n got %q\nwant %q", got[0], want)
-	}
-	if strings.Contains(got[1], "go") || strings.TrimRight(got[1], " ") != "┃ second" {
-		t.Errorf("label only on first line: %q", got[1])
-	}
-	// Doesn't fit: omitted, content untouched.
-	if g := label(19, "```go\nfunc main() {}\n```"); g[0] != "┃ func main() {}" {
-		t.Errorf("tight width: %q", g[0])
-	}
-	// No info string: no label. Odd info strings: no label.
-	if g := label(30, "```\nx\n```"); g[0] != "┃ x" {
-		t.Errorf("no label expected: %q", g[0])
-	}
-	if g := label(30, "```<script>\nx\n```"); g[0] != "┃ x" {
-		t.Errorf("odd info: %q", g[0])
 	}
 	// Extra words after the language are ignored.
-	if g := label(30, "```python title=x\nx\n```"); !strings.HasSuffix(g[0], "python") {
-		t.Errorf("first word: %q", g[0])
+	if got := head(30, "```python title=x\nx\n```"); !strings.HasPrefix(got, "python ") {
+		t.Errorf("first word: %q", got)
 	}
-	// Diff label.
-	if g := label(40, "```diff\n+a\n```"); !strings.HasSuffix(g[0], "diff") {
-		t.Errorf("diff label: %q", g[0])
+	if got := head(40, "```diff\n+a\n```"); !strings.HasPrefix(got, "diff") {
+		t.Errorf("diff label: %q", got)
 	}
-	// Empty block: nothing to hang a label on.
-	if g := label(30, "```go\n```"); len(g) != 1 || g[0] != "" {
-		t.Errorf("empty block: %q", g)
+	// Empty block: nothing to draw.
+	if _, _, rows := codeRows(true, "```go\n```", 30); strings.Contains(strings.Join(rows, ""), "copy") {
+		t.Errorf("empty block: %q", rows)
 	}
 }
 

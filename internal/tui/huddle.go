@@ -28,7 +28,7 @@ type HuddleBackend interface {
 	SetTalking(on bool)
 	Talking() bool
 	Speaking() map[uint64]bool
-	// Huddles counts people per channel huddle (the sidebar's 🎧 marker).
+	// Huddles counts people per channel huddle (the sidebar's ♪ marker).
 	Huddles() map[uint64]int
 	// HuddleWarning is a problem with our huddle worth telling the user
 	// (repeated clock-skew drops), or nil; while we're in no huddle, why the
@@ -82,6 +82,8 @@ type huddleUI struct {
 	speaking map[uint64]bool
 	talking  bool
 	here     int // people in the open channel's huddle, when we're not in it
+	hereWho  []uint64
+	joinedAt time.Time // when we joined the huddle we're in
 	counts   map[uint64]int
 	warned   error  // the HuddleWarning already shown
 	last     uint64 // the huddle we were in last
@@ -121,8 +123,12 @@ func (m *Model) refreshHuddle() {
 	if h.in {
 		h.last = h.cur
 	}
+	was, wasIn := h.cur, h.in
 	h.cur, h.in = hb.InHuddle()
-	h.roster, h.speaking, h.talking, h.here = nil, nil, false, 0
+	if h.in && (!wasIn || was != h.cur) {
+		h.joinedAt = m.now()
+	}
+	h.roster, h.speaking, h.talking, h.here, h.hereWho = nil, nil, false, 0, nil
 	h.counts = hb.Huddles()
 	w := hb.HuddleWarning()
 	if h.in {
@@ -146,7 +152,8 @@ func (m *Model) refreshHuddle() {
 		m.clearNotice()
 	}
 	h.warnNote = ""
-	h.here = len(hb.Huddle(m.active))
+	h.hereWho = hb.Huddle(m.active)
+	h.here = len(h.hereWho)
 	// Out of a huddle the warning is why the last one ended without us
 	// leaving (#76): say it once.
 	switch {
@@ -170,9 +177,9 @@ func (m *Model) refreshHuddle() {
 func (m *Model) huddleEndedText(why error) string {
 	where := m.chanTitle(m.hud.last)
 	if errors.Is(why, client.ErrHuddleMoved) {
-		return "🎧 " + where + " moved to your other device"
+		return "♪ " + where + " moved to your other device"
 	}
-	s := "🎧 " + where + " ended: " + why.Error()
+	s := "♪ " + where + " ended: " + why.Error()
 	if m.status.State == client.Online && m.hud.last == m.active && m.nt.ring.ch == 0 {
 		s += " · /huddle to rejoin"
 	}
@@ -205,10 +212,10 @@ func (m *Model) huddlesElsewhere() int {
 }
 
 // huddleMarker is the sidebar's mark for a channel with a huddle going:
-// 🎧 and how many are in it ("" when none).
+// ♪ and how many are in it ("" when none).
 func (m *Model) huddleMarker(ch uint64) string {
 	if n := m.hud.counts[ch]; n > 0 {
-		return " 🎧" + strconv.Itoa(n)
+		return "♪" + strconv.Itoa(n)
 	}
 	return ""
 }
@@ -417,7 +424,7 @@ func (m *Model) huddleMsg(msg tea.Msg) (tea.Cmd, bool) {
 }
 
 // huddleHead is the part of the status line that must survive truncation:
-// 🎧, our mic state, and where. compact drops the roster.
+// ♪, our mic state, and where. compact drops the roster.
 func (m *Model) huddleHead(compact bool) (head, roster string) {
 	h := &m.hud
 	if !h.in {
@@ -425,12 +432,12 @@ func (m *Model) huddleHead(compact bool) (head, roster string) {
 		case h.here == 0:
 			return "", ""
 		case compact:
-			return fmt.Sprintf("🎧%d", h.here), ""
+			return fmt.Sprintf("♪%d", h.here), ""
 		}
-		return fmt.Sprintf("🎧 %d in huddle — /huddle", h.here), ""
+		return fmt.Sprintf("♪ %d in huddle — /huddle", h.here), ""
 	}
 	var b strings.Builder
-	b.WriteString("🎧 ")
+	b.WriteString("♪ ")
 	if h.talking {
 		b.WriteString(m.st.noticeErr.Render("●") + " ")
 	}
@@ -464,7 +471,7 @@ func (m *Model) huddleHead(compact bool) (head, roster string) {
 
 const (
 	headphonesHint = "no echo cancellation: use headphones"
-	// headphonesShort fits after the 🎧 head in a 40-column pane.
+	// headphonesShort fits after the ♪ head in a 40-column pane.
 	headphonesShort = "use headphones"
 )
 

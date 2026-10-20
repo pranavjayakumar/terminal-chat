@@ -65,6 +65,8 @@ var commandTable = []cmdSpec{
 	{name: "notify", desc: "settings; also: global LEVEL, content full|name|none, quiet 22:00-08:00, test", more: true},
 	{name: "dnd", args: "[2h|until 9am|off]", desc: "do not disturb: no popups, sounds or rings"},
 	{name: "sounds", args: "[CUE] on|off", desc: "cues: mention message ring huddle join mic; /sounds volume N"},
+	{name: "settings", desc: "theme, density, sidebar, notifications, devices"},
+	{name: "theme", args: "[name]", desc: "switch theme (none: list them)"},
 	{help: "//text", desc: "send text starting with /"},
 	// In the keys part of /help ("Alt-A, /activity" and so on).
 	{name: "activity", desc: "mentions, replies, reactions, DMs", helpHidden: true},
@@ -81,18 +83,6 @@ func (c cmdSpec) helpKey() string {
 		return "/" + c.name + " " + c.args
 	}
 	return "/" + c.name
-}
-
-func buildHelp() [][2]string {
-	out := make([][2]string, 0, len(keyHelp)+1+len(commandTable))
-	out = append(out, keyHelp...)
-	out = append(out, [2]string{"", ""})
-	for _, c := range commandTable {
-		if !c.helpHidden {
-			out = append(out, [2]string{c.helpKey(), c.desc})
-		}
-	}
-	return out
 }
 
 // isCommandName reports whether name (without "/") is a command runCommand

@@ -29,6 +29,9 @@ func typeVia(m *Model, s string) {
 func sidebarRow(t *testing.T, view, name string) string {
 	t.Helper()
 	for _, l := range strings.Split(view, "\n") {
+		if strings.Contains(l, "╭") || strings.Contains(l, "╰") {
+			continue
+		}
 		if i := strings.Index(l, "│"); i > 0 {
 			if side := l[:i]; strings.Contains(side, name) {
 				return side
@@ -40,7 +43,7 @@ func sidebarRow(t *testing.T, view, name string) string {
 }
 
 func TestDraftsKeptPerChannelAcrossSwitch(t *testing.T) {
-	m, f := newTestModelFake(t, 80, 24)
+	m, f := newTestModelFake(t, 100, 24)
 	typeVia(m, "hello wor")
 	if m.active != 10 {
 		t.Fatalf("active = %d", m.active)
@@ -78,7 +81,7 @@ func TestDraftsKeptPerChannelAcrossSwitch(t *testing.T) {
 }
 
 func TestDraftsPerThread(t *testing.T) {
-	m, f := newTestModelFake(t, 80, 24)
+	m, f := newTestModelFake(t, 100, 24)
 	typeVia(m, "main draft")
 	m.openThread(103) // as a jump from search or the activity view does
 	m.Update(noopMsg{})
@@ -107,7 +110,7 @@ func TestDraftsPerThread(t *testing.T) {
 }
 
 func TestDraftClearedOnSend(t *testing.T) {
-	m, f := newTestModelFake(t, 80, 24)
+	m, f := newTestModelFake(t, 100, 24)
 	typeVia(m, "ship it")
 	press(m, "ctrl+n", "ctrl+p") // saved by the switch
 	if f.draft(10, 0) != "ship it" {
@@ -134,7 +137,7 @@ func TestDraftsRestoredOnStart(t *testing.T) {
 	f.SetDraft(10, 0, "from last time")
 	f.SetDraft(13, 0, "another")
 	m := New(t.Context(), f, Options{Out: &syncBuf{}, Notifier: &fakeNotifier{}, styles: testStyles(true)})
-	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	if m.input.Value() != "from last time" {
 		t.Fatalf("input at start = %q", m.input.Value())
 	}
@@ -149,7 +152,7 @@ func TestDraftsRestoredOnStart(t *testing.T) {
 }
 
 func TestDraftSavedAfterTypingPausesAndOnClose(t *testing.T) {
-	m, f := newTestModelFake(t, 80, 24)
+	m, f := newTestModelFake(t, 100, 24)
 	typeVia(m, "abc")
 	if got := f.draft(10, 0); got != "" {
 		t.Fatalf("written on every keystroke: %q", got)
@@ -169,7 +172,7 @@ func TestDraftSavedAfterTypingPausesAndOnClose(t *testing.T) {
 }
 
 func TestEditTextIsNeverADraft(t *testing.T) {
-	m, f := newTestModelFake(t, 80, 24)
+	m, f := newTestModelFake(t, 100, 24)
 	press(m, "up") // select mode on the newest message of mine…
 	for i, x := range m.main.msgs {
 		if x.ID == 103 {
@@ -278,7 +281,7 @@ func TestEditAfterJumpKeepsTheDraft(t *testing.T) {
 
 // A failed write must not forget the draft: it stays dirty and is retried.
 func TestDraftFlushKeepsDirtyUntilSaved(t *testing.T) {
-	m, f := newTestModelFake(t, 80, 24)
+	m, f := newTestModelFake(t, 100, 24)
 	f.setErr = errors.New("database is locked")
 	typeVia(m, "precious words")
 	m.Update(draftSaveMsg{})
@@ -317,7 +320,7 @@ func TestRestoredDraftIsSanitized(t *testing.T) {
 
 // Another tc process on the same cache wrote a draft after this one started.
 func TestDraftWrittenByAnotherProcessIsPickedUp(t *testing.T) {
-	m, f := newTestModelFake(t, 80, 24)
+	m, f := newTestModelFake(t, 100, 24)
 	f.SetDraft(13, 0, "typed in the other pane\u202e") // plus a bidi override, to be dropped
 	press(m, "ctrl+n")                                 // general → secret
 	if m.active != 13 || m.input.Value() != "typed in the other pane" {
@@ -327,7 +330,7 @@ func TestDraftWrittenByAnotherProcessIsPickedUp(t *testing.T) {
 
 // A slot with unsaved local changes is not overwritten by what the cache has.
 func TestDraftWithUnsavedChangesIsNotReplacedByTheCache(t *testing.T) {
-	m, f := newTestModelFake(t, 80, 24)
+	m, f := newTestModelFake(t, 100, 24)
 	key := draftKey{13, 0}
 	m.setDraft(key, "local, not saved yet")
 	f.SetDraft(13, 0, "remote")
@@ -344,7 +347,7 @@ func TestDraftWithUnsavedChangesIsNotReplacedByTheCache(t *testing.T) {
 }
 
 func TestDraftMarksFollowTheCacheOnChannelUpdates(t *testing.T) {
-	m, f := newTestModelFake(t, 80, 24)
+	m, f := newTestModelFake(t, 100, 24)
 	if row := sidebarRow(t, checkView(t, m, "start"), "secret"); strings.Contains(row, "✎") {
 		t.Fatalf("mark before any draft: %q", row)
 	}

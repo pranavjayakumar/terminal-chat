@@ -81,26 +81,30 @@ func checkView(t *testing.T, m *Model, step string) string {
 		}
 	}
 	plain := ansi.Strip(v)
-	// The input sits right under the last separator rule, on screen.
+	// The input box is on screen: a rounded frame with a row inside.
 	pl := strings.Split(plain, "\n")
-	sep := -1
-	for i, l := range pl {
-		if strings.Contains(l, strings.Repeat("─", min(m.dims().mainW, 10))) {
-			sep = i
+	g := m.geo()
+	switch {
+	case m.overlayShown() || m.booting() || m.mode == modeViewer:
+		// a dialog or the loading screen covers the input
+	case g.inY >= 0 && g.inW >= 6:
+		top, bot := -1, -1
+		for i, l := range pl {
+			if strings.Contains(l, "╭") {
+				top = i
+			}
+			if strings.Contains(l, "╰") {
+				bot = i
+			}
 		}
-	}
-	if sep < 0 || sep >= len(pl)-1 {
-		t.Fatalf("%dx%d after %s: input line not visible\n%s", m.w, m.h, step, plain)
-	}
-	in := pl[sep+1]
-	if i := strings.LastIndex(in, "│"); i >= 0 {
-		in = in[i+len("│"):]
-	}
-	if m.input.Value() == "" && m.mode != modeReact && !strings.HasPrefix(in, "> ") {
-		t.Fatalf("%dx%d after %s: empty input has no prompt: %q", m.w, m.h, step, pl[sep+1])
-	}
-	if m.mode == modeReact && !strings.Contains(pl[sep+1], "react: ") {
-		t.Fatalf("%dx%d after %s: react prompt not visible: %q", m.w, m.h, step, pl[sep+1])
+		if top < 0 || bot <= top+1 {
+			t.Fatalf("%dx%d after %s: input box not visible\n%s", m.w, m.h, step, plain)
+		}
+		if m.mode == modeReact && !strings.Contains(pl[top+1], "react: ") {
+			t.Fatalf("%dx%d after %s: react prompt not visible: %q", m.w, m.h, step, pl[top+1])
+		}
+	case m.mode == modeReact && !strings.Contains(plain, "react: "):
+		t.Fatalf("%dx%d after %s: react prompt not visible\n%s", m.w, m.h, step, plain)
 	}
 	if strings.ContainsAny(plain, "\x1b\a‮") {
 		t.Fatalf("%dx%d after %s: control characters leaked", m.w, m.h, step)
@@ -167,18 +171,18 @@ func TestLayout40x12(t *testing.T) {
 	if !strings.Contains(plain, "#general") {
 		t.Fatalf("header missing:\n%s", plain)
 	}
-	m80 := newTestModel(t, 80, 24)
-	plain = checkView(t, m80, "start")
-	for _, want := range []string{"CHANNELS", "DIRECT", "# general", "# secret", "@", "◐ bob", "message #general"} {
+	m100 := newTestModel(t, 100, 24)
+	plain = checkView(t, m100, "start")
+	for _, want := range []string{"Channels", "Direct", "# general", "# secret", "@1", "◐ bob", "message #general"} {
 		if !strings.Contains(plain, want) {
-			t.Errorf("80x24 missing %q\n%s", want, plain)
+			t.Errorf("100x24 missing %q\n%s", want, plain)
 		}
 	}
 	if strings.Contains(plain, "# random") {
 		t.Error("non-member channel in sidebar")
 	}
-	if strings.Contains(plain, "online") {
-		t.Error("status shown while online")
+	if strings.Contains(plain, "syncing") || strings.Contains(plain, "connecting") || strings.Contains(plain, "offline ·") {
+		t.Error("connection state shown while online")
 	}
 }
 
@@ -401,7 +405,7 @@ func TestQuestionMarkStartsMessage(t *testing.T) {
 		t.Fatalf("sent %+v", f.sent)
 	}
 	run(m, m.handleKey(keyMsg("f1")))
-	if m.mode != modeHelp || !strings.Contains(m.View(), "help —") {
+	if m.mode != modeHelp || !strings.Contains(m.View(), "Keyboard shortcuts") {
 		t.Fatal("F1 should open help")
 	}
 }
