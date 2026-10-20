@@ -177,8 +177,8 @@ func (m *Model) filterPalette() {
 	p := &m.pal
 	p.shown = p.shown[:0]
 	for _, it := range p.items {
-		if !strings.Contains(it.tabs, tab) {
-			continue
+		if !strings.Contains(it.tabs, tab) && !(tab == "a" && q != "") {
+			continue // a search on All looks through everything
 		}
 		if q != "" {
 			sc, ok := fuzzyScore(q, it.label+" "+it.desc)
@@ -187,6 +187,9 @@ func (m *Model) filterPalette() {
 			}
 			if !ok {
 				continue
+			}
+			if strings.HasPrefix(q, "/") && (it.label == q || strings.HasPrefix(it.label, q+" ")) {
+				sc += 1 << 20 // the command typed in full comes first
 			}
 			it.score = sc
 		}
