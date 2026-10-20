@@ -184,6 +184,65 @@ exactly like public-channel text. The TUI marks encrypted huddles with the lock 
 - herdr: while you're in a huddle the pane's metadata title starts `tc · 🎧` (`tc · 🎧●` with an
   open mic), followed by the unread summary, so you can see which pane holds the call.
 
+## Echo
+
+Field report (v0.4.0, macOS ↔ Linux): the Linux user heard himself. The relay never returns a
+sender's frames and a client never plays its own capture, so the cause is acoustic: the Mac's
+speakers play his voice, the Mac's open mic picks it up, and the Mac sends it back. Headphones
+fix it; for everyone else tc picks one of three modes per huddle (`/huddle` in your huddle
+shows which):
+
+| Mode | When | What |
+|---|---|---|
+| `system` | macOS (the voice-processing unit starts); Linux with an echo-cancel source **and** sink loaded | The OS cancels echo. On macOS: `kAudioUnitSubType_VoiceProcessingIO` (Apple's AEC + AGC + noise suppression), via a small cgo shim (`vpio_darwin.c`) because miniaudio only opens the plain HAL unit. Other apps' audio is ducked as little as macOS 14+ allows. |
+| `gate` | no platform canceller (most Linux setups), or forced | Half-duplex gate in the engine: while remote audio plays (above ≈ −42 dBFS and 6 dB above the far end's learned noise floor, or above ≈ −26 dBFS regardless) and for 200 ms after, an **open** mic is muted (2.5 ms attack, 20 ms release ramps). A ctrl+t press is gateable until a key-repeat proves it held; a held key is never gated: you are deliberately talking (barge-in = hold ctrl+t). |
+| `off` | `TC_VOICE_AEC=off`, or `system` asked for and unavailable | Nothing. |
+
+`TC_VOICE_AEC=auto|system|gate|off` (default `auto` = system if available, else gate; `system`
+= system or nothing, for testing; an unknown value fails `/huddle` with a message). Without
+system echo cancellation the join notice starts with `no echo cancellation: use headphones`, once
+per run.
+
+- **Linux: enabling system echo cancellation.** tc never loads modules or changes audio settings;
+  it looks (on the PulseAudio API, which PipeWire serves through pipewire-pulse) for a source and
+  sink named like the modules' defaults (`echo-cancel-source`/`-sink`, `<master>.echo-cancel`,
+  descriptions `Echo-Cancel …` or `… (echo cancelled with …)`; monitors and hardware that merely says
+  "Echo Cancelling" excluded) and opens that pair; with several cancellers only a same-stem pair, else
+  the gate; both are needed, since the canceller only hears the far end through its sink.
+  To enable one:
+  - PipeWire: `~/.config/pipewire/pipewire.conf.d/echo-cancel.conf` with
+    `context.modules = [ { name = libpipewire-module-echo-cancel args = { library.name = aec/libspa-aec-webrtc } } ]`,
+    then `systemctl --user restart pipewire pipewire-pulse`.
+  - PulseAudio: `pactl load-module module-echo-cancel aec_method=webrtc` (for every login: add
+    `load-module module-echo-cancel aec_method=webrtc` to `~/.config/pulse/default.pa`).
+- **The gate's limits.** It is half-duplex: in open mic you aren't heard while others talk (hold
+  ctrl+t to talk over them), and the far end's background noise above the threshold keeps your
+  open mic shut only until its noise floor is learned (a few seconds: the floor follows quieter
+  frames at once and rises ≈ 3 dB/s, so pauses between words keep it at the noise). The floor is
+  capped at ≈ −30 dBFS and anything above ≈ −26 dBFS always counts, so loud continuous audio
+  (music, a talker who never pauses) can't train it open; continuous far audio between ≈ −36 and
+  −26 dBFS can, after a few seconds. Far speech less than 6 dB over steady far noise doesn't count.
+  Bluetooth output adds 150–250 ms of latency the 200 ms hangover may not cover.
+  Our own cues (join/leave, mic clicks) don't trigger it. It runs on the audio thread with no
+  allocation (`TestGateNoAllocs`).
+- **Why not speexdsp's echo canceller.** Considered (BSD, small, could be built static like
+  libopus). Not added: macOS already gets Apple's canceller, PipeWire/PulseAudio's WebRTC
+  canceller is better than speex MDF on Linux, and MDF needs tuning (tail length, drift between
+  input and output clocks, nonlinear laptop speakers) that we can't validate without many real
+  setups; a mis-tuned canceller leaks echo *and* garbles double talk. The gate is predictable and
+  costs nothing. Revisit if Linux users without an echo-cancel module report echo in practice.
+- **Never a monitor as the microphone.** A PulseAudio/PipeWire "Monitor of …" source records the
+  speakers; as tc's input it would send everyone's voice straight back to them (no digital
+  self-echo exists otherwise: the relay skips the sender and the engine never plays our own `src`).
+  If the default input is a monitor (by name `….monitor`, or a description "Monitor of …" and its
+  common translations), tc uses the first real microphone instead and says so on join and in
+  `/huddle`; with no real microphone it joins listen-only (captures silence). `TC_VOICE_INPUT=<text>`
+  picks the first non-monitor input whose name or description contains `<text>`
+  (case-insensitive; a monitor is never picked, even by name); it skips the Linux echo-cancel pair
+  and, on macOS, the voice-processing unit (which only opens the default devices), so the gate
+  applies.
+- Platform echo cancellation lives entirely on the client; the protocol is unchanged.
+
 ## Audio I/O library
 
 Choice: **miniaudio via `github.com/gen2brain/malgo`** for capture/playback, **libopus via a

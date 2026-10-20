@@ -360,6 +360,18 @@ and are not listed; they appear in the log as usual. Rows are kept for the newes
   a sync or channel join hands us (reconnects don't ring), nor for a late roster that already has
   several people. Esc closes an open mic first, then dismisses the ring. Channel huddle starts are silent at `mentions` (the sidebar
   `🎧n` shows them); at `all`, one popup per channel per 5 min, within the 2 s cap.
+- **Echo control** (docs/VOICE.md "Echo"): the join notice puts the most important thing first,
+  because narrow panes truncate it. That is a device note if there is one (`mic: Built-in Audio ·
+  default input is a speaker monitor · TC_VOICE_INPUT picks another`, or `no microphone, listening
+  only · …`). Otherwise, without the platform's echo canceller (mode `gate` or `off`), it is `no echo
+  cancellation: use headphones` (`use headphones` under 60 columns), once per run. Then comes
+  `left #x` when switching, then the talk help. A note and the hint don't both fit at 80 columns,
+  so after a note the hint follows as its own notice when the note's expires. All of these use the
+  normal info style, for 8 s. `/huddle` in the huddle you're in answers about echo first instead of
+  an error: `echo cancellation on (system)`, `echo: gate only, use headphones` or `echo cancellation
+  off, use headphones`, then any device note, then `/leave-huddle to leave`. The mic is gateable
+  (open) from a fresh ctrl+t press until a key-repeat proves it held; a held key is never gated.
+  `/talk` is open mic.
 - **Privacy**: `/notify content full|name|none` (`TC_NOTIFY_CONTENT`): `name` shows who but not
   the text, `none` shows just `tc` / `new message`. Popups persist in the OS notification history
   (Notification Center, GNOME's tray): use `name` on shared machines.

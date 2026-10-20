@@ -841,6 +841,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case noticeExpireMsg:
 		if msg.gen == m.noticeGen {
 			m.clearNotice()
+			if m.huddleFollowUp(msg.gen) {
+				return m, m.noticeTick()
+			}
 		}
 		return m, nil
 	case okMsg:

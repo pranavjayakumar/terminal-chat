@@ -28,6 +28,42 @@ type huddleFake struct {
 	speaking map[uint64]bool
 	joinErr  error
 	warn     error
+	openMic  bool
+	aec      string // "" = system
+	note     string
+}
+
+func (h *huddleFake) SetOpenMic(open bool) {
+	h.hmu.Lock()
+	defer h.hmu.Unlock()
+	h.openMic = open
+}
+
+func (h *huddleFake) VoiceNote() string {
+	h.hmu.Lock()
+	defer h.hmu.Unlock()
+	if h.in == 0 {
+		return ""
+	}
+	return h.note
+}
+
+func (h *huddleFake) VoiceAEC() string {
+	h.hmu.Lock()
+	defer h.hmu.Unlock()
+	if h.in == 0 {
+		return ""
+	}
+	if h.aec == "" {
+		return "system"
+	}
+	return h.aec
+}
+
+func (h *huddleFake) OpenMic() bool {
+	h.hmu.Lock()
+	defer h.hmu.Unlock()
+	return h.openMic
 }
 
 func (h *huddleFake) Huddles() map[uint64]int {
@@ -82,6 +118,9 @@ func (h *huddleFake) SetTalking(on bool) {
 	h.hmu.Lock()
 	defer h.hmu.Unlock()
 	h.talking = on
+	if !on {
+		h.openMic = false // as the engine does
+	}
 	h.talks = append(h.talks, on)
 }
 
@@ -148,7 +187,7 @@ func TestHuddleJoinTalkLeave(t *testing.T) {
 		t.Fatalf("status line:\n%s", v)
 	}
 	runInput(t, m, "/huddle")
-	if !m.noticeErr || !strings.Contains(m.notice, "already in this huddle") {
+	if m.noticeErr || !strings.Contains(m.notice, "echo cancellation on (system) · /leave-huddle") {
 		t.Fatalf("rejoin notice %q", m.notice)
 	}
 

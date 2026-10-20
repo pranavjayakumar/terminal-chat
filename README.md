@@ -153,6 +153,11 @@ whichever build you have, and `tc version` shows `(voice)`.
 - Huddles in DMs and private channels are end-to-end encrypted. A huddle started in a DM rings
   the other person; channel huddles show a dim `🎧n` in the sidebar instead.
 - On macOS the first `/huddle` asks for microphone permission for your terminal app.
+- Echo: macOS uses Apple's built-in echo cancellation; on Linux, tc uses a PipeWire/PulseAudio
+  echo-cancel device if you've loaded one, else pauses an open mic while others talk. Headphones
+  are the surest fix; `/huddle` shows the mode, `TC_VOICE_AEC=auto|system|gate|off` overrides
+  ([docs/VOICE.md](docs/VOICE.md#echo)). `TC_VOICE_INPUT=<name>` picks the microphone; a speaker
+  "Monitor of …" source is never used as one.
 
 Design: [docs/VOICE.md](docs/VOICE.md).
 
