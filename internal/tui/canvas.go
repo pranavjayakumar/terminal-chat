@@ -3,6 +3,7 @@ package tui
 import (
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/muesli/termenv"
 	"github.com/rivo/uniseg"
@@ -111,6 +112,9 @@ func (c *canvas) act(a string) uint16 {
 	if c.actIx == nil {
 		c.actIx = map[string]uint16{}
 	}
+	if len(c.acts) >= 1<<16-1 {
+		return 0 // out of room: the cell gets no action rather than a wrong one
+	}
 	c.acts = append(c.acts, a)
 	i := uint16(len(c.acts) - 1)
 	c.actIx[a] = i
@@ -149,6 +153,17 @@ func (c *canvas) put(x, y int, s string, st cstyle, act string) int {
 		var g string
 		var w int
 		g, s, w, state = uniseg.FirstGraphemeClusterInString(s, state)
+		if !utf8.ValidString(g) {
+			g, w = "\ufffd", 1 // never pass raw bytes to the terminal
+		}
+		if w > 2 {
+			// A cluster wider than a wide character (Prepend marks) is
+			// drawn one rune at a time, as terminals measure it.
+			for _, r := range g {
+				x = c.put(x, y, string(r), st, act)
+			}
+			continue
+		}
 		if w == 0 {
 			continue
 		}
@@ -247,7 +262,10 @@ func (c *canvas) putANSI(x, y int, s string, maxW int, base cstyle, act string) 
 	defer func() { c.clip = old }()
 	st := base
 	for len(s) > 0 {
-		if s[0] == 0x1b && len(s) > 1 {
+		if s[0] == 0x1b && len(s) == 1 {
+			break // a lone trailing ESC
+		}
+		if s[0] == 0x1b {
 			switch s[1] {
 			case '[':
 				j := 2
@@ -270,7 +288,8 @@ func (c *canvas) putANSI(x, y int, s string, maxW int, base cstyle, act string) 
 				s = s[min(j+1, len(s)):]
 				continue
 			}
-			s = s[2:]
+			_, n := utf8.DecodeRuneInString(s[1:])
+			s = s[1+n:] // ESC and one whole rune: never split a character
 			continue
 		}
 		j := strings.IndexByte(s, 0x1b)

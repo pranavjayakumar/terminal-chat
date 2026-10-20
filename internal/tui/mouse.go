@@ -32,7 +32,8 @@ func (m *Model) hoverMsg() (string, int, bool) {
 	if len(parts) < 2 {
 		return "", 0, false
 	}
-	i, err := strconv.Atoi(parts[1])
+	is, _, _ := strings.Cut(parts[1], "~")
+	i, err := strconv.Atoi(is)
 	if err != nil {
 		return "", 0, false
 	}
@@ -211,9 +212,9 @@ func (m *Model) click(a string) tea.Cmd {
 	if parts[0] == "thr" {
 		p = &m.thread
 	}
-	i, err := strconv.Atoi(parts[1])
-	if err != nil || i < 0 || i >= len(p.msgs) {
-		return nil
+	i := findRef(p.msgs, parts[1])
+	if i < 0 {
+		return nil // that message is gone since the frame was drawn
 	}
 	x := p.msgs[i]
 	arg := ""

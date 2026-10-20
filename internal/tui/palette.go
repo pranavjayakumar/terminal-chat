@@ -345,6 +345,8 @@ func (m *Model) appAction(run string) tea.Cmd {
 func (m *Model) drawPalette(c *canvas) {
 	th := m.st.th
 	r := m.dialog(c, 76, 30, "Command palette")
+	old := c.setClip(r)
+	defer c.setClip(old)
 	x0, y0 := r.x0, r.y0
 	w, h := r.x1-r.x0, r.y1-r.y0
 	in := 2
@@ -442,6 +444,8 @@ func (m *Model) palRow(c *canvas, x, y, w, i int) {
 	th := m.st.th
 	it := m.pal.shown[i]
 	act := "pal:" + strconv.Itoa(i)
+	old := c.setClip(rect{x, y, x + w, y + 1})
+	defer c.setClip(old)
 	on := i == m.pal.sel || m.hover == act
 	bg := th.panel
 	if on {

@@ -253,6 +253,9 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 	m.syncDraft()
 	m.applyCursorMode()
 	m.boot = len(m.chans) == 0 && m.status.State != client.Online
+	if ui.loadFailed {
+		m.setErr("", errors.New("ui.json can't be read: default look in use; a settings change rewrites it"))
+	}
 	return m
 }
 

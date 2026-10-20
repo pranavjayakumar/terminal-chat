@@ -265,7 +265,7 @@ func (m *Model) blitRow(c *canvas, r prow, o int, p *pane, key string, x, y, w i
 	}
 	idx := ""
 	if o >= 0 {
-		idx = key + ":" + strconv.Itoa(o)
+		idx = msgRef(key, o, x0)
 	}
 	selBg := th.element
 	if !sel {
@@ -420,7 +420,7 @@ func (m *Model) drawToolbar(c *canvas, p *pane, key string, o, x, y, w int) {
 	if x0.ID == 0 || x0.Deleted {
 		return
 	}
-	idx := key + ":" + strconv.Itoa(o)
+	idx := msgRef(key, o, x0)
 	tx := x + w - 13
 	if x0.Author == m.me.ID && p.root == 0 {
 		tx = x + 1
@@ -562,10 +562,7 @@ func (m *Model) drawStatusBar(c *canvas, g geo) {
 	y := g.statusY
 	c.fill(0, y, m.w, 1, th.bg, "")
 	x := c.put(1, y, " tc ", fgb(th.accentFg).on(th.accent).with(aMonoRev), "palette:")
-	x = c.put(x+1, y, m.chanTitle(m.active), fgc(th.dim), "")
-	if m.active == 0 {
-		x = c.put(x, y, "", fgc(th.dim), "")
-	}
+	x = c.put(x+1, y, truncate(m.chanTitle(m.active), max(m.w/2-x, 1)), fgc(th.dim), "")
 	conn, cc := m.connLabel()
 	type part struct {
 		t   string
@@ -624,4 +621,40 @@ func (m *Model) dots() string {
 		return "···"
 	}
 	return [...]string{"•··", "·•·", "··•"}[(m.now().UnixMilli()/400)%3]
+}
+
+// msgRef names message o of a pane in a mouse action: "main:3~i500". The
+// index finds it fast; the id (or outbox id) checks it is still the same
+// message when the click arrives.
+func msgRef(key string, o int, x client.Message) string {
+	ref := "i" + strconv.FormatUint(x.ID, 10)
+	if x.ID == 0 {
+		ref = "l" + strconv.FormatInt(x.Local, 10)
+	}
+	return key + ":" + strconv.Itoa(o) + "~" + ref
+}
+
+// findRef is the index in msgs that ref ("3~i500") names, or -1 when that
+// message is gone.
+func findRef(msgs []client.Message, ref string) int {
+	is, id, _ := strings.Cut(ref, "~")
+	i, err := strconv.Atoi(is)
+	if err != nil {
+		return -1
+	}
+	match := func(x client.Message) bool {
+		if x.ID == 0 {
+			return id == "l"+strconv.FormatInt(x.Local, 10)
+		}
+		return id == "i"+strconv.FormatUint(x.ID, 10)
+	}
+	if i >= 0 && i < len(msgs) && match(msgs[i]) {
+		return i
+	}
+	for j, x := range msgs {
+		if match(x) {
+			return j
+		}
+	}
+	return -1
 }

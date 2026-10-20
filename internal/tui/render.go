@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/rivo/uniseg"
@@ -17,7 +18,30 @@ import (
 
 // ---- width helpers (display cells, never bytes or runes) ----
 
-func strWidth(s string) int { return ansi.StringWidth(s) }
+// strWidth is how many cells s takes on the canvas (styling ignored): the
+// same measure canvas.put draws with, so layout and drawing never disagree.
+func strWidth(s string) int {
+	if strings.IndexByte(s, 0x1b) >= 0 {
+		s = ansi.Strip(s)
+	}
+	n, state := 0, -1
+	for s != "" {
+		var g string
+		var w int
+		g, s, w, state = uniseg.FirstGraphemeClusterInString(s, state)
+		switch {
+		case !utf8.ValidString(g):
+			n++
+		case w > 2:
+			for _, r := range g {
+				n += strWidth(string(r))
+			}
+		default:
+			n += w
+		}
+	}
+	return n
+}
 
 // deletedText is what a deleted message shows (PROTOCOL §13.4): "message
 // deleted" only for a delete we can attribute (plaintext channel, or one
@@ -42,7 +66,13 @@ func truncate(s string, w int) string {
 	if strWidth(s) <= w {
 		return s
 	}
-	return ansi.Truncate(s, w, "…")
+	// ansi.Truncate measures a few clusters differently: cut until it fits.
+	for lim := w; lim > 0; lim-- {
+		if out := ansi.Truncate(s, lim, "…"); strWidth(out) <= w {
+			return out
+		}
+	}
+	return ""
 }
 
 // fit makes s exactly w cells wide: truncated, then padded with spaces.
@@ -50,8 +80,8 @@ func fit(s string, w int) string {
 	if w <= 0 {
 		return ""
 	}
-	if sw := strWidth(s); sw > w {
-		s = ansi.Truncate(s, w, "")
+	for lim := w; strWidth(s) > w && lim > 0; lim-- {
+		s = ansi.Truncate(s, lim, "")
 	}
 	if sw := strWidth(s); sw < w {
 		s += strings.Repeat(" ", w-sw)

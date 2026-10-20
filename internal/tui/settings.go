@@ -262,6 +262,8 @@ func (m *Model) settingsClick(a string) tea.Cmd {
 func (m *Model) drawSettings(c *canvas) {
 	th := m.st.th
 	r := m.dialog(c, 116, 38, "Settings")
+	old0 := c.setClip(r)
+	defer c.setClip(old0)
 	w, h := r.x1-r.x0, r.y1-r.y0
 	navW := 24
 	if w < 70 {

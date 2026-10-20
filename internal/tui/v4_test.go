@@ -395,15 +395,15 @@ func TestMouseClicks(t *testing.T) {
 	press(m, "esc")
 	for m.main.scroll = 0; ; m.main.scroll += 5 {
 		m.View()
-		if _, ok := m.lastCanvas.actIx["react:main:3:👍"]; ok || m.main.scroll > 200 {
+		if _, ok := m.lastCanvas.actIx["react:main:3~i103:👍"]; ok || m.main.scroll > 200 {
 			break
 		}
 	}
-	click(t, m, "react:main:3:👍")
+	click(t, m, "react:main:3~i103:👍")
 	if !strings.Contains(strings.Join(f.calls, " "), "unreact 👍") {
 		t.Fatalf("pill click: calls %v", f.calls)
 	}
-	click(t, m, "thread:main:3")
+	click(t, m, "thread:main:3~")
 	if !m.thread.open() || m.thread.root != 103 {
 		t.Fatal("replies click didn't open the thread")
 	}
@@ -460,5 +460,52 @@ func TestNoColorFrame(t *testing.T) {
 			t.Fatalf("color under NO_COLOR after %q", k)
 		}
 		_ = v
+	}
+}
+
+// Hostile graphemes can't widen a row or leave stale cells, and a click
+// never acts on a message other than the one drawn under it.
+func TestCanvasHostileText(t *testing.T) {
+	th := themes[defaultTheme]
+	c := newCanvas(20, 1, th)
+	c.put(0, 0, "SECRETSTUFF!", fgc(th.fg), "")
+	c.put(0, 0, strings.Repeat("؀", 5)+"b", fgc(th.fg), "")
+	if got := ansi.Strip(c.encode(newEncoder(0, false))); strWidth(got) != 20 || strings.Contains(got, "ECRET") {
+		t.Fatalf("stale cells or wrong width: %q (%d)", got, strWidth(got))
+	}
+	c = newCanvas(20, 1, th)
+	c.put(0, 0, strings.Repeat("ൎ", 8)+"aEND", fgc(th.fg), "")
+	if got := ansi.Strip(c.encode(newEncoder(0, false))); strWidth(got) != 20 {
+		t.Fatalf("row is %d cells: %q", strWidth(got), got)
+	}
+	c = newCanvas(20, 1, th)
+	c.put(0, 0, "a\xff\x9bb", fgc(th.fg), "")
+	if out := c.encode(newEncoder(0, false)); strings.Contains(out, "\xff") || strings.Contains(out, "\x9b") {
+		t.Fatalf("raw bytes reached the terminal: %q", out)
+	}
+	done := make(chan struct{})
+	go func() {
+		c.putANSI(0, 0, "abc\x1b", 20, fgc(th.fg), "")
+		c.putANSI(0, 0, "x\x1b\xc2\x9b2Jy", 20, fgc(th.fg), "")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("putANSI hangs on a trailing ESC")
+	}
+	if out := c.encode(newEncoder(0, false)); strings.Contains(out, "\x9b") {
+		t.Fatalf("8-bit CSI leaked: %q", out)
+	}
+	if w := strWidth(strings.Repeat("؀؀؀W", 40)); w != 160 {
+		t.Fatalf("strWidth disagrees with the canvas: %d", w)
+	}
+	// A click on a message that moved since the frame finds it by id.
+	msgs := []client.Message{{Message: proto.Message{ID: 7}}, {Message: proto.Message{ID: 9}}}
+	if i := findRef(msgs, "0~i9"); i != 1 {
+		t.Fatalf("moved message: %d", i)
+	}
+	if i := findRef(msgs, "0~i8"); i != -1 {
+		t.Fatalf("gone message: %d", i)
 	}
 }
