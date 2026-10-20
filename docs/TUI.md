@@ -1,59 +1,87 @@
-# tc TUI design (M1)
+# tc TUI design (v4)
 
-Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Gloss.
+Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Gloss; every frame is drawn
+into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal's color profile.
 
 ## Layout
 
 ```
-┌──────────────┬───────────────────────────────────────────────┐
-│ tc · online  │ #general — team-wide chatter                  │
-│              │                                               │
-│ CHANNELS     │ 10:42 alice  morning! anyone seen the deploy  │
-│ # general  3 │              logs from last night?            │
-│ # backend    │ 10:43 bob    yep, pasting:                    │
-│ # secret  @  │              ┃ panic: nil map write           │
-│              │              ┃   at handler.go:42             │
-│ DIRECT       │ 10:44 alice  👍 1   ↳ 2 replies                 │
-│ ● bob        │                                               │
-│ ○ carol      │ bob is typing…                                │
-│              ├───────────────────────────────────────────────┤
-│              │ > message #general                            │
-└──────────────┴───────────────────────────────────────────────┘
+ tc · 3 online          │        # general  team-wide chatter                       ⌕   ◉ 3
+                        │        ▎ ♪ huddle 4:18  bob ▂▅▇▅  carol ▁▁▁▁            join
+ ⌕ Jump to…        ⌃K   │
+                        │        │ bob  21:46
+ Channels               │        │ yep, the api pod crashed around 02:14. pasting:
+ # backend           3  │        │  panic.log                                  copy
+▎# general              │        │  panic: assignment to entry in nil map
+ # deploys          @3  │
+ ◆ incident-0214     4  │                 @bob nice catch, I will patch it after standup │
+                        │                          ↳ 3 replies   ▐ 🚀 1 ▌  ▐ 👀 1 ▌        │
+ Direct                 │                                                       21:49 ✓
+ ● bob               1  │
+ ◐ dave away            │        carol is typing •··
+                        │        ╭─ #general ───────────────────────────────── public ─╮
+                        │        │ message #general                                    │
+ ● alice online      ⚙  │        ╰────────────── ⌃K commands · ⌥⏎ newline · ⏎ send ─╯
+ tc  #general                                      F1 keys · ◆ e2e · ● quic · ◐ graphite
 ```
 
-- Sidebar: 18 columns; hidden automatically below 70 columns total (toggle `Ctrl-B`).
-- Header: channel name + topic (one line, truncated). Status (Connecting/Offline/Reconnecting) shows in
-  the sidebar title, dim, only when not Online.
-- Messages: `HH:MM author  body`. Consecutive messages from the same author within 5 min omit the
-  time/author. Day separators (`── Tue 9 Oct ──`). Wrapped bodies align under the body column.
+- Sidebar: 24 columns (`normal`), 32 (`wide`) or 7 (`icons`, names show as tooltips on hover). `Ctrl-B`/`F2`
+  cycle normal → wide → icons; clicking its right edge does the same, dragging it picks a size. Below 90
+  columns it shrinks to icons, below 60 it is hidden. The size is kept in `TC_HOME/ui.json`.
+- Message column: centered, at most 86 columns. Threads open in a 44-column pane on the right (sliding in)
+  when there is room, full width otherwise; the input moves into the pane while it is open.
+- Status bar (bottom row): ` tc ` pill, the channel, then `F1 keys`, `◆ e2e` in encrypted channels, the
+  connection (`● quic`/`● tcp`; the state when not online) and `◐ theme` (click: themes). No server name.
+- Header: channel name + topic (one line, truncated); `◉ N` members and `⌕` (palette) on the right. Status
+  (Connecting/Offline/Reconnecting) shows in the sidebar title, dim, only when not Online.
+- Messages ("thin bar, split sides"): other people on the left, name (their muted color) and time over
+  the text, a thin `│` bar in their color; mine on the right against an accent bar, time and `◌`/`✓`
+  under them. Identity is the name only. Consecutive messages from the same author within 5 min omit
+  the name row. Day dividers (`──── Today ────`). Cozy density leaves a blank row between groups; compact
+  doesn't. A message draws at most 120 rows (code blocks 40) in the log; `v` shows all of it.
 - Pending (outbox) messages render dim; failed ones show `! failed — r to retry, d to discard`.
 - Edited: dim ` (edited)`. Deleted: dim italic `message deleted` (encrypted channels: `deleted (unverified)` until judged). In encrypted channels `(edited)` shows
   only for an edit the author signed, reactions only when signed by the reactor, and a delete the author
   didn't sign (an admin, the server) reads `removed (not by author)`. `e` refuses messages that aren't
   verified (waiting, invalid, legacy or inserted plaintext).
 - Pinned messages end with a dim `📌` on their footer line; the header shows a dim `📌 N` when the channel has pins.
-- Reactions on a line below: `👍 2  🎉 1` (your own reactions highlighted).
+- Reactions as pills on a row below: `▐ 👍 2 ▌` (yours in the accent); click one to toggle it.
 - Thread roots show `↳ N replies`; threads open in a right pane (or full width below 100 cols).
 - An empty channel shows a dim `no messages yet — say hi · F1 help · Ctrl-K channels & people` (shorter when the message pane is under 64 or 26 columns; in my notes `your notes — only you see them; /remind lands here`) once a history fetch said it is empty.
-- Typing line above the input; nothing when nobody is typing.
-- Input: single line that grows to max 6 lines; `Alt-Enter`/`Ctrl-J` inserts newline; `Enter` sends.
+- Typing line above the input (`bob is typing •··`); nothing when nobody is typing. Errors, rings and
+  lasting hints share that row; passing notices ("copied", "pinned") show as a toast pill there instead
+  (fades in and out, click dismisses). Notices raised while a dialog is open show over its bottom edge.
+- Input: a rounded box (channel in the top edge, `public`/`private`/`◆ e2e` on its right, key hints in the
+  bottom edge) that grows to max 6 lines; `Alt-Enter`/`Ctrl-J` inserts newline; `Enter` sends.
+- Huddle bar: one row under the header while a huddle runs in the open channel:
+  `♪ huddle m:ss ● mic  bob ▂▅▇▅ …  talk|mute leave` (in it) or `join`; a meter moves while that person talks.
+- Loading screen (logo, steps, progress) only on a first run with no local cache; a start with a cache
+  draws the chat at once.
 
 ## Rendering rules
 
-- Every user-controlled string goes through `sanitize.Text`/`sanitize.Line` before Lip Gloss.
-- Markdown-lite only: ```` ``` ```` fenced blocks (left bar `┃`, no wrap reflow, horizontal truncation
-  with `…`), inline `` `code` ``, `**bold**`, `_italic_`, URLs underlined. No headings, no tables.
-- `@me` mentions highlighted; the message gets a marker in the gutter: `▎` when it mentions me, `*`
-  when it only contains one of my highlight words.
-- Author colors: stable hash of user id into an 8-color palette that reads on dark and light terminals.
-  Respect `NO_COLOR` (no colors, keep bold/dim).
-- Fenced blocks: an info string (```` ```go ````) shows a dim right-aligned label on the block's first line
-  when it fits next to that line's text (no syntax highlighting). A ```` ```diff ```` block, or an unlabeled
-  block that looks like a unified diff (`diff --git`, or `---`/`+++` headers plus `@@ -` hunk), colors `+` green,
-  `-` red, `@@` dim cyan, file headers dim bold; under `NO_COLOR` only the `+`/`-` markers remain. The full-message
-  viewer (`v`) colors diffs the same way. `git diff | tc send` produces a diff block automatically.
+- Every user-controlled string goes through `sanitize.Text`/`sanitize.Line` before it reaches the canvas.
+- Markdown-lite only: ```` ``` ```` fenced blocks (a panel with a header row, no wrap reflow, horizontal
+  truncation with `…`), inline `` `code` ``, `**bold**`, `_italic_`, URLs underlined. No headings, no tables.
+- `@me` mentions in the accent; a message that mentions me gets an accent bar and a faint accent tint, one
+  that only contains a highlight word a warn-colored bar.
+- Themes: ten built in (graphite default, sky, mint, rose, lilac, ember, phosphor, and the light paper,
+  teletype, macintosh), picked in Settings, the palette or `/theme name`, kept in `TC_HOME/ui.json`. Name
+  colors are a stable hash of the user id into the theme's four muted name colors. Truecolor, degraded to
+  256/16 colors by the terminal's profile; `NO_COLOR` drops colors (quiet text becomes faint, selections reverse).
+- Fenced blocks: the header row shows the info string (```` ```go ````; `code` without one) and `copy`. A
+  ```` ```diff ```` block, or an unlabeled block that looks like a unified diff (`diff --git`, or `---`/`+++` headers
+  plus `@@ -` hunk), says `diff +N −M` and tints rows: `+` green, `-` red, `@@` in the hunk color, file headers dim;
+  under `NO_COLOR` only the `+`/`-` markers remain. The full-message viewer (`v`) colors diffs the same way.
+  `git diff | tc send` produces a diff block automatically.
 - Width math uses display width (runewidth), never byte or rune counts.
-- The input line and the switcher/react prompts never draw bidi controls (they would reorder the line on screen).
+- The input line and the palette/react prompts never draw bidi controls (they would reorder the line on screen).
+- Motion (Settings › Animations, on by default; off = instant): send pop with sparkles, arrival fade and
+  slide, reaction flash with a floating `+1`, thread pane slide, dialog fade, theme cross-fade, typing dots,
+  mention badge pulse. A frame tick (~30 fps) runs only while something moves; an idle screen has no timer.
+- Mouse: click channels, messages (select), reactions, `↳ replies`, the hover toolbar (`☺ ↩ ⧉ ⋯`), huddle
+  join/leave, palette rows and tabs, settings controls, toasts, the theme in the status bar; the wheel
+  scrolls the pane under the pointer. A pointer move that changes nothing reuses the last frame.
 
 ## Keys
 
@@ -62,16 +90,18 @@ Minimal, keyboard-first, works in a 40-column herdr split. Bubble Tea + Lip Glos
 | `Enter` | send (completes instead while the completion popup is open, unless the `@`/`#` word already equals the highlighted item) |
 | `/`, `@`, `#` | completion popup above the input (see below) |
 | `Tab` | complete from the popup; reopens it after `Esc` |
-| `Ctrl-K` | quick switcher (fuzzy over channels + people; Enter opens; DMs created on demand) |
+| `Ctrl-K` | command palette: tabs All · Channels · People · Commands · Settings (`Tab`/`Shift-Tab`); fuzzy search keeps the quick switcher's behavior (Enter opens the top channel or person; DMs created on demand); command rows run the slash command, or type it when it needs arguments; theme rows switch the theme |
 | `Alt-A` | activity view (also `/activity`); `Ctrl-A` stays the textarea's line start |
 | `Alt-↑/↓` or `Ctrl-P/N` | previous / next channel (`Ctrl-P/N` move the completion popup's highlight while it is open) |
 | `Alt-Shift-↑/↓` | previous / next unread channel |
 | `PgUp/PgDn`, mouse wheel | scroll history (fetches older via History at top) |
 | `↑` on empty input | select messages mode (↑/↓ moves selection) |
 | in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (prompt for emoji; `+1`, `:tada:` shortcuts), `y` copy body (OSC 52), `p` pin / unpin (notice "pinned" / "unpinned"), `Esc` leave |
-| `Esc` | close the completion popup / thread / switcher / select mode; never quits |
+| `Esc` | close the completion popup / thread / palette / dialog / select mode; never quits |
 | `Ctrl-C` twice (the second while `press Ctrl-C again to quit` shows, 4 s), or `/quit` | quit |
-| `F1` or `/help` | help overlay (`?` is just text, so messages can start with it) |
+| `F1` or `/help` | keyboard sheet: Navigate, Messages, Write, Huddle, App, then every command (`?` is just text, so messages can start with it) |
+| `Ctrl-B`, `F2` | sidebar size: normal → wide → icons |
+| `/settings` (or `Ctrl-,` where the terminal reports it) | Settings: Appearance (theme, density, sidebar, animations), Notifications (runs `/notify`, `/sounds`, `/dnd`), Keys, Account & devices, About; `↑/↓` move, `←/→` change, `Enter` toggles, `Tab` next page |
 
 ## Slash commands
 
@@ -200,8 +230,8 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
 
 - Opening a channel marks it read up to the newest message (MarkRead) when the view is at the bottom.
   Scrolled up → don't mark read; show `↓ N new` pill.
-- Unread counts in sidebar; `@` instead of count when there's a mention or it's a DM (bot
-  messages never make a mention).
+- Unread counts in the sidebar (dim; a DM's in the accent); `@N` in the accent when there's a mention, pulsing
+  briefly when it grows (bot messages never make a mention).
 - Notifications: see "Notifications & herdr" below.
 - Never block the UI on network: all client calls run in `tea.Cmd`s.
 - Startup renders from cache immediately, before connecting.
@@ -359,7 +389,7 @@ and are not listed; they appear in the log as usual. Rows are kept for the newes
   starter must be a member of the DM (rosters aren't end-to-end authenticated). Never for rosters
   a sync or channel join hands us (reconnects don't ring), nor for a late roster that already has
   several people. Esc closes an open mic first, then dismisses the ring. Channel huddle starts are silent at `mentions` (the sidebar
-  `🎧n` shows them); at `all`, one popup per channel per 5 min, within the 2 s cap.
+  `♪n` shows them); at `all`, one popup per channel per 5 min, within the 2 s cap.
 - **Echo control** (docs/VOICE.md "Echo"): the join notice puts the most important thing first,
   because narrow panes truncate it. That is a device note if there is one (`mic: Built-in Audio ·
   default input is a speaker monitor · TC_VOICE_INPUT picks another`, or `no microphone, listening
