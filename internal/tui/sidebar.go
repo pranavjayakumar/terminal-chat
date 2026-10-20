@@ -25,7 +25,6 @@ type sideItem struct {
 }
 
 func (m *Model) sideItems() []sideItem {
-	th := m.st.th
 	var out []sideItem
 	section := func(name string, dm bool) {
 		first := true
@@ -42,7 +41,6 @@ func (m *Model) sideItems() []sideItem {
 			}
 			out = append(out, m.sideEntry(v))
 		}
-		_ = th
 	}
 	section("Channels", false)
 	section("Direct", true)
@@ -227,15 +225,11 @@ func (m *Model) drawSideItem(c *canvas, it sideItem, y, sb int, mini bool) {
 		st.attr |= aMonoRev
 	}
 	if mini {
-		g := it.icon
-		if it.icon == "#" || it.icon == "◆" && it.label != "" {
-			if it.icon == "#" {
-				g, _, _, _ = uniseg.FirstGraphemeClusterInString(it.label, -1)
-			}
-		}
-		fg := nameFg
-		if it.icon != "#" {
-			fg = it.iconFg
+		// a channel shows its first letter; everything else its icon
+		g, fg := it.icon, it.iconFg
+		if it.icon == "#" {
+			g, _, _, _ = uniseg.FirstGraphemeClusterInString(it.label, -1)
+			fg = nameFg
 		}
 		c.put(3, y, g, cstyle{fg: fg, hasFg: true, attr: st.attr}, act)
 		if it.badge != "" {

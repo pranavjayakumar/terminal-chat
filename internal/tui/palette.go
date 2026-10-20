@@ -78,7 +78,6 @@ func (m *Model) palCommands() []palItem {
 }
 
 func (m *Model) palSettings() []palItem {
-	th := m.st.th
 	out := []palItem{
 		{group: "Settings", label: "Appearance", desc: "theme, density, sidebar", icon: "◐", run: "app:settings:appearance", tabs: "s"},
 		{group: "Settings", label: "Notifications", desc: "mentions, sounds, quiet hours", icon: "⚑", run: "app:settings:notifications", tabs: "s"},
@@ -99,7 +98,6 @@ func (m *Model) palSettings() []palItem {
 		}
 		out = append(out, it)
 	}
-	_ = th
 	return out
 }
 

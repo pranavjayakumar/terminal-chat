@@ -82,7 +82,7 @@ func (m *Model) drawMain(c *canvas, g geo) {
 		return
 	}
 	// header
-	if g.top < g.msgTop || g.msgTop == 0 && g.top == 0 && g.noteY > 0 {
+	if g.top < g.msgTop {
 		m.drawHeader(c, g)
 	}
 	if g.hud >= 0 {
@@ -142,8 +142,7 @@ func (m *Model) drawHeader(c *canvas, g geo) {
 	if g.thrFull {
 		title := "Thread"
 		c.put(g.CX, y, title, fgb(th.fg), "")
-		e := c.put(g.CX+len(title)+1, y, m.chanTitle(m.thread.ch), fgc(th.faint), "")
-		_ = e
+		c.put(g.CX+len(title)+1, y, m.chanTitle(m.thread.ch), fgc(th.faint), "")
 		c.put(g.CX+g.CW-1, y, "✕", fgc(th.dim), "thread:close")
 		return
 	}
