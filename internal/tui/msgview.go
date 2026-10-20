@@ -26,25 +26,32 @@ const (
 
 type blockKey struct {
 	renderKey
+	th      *theme
 	left    bool // thread pane: everyone on the left
 	tail    bool // last of its group: ours shows time and status
 	concern concern
 }
 
-// blockCache memoizes message blocks. Reset when names or the theme change.
-type blockCache struct{ m map[blockKey]*canvas }
+// blockCache memoizes message blocks in two generations: when the current
+// one fills up it becomes the old one, and blocks still in use move back,
+// so a busy channel never loses its whole working set at once. Reset when
+// names or the theme change.
+type blockCache struct{ cur, old map[blockKey]*canvas }
 
-func (c *blockCache) reset() { c.m = nil }
+func (c *blockCache) reset() { c.cur, c.old = nil, nil }
 
 func (c *blockCache) get(k blockKey, draw func() *canvas) *canvas {
-	if b, ok := c.m[k]; ok {
+	if b, ok := c.cur[k]; ok {
 		return b
 	}
-	if c.m == nil || len(c.m) > maxBlocks {
-		c.m = map[blockKey]*canvas{}
+	b, ok := c.old[k]
+	if !ok {
+		b = draw()
 	}
-	b := draw()
-	c.m[k] = b
+	if c.cur == nil || len(c.cur) >= maxBlocks {
+		c.old, c.cur = c.cur, make(map[blockKey]*canvas, maxBlocks/4)
+	}
+	c.cur[k] = b
 	return b
 }
 
@@ -109,9 +116,16 @@ func (m *Model) concernOf(x client.Message) concern {
 
 // msgBlock draws one message at column width cw.
 func (m *Model) msgBlock(x client.Message, cw int, header, tail, left bool) *canvas {
+	return m.msgBlockFrom(nil, x, cw, header, tail, left)
+}
+
+// msgBlockFrom is msgBlock, first looking in prev (a pane's last layout).
+func (m *Model) msgBlockFrom(prev map[blockKey]*canvas, x client.Message, cw int, header, tail, left bool) *canvas {
 	mine := x.Author == m.me.ID && !left
-	k := blockKey{renderKey: keyFor(x, cw, header), left: left, tail: tail, concern: m.concernOf(x)}
-	k.renderKey.width = cw
+	k := blockKey{renderKey: keyFor(x, cw, header), th: m.st.th, left: left, tail: tail, concern: m.concernOf(x)}
+	if b, ok := prev[k]; ok {
+		return b
+	}
 	return m.blocks.get(k, func() *canvas { return m.drawBlock(x, cw, header, tail, mine, k.concern) })
 }
 
@@ -437,7 +451,7 @@ func (m *Model) drawFooter(g *grower, x client.Message, cw, bw int, mine bool) {
 
 // sepBlock is a centered divider row: a day ("Today") or "replies".
 func (m *Model) sepBlock(label string, cw int) *canvas {
-	k := blockKey{renderKey: renderKey{failed: "sep:" + label, width: cw}}
+	k := blockKey{renderKey: renderKey{failed: "sep:" + label, width: cw}, th: m.st.th}
 	return m.blocks.get(k, func() *canvas {
 		th := m.st.th
 		c := newCanvas(cw, 1, th)
@@ -492,6 +506,13 @@ func (m *Model) paneLines(p *pane, w int) ([]prow, []int) {
 	var rows []prow
 	var owner []int
 	now := m.now()
+	// Blocks of the last layout are reused directly: a new message or one
+	// changed reaction redraws only what changed, however long the list.
+	prev := p.memoBlocks
+	if p.memoW != w {
+		prev = nil
+	}
+	used := make(map[blockKey]*canvas, len(p.msgs))
 	for i, x := range p.msgs {
 		sep := i == 0 || !sameDay(p.msgs[i-1].Time, x.Time)
 		header := sep || !grouped(p.msgs[i-1], x)
@@ -508,7 +529,8 @@ func (m *Model) paneLines(p *pane, w int) ([]prow, []int) {
 			}
 		}
 		tail := i == len(p.msgs)-1 || !sameDay(x.Time, p.msgs[i+1].Time) || !grouped(x, p.msgs[i+1])
-		b := m.msgBlock(x, w, header, tail, left)
+		b := m.msgBlockFrom(prev, x, w, header, tail, left)
+		used[blockKey{renderKey: keyFor(x, w, header), th: m.st.th, left: left, tail: tail, concern: m.concernOf(x)}] = b
 		for y := 0; y < b.h; y++ {
 			rows = append(rows, prow{b: b, y: y})
 			owner = append(owner, i)
@@ -526,7 +548,7 @@ func (m *Model) paneLines(p *pane, w int) ([]prow, []int) {
 	if rows == nil {
 		rows, owner = []prow{}, []int{}
 	}
-	p.memoLines, p.memoOwner, p.memoVer, p.memoW = rows, owner, p.ver, w
+	p.memoLines, p.memoOwner, p.memoVer, p.memoW, p.memoBlocks = rows, owner, p.ver, w, used
 	p.memoCompact, p.memoDay = m.ui.Compact, m.today()
 	return rows, owner
 }

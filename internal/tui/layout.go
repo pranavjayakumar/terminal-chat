@@ -55,6 +55,11 @@ func (m *Model) sbMode() string {
 	switch {
 	case m.mode == modeViewer && m.view.wide:
 		return "" // text to copy: a mouse selection mustn't pick up the sidebar
+	case m.sbForce != "" && m.w < sbIconsBelow && m.w >= minSidebarCols:
+		if m.sbForce == sbHidden {
+			return ""
+		}
+		return m.sbForce
 	case m.w < sbHideBelow:
 		return ""
 	case m.w < sbIconsBelow:
@@ -172,6 +177,16 @@ func (m *Model) inputRows(w int) int {
 		return 1
 	}
 	return min(inputLines(m.input.Value(), max(w, 1)), m.inputMax())
+}
+
+// paneHeight is how many rows p shows: the split thread pane has its own
+// header and ends above its input.
+func (m *Model) paneHeight(p *pane) int {
+	g := m.geo()
+	if p == &m.thread && g.split {
+		return max(g.inY-1-(g.top+2), 0)
+	}
+	return max(g.msgBot-g.msgTop, 0)
 }
 
 // dims is the layout for code that only needs widths and heights.

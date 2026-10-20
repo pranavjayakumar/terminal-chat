@@ -91,6 +91,11 @@ func (m *Model) dragTo(x int) {
 	}
 	if abs(float64(x-m.dragX)) >= 2 {
 		m.dragX = -100 // a drag, not a click
+		if m.w < sbIconsBelow {
+			m.sbForce = mode // automatic size here: this session only
+			m.layoutInput()
+			return
+		}
 		m.setSidebar(mode)
 	}
 }
@@ -117,7 +122,12 @@ func (m *Model) wheel(msg tea.MouseMsg) tea.Cmd {
 		return nil
 	case modeNormal, modeSelect:
 	default:
-		return nil
+		// other dialogs: the wheel moves like the arrow keys
+		k := tea.KeyMsg{Type: tea.KeyDown}
+		if up {
+			k.Type = tea.KeyUp
+		}
+		return m.handleKey(k)
 	}
 	p := m.focus()
 	g := m.geo()

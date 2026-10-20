@@ -197,6 +197,10 @@ func (m *Model) filterPalette() {
 	}
 	if q != "" {
 		// Jump targets keep the switcher's ranking and come first.
+		rank := make(map[int]int, len(m.sw.shown))
+		for i, s := range m.sw.shown {
+			rank[s.order] = i
+		}
 		slices.SortStableFunc(p.shown, func(a, b palItem) int {
 			if (a.sw != nil) != (b.sw != nil) {
 				if a.sw != nil {
@@ -205,8 +209,7 @@ func (m *Model) filterPalette() {
 				return 1
 			}
 			if a.sw != nil {
-				return slices.IndexFunc(m.sw.shown, func(s switchItem) bool { return s.order == a.sw.order }) -
-					slices.IndexFunc(m.sw.shown, func(s switchItem) bool { return s.order == b.sw.order })
+				return rank[a.sw.order] - rank[b.sw.order]
 			}
 			return b.score - a.score
 		})
@@ -446,10 +449,13 @@ func (m *Model) palRow(c *canvas, x, y, w, i int) {
 	act := "pal:" + strconv.Itoa(i)
 	old := c.setClip(rect{x, y, x + w, y + 1})
 	defer c.setClip(old)
-	on := i == m.pal.sel || m.hover == act
+	on := i == m.pal.sel
 	bg := th.panel
-	if on {
+	switch {
+	case on:
 		bg = th.accent
+	case m.hover == act:
+		bg = th.element // hover is a hint; Enter acts on the selected row
 	}
 	c.fill(x, y, w, 1, bg, act)
 	pick := func(normal rgb) cstyle {

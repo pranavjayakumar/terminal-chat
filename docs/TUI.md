@@ -27,7 +27,8 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
 
 - Sidebar: 24 columns (`normal`), 32 (`wide`) or 7 (`icons`, names show as tooltips on hover). `Ctrl-B`/`F2`
   cycle normal → wide → icons; clicking its right edge does the same, dragging it picks a size. Below 90
-  columns it shrinks to icons, below 60 it is hidden. The size is kept in `TC_HOME/ui.json`.
+  columns it shrinks to icons, below 60 it is hidden; there `Ctrl-B` cycles icons → normal → hidden (40–59:
+  icons ↔ hidden) for the session without changing the saved size. The size is kept in `TC_HOME/ui.json`.
 - Message column: centered, at most 86 columns. Threads open in a 44-column pane on the right (sliding in)
   when there is room, full width otherwise; the input moves into the pane while it is open.
 - Status bar (bottom row): ` tc ` pill, the channel, then `F1 keys`, `◆ e2e` in encrypted channels, the
@@ -78,7 +79,11 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
 - The input line and the palette/react prompts never draw bidi controls (they would reorder the line on screen).
 - Motion (Settings › Animations, on by default; off = instant): send pop with sparkles, arrival fade and
   slide, reaction flash with a floating `+1`, thread pane slide, dialog fade, theme cross-fade, typing dots,
-  mention badge pulse. A frame tick (~30 fps) runs only while something moves; an idle screen has no timer.
+  mention badge pulse. A frame tick (~30 fps) runs only while something moves (a slow one for typing dots,
+  talking meters and the huddle timer); the cursor blinks for 5 s after a key. An idle screen has no timer.
+- 256-color terminals get each theme's surfaces on distinct grey steps; 16-color terminals keep their own
+  background and mark selections in reverse. A selected message's bar becomes `▌`; a mention's bar is `┃`
+  and a highlight word's `┇`, so they read without color too.
 - Mouse: click channels, messages (select), reactions, `↳ replies`, the hover toolbar (`☺ ↩ ⧉ ⋯`), huddle
   join/leave, palette rows and tabs, settings controls, toasts, the theme in the status bar; the wheel
   scrolls the pane under the pointer. A pointer move that changes nothing reuses the last frame.

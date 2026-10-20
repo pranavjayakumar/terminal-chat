@@ -149,7 +149,7 @@ func (m *Model) slowWanted() bool {
 			return true
 		}
 	}
-	return m.hud.in && m.hud.talking
+	return m.hud.in // the huddle bar's timer and our mic meter
 }
 
 // frameTick schedules the next frame when one is needed and none is.

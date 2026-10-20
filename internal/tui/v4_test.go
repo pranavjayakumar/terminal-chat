@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
@@ -559,5 +560,49 @@ func TestThreadPaneHasTheInput(t *testing.T) {
 		if d := m.dims(); m.input.Width() != d.inputW {
 			t.Fatalf("%v: textarea %d wide, box text %d", sz, m.input.Width(), d.inputW)
 		}
+	}
+}
+
+// Below 90 columns Ctrl-B cycles icons → normal → hidden for the session
+// and never changes the saved size.
+func TestNarrowSidebarCycle(t *testing.T) {
+	m := newTestModel(t, 80, 24)
+	for _, want := range []string{sbNormal, "", sbIcons, sbNormal} {
+		press(m, "ctrl+b")
+		if m.sbMode() != want {
+			t.Fatalf("got %q, want %q", m.sbMode(), want)
+		}
+		checkView(t, m, "narrow cycle")
+	}
+	if m.ui.sidebarMode() != sbNormal || m.ui.Sidebar != "" {
+		t.Fatalf("saved size changed: %q", m.ui.Sidebar)
+	}
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	if m.sbMode() != sbNormal {
+		t.Fatalf("wide terminal: %q", m.sbMode())
+	}
+}
+
+// The cursor blink stops after a few idle seconds and starts on a key.
+func TestCursorBlinkStopsWhenIdle(t *testing.T) {
+	m, _, clk := motionModel(t, 100, 30, "")
+	m.lastKey = clk.t
+	clk.add(blinkFor + time.Second)
+	m.Update(cursor.BlinkMsg{})
+	if !m.blinkIdle || m.input.Cursor.Blink {
+		t.Fatal("blink not stopped")
+	}
+	if cmd := m.handleKey(keyMsg("x")); cmd == nil || m.blinkIdle {
+		t.Fatal("a key didn't restart the blink")
+	}
+}
+
+// At 40 columns the status bar keeps the connection and a way to the keys.
+func TestStatusBarNarrow(t *testing.T) {
+	m := newTestModel(t, 40, 14)
+	v := strings.Split(checkView(t, m, "narrow status"), "\n")
+	last := v[len(v)-1]
+	if !strings.Contains(last, "● quic") || !strings.Contains(last, "F1") || strings.Contains(last, "graphite") {
+		t.Fatalf("status bar: %q", last)
 	}
 }

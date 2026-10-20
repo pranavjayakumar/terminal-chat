@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -52,6 +53,7 @@ type pane struct {
 	memoCompact             bool
 	memoLines               []prow
 	memoOwner               []int
+	memoBlocks              map[blockKey]*canvas // the blocks memoLines uses
 }
 
 func (p *pane) open() bool { return p.ch != 0 }
@@ -169,7 +171,9 @@ type Model struct {
 	lastCanvas *canvas // the last frame, for clicks and the theme cross-fade
 	spare      *canvas // the frame before it, reused for the next
 	lastFrame  string
-	reuseFrame bool // nothing changed since lastFrame (pointer motion)
+	reuseFrame bool   // nothing changed since lastFrame (pointer motion)
+	blinkIdle  bool   // the cursor blink loop stopped after blinkFor without keys
+	sbForce    string // Ctrl-B's choice below sbIconsBelow columns, this session only
 }
 
 // ---- tea messages ----
@@ -346,6 +350,7 @@ func (m *Model) reloadUsers() {
 	m.refreshMentionNames()
 	m.reloadComp()
 	m.blocks.reset()
+	m.main.memoBlocks, m.thread.memoBlocks = nil, nil
 	m.main.ver++
 	m.thread.ver++
 }
@@ -976,6 +981,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.markRead()
 	case tea.BlurMsg:
 		m.focused = false
+		m.hover = "" // the pointer left for another pane
 		return m, nil
 	case updateMsg:
 		if msg.Prefs || msg.Reset {
@@ -1072,6 +1078,13 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m, m.handleKey(msg)
 	}
+	if _, ok := msg.(cursor.BlinkMsg); ok && m.now().Sub(m.lastKey) > blinkFor {
+		// Idle: stop the blink loop with the cursor shown, so an idle
+		// screen has no timer. The next key starts it again.
+		m.input.Cursor.Blink = false
+		m.blinkIdle = true
+		return m, nil
+	}
 	// Cursor blink and other component messages.
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
@@ -1152,7 +1165,18 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 
 // ---- keys ----
 
+// blinkFor is how long the cursor blinks after the last key.
+const blinkFor = 5 * time.Second
+
 func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
+	if m.blinkIdle && !m.fx.off {
+		m.blinkIdle = false
+		return tea.Batch(m.input.Cursor.BlinkCmd(), m.handleKey0(k))
+	}
+	return m.handleKey0(k)
+}
+
+func (m *Model) handleKey0(k tea.KeyMsg) tea.Cmd {
 	if cmd := m.keyActivity(); cmd != nil {
 		return tea.Batch(cmd, m.handleKey1(k))
 	}
@@ -1296,9 +1320,9 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 	case isNextUnread(key):
 		return m.cycle(1, true)
 	case key == kPgUp:
-		return m.scrollBy(m.focus(), max(m.dims().bodyH-1, 1))
+		return m.scrollBy(m.focus(), max(m.paneHeight(m.focus())-1, 1))
 	case key == kPgDown:
-		return m.scrollBy(m.focus(), -max(m.dims().bodyH-1, 1))
+		return m.scrollBy(m.focus(), -max(m.paneHeight(m.focus())-1, 1))
 	case key == kEsc:
 		// One Esc backs out one thing: an open mic first (we're
 		// broadcasting), then a ring, then the usual chain.
@@ -1385,7 +1409,7 @@ func (m *Model) clampScroll(p *pane) {
 	if !p.open() {
 		return
 	}
-	w, h := m.paneWidth(p), m.dims().bodyH
+	w, h := m.paneWidth(p), m.paneHeight(p)
 	if w <= 0 || h <= 0 {
 		return
 	}
@@ -1399,13 +1423,14 @@ func (m *Model) scrollBy(p *pane, n int) tea.Cmd {
 	if !p.open() {
 		return nil
 	}
-	w, h := m.paneWidth(p), m.dims().bodyH
+	w, h := m.paneWidth(p), m.paneHeight(p)
 	if w <= 0 || h <= 0 {
 		return nil
 	}
 	lines, _ := m.paneLines(p, w)
 	top := max(len(lines)-h, 0)
 	p.scroll = min(max(p.scroll+n, 0), top)
+	m.hover = "" // the list moved under the pointer
 	if p == &m.main {
 		if n > 0 && p.scroll == top {
 			return m.loadOlder()
@@ -1450,7 +1475,7 @@ func (m *Model) selected() (client.Message, bool) {
 
 // ensureVisible scrolls so the selected message is on screen.
 func (m *Model) ensureVisible(p *pane) {
-	w, h := m.paneWidth(p), m.dims().bodyH
+	w, h := m.paneWidth(p), m.paneHeight(p)
 	if w <= 0 || h <= 0 || p.sel < 0 {
 		return
 	}
@@ -1481,7 +1506,7 @@ func (m *Model) ensureVisible(p *pane) {
 // selectByPage moves the selection about one screen of lines up (dir -1)
 // or down (dir 1).
 func (m *Model) selectByPage(p *pane, dir int) {
-	w, h := m.paneWidth(p), m.dims().bodyH
+	w, h := m.paneWidth(p), m.paneHeight(p)
 	if w <= 0 || p.sel < 0 {
 		return
 	}

@@ -469,7 +469,7 @@ func (m *Model) drawThreadPane(c *canvas, g geo) {
 	c.put(m.w-3, g.top, "✕", fgc(th.dim), "thread:close")
 	pw := threadW - 4
 	top := g.top + 2
-	h := g.inY - 1 - top
+	h := m.paneHeight(&m.thread)
 	if m.thread.open() && h > 0 {
 		m.viewPane(c, &m.thread, "thr", tx, top, pw, h, 0)
 		c.each(tx, top, pw, h, func(cl *cell) {
@@ -599,15 +599,31 @@ func (m *Model) drawStatusBar(c *canvas, g geo) {
 	if m.newRelease != "" {
 		parts = append([]part{{"↑ " + m.newRelease, th.info, "settings:about"}}, parts...)
 	}
-	// Drop from the left until it fits next to the channel.
-	for len(parts) > 0 {
+	// Too narrow: drop the least useful first; the connection and a way
+	// to the keys stay longest.
+	fits := func() bool {
 		w := 0
 		for _, p := range parts {
 			w += strWidth(p.t) + 3
 		}
-		if x+2+w <= m.w {
+		return x+2+w <= m.w
+	}
+	for _, drop := range []string{"◐", "↑", "◆", "F1 keys"} {
+		if fits() {
 			break
 		}
+		for i, p := range parts {
+			if strings.HasPrefix(p.t, drop) {
+				if drop == "F1 keys" {
+					parts[i].t = "F1" // shortened, not dropped
+				} else {
+					parts = append(parts[:i], parts[i+1:]...)
+				}
+				break
+			}
+		}
+	}
+	for !fits() && len(parts) > 0 {
 		parts = parts[1:]
 	}
 	rx := m.w - 2

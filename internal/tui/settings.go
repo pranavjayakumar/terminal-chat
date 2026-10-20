@@ -75,16 +75,33 @@ func (m *Model) setSidebar(mode string) {
 	m.clampScroll(&m.thread)
 }
 
-// cycleSidebar is Ctrl-B: normal → wide → icons → normal.
+// cycleSidebar is Ctrl-B: normal → wide → icons → normal, saved. Below
+// sbIconsBelow columns the size is automatic, so Ctrl-B instead cycles
+// icons → normal → hidden for this session only.
 func (m *Model) cycleSidebar() {
-	if m.w < sbHideBelow {
+	if m.w < minSidebarCols {
 		m.setInfo("too narrow for sidebar")
 		return
 	}
-	next := map[string]string{sbNormal: sbWide, sbWide: sbIcons, sbIcons: sbNormal}[m.ui.sidebarMode()]
 	if m.w < sbIconsBelow {
-		m.setInfo("sidebar shows icons below " + strconv.Itoa(sbIconsBelow) + " columns")
+		cur := m.sbMode()
+		if cur == "" {
+			cur = sbHidden
+		}
+		next := map[string]string{sbIcons: sbNormal, sbNormal: sbHidden, sbHidden: sbIcons, sbWide: sbHidden}[cur]
+		if next == sbNormal && m.w < sbHideBelow {
+			next = sbHidden // a full sidebar would leave the chat too little room
+		}
+		m.fx.sbFrom = m.sbW()
+		m.sbForce = next
+		m.fx.sbTo, m.fx.sbAt = sbWidth(m.sbMode()), m.now()
+		m.setInfo("sidebar: " + next + " (at this width; wider terminals use your setting)")
+		m.layoutInput()
+		m.clampScroll(&m.main)
+		m.clampScroll(&m.thread)
+		return
 	}
+	next := map[string]string{sbNormal: sbWide, sbWide: sbIcons, sbIcons: sbNormal}[m.ui.sidebarMode()]
 	m.setSidebar(next)
 }
 

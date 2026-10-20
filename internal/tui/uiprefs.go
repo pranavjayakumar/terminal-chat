@@ -11,6 +11,7 @@ const (
 	sbNormal = "normal"
 	sbWide   = "wide"
 	sbIcons  = "icons"
+	sbHidden = "hidden" // only as a narrow terminal's session choice (Ctrl-B)
 )
 
 // uiPrefs are this device's look-and-feel settings, kept in TC_HOME/ui.json.
