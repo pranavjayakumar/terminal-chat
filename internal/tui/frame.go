@@ -19,7 +19,7 @@ func (m *Model) View() string {
 		return m.lastFrame
 	}
 	c := m.frame()
-	m.lastCanvas = c
+	m.spare, m.lastCanvas = m.lastCanvas, c
 	m.lastFrame = c.encode(m.st.enc)
 	return m.lastFrame
 }
@@ -27,7 +27,8 @@ func (m *Model) View() string {
 // frame draws the whole screen into a canvas.
 func (m *Model) frame() *canvas {
 	th := m.st.th
-	c := newCanvas(m.w, m.h, th)
+	c := reuseCanvas(m.spare, m.w, m.h, th)
+	m.spare = nil
 	g := m.geo()
 	m.drawMain(c, g)
 	if g.split {

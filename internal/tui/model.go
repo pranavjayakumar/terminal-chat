@@ -167,6 +167,7 @@ type Model struct {
 	drag       bool       // the sidebar edge is being dragged
 	dragX      int
 	lastCanvas *canvas // the last frame, for clicks and the theme cross-fade
+	spare      *canvas // the frame before it, reused for the next
 	lastFrame  string
 	reuseFrame bool // nothing changed since lastFrame (pointer motion)
 }
@@ -635,6 +636,9 @@ func (m *Model) openThread(root uint64) tea.Cmd {
 	if root == 0 || m.active == 0 {
 		return nil
 	}
+	if !m.thread.open() {
+		m.fx.paneAt = m.now() // the pane slides in
+	}
 	m.thread = pane{ch: m.active, root: root, sel: -1}
 	m.reloadPane(&m.thread)
 	m.updatePlaceholder()
@@ -650,6 +654,9 @@ func (m *Model) openThread(root uint64) tea.Cmd {
 }
 
 func (m *Model) closeThread() {
+	if m.thread.open() {
+		m.fx.paneAt = m.now() // the pane slides out
+	}
 	m.jump.waiting = false
 	m.thread = pane{sel: -1}
 	m.updatePlaceholder()

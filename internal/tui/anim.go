@@ -221,7 +221,7 @@ func (f *fxState) themeFrom(m *Model) {
 	if f.off || m.lastCanvas == nil {
 		return
 	}
-	f.themePrev = m.lastCanvas
+	f.themePrev = m.lastCanvas.clone()
 	f.themeAt = m.now()
 }
 

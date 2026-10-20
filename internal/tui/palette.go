@@ -411,6 +411,9 @@ func (m *Model) drawPalette(c *canvas) {
 		}
 	}
 	start, end := window(len(lines), selLine, rows)
+	for end > start && lines[end-1].item < 0 {
+		end-- // never end on a group title with nothing under it
+	}
 	for i := start; i < end; i++ {
 		l := lines[i]
 		if l.item < 0 {

@@ -59,12 +59,34 @@ type canvas struct {
 type rect struct{ x0, y0, x1, y1 int } // [x0, x1) × [y0, y1)
 
 func newCanvas(w, h int, th *theme) *canvas {
-	c := &canvas{w: w, h: h, cells: make([]cell, w*h), acts: []string{""}, th: th}
+	return reuseCanvas(nil, w, h, th)
+}
+
+// reuseCanvas blanks c for a new frame, or makes a canvas when c is nil or
+// the wrong size, so steady frames don't allocate a new grid.
+func reuseCanvas(c *canvas, w, h int, th *theme) *canvas {
+	if c == nil || c.w != w || cap(c.cells) < w*h {
+		c = &canvas{cells: make([]cell, w*h)}
+	}
+	c.w, c.h, c.th = w, h, th
+	c.cells = c.cells[:w*h]
+	c.acts = append(c.acts[:0], "")
+	clear(c.actIx)
+	blank := cell{s: " ", w: 1, fg: th.fg, bg: th.bg}
 	for i := range c.cells {
-		c.cells[i] = cell{s: " ", w: 1, fg: th.fg, bg: th.bg}
+		c.cells[i] = blank
 	}
 	c.clip = rect{0, 0, w, h}
 	return c
+}
+
+// clone copies c (the theme cross-fade keeps a frame while new ones draw).
+func (c *canvas) clone() *canvas {
+	n := *c
+	n.cells = append([]cell(nil), c.cells...)
+	n.acts = append([]string(nil), c.acts...)
+	n.actIx = nil
+	return &n
 }
 
 func (c *canvas) setClip(r rect) rect {
