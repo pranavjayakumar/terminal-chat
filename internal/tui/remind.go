@@ -34,7 +34,7 @@ func (m *Model) remindCommand(c command) (cmd tea.Cmd, ok bool, err error) {
 		if _, enc := m.e2e[ch]; enc {
 			// The server stores reminder text in the clear (docs/E2E.md).
 			// Returned here so the typed command stays in the input.
-			return nil, true, errors.New("reminders are stored unencrypted on the server; set it from #notes or a plain channel")
+			return nil, true, errors.New("reminders are stored unencrypted on the server; set it from your notes (/dm @me) or a plain channel")
 		}
 		if v, found := m.chanView(ch); found && v.Kind == proto.ChanDM && len(v.Members) == 1 {
 			ch = 0 // my own notes: "(from …)" would only say where it lands

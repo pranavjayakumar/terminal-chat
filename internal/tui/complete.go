@@ -100,8 +100,13 @@ func (m *Model) fillComp(v string) {
 			kind, query = w[0], strings.ToLower(string([]rune(w)[1:before]))
 		}
 	}
+	// Same query: keep the highlight on the same item, even if users or
+	// channels changed underneath (else Enter would insert someone else).
+	keep := ""
 	if kind != c.kind || query != c.query {
 		c.sel = 0
+	} else if c.sel >= 0 && c.sel < len(c.items) {
+		keep = c.items[c.sel].text
 	}
 	c.kind, c.query, c.val = kind, query, v
 	c.ch, c.root = m.focus().ch, m.focus().root
@@ -117,6 +122,11 @@ func (m *Model) fillComp(v string) {
 	slices.SortStableFunc(c.items, func(a, b compItem) int { return a.rank - b.rank })
 	if len(c.items) == 0 {
 		c.kind = 0
+	}
+	if keep != "" {
+		if i := slices.IndexFunc(c.items, func(it compItem) bool { return it.text == keep }); i >= 0 {
+			c.sel = i
+		}
 	}
 	c.sel = min(c.sel, max(len(c.items)-1, 0))
 }
@@ -177,8 +187,32 @@ func (m *Model) userItems(q string) {
 			}
 		}
 	}
+	// After /dm, "@me" and my own name open my notes: offer them, so Enter
+	// on them never completes to someone else whose name contains "me".
+	dm := strings.HasPrefix(strings.ToLower(m.input.Value()), "/dm ")
+	if dm {
+		if strings.HasPrefix("me", q) {
+			rank := 0
+			if q == "me" {
+				rank = exactRank
+			}
+			c.items = append(c.items, compItem{text: "@me", desc: "your notes", rank: rank})
+		}
+		if me := strings.ToLower(m.me.Name); me != "" && me != "me" && strings.HasPrefix(me, q) {
+			rank := 0
+			if me == q {
+				rank = exactRank
+			}
+			c.items = append(c.items, compItem{text: "@" + sanitize.Line(m.me.Name), desc: "you · your notes", rank: rank})
+		}
+	}
+	if me := strings.ToLower(m.me.Name); !dm && me != "" && me == q {
+		// "as @alice said": my exact name is an exact name like any other,
+		// so Enter sends instead of completing to a longer one.
+		c.items = append(c.items, compItem{text: "@" + sanitize.Line(m.me.Name), desc: "you", rank: exactRank})
+	}
 	for _, u := range m.userList {
-		if u.ID == m.me.ID || u.Disabled {
+		if u.ID == m.me.ID || u.Disabled || dm && u.Name == "me" {
 			continue
 		}
 		r := wordRank(q, strings.ToLower(u.Name))
@@ -298,7 +332,7 @@ func (m *Model) exactComp() bool {
 		return false
 	}
 	w, _, _ := m.cursorWord()
-	return w == c.items[c.sel].text
+	return strings.EqualFold(w, c.items[c.sel].text) // names are case-insensitive
 }
 
 // acceptComp puts the highlighted item into the input, followed by a space.

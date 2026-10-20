@@ -101,6 +101,7 @@ func (s *switcher) filter(q string) {
 func (m *Model) switchItems() []switchItem {
 	var items []switchItem
 	dmWith := map[uint64]int{} // user → index of their 1:1 DM item
+	haveNotes := false
 	for _, v := range m.chans {
 		if v.Kind == proto.ChanDM {
 			if !v.Member {
@@ -116,8 +117,15 @@ func (m *Model) switchItems() []switchItem {
 				dmWith[others[0]] = int(v.ID)
 				continue
 			}
+			if len(others) == 0 {
+				haveNotes = true
+			}
 			name := sanitize.Line(v.Display)
-			items = append(items, switchItem{label: "@ " + name, match: name, ch: v.ID, unread: v.Unread, mention: v.Mention})
+			match := name
+			if len(others) == 0 {
+				match += " me" // my notes
+			}
+			items = append(items, switchItem{label: "@ " + name, match: match, ch: v.ID, unread: v.Unread, mention: v.Mention})
 			continue
 		}
 		if !v.Member && v.Kind != proto.ChanPublic {
@@ -127,7 +135,14 @@ func (m *Model) switchItems() []switchItem {
 		items = append(items, switchItem{label: "# " + name, match: name, ch: v.ID, unread: v.Unread, mention: v.Mention})
 	}
 	for _, u := range m.userList {
-		if u.ID == m.me.ID || u.Disabled {
+		if u.ID == m.me.ID {
+			if !haveNotes { // opened on demand, like a DM
+				name := sanitize.Line(u.Name) + " (notes)"
+				items = append(items, switchItem{label: "@ " + name, match: name + " me", user: u.ID})
+			}
+			continue
+		}
+		if u.Disabled {
 			continue
 		}
 		name := sanitize.Line(u.Name)
@@ -187,6 +202,9 @@ func (m *Model) switcherKey(k tea.KeyMsg) tea.Cmd {
 		it := m.sw.shown[m.sw.sel]
 		if it.ch != 0 {
 			return m.openChannel(it.ch)
+		}
+		if it.user == m.me.ID {
+			return m.openDM(nil) // my notes
 		}
 		return m.openDM([]uint64{it.user})
 	}

@@ -28,7 +28,6 @@ func setFakeMsg(f *fakeClient, ch uint64, x client.Message) {
 // drops or rechecks the pending note when a message is deleted. The popup
 // then sits in Notification Center / the GNOME tray history.
 func TestNotify_BreakDeletedMessageStillPopsUp(t *testing.T) {
-	t.Skip("issue #97")
 	m, f := newTestModelFake(t, 100, 24)
 	clk := newClock(m)
 	first := newMsg(501, 20, 2, "hey")
@@ -57,7 +56,6 @@ func TestNotify_BreakDeletedMessageStillPopsUp(t *testing.T) {
 // Same window, but the message is edited before the window closes: the
 // popup shows the pre-edit text (e.g. a typo'd secret the author fixed).
 func TestNotify_BreakEditedMessagePopsUpOldText(t *testing.T) {
-	t.Skip("issue #97")
 	m, f := newTestModelFake(t, 100, 24)
 	clk := newClock(m)
 	first := newMsg(511, 20, 2, "hey")
@@ -86,7 +84,6 @@ func TestNotify_BreakEditedMessagePopsUpOldText(t *testing.T) {
 // @mentions still do: a pasted package.json or stack trace containing
 // "@alice/..." pops up a mention notification with the mention sound.
 func TestNotify_BreakMentionInsideCodeBlockNotifies(t *testing.T) {
-	t.Skip("issue #100")
 	m, _ := newTestModelFake(t, 100, 24)
 	newClock(m)
 	deliver(m, newMsg(521, 11, 2, "deps:\n```\n\"@alice/utils\": \"^1.2.0\",\n\"@babel/core\": \"7\"\n```"))
@@ -101,7 +98,6 @@ func TestNotify_BreakMentionInsideCodeBlockNotifies(t *testing.T) {
 // zero, so the soft messages counted before the mention are never
 // announced — neither in the mention popup nor in any summary.
 func TestNotify_BreakMentionDropsCountedLevelAllMessages(t *testing.T) {
-	t.Skip("issue #100")
 	m, _ := newTestModelFake(t, 100, 24)
 	clk := newClock(m)
 	runInput(t, m, "/notify all #secret")
@@ -133,7 +129,6 @@ func TestNotify_BreakMentionDropsCountedLevelAllMessages(t *testing.T) {
 // several level-all channels (or a server replaying them) fires one cued
 // popup per channel at the same instant, on top of a message popup.
 func TestNotify_BreakChannelHuddlePopupsBypassGlobalCap(t *testing.T) {
-	t.Skip("issue #100")
 	m, h := newHuddleModel(t, 100, 24)
 	newClock(m)
 	runInput(t, m, "/notify global all")

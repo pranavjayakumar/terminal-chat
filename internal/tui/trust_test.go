@@ -518,6 +518,10 @@ func TestUnverifiedMarks(t *testing.T) {
 			t.Errorf("%v hint %q dim=%v", sz, m.notice, m.noticeDim)
 		}
 		checkView(t, m, "hint")
+		run(m, m.openChannel(10)) // the hint is about #secret: it goes with it
+		if strings.Contains(m.notice, "/verify") {
+			t.Errorf("%v hint followed to #general: %q", sz, m.notice)
+		}
 		m.clearNotice()
 		run(m, m.openChannel(10))
 		run(m, m.openChannel(13))

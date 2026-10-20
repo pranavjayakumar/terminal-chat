@@ -126,6 +126,7 @@ func (m *Model) unverifiedHint() {
 	m.hinted[ch] = true
 	m.setNotice("? = not verified yet — compare safety numbers with /verify "+m.atName(us[0]), false, false, errTTL)
 	m.noticeDim = true
+	m.noticeCh = ch // about this channel: switching away drops it
 }
 
 // ---- commands ----
