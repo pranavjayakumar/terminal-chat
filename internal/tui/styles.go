@@ -65,6 +65,7 @@ func newStyles(color bool, prof termenv.Profile, th *theme) *styles {
 		return s.Foreground(lipgloss.Color(c.String()))
 	}
 	s := &styles{color: color, th: th, prof: prof, enc: newEncoder(prof, color), r: r}
+	s.enc.pinSurfaces(th)
 	// quiet colors become faint text without color.
 	q := func(s lipgloss.Style, c rgb) lipgloss.Style {
 		if !color {

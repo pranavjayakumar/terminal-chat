@@ -203,17 +203,17 @@ func (m *Model) drawBlock(x client.Message, cw int, header, tail, mine bool, cc 
 	}
 	out := g.done()
 	bar := mix(th.bg, th.nick(x.Author), 0.55)
-	bx := 0
+	bx, glyph := 0, "│"
 	switch {
 	case mine:
 		bar, bx = th.accent, cw-1
 	case cc == cMention:
-		bar = th.accent
+		bar, glyph = th.accent, "┃" // a heavier bar: still a mark without color
 	case cc == cHighlight:
-		bar = th.warn
+		bar, glyph = th.warn, "┇"
 	}
 	for y := 0; y < barEnd; y++ {
-		out.put(bx, y, "│", fgc(bar), "")
+		out.put(bx, y, glyph, fgc(bar), "")
 	}
 	if cc == cMention {
 		tint := mix(th.bg, th.accent, 0.06)

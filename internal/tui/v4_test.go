@@ -509,3 +509,55 @@ func TestCanvasHostileText(t *testing.T) {
 		t.Fatalf("gone message: %d", i)
 	}
 }
+
+// Settings scrolls to the focused control, and the › mark shows it, at
+// every size.
+func TestSettingsFocusVisible(t *testing.T) {
+	for _, sz := range [][2]int{{80, 24}, {100, 30}, {40, 50}, {160, 48}} {
+		m := newTestModel(t, sz[0], sz[1])
+		m.openSettings("appearance")
+		for i, want := range []string{"Theme", "Density", "Sidebar", "Show people as", "Animations"} {
+			ok := false
+			for _, l := range strings.Split(checkView(t, m, want), "\n") {
+				ok = ok || strings.Contains(l, "›") && strings.Contains(l, want)
+			}
+			if !ok {
+				t.Errorf("%v: row %d (%s) not shown with its mark", sz, i, want)
+			}
+			press(m, "down")
+		}
+	}
+}
+
+// In a split thread the input (and its popup) is the thread pane's.
+func TestThreadPaneHasTheInput(t *testing.T) {
+	for _, sz := range [][2]int{{120, 40}, {160, 48}, {200, 60}} {
+		m := newTestModel(t, sz[0], sz[1])
+		run(m, m.openThread(103))
+		m.layoutInput()
+		typeVia(m, "@b")
+		g := m.geo()
+		if !g.split {
+			t.Fatalf("%v: not split", sz)
+		}
+		m.View()
+		c := m.lastCanvas
+		input, popup := false, false
+		for y := 0; y < c.h; y++ {
+			for x := g.RX; x < c.w; x++ {
+				input = input || c.actionAt(x, y) == "focus:input"
+			}
+			row := ""
+			for x := g.RX; x < c.w; x++ {
+				row += c.at(x, y).s
+			}
+			popup = popup || strings.Contains(row, "@bob")
+		}
+		if !input || !popup {
+			t.Fatalf("%v: input in the pane %v, popup there %v\n%s", sz, input, popup, ansi.Strip(m.View()))
+		}
+		if d := m.dims(); m.input.Width() != d.inputW {
+			t.Fatalf("%v: textarea %d wide, box text %d", sz, m.input.Width(), d.inputW)
+		}
+	}
+}

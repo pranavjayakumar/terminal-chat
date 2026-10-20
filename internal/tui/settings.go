@@ -303,7 +303,7 @@ func (m *Model) drawSettings(c *canvas) {
 		cx = r.x0 + 2
 	}
 	cw := r.x1 - cx - 2
-	old := c.setClip(rect{cx, top, cx + cw, r.y1 - 1})
+	old := c.setClip(rect{cx - 2, top, cx + cw, r.y1 - 1}) // from the › focus mark
 	defer c.setClip(old)
 	y := top
 	label := func(s, sub string, focused bool) {
@@ -360,7 +360,7 @@ func (m *Model) drawSettings(c *canvas) {
 			y++
 		}
 		y++
-		m.drawCtls(c, cx, y, cw)
+		m.drawCtls(c, cx, y, cw, r.y1-1)
 		return
 	case "about":
 		label("tc", "terminal chat", false)
@@ -383,12 +383,56 @@ func (m *Model) drawSettings(c *canvas) {
 		}
 		return
 	}
-	m.drawCtls(c, cx, y, cw)
+	m.drawCtls(c, cx, y, cw, r.y1-1)
 }
 
-func (m *Model) drawCtls(c *canvas, cx, y, cw int) {
+// themeRows is how many rows of cards the grid has at width w, and whether
+// they are the one-line compact kind.
+func themeGrid(w, room int) (cols, rows int, compact bool) {
+	cols = 5
+	for cols > 1 && cols*16 > w {
+		cols--
+	}
+	rows = (len(themeOrder) + cols - 1) / cols
+	return cols, rows, room < rows*6+14
+}
+
+// ctlHeight is how many rows drawCtls gives a control.
+func ctlHeight(ctl setCtl, cw, room int) int {
+	switch {
+	case ctl.themes:
+		_, rows, compact := themeGrid(cw, room)
+		if compact {
+			return rows*2 + 2
+		}
+		return rows*6 + 2
+	case ctl.toggle:
+		return 2
+	}
+	return 3
+}
+
+// drawCtls draws the page's controls from row y down to bottom, scrolled so
+// the focused one is in view.
+func (m *Model) drawCtls(c *canvas, cx, y, cw, bottom int) {
 	th := m.st.th
-	for row, ctl := range m.setCtls() {
+	ctls := m.setCtls()
+	room := bottom - y
+	start, focusTop, focusEnd := 0, 0, 0
+	for row, ctl := range ctls {
+		h := ctlHeight(ctl, cw, room)
+		if row == m.set.row {
+			focusTop, focusEnd = start, start+h
+		}
+		start += h
+	}
+	off := 0
+	if focusEnd > room {
+		off = focusEnd - room
+	}
+	off = min(off, focusTop)
+	y -= off
+	for row, ctl := range ctls {
 		focused := row == m.set.row
 		st := fgb(th.fg)
 		if focused {
@@ -404,7 +448,7 @@ func (m *Model) drawCtls(c *canvas, cx, y, cw int) {
 		}
 		switch {
 		case ctl.themes:
-			y = m.drawThemeCards(c, cx, y+1, cw, row) + 1
+			y = m.drawThemeCards(c, cx, y+1, cw, room, row) + 1
 		case ctl.toggle:
 			on := ctl.cur == 1
 			a := "set:" + strconv.Itoa(row) + ":0"
@@ -454,29 +498,44 @@ func (m *Model) drawCtls(c *canvas, cx, y, cw int) {
 
 // drawThemeCards draws the 5×2 grid of theme previews; it returns the row
 // after it.
-func (m *Model) drawThemeCards(c *canvas, x, y, w, row int) int {
+func (m *Model) drawThemeCards(c *canvas, x, y, w, room, row int) int {
 	th := m.st.th
-	cols := 5
-	for cols > 1 && cols*16 > w {
-		cols--
-	}
+	cols, rows, compact := themeGrid(w, room)
 	for k, id := range themeOrder {
 		t := themes[id]
-		bx, by := x+(k%cols)*16, y+(k/cols)*6
 		a := "set:" + strconv.Itoa(row) + ":" + strconv.Itoa(k)
+		cur := t == th
+		mark := "  "
+		if cur {
+			mark = "✓ "
+		}
+		if compact {
+			// one line per card: the theme's own colors and name
+			bx, by := x+(k%cols)*16, y+(k/cols)*2
+			c.fill(bx, by, 14, 1, t.bg, a)
+			c.put(bx, by, "▌", fgc(t.accent), a)
+			st := fgc(t.fg)
+			if cur {
+				st = fgb(t.accent)
+			}
+			c.put(bx+1, by, mark+id, st.on(t.bg), a)
+			continue
+		}
+		bx, by := x+(k%cols)*16, y+(k/cols)*6
 		c.fill(bx, by, 14, 4, t.bg, a)
 		c.fill(bx, by, 3, 4, t.panel, a)
 		c.put(bx+4, by+1, "│", fgc(t.nicks[1]), a)
 		c.put(bx+6, by+1, "────", fgc(t.fg), a)
 		c.put(bx+7, by+2, "────", fgc(t.dim), a)
 		c.put(bx+12, by+2, "│", fgc(t.accent), a)
-		cur := t == th
 		st := fgc(th.dim)
-		mark := "  "
 		if cur {
-			st, mark = fgb(th.accent), "✓ "
+			st = fgb(th.accent)
 		}
 		c.put(bx, by+4, mark+id, st, a)
 	}
-	return y + ((len(themeOrder)+cols-1)/cols)*6 - 1
+	if compact {
+		return y + rows*2 - 1
+	}
+	return y + rows*6 - 1
 }

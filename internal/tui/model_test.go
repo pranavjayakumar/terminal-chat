@@ -88,7 +88,7 @@ func checkView(t *testing.T, m *Model, step string) string {
 	switch {
 	case m.overlayShown() || m.booting() || m.mode == modeViewer:
 		// a dialog or the loading screen covers the input
-	case g.inY >= 0 && g.inW >= 6:
+	case g.inY >= 0 && g.boxed:
 		top, bot := -1, -1
 		for i, l := range pl {
 			if strings.Contains(l, "╭") {

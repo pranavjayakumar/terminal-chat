@@ -34,6 +34,7 @@ type geo struct {
 	inX, inW       int // input box column and width
 	statusY        int
 	roomy          bool
+	boxed          bool // the input has its frame (not on tiny terminals)
 }
 
 func sbWidth(mode string) int {
@@ -99,13 +100,17 @@ func (m *Model) geo() geo {
 			g.thrFull = true
 		}
 	}
-	// The column's width follows the sidebar's final size, so a resize
-	// animation moves the column instead of re-wrapping every message.
+	// The column's width follows the final sidebar and thread pane sizes,
+	// so their slides move the column instead of re-wrapping every message.
 	tl := 0
 	if w := sbWidth(g.sb); w > 0 {
 		tl = w + 1
 	}
-	region = g.RX - tl
+	finalRX := m.w
+	if g.split && m.thread.open() {
+		finalRX = m.w - threadW
+	}
+	region = finalRX - tl
 	switch {
 	case region >= 70:
 		g.CW = min(maxColumn, region-8)
@@ -124,10 +129,15 @@ func (m *Model) geo() geo {
 		gap = 1
 	}
 	g.inX, g.inW = g.CX, g.CW
-	if g.split && m.thread.open() && g.tpW >= 12 {
-		g.inX, g.inW = g.RX+2, g.tpW-4
+	if g.split && m.thread.open() {
+		// final width, sliding in with the pane (the screen edge clips it)
+		g.inX, g.inW = g.RX+2, threadW-4
 	}
+	g.boxed = m.h >= 10 && g.inW >= 6
 	g.inH = m.inputRows(g.inW-4) + 2
+	if !g.boxed {
+		g.inH = m.inputRows(g.inW)
+	}
 	g.inY = g.statusY - gap - g.inH
 	g.noteY = g.inY - 1
 	if g.roomy {
@@ -182,6 +192,9 @@ func (m *Model) dims() dims {
 	}
 	d := dims{side: g.SB > 0, mainW: g.CW, inputW: max(g.inW-4, 1), msgW: g.CW, split: g.split, thrFull: g.thrFull,
 		inputH: g.inH - 2, bodyH: g.msgBot - g.msgTop, banner: g.banner >= 0}
+	if !g.boxed {
+		d.inputW, d.inputH = max(g.inW, 1), g.inH
+	}
 	switch {
 	case g.split:
 		d.thrW = max(threadW-4, 1)

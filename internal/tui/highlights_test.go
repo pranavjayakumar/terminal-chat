@@ -119,8 +119,12 @@ func gutterLines(m *Model, marks ...string) []string {
 			if mark == "*" {
 				want = m.st.th.warn
 			}
-			if bar.s == "│" && bar.fg == want {
-				out = append(out, strings.TrimSpace(strings.TrimPrefix(l.text(), "│")))
+			glyph := "┃"
+			if mark == "*" {
+				glyph = "┇"
+			}
+			if bar.s == glyph && bar.fg == want {
+				out = append(out, strings.TrimSpace(strings.TrimPrefix(l.text(), glyph)))
 			}
 		}
 	}

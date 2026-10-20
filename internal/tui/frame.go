@@ -34,6 +34,8 @@ func (m *Model) frame() *canvas {
 	if g.split {
 		m.drawThreadPane(c, g)
 	}
+	m.drawInput(c, g)
+	m.drawPopup(c, g)
 	if g.SB > 0 {
 		m.drawSidebar(c, g)
 	}
@@ -100,10 +102,6 @@ func (m *Model) drawMain(c *canvas, g geo) {
 		} else {
 			m.viewPane(c, &m.main, "main", g.CX, g.msgTop, g.CW, h, unread)
 		}
-		if m.compShown() {
-			rows := m.compLines(g.CW, h)
-			m.drawLines(c, g.CX, g.msgBot-len(rows), g.CW, len(rows), rows)
-		}
 	}
 	if g.noteY >= 0 && g.noteY < g.statusY {
 		c.putANSI(g.CX, g.noteY, m.statusLine(g.CW), g.CW, fgc(th.fg), "")
@@ -111,7 +109,24 @@ func (m *Model) drawMain(c *canvas, g geo) {
 	if g.inX != g.CX {
 		m.drawIdleInput(c, g)
 	}
-	m.drawInput(c, g)
+}
+
+// drawPopup is the completion popup, just above the input it completes.
+func (m *Model) drawPopup(c *canvas, g geo) {
+	if !m.compShown() || m.overlayShown() {
+		return
+	}
+	bottom := g.msgBot
+	if g.inX != g.CX { // the thread pane's input
+		bottom = g.inY - 1
+	}
+	h := bottom - g.msgTop
+	if h <= 0 {
+		return
+	}
+	w := g.inW
+	rows := m.compLines(w, h)
+	m.drawLines(c, g.inX, bottom-len(rows), w, len(rows), rows)
 }
 
 // drawLines copies styled lines (overlay content) into a rectangle.
@@ -298,7 +313,7 @@ func (m *Model) blitRow(c *canvas, r prow, o int, p *pane, key string, x, y, w i
 			dst.fg = mix(th.bg, dst.fg, fade)
 		}
 		if pop < 1 {
-			if dst.s == "│" {
+			if isBar(dst.s) {
 				dst.fg = mix(0xffffff, th.accent, pop)
 			} else if dst.s != " " {
 				dst.fg = mix(th.accent, dst.fg, pop)
@@ -309,6 +324,9 @@ func (m *Model) blitRow(c *canvas, r prow, o int, p *pane, key string, x, y, w i
 		}
 		if lit && dst.bg == th.bg {
 			dst.bg = selBg
+		}
+		if sel && (bx == 0 || bx == r.b.w-1) && isBar(dst.s) {
+			dst.s, dst.fg, dst.attr = "▌", th.accent, dst.attr|aBold // selected, whatever the colors
 		}
 		if sel && !m.st.color {
 			dst.attr |= aMonoRev
@@ -490,10 +508,14 @@ func (m *Model) box(c *canvas, x, y, w, h int, col, bg rgb) {
 func (m *Model) drawInput(c *canvas, g geo) {
 	th := m.st.th
 	x, y, w, h := g.inX, g.inY, g.inW, g.inH
-	if y < 0 || w < 6 {
-		// No room for a frame: just the text.
-		y = max(g.statusY-1, 0)
-		c.putANSI(0, y, dropBidi(m.inputView()[0]), m.w, fgc(th.fg), "")
+	if !g.boxed || y < 0 {
+		// Tiny terminal: just the text rows, no frame.
+		y = max(y, 0)
+		for i, l := range m.inputView() {
+			if i < h {
+				c.putANSI(x, y+i, dropBidi(l), w, fgc(th.fg).on(th.panel), "focus:input")
+			}
+		}
 		return
 	}
 	col := mix(th.bg, th.accent, 0.75)
@@ -658,3 +680,5 @@ func findRef(msgs []client.Message, ref string) int {
 	}
 	return -1
 }
+
+func isBar(s string) bool { return s == "│" || s == "┃" || s == "┇" }

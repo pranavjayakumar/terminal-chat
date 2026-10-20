@@ -393,11 +393,47 @@ func xterm256(n int) rgb {
 	return 0
 }
 
+// nearest256 is the closest xterm color to c among 16–255 (the cube and the
+// grey ramp), so nearby dark surfaces stay distinct steps of the ramp
+// instead of all becoming one grey.
+func nearest256(c rgb) int {
+	r, g, b := c.parts()
+	best, bestD := 16, 1e18
+	for i := 16; i < 256; i++ {
+		x := xterm256(i)
+		xr, xg, xb := x.parts()
+		d := (r-xr)*(r-xr)*0.3 + (g-xg)*(g-xg)*0.59 + (b-xb)*(b-xb)*0.11
+		if d < bestD {
+			best, bestD = i, d
+		}
+	}
+	return best
+}
+
 // encoder turns cells into escape sequences for one color profile.
 type encoder struct {
-	prof  termenv.Profile
-	color bool
-	cache map[rgb][2]string
+	prof   termenv.Profile
+	color  bool
+	cache  map[rgb][2]string
+	pinned map[rgb]int // 256 colors: a theme's surfaces, kept distinct
+}
+
+// pinSurfaces gives th's bg, panel, element and line distinct 256-color
+// steps, each one further from bg than the last.
+func (e *encoder) pinSurfaces(th *theme) {
+	e.pinned = map[rgb]int{}
+	prev := -1
+	for _, c := range []rgb{th.bg, th.panel, th.element, th.line} {
+		i := nearest256(c)
+		if i >= 232 && prev >= 232 {
+			if th.light && i >= prev {
+				i = max(prev-1, 232)
+			} else if !th.light && i <= prev {
+				i = min(prev+1, 255)
+			}
+		}
+		e.pinned[c], prev = i, i
+	}
 }
 
 func newEncoder(p termenv.Profile, color bool) *encoder {
@@ -405,9 +441,21 @@ func newEncoder(p termenv.Profile, color bool) *encoder {
 }
 
 func (e *encoder) seq(c rgb, bg bool) string {
+	if bg && e.prof == termenv.ANSI {
+		return "" // 16 colors can't hold the theme's surfaces: keep the terminal's own
+	}
 	k, ok := e.cache[c]
 	if !ok {
-		col := e.prof.Color(c.String())
+		var col termenv.Color
+		if e.prof == termenv.ANSI256 {
+			i, pinned := e.pinned[c]
+			if !pinned {
+				i = nearest256(c)
+			}
+			col = termenv.ANSI256Color(i)
+		} else {
+			col = e.prof.Color(c.String())
+		}
 		if col != nil {
 			k = [2]string{col.Sequence(false), col.Sequence(true)}
 		}
@@ -441,6 +489,9 @@ func (c *canvas) encode(e *encoder) string {
 				continue
 			}
 			k := key{cl.fg, cl.bg, cl.attr}
+			if e.color && e.prof == termenv.ANSI && cl.attr&aMonoRev != 0 {
+				k.attr |= aReverse // 16 colors draw no backgrounds: reverse marks it
+			}
 			if !e.color {
 				k.fg, k.bg = 0, 0
 				if cl.attr&aMonoRev != 0 {
