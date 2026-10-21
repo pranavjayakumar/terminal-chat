@@ -54,6 +54,27 @@ func TestGroupCommandSetsAndDeletes(t *testing.T) {
 	}
 }
 
+// "me" is reserved (#113): no new "me" group, and @me in a command is me,
+// never a legacy account named "me". An old "me" group can be deleted.
+func TestGroupCommandMe(t *testing.T) {
+	m, f := adminModel(t)
+	f.users = append(f.users, proto.User{ID: 77, Name: "me"})
+	m.reloadUsers()
+	submitCmd(m, "/group me @bob")
+	if !m.noticeErr || !strings.Contains(m.notice, "reserved") || f.called("group:me:[2]") {
+		t.Fatalf("notice %q calls %v", m.notice, f.calls)
+	}
+	runInput(t, m, "/group oncall @me @bob")
+	if !f.called("group:oncall:[1 2]") || f.called("group:oncall:[2 77]") {
+		t.Fatalf("@me went to someone else: %v", f.calls)
+	}
+	f.groups = append(f.groups, proto.Group{Name: "me", Members: []uint64{2}})
+	runInput(t, m, "/group me")
+	if !f.called("group:me:[]") {
+		t.Fatalf("delete of an old me group not sent: %v", f.calls)
+	}
+}
+
 // runInput types a command, presses Enter and plays the resulting commands.
 func runInput(t *testing.T, m *Model, line string) {
 	t.Helper()
@@ -68,7 +89,7 @@ func TestGroupCommandErrorsKeepTheInput(t *testing.T) {
 	for _, tc := range []struct{ line, want string }{
 		{"/group", "usage"},
 		{"/group Bad!Name @bob", "group names"},
-		{"/group ci-bot @bob", "group names"},
+		{"/group ci-bot @bob", "reserved for webhook bots"},
 		{"/group " + strings.Repeat("a", 33) + " @bob", "group names"},
 		{"/group bob @carol", "is a user's name"},
 		{"/group @alice @carol", "is a user's name"},

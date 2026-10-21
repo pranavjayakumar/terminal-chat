@@ -210,7 +210,8 @@ Kinds:
   `-bot` are reserved for webhook bots (§5 `hook.create`), and `me` is reserved because
   clients read `@me` as the caller's own notes; either → BYE `protocol_error`. A name
   that exists → BYE `name_taken`. Accounts named `me` from before the reservation keep
-  working (login doesn't check names).
+  working (login doesn't check names), but clients resolve `@me` to the caller, so others
+  can't address such an account by name.
 - **add key** (`invite.create {user}`): attaches `pubkey` to an existing user
   (new laptop). `name` is ignored.
 

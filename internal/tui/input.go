@@ -302,6 +302,11 @@ func (m *Model) atNames(ids []uint64) string {
 
 func (m *Model) findUser(name string) (uint64, bool) {
 	name = strings.ToLower(strings.TrimPrefix(name, "@"))
+	// @me is always you, even where an account was named "me" before the
+	// name was reserved (#113): /add, /group or /trust must not pick them.
+	if name == proto.NameMe && m.me.ID != 0 {
+		return m.me.ID, true
+	}
 	for _, u := range m.userList {
 		if strings.ToLower(u.Name) == name {
 			return u.ID, true
