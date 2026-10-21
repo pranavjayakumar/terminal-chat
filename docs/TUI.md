@@ -55,7 +55,10 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
 - Input: a rounded box (channel in the top edge, `public`/`private`/`◆ e2e` on its right, key hints in the
   bottom edge) that grows to max 6 lines; `Alt-Enter`/`Ctrl-J` inserts newline; `Enter` sends.
 - Huddle bar: one row under the header while a huddle runs in the open channel:
-  `♪ huddle m:ss ● mic  bob ▂▅▇▅ …  talk|mute leave` (in it) or `join`; a meter moves while that person talks.
+  `♪ huddle m:ss  you ⣀⡠⠔⠊⢁ ● live  bob ⣀⣀ …  mute leave` (in it; `⊘ muted` while the mic is closed) or
+  `join`. Meters are a braille line (one dot per sample, two per cell): yours rolls over 10 samples, others'
+  over 4, on the animation tick while you are in the huddle. Voice reports who is talking, not how loud,
+  so a meter moves while that person talks and lies on the floor otherwise.
 - Loading screen (logo, steps, progress) only on a first run with no local cache; a start with a cache
   draws the chat at once.
 
@@ -123,14 +126,17 @@ Unknown command → inline error, input kept.
 
 ### Completion popup
 
-While the input is a bare `/command` (no space yet) a popup of up to 4 rows just above the input lists the
+While the input is a bare `/command` (no space yet) a popup of up to 6 rows lists the
 matching commands (prefix matches first, then substring; an exact name first) with their argument hint and a
 dim one-line description; more matches scroll (`↑`/`↓` marks at the right). An `@` or `#` word at the cursor
 does the same for people (this channel's members first, then everyone else, then user groups like
 `@oncall`) and channels (joined ones first); a name equal to what was typed always comes first (my own name too, so `as @alice said` sends on Enter). For
-`@`/`#` a substring match needs two letters and never comes from digits alone, so `fixed in #12` isn't offered `#release-12`. The popup covers the bottom of the
-message list, above the status line (notices and connection state stay visible), with a dim `▏` gutter;
-it is never drawn outside normal mode.
+`@`/`#` a substring match needs two letters and never comes from digits alone, so `fixed in #12` isn't offered `#release-12`. The popup is an
+opaque floating panel on the input's left edge, one blank row above it (that row keeps showing notices and
+typing), at most 72 columns and never wider than the column: a rounded frame with the kind (`Commands`,
+`People`, `Channels`) and `i/N` in its top edge and `↑↓ move · ⇥ complete · ⏎ run · esc` in its bottom edge;
+rows in columns (completion, its arguments, the description), the selected or hovered row in the accent;
+a click picks a row. It fades and rises in unless animations are off, and is never drawn outside normal mode.
 
 - `↑`/`↓` or `Ctrl-P`/`Ctrl-N` move the highlight (wrapping). It stays on the same item when users or channels change under the open popup.
 - `Enter` or `Tab` puts the highlighted item into the input followed by a space (a whole `@`/`#` word is

@@ -83,7 +83,8 @@ type huddleUI struct {
 	talking  bool
 	here     int // people in the open channel's huddle, when we're not in it
 	hereWho  []uint64
-	joinedAt time.Time // when we joined the huddle we're in
+	meters   map[uint64][]uint8 // recent meter samples per person (chrome.go)
+	joinedAt time.Time          // when we joined the huddle we're in
 	counts   map[uint64]int
 	warned   error  // the HuddleWarning already shown
 	last     uint64 // the huddle we were in last

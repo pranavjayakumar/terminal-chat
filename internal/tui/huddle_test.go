@@ -172,7 +172,7 @@ func TestHuddleJoinTalkLeave(t *testing.T) {
 	}
 	h.rosters[m.active] = []uint64{2}
 	h.update(m)
-	if v := checkView(t, m, "huddle elsewhere"); !strings.Contains(v, "♪ huddle") || !strings.Contains(v, "bob ▁▁▁▁") || !strings.Contains(v, "join") {
+	if v := checkView(t, m, "huddle elsewhere"); !strings.Contains(v, "♪ huddle") || !strings.Contains(v, "bob ⣀⣀") || !strings.Contains(v, "join") {
 		t.Fatalf("live huddle not shown:\n%s", v)
 	}
 
@@ -202,7 +202,7 @@ func TestHuddleJoinTalkLeave(t *testing.T) {
 		t.Fatalf("tap should latch: talking=%v mode=%v", h.Talking(), m.hud.talk)
 	}
 	m.clearNotice()
-	if v := checkView(t, m, "talking"); !strings.Contains(v, "● mic") {
+	if v := checkView(t, m, "talking"); !strings.Contains(v, "● live") {
 		t.Fatalf("own mic not shown:\n%s", v)
 	}
 	clk.add(time.Second)
@@ -286,12 +286,12 @@ func TestHuddleNarrowKeepsMicAndErrors(t *testing.T) {
 	runInput(t, m, "/talk")
 	m.clearNotice()
 	h.update(m)
-	if v := checkView(t, m, "narrow talking"); !strings.Contains(v, "● mic") {
+	if v := checkView(t, m, "narrow talking"); !strings.Contains(v, "● live") {
 		t.Fatalf("mic marker lost at 40 cols:\n%s", v)
 	}
 	m.setErr("send", errors.New("offline"))
 	v := checkView(t, m, "narrow error")
-	if !strings.Contains(v, "! send") || !strings.Contains(v, "● mic") {
+	if !strings.Contains(v, "! send") || !strings.Contains(v, "● live") {
 		t.Fatalf("error or mic lost at 40 cols:\n%s", v)
 	}
 }
@@ -388,7 +388,7 @@ func TestHuddleClockSkewWarning(t *testing.T) {
 	}
 }
 
-// In a huddle the ● mic mark stays visible even behind a sticky error, Esc
+// In a huddle the ● live mark stays visible even behind a sticky error, Esc
 // closes an open mic, and herdr's title shows the open mic.
 func TestHuddleOpenMicVisible(t *testing.T) {
 	for _, w := range []int{20, 40, 80} {
@@ -397,7 +397,7 @@ func TestHuddleOpenMicVisible(t *testing.T) {
 		runInput(t, m, "/talk")
 		h.warn = client.ErrClockSkew
 		h.update(m)
-		if v := ansi.Strip(checkView(t, m, "open mic + error")); !strings.Contains(v, "● mic") {
+		if v := ansi.Strip(checkView(t, m, "open mic + error")); !strings.Contains(v, "● live") {
 			t.Fatalf("%d cols: open mic hidden:\n%s", w, v)
 		}
 		if got := m.badgeText(); !strings.HasPrefix(got, "tc · 🎧●") {
@@ -410,5 +410,65 @@ func TestHuddleOpenMicVisible(t *testing.T) {
 		if got := m.badgeText(); strings.Contains(got, "●") {
 			t.Fatalf("badge %q after mic off", got)
 		}
+	}
+}
+
+// Meters are a braille line: one dot per sample at its level, two
+// samples per cell.
+func TestBrailleLineMeter(t *testing.T) {
+	if got := braille([]uint8{0, 0, 3, 3, 1, 2}); got != "\u28c0\u2809\u2814" {
+		t.Fatalf("braille = %q", got)
+	}
+	if got := braille([]uint8{2}); got != "⢂" {
+		t.Fatalf("odd count = %q", got)
+	}
+}
+
+// In a huddle the bar shows our own rolling meter (10 samples, 5 cells)
+// with ● live while the mic sends and ⊘ muted otherwise; others get 2
+// cells. Samples roll only on the animation tick while we're in.
+func TestOwnVoiceMeter(t *testing.T) {
+	m, h := newHuddleModel(t, 120, 30)
+	clk := newClock(m)
+	m.fx.off = false
+	h.rosters[m.active] = []uint64{2}
+	runInput(t, m, "/huddle")
+	h.update(m)
+	v := checkView(t, m, "muted")
+	if !regexp.MustCompile(`you [⠀-⣿]{5} ⊘ muted`).MatchString(v) || !regexp.MustCompile(`bob [⠀-⣿]{2}`).MatchString(v) {
+		t.Fatalf("muted bar:\n%s", v)
+	}
+	runInput(t, m, "/talk")
+	h.update(m)
+	for i := 0; i < 12; i++ {
+		clk.add(200 * time.Millisecond)
+		m.Update(frameMsg{gen: m.fx.gen})
+	}
+	if s := m.hud.meters[m.me.ID]; len(s) != meMeterN {
+		t.Fatalf("own samples %v, want %d", s, meMeterN)
+	}
+	if s := m.hud.meters[2]; len(s) != otherMeterN {
+		t.Fatalf("bob's samples %v, want %d", s, otherMeterN)
+	}
+	if !m.slowWanted() {
+		t.Fatal("no tick in a huddle")
+	}
+	v = checkView(t, m, "live")
+	if !strings.Contains(v, "● live") || strings.Contains(v, "⊘ muted") {
+		t.Fatalf("live bar:\n%s", v)
+	}
+	// talking samples sit above the floor
+	moved := false
+	for _, l := range m.hud.meters[m.me.ID] {
+		moved = moved || l > 0
+	}
+	if !moved {
+		t.Fatal("own meter flat while talking")
+	}
+	runInput(t, m, "/leave-huddle")
+	h.update(m)
+	m.Update(frameMsg{gen: m.fx.gen})
+	if m.hud.meters != nil {
+		t.Fatal("meters kept after leaving")
 	}
 }

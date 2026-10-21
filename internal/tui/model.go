@@ -914,6 +914,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen == m.fx.gen {
 			m.fx.running = false
 		}
+		m.sampleMeters()
 		return m, nil
 	case noticeExpireMsg:
 		if msg.gen == m.noticeGen {

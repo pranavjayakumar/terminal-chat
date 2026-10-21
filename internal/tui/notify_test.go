@@ -464,7 +464,7 @@ func TestEscMicBeforeRing(t *testing.T) {
 	runInput(t, m, "/huddle")
 	runInput(t, m, "/talk")
 	startHuddle(m, h, 20, 2)
-	if v := ansi.Strip(checkView(t, m, "narrow ring")); !strings.Contains(v, "📞") || !strings.Contains(v, "● mic") {
+	if v := ansi.Strip(checkView(t, m, "narrow ring")); !strings.Contains(v, "📞") || !strings.Contains(v, "● live") {
 		t.Fatalf("ring or mic hidden:\n%s", v)
 	}
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
