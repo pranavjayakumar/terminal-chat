@@ -16,7 +16,7 @@ type keyGroup struct {
 
 var keyGroups = []keyGroup{
 	{"Navigate", [][2]string{
-		{"⌃K", "command palette"}, {"⌥↑ ⌥↓", "previous / next channel"}, {"⌃P ⌃N", "previous / next channel"},
+		{"⌥K", "command palette"}, {"⌥↑ ⌥↓", "previous / next channel"}, {"⌃P ⌃N", "previous / next channel"},
 		{"⌥⇧↑ ⌥⇧↓", "previous / next unread"}, {"⌥A", "activity"}, {"⌃B F2", "sidebar size"},
 		{"PgUp PgDn", "scroll history"}, {"End", "jump to newest"}, {"esc", "back out of anything"},
 	}},

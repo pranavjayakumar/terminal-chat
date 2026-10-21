@@ -533,7 +533,7 @@ func askName(env joinEnv, in *bufio.Reader, def string) (string, error) {
 func printJoinTips(env joinEnv, u proto.User) {
 	fmt.Fprintf(env.out, "\nYou're in as %s. Next:\n\n", sanitize.Line(u.Name))
 	fmt.Fprintln(env.out, "  tc               start chatting")
-	fmt.Fprintln(env.out, "  Ctrl-K / F1      jump to any channel or person / all keys")
+	fmt.Fprintln(env.out, "  Option-K / F1    command palette: jump anywhere, run anything / all keys")
 	fmt.Fprintln(env.out, "  /dm @name        message someone directly")
 	if env.herdr {
 		fmt.Fprintln(env.out, "\nIn herdr: run tc in a pane; mentions become herdr notifications and the pane title shows unread counts.")

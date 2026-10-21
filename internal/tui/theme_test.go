@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"math"
 	"testing"
 
 	"github.com/muesli/termenv"
@@ -51,6 +52,30 @@ func TestSurfacesSurvive256(t *testing.T) {
 				t.Errorf("%s: %s and %s both become %d", name, prev, s.n, i)
 			}
 			seen[i] = s.n
+		}
+	}
+}
+
+// Every theme's name colors are clearly different hues and readable on its
+// background, so people never look alike (not all green in phosphor).
+func TestNamePalettes(t *testing.T) {
+	for _, name := range themeOrder {
+		th := themes[name]
+		min := 3.0
+		if th.light {
+			min = 4.5
+		}
+		for i, a := range th.nicks {
+			if c := contrast(a, th.bg); c < min {
+				t.Errorf("%s: name color %v on bg is %.2f", name, a, c)
+			}
+			for _, b := range th.nicks[i+1:] {
+				d := math.Abs(a.hue() - b.hue())
+				d = math.Min(d, 360-d)
+				if d < 22 {
+					t.Errorf("%s: %v and %v are only %.0f° apart", name, a, b, d)
+				}
+			}
 		}
 	}
 }

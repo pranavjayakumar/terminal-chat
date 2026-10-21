@@ -20,6 +20,7 @@ type uiPrefs struct {
 	Theme      string `json:"theme,omitempty"`
 	Compact    bool   `json:"compact,omitempty"`
 	Sidebar    string `json:"sidebar,omitempty"`
+	Split      bool   `json:"split,omitempty"` // messages: ours on the right
 	NoMotion   bool   `json:"no_motion,omitempty"`
 	path       string
 	loadFailed bool

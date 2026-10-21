@@ -269,7 +269,7 @@ func TestJoinTips(t *testing.T) {
 	if err := runJoin(context.Background(), env, testInvite, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"You're in as ada", "tc ", "Ctrl-K", "F1", "/dm @name"} {
+	for _, want := range []string{"You're in as ada", "tc ", "Option-K", "F1", "/dm @name"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("missing %q:\n%s", want, out)
 		}

@@ -165,13 +165,13 @@ func (m *Model) viewPane(c *canvas, p *pane, key string, x, y, w, h, unread int)
 		return
 	}
 	if !p.open() {
-		msg := truncate("no channel — Ctrl-K to open one", w)
+		msg := truncate("no channel — ⌥K to open one", w)
 		c.put(x+(w-strWidth(msg))/2, y+h/2, msg, fgc(th.dim), "palette:")
 		return
 	}
 	rows, owner := m.paneLines(p, w)
 	if len(rows) == 0 && p == &m.main && !m.histBusy[p.ch] && m.histDone[p.ch] {
-		hint := "no messages yet — say hi · F1 help · Ctrl-K channels & people"
+		hint := "no messages yet — say hi · F1 help · ⌥K channels & people"
 		switch v, _ := m.chanView(p.ch); {
 		case v.Kind == proto.ChanDM && len(v.Members) == 1:
 			hint = "your notes — only you see them; /remind lands here"
@@ -371,13 +371,25 @@ func (m *Model) drawMsgFx(c *canvas, p *pane, o, x, y, w int) {
 			}
 			return mix(base, th.bg, age)
 		}
-		for i, px := range []int{lx - 2 - d, x + w + 1 + d} {
+		spots, above := []int{lx - 2 - d, x + w + 1 + d}, x+w-3-d
+		if !m.ui.Split || p.root != 0 {
+			// ours is on the left: around the end of its first row
+			rx := x + 1
+			for xx := x + w - 1; xx > x; xx-- {
+				if c.in(xx, y) && c.at(xx, y).s != " " {
+					rx = xx
+					break
+				}
+			}
+			spots, above = []int{rx + 2 + d, x - 2 - d}, rx-1+d
+		}
+		for i, px := range spots {
 			if c.in(px, y) && c.at(px, y).s == " " {
 				c.put(px, y, glyph, fgc(col(i)), "")
 			}
 		}
-		if age > 0.15 && c.in(x+w-3-d, y-1) && c.at(x+w-3-d, y-1).s == " " {
-			c.put(x+w-3-d, y-1, "·", fgc(col(1)), "")
+		if age > 0.15 && c.in(above, y-1) && c.at(above, y-1).s == " " {
+			c.put(above, y-1, "·", fgc(col(1)), "")
 		}
 	}
 	if r, ok := m.fx.react[k]; ok && m.running(r.at, dReact) {
@@ -421,8 +433,8 @@ func (m *Model) drawToolbar(c *canvas, p *pane, key string, o, x, y, w int) {
 	}
 	idx := msgRef(key, o, x0)
 	tx := x + w - 13
-	if x0.Author == m.me.ID && p.root == 0 {
-		tx = x + 1
+	if x0.Author == m.me.ID && p.root == 0 && m.ui.Split {
+		tx = x + 1 // ours is on the right: the toolbar goes left
 	}
 	for _, b := range [][2]string{{"☺", "react"}, {"↩", "reply"}, {"⧉", "copy"}, {"⋯", "more"}} {
 		a := "tb:" + idx + ":" + b[1]
@@ -525,7 +537,7 @@ func (m *Model) drawInput(c *canvas, g geo) {
 		c.putANSI(x+2, y+1+i, dropBidi(lines[i]), w-4, fgc(th.fg).on(th.panel), "focus:input")
 	}
 	// key hints in the bottom edge
-	keys := [][3]string{{"⌃K", "commands", "palette:"}, {"⌥⏎", "newline", ""}, {"⏎", "send", "send"}}
+	keys := [][3]string{{"⌥K", "commands", "palette:"}, {"⌥⏎", "newline", ""}, {"⏎", "send", "send"}}
 	if m.mode == modeSelect {
 		keys = [][3]string{{"esc", "back", ""}}
 	}

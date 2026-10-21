@@ -1293,7 +1293,7 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 	switch {
 	case key == kTab && m.tabComplete():
 		return nil
-	case key == kSwitcher:
+	case isSwitcher(key):
 		m.openSwitcher()
 		return nil
 	case key == kActivity:
