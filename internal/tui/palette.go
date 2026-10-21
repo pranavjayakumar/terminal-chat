@@ -90,6 +90,11 @@ func (m *Model) palSettings() []palItem {
 		anim = "Animations: off"
 	}
 	out = append(out, palItem{group: "Settings", label: anim, desc: "fades, pops, slides", icon: "✦", run: "app:motion", tabs: "s"})
+	layout := "Messages: left"
+	if m.ui.Split {
+		layout = "Messages: split"
+	}
+	out = append(out, palItem{group: "Settings", label: layout, desc: "everyone on the left, or yours on the right", icon: "≡", run: "app:split", tabs: "s"})
 	for _, id := range themeOrder {
 		t := themes[id]
 		it := palItem{group: "Theme", label: id, desc: t.desc, icon: "■", iconFg: t.accent, run: "theme:" + id, tabs: "as"}
@@ -299,6 +304,13 @@ func (m *Model) palRun(it palItem) tea.Cmd {
 				break
 			}
 		}
+		return nil
+	case run == "app:split":
+		m.setSplit(!m.ui.Split)
+		m.pal.items = m.palItems()
+		sel := m.pal.sel
+		m.filterPalette()
+		m.pal.sel = sel
 		return nil
 	case run == "app:motion":
 		m.setMotion(m.fx.off)

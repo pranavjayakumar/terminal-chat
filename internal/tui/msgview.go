@@ -28,6 +28,7 @@ type blockKey struct {
 	renderKey
 	th      *theme
 	left    bool // thread pane: everyone on the left
+	split   bool // Settings › Messages: Split (ours on the right)
 	tail    bool // last of its group: ours shows time and status
 	concern concern
 }
@@ -121,15 +122,22 @@ func (m *Model) msgBlock(x client.Message, cw int, header, tail, left bool) *can
 
 // msgBlockFrom is msgBlock, first looking in prev (a pane's last layout).
 func (m *Model) msgBlockFrom(prev map[blockKey]*canvas, x client.Message, cw int, header, tail, left bool) *canvas {
-	mine := x.Author == m.me.ID && !left
-	k := blockKey{renderKey: keyFor(x, cw, header), th: m.st.th, left: left, tail: tail, concern: m.concernOf(x)}
+	own := x.Author == m.me.ID
+	mine := own && !left && m.ui.Split // drawn on the right
+	k := m.blockKeyOf(x, cw, header, tail, left)
 	if b, ok := prev[k]; ok {
 		return b
 	}
-	return m.blocks.get(k, func() *canvas { return m.drawBlock(x, cw, header, tail, mine, k.concern) })
+	return m.blocks.get(k, func() *canvas { return m.drawBlock(x, cw, header, tail, mine, own, k.concern) })
 }
 
-func (m *Model) drawBlock(x client.Message, cw int, header, tail, mine bool, cc concern) *canvas {
+func (m *Model) blockKeyOf(x client.Message, cw int, header, tail, left bool) blockKey {
+	return blockKey{renderKey: keyFor(x, cw, header), th: m.st.th, left: left, split: m.ui.Split, tail: tail, concern: m.concernOf(x)}
+}
+
+// drawBlock draws one message. mine: ours on the right (split layout);
+// own: ours, wherever it goes.
+func (m *Model) drawBlock(x client.Message, cw int, header, tail, mine, own bool, cc concern) *canvas {
 	th := m.st.th
 	g := newGrower(cw, th)
 	c := func() *canvas { return g.c }
@@ -154,8 +162,10 @@ func (m *Model) drawBlock(x client.Message, cw int, header, tail, mine bool, cc 
 		if m.users[x.Author].Bot {
 			e = c().put(e, y, botTag, fgc(th.faint), "")
 		}
-		ts := time.UnixMilli(x.ShownTime()).Local().Format("15:04")
-		c().put(e+2, y, ts, fgc(th.faint), "")
+		if !own { // ours shows its time and status under the text
+			ts := time.UnixMilli(x.ShownTime()).Local().Format("15:04")
+			c().put(e+2, y, ts, fgc(th.faint), "")
+		}
 		first = 1
 	}
 	line := func(text string, st cstyle) {
@@ -202,7 +212,7 @@ func (m *Model) drawBlock(x client.Message, cw int, header, tail, mine bool, cc 
 		}
 	}
 	barEnd := g.n
-	if mine && (tail || x.Pending || x.Failed != "") && x.Failed == "" {
+	if own && (tail || x.Pending) && x.Failed == "" {
 		y := g.row()
 		st := "✓"
 		if x.Pending {
@@ -210,13 +220,16 @@ func (m *Model) drawBlock(x client.Message, cw int, header, tail, mine bool, cc 
 		}
 		meta := time.UnixMilli(x.ShownTime()).Local().Format("15:04") + " " + st
 		c().put(at(strWidth(meta)), y, meta, fgc(th.faint), "")
+		if !mine {
+			barEnd = g.n // on the left the bar runs down to it
+		}
 	}
 	if g.n == first {
 		g.row()
 		barEnd = g.n
 	}
 	out := g.done()
-	bar := mix(th.bg, th.nick(x.Author), 0.55)
+	bar := mix(th.bg, th.nick(x.Author), 0.9)
 	bx, glyph := 0, "│"
 	switch {
 	case mine:

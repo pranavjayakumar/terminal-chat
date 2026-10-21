@@ -51,8 +51,18 @@ func click(t *testing.T, m *Model, prefix string) {
 
 // The frame fits at every size the spec names, mid-animation included.
 func TestFramesFitWithMotion(t *testing.T) {
-	for _, sz := range [][2]int{{80, 24}, {120, 40}, {160, 48}, {40, 24}, {40, 12}, {20, 6}, {200, 60}} {
+	for _, split := range []bool{false, true} {
+		for _, sz := range [][2]int{{80, 24}, {120, 40}, {160, 48}, {40, 24}, {40, 12}, {20, 6}, {200, 60}} {
+			framesFit(t, sz, split)
+		}
+	}
+}
+
+func framesFit(t *testing.T, sz [2]int, split bool) {
+	t.Helper()
+	{
 		m, f, clk := motionModel(t, sz[0], sz[1], "")
+		m.ui.Split = split
 		step := func(name string) {
 			t.Helper()
 			for i := 0; i < 6; i++ {
@@ -249,13 +259,17 @@ func TestSettingsDialog(t *testing.T) {
 	if m.ui.sidebarMode() != sbWide {
 		t.Fatalf("sidebar %q", m.ui.sidebarMode())
 	}
+	press(m, "down", "right") // messages: left → split
+	if !m.ui.Split {
+		t.Fatal("messages layout")
+	}
 	press(m, "down", "right") // "show people as": later styles are greyed and skipped
 	press(m, "down", "enter") // animations: tests start with them off
 	if m.fx.off || m.ui.NoMotion {
 		t.Fatal("animations toggle")
 	}
 	b, _ := os.ReadFile(path)
-	for _, want := range []string{`"theme": "sky"`, `"compact": true`, `"sidebar": "wide"`} {
+	for _, want := range []string{`"theme": "sky"`, `"compact": true`, `"sidebar": "wide"`, `"split": true`} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("ui.json lacks %s: %s", want, b)
 		}
@@ -287,7 +301,7 @@ func TestSettingsDialog(t *testing.T) {
 	if m.ui.Compact {
 		t.Fatal("click cozy")
 	}
-	click(t, m, "set:3:1")
+	click(t, m, "set:4:1")
 	if !strings.Contains(m.notice, "later") {
 		t.Fatalf("greyed style: %q", m.notice)
 	}
@@ -517,7 +531,7 @@ func TestSettingsFocusVisible(t *testing.T) {
 	for _, sz := range [][2]int{{80, 24}, {100, 30}, {40, 50}, {160, 48}} {
 		m := newTestModel(t, sz[0], sz[1])
 		m.openSettings("appearance")
-		for i, want := range []string{"Theme", "Density", "Sidebar", "Show people as", "Animations"} {
+		for i, want := range []string{"Theme", "Density", "Sidebar", "Messages", "Show people as", "Animations"} {
 			ok := false
 			for _, l := range strings.Split(checkView(t, m, want), "\n") {
 				ok = ok || strings.Contains(l, "›") && strings.Contains(l, want)
@@ -734,5 +748,41 @@ func TestCompletionPopupRises(t *testing.T) {
 	lines = strings.Split(checkView(t, m, "settled"), "\n")
 	if !strings.Contains(lines[r.y0], "╭─ Commands") || m.fastWanted() {
 		t.Fatalf("not settled: %q", lines[r.y0])
+	}
+}
+
+// Messages: Left (default) or Split, from Settings or the palette; in the
+// left layout the hover toolbar sits at the right end of the first line.
+func TestMessageLayoutSetting(t *testing.T) {
+	m := newTestModel(t, 140, 44)
+	if m.ui.Split {
+		t.Fatal("split by default")
+	}
+	press(m, "ctrl+k", "tab", "tab", "tab", "tab")
+	typeVia(m, "messages")
+	press(m, "enter")
+	if !m.ui.Split || m.mode != modeSwitcher {
+		t.Fatalf("palette row: split %v mode %v", m.ui.Split, m.mode)
+	}
+	press(m, "enter")
+	press(m, "esc")
+	if m.ui.Split {
+		t.Fatal("palette row didn't toggle back")
+	}
+	// A hovered message: the toolbar sits at the right end of its first line.
+	x, y := find(t, m, "msg:main:")
+	m.Update(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionMotion})
+	checkView(t, m, "hover")
+	g := m.geo()
+	c := m.lastCanvas
+	tb := -1
+	for xx := g.CX; xx < g.CX+g.CW; xx++ {
+		if strings.HasPrefix(c.actionAt(xx, y), "tb:") {
+			tb = xx
+			break
+		}
+	}
+	if hk, _, ok := m.hoverMsg(); ok && hk == "main" && tb >= 0 && tb < g.CX+g.CW-14 {
+		t.Fatalf("toolbar at %d, column ends at %d", tb, g.CX+g.CW)
 	}
 }

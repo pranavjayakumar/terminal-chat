@@ -54,6 +54,18 @@ func (m *Model) setMotion(on bool) {
 	m.applyCursorMode()
 }
 
+// setSplit picks the message layout: everyone on the left, or ours on the
+// right.
+func (m *Model) setSplit(on bool) {
+	if m.ui.Split == on {
+		return
+	}
+	m.ui.Split = on
+	m.savePrefs()
+	m.main.ver++
+	m.thread.ver++
+}
+
 func (m *Model) setCompact(on bool) {
 	m.ui.Compact = on
 	m.savePrefs()
@@ -130,6 +142,8 @@ func (m *Model) setCtls() []setCtl {
 				pick: func(i int) tea.Cmd { m.setCompact(i == 1); return nil }},
 			{label: "Sidebar", sub: "or click its edge, or ⌃B", opts: []string{"Icons", "Normal", "Wide"}, cur: sb,
 				pick: func(i int) tea.Cmd { m.setSidebar([]string{sbIcons, sbNormal, sbWide}[i]); return nil }},
+			{label: "Messages", sub: "split puts yours on the right", opts: []string{"Left", "Split"}, cur: boolInt(m.ui.Split),
+				pick: func(i int) tea.Cmd { m.setSplit(i == 1); return nil }},
 			{label: "Show people as", sub: "more styles later", opts: []string{"Name", "~Stripe", "~Tag", "~Shape"},
 				pick: func(int) tea.Cmd { return nil }},
 			{label: "Animations", sub: "fades, pops, slides · off = instant", toggle: true, cur: boolInt(!m.fx.off),

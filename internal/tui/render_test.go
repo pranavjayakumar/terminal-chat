@@ -261,7 +261,14 @@ func TestMessageLayout(t *testing.T) {
 	if strings.Contains(g[0], "bob") || strings.Contains(g[0], "10:42") {
 		t.Fatalf("grouped message shows header: %q", g[0])
 	}
-	// Mine: right-aligned against an accent bar, time and status under it.
+	// Default (left): ours like everyone's, name in our color, time and
+	// status under the text, the bar in our color.
+	lb, left := block(m, msg(2, 1, "on it"), 60, true)
+	if strings.Join(left, "|") != "│ alice|│ on it|│ 10:42 ✓" || lb.at(0, 0).fg != mix(m.st.th.bg, m.st.th.nick(1), 0.9) {
+		t.Fatalf("own message, left: %q", left)
+	}
+	// Split: right-aligned against an accent bar, time and status under it.
+	m.ui.Split = true
 	b, mine := block(m, msg(2, 1, "on it"), 60, true)
 	if !strings.HasSuffix(mine[0], "on it │") || b.at(59, 0).fg != m.st.th.accent {
 		t.Fatalf("own message: %q", mine)
@@ -330,7 +337,7 @@ func TestFooterAndStates(t *testing.T) {
 	pend := msg(0, 1, "wait")
 	pend.Pending = true
 	pb, pr := block(m, pend, 80, true)
-	if c := cellAt(pb, pr, 0, "wait"); c == nil || c.fg != m.st.th.dim || !strings.Contains(strings.Join(pr, ""), "◌") {
+	if c := cellAt(pb, pr, rowWith(pr, "wait"), "wait"); c == nil || c.fg != m.st.th.dim || !strings.Contains(strings.Join(pr, ""), "◌") {
 		t.Errorf("pending not dim or no ◌: %q %+v", pr, c)
 	}
 }

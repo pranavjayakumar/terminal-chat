@@ -371,13 +371,25 @@ func (m *Model) drawMsgFx(c *canvas, p *pane, o, x, y, w int) {
 			}
 			return mix(base, th.bg, age)
 		}
-		for i, px := range []int{lx - 2 - d, x + w + 1 + d} {
+		spots, above := []int{lx - 2 - d, x + w + 1 + d}, x+w-3-d
+		if !m.ui.Split || p.root != 0 {
+			// ours is on the left: around the end of its first row
+			rx := x + 1
+			for xx := x + w - 1; xx > x; xx-- {
+				if c.in(xx, y) && c.at(xx, y).s != " " {
+					rx = xx
+					break
+				}
+			}
+			spots, above = []int{rx + 2 + d, x - 2 - d}, rx-1+d
+		}
+		for i, px := range spots {
 			if c.in(px, y) && c.at(px, y).s == " " {
 				c.put(px, y, glyph, fgc(col(i)), "")
 			}
 		}
-		if age > 0.15 && c.in(x+w-3-d, y-1) && c.at(x+w-3-d, y-1).s == " " {
-			c.put(x+w-3-d, y-1, "·", fgc(col(1)), "")
+		if age > 0.15 && c.in(above, y-1) && c.at(above, y-1).s == " " {
+			c.put(above, y-1, "·", fgc(col(1)), "")
 		}
 	}
 	if r, ok := m.fx.react[k]; ok && m.running(r.at, dReact) {
@@ -421,8 +433,8 @@ func (m *Model) drawToolbar(c *canvas, p *pane, key string, o, x, y, w int) {
 	}
 	idx := msgRef(key, o, x0)
 	tx := x + w - 13
-	if x0.Author == m.me.ID && p.root == 0 {
-		tx = x + 1
+	if x0.Author == m.me.ID && p.root == 0 && m.ui.Split {
+		tx = x + 1 // ours is on the right: the toolbar goes left
 	}
 	for _, b := range [][2]string{{"☺", "react"}, {"↩", "reply"}, {"⧉", "copy"}, {"⋯", "more"}} {
 		a := "tb:" + idx + ":" + b[1]
