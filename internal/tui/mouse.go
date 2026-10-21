@@ -207,6 +207,14 @@ func (m *Model) click(a string) tea.Cmd {
 			m.layoutInput()
 			return nil
 		}
+	case "comp":
+		i, err := strconv.Atoi(rest)
+		if err != nil || !m.compShown() || i < 0 || i >= len(m.comp.items) {
+			return nil
+		}
+		m.comp.sel = i
+		cmd, _ := m.compKey(kTab)
+		return cmd
 	case "focus":
 		if m.mode == modeSelect {
 			m.leaveSelect()

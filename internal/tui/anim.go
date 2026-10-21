@@ -71,6 +71,9 @@ type fxState struct {
 
 	dialogAt time.Time
 
+	compAt    time.Time // the completion popup opened
+	compShown bool
+
 	themePrev *canvas
 	themeAt   time.Time
 
@@ -129,6 +132,7 @@ func (m *Model) fastWanted() bool {
 	}
 	return m.running(f.slideAt, dSlide) || m.running(f.sbAt, dSlide) || m.running(f.paneAt, dPane) ||
 		m.running(f.dialogAt, dDialog) || m.running(f.themeAt, dTheme) || m.running(f.bootAt, dBoot) ||
+		m.running(f.compAt, dToast) ||
 		m.toastMoving()
 }
 

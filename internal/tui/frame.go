@@ -111,24 +111,6 @@ func (m *Model) drawMain(c *canvas, g geo) {
 	}
 }
 
-// drawPopup is the completion popup, just above the input it completes.
-func (m *Model) drawPopup(c *canvas, g geo) {
-	if !m.compShown() || m.overlayShown() {
-		return
-	}
-	bottom := g.msgBot
-	if g.inX != g.CX { // the thread pane's input
-		bottom = g.inY - 1
-	}
-	h := bottom - g.msgTop
-	if h <= 0 {
-		return
-	}
-	w := g.inW
-	rows := m.compLines(w, h)
-	m.drawLines(c, g.inX, bottom-len(rows), w, len(rows), rows)
-}
-
 // drawLines copies styled lines (overlay content) into a rectangle.
 func (m *Model) drawLines(c *canvas, x, y, w, h int, lines []string) {
 	for i := 0; i < h && i < len(lines); i++ {

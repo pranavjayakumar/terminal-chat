@@ -638,3 +638,101 @@ func TestBlankRowAfterCodeBlock(t *testing.T) {
 		}
 	}
 }
+
+// The completion popup is an opaque framed panel on the input's left edge,
+// one blank row above the input, no wider than 72 or the column.
+func TestCompletionPopupPanel(t *testing.T) {
+	for _, sz := range [][2]int{{200, 60}, {120, 40}, {80, 24}, {40, 12}} {
+		m := newTestModel(t, sz[0], sz[1])
+		typeKeys(m, "/")
+		g := m.geo()
+		r, n, framed := m.popupRect(g)
+		if !framed || n == 0 {
+			t.Fatalf("%v: no framed popup", sz)
+		}
+		if w := r.x1 - r.x0; w > popupMaxW || w > g.CW || r.x0 != g.inX {
+			t.Fatalf("%v: popup at %d, %d wide (column %d at %d)", sz, r.x0, w, g.CW, g.inX)
+		}
+		if r.y1 != g.inY-1 {
+			t.Fatalf("%v: popup ends at %d, input at %d: want one blank row", sz, r.y1, g.inY)
+		}
+		lines := strings.Split(checkView(t, m, "popup"), "\n")
+		top, bot := lines[r.y0], lines[r.y1-1]
+		if !strings.Contains(top, "╭─ Commands ") || !strings.Contains(top, " 1/") || !strings.Contains(bot, "╯") {
+			t.Fatalf("%v: edges %q / %q", sz, top, bot)
+		}
+		if sz[0] >= 80 && !strings.Contains(bot, "↑↓ move · ⇥ complete · ⏎ run · esc") {
+			t.Fatalf("%v: no key hint: %q", sz, bot)
+		}
+		// Opaque: every cell inside is the panel (or the selected row's
+		// accent), never the chat behind it.
+		c := m.lastCanvas
+		for y := r.y0 + 1; y < r.y1-1; y++ {
+			for x := r.x0 + 1; x < r.x1-1; x++ {
+				if bg := c.at(x, y).bg; bg != m.st.th.panel && bg != m.st.th.accent {
+					t.Fatalf("%v: cell %d,%d shows through (bg %v)", sz, x, y, bg)
+				}
+			}
+		}
+		if !strings.Contains(lines[r.y0+2], "/join") || c.at(r.x0+3, r.y0+2).bg != m.st.th.accent {
+			t.Fatalf("%v: first row not selected at col 3: %q", sz, lines[r.y0+2])
+		}
+		if len(m.comp.items) > n && !strings.Contains(lines[r.y0+1+n], "↓") {
+			t.Fatalf("%v: no ↓ on the last row: %q", sz, lines[r.y0+1+n])
+		}
+	}
+	// Columns: command at 3, its arguments at 12, the description at 32.
+	m := newTestModel(t, 160, 48)
+	typeKeys(m, "/jo")
+	g := m.geo()
+	r, _, _ := m.popupRect(g)
+	row := strings.Split(checkView(t, m, "cols"), "\n")[r.y0+2]
+	at := func(s string) int { return strWidth(row[:strings.Index(row, s)]) - r.x0 }
+	if at("/join") != 3 || at("#x") != 12 || at("join or open") != 32 {
+		t.Fatalf("columns %d %d %d in %q", at("/join"), at("#x"), at("join or open"), row)
+	}
+	// People: name | detail.
+	m.input.Reset()
+	typeKeys(m, "@ca")
+	if v := checkView(t, m, "people"); !strings.Contains(v, " People ") || !strings.Contains(v, "@carol") {
+		t.Fatalf("people popup:\n%s", v)
+	}
+}
+
+// The pointer highlights a popup row; a click picks it.
+func TestCompletionPopupMouse(t *testing.T) {
+	m := newTestModel(t, 120, 40)
+	typeKeys(m, "/")
+	x, y := find(t, m, "comp:2")
+	m.Update(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionMotion})
+	m.View()
+	if m.lastCanvas.at(x+3, y).bg != m.st.th.accent || m.lastCanvas.at(x+3, y-2).bg == m.st.th.accent {
+		t.Fatal("hover didn't move the highlight")
+	}
+	want := m.comp.items[2].text
+	click(t, m, "comp:2")
+	if !strings.HasPrefix(m.input.Value(), want+" ") || m.compShown() {
+		t.Fatalf("click: input %q, popup shown %v", m.input.Value(), m.compShown())
+	}
+}
+
+// With motion on the popup fades and rises in, then settles one row
+// above the input.
+func TestCompletionPopupRises(t *testing.T) {
+	m, _, clk := motionModel(t, 120, 40, "")
+	typeKeys(m, "/")
+	g := m.geo()
+	r, _, _ := m.popupRect(g)
+	lines := strings.Split(checkView(t, m, "rising"), "\n")
+	if !strings.Contains(lines[r.y0+1], "╭") {
+		t.Fatalf("not one row low while rising: %q", lines[r.y0+1])
+	}
+	if !m.fastWanted() {
+		t.Fatal("no frames while the popup rises")
+	}
+	clk.add(time.Second)
+	lines = strings.Split(checkView(t, m, "settled"), "\n")
+	if !strings.Contains(lines[r.y0], "╭─ Commands") || m.fastWanted() {
+		t.Fatalf("not settled: %q", lines[r.y0])
+	}
+}

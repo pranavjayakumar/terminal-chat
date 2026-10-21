@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -43,7 +44,7 @@ func TestSlashMenuOpensAndFilters(t *testing.T) {
 			t.Fatalf("%v: / didn't open the menu", sz)
 		}
 		plain := checkView(t, m, "/")
-		if sz[1] >= 12 && !strings.Contains(plain, "/join #x") {
+		if sz[1] >= 12 && !regexp.MustCompile(`/join +#x`).MatchString(plain) {
 			t.Fatalf("%v: menu not drawn:\n%s", sz, plain)
 		}
 		// Scroll to the last item (↑ wraps) and back.

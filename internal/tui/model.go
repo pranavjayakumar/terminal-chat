@@ -885,6 +885,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = tea.Batch(cmd, t)
 	}
 	m.endBoot()
+	if shown := m.compShown(); shown != m.fx.compShown {
+		m.fx.compShown = shown
+		if shown {
+			m.fx.compAt = m.now() // the popup fades and rises in
+		}
+	}
 	if t := m.frameTick(); t != nil {
 		cmd = tea.Batch(cmd, t)
 	}
