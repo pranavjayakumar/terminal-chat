@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -139,3 +140,10 @@ var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 
 // ValidName reports whether s is a valid user or channel name (PROTOCOL.md §9).
 func ValidName(s string) bool { return nameRE.MatchString(s) }
+
+// NameMe is "@me", your own notes: no user or group may take it (§4.1).
+const NameMe = "me"
+
+// ReservedName reports whether s may not be a new user or group name even
+// though it is a ValidName: "me", and the webhook bots' "-bot" names.
+func ReservedName(s string) bool { return s == NameMe || strings.HasSuffix(s, BotSuffix) }

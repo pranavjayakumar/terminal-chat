@@ -223,6 +223,10 @@ func joinWithKeys(ctx context.Context, env joinEnv, inv proto.Invite, code, name
 		}
 	} else if !proto.ValidName(name) {
 		return fmt.Errorf("--name %q: use 1-32 of a-z 0-9 _ - (starting with a letter or digit)", sanitize.Line(name))
+	} else if name == proto.NameMe {
+		return errors.New(`--name me: "me" is reserved (@me means your own notes); pick another name`)
+	} else if proto.ReservedName(name) {
+		return fmt.Errorf("--name %s: names ending in -bot are reserved for webhook bots; pick another name", name)
 	}
 
 	lctx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -493,7 +497,7 @@ func sanitizeName(s string) string {
 	if len(n) > 32 {
 		n = n[:32]
 	}
-	if !proto.ValidName(n) || strings.HasSuffix(n, proto.BotSuffix) {
+	if !proto.ValidName(n) || proto.ReservedName(n) {
 		return ""
 	}
 	return n
@@ -519,13 +523,13 @@ func askName(env joinEnv, in *bufio.Reader, def string) (string, error) {
 		if line == "" {
 			line = def
 		}
-		if line != "" && proto.ValidName(line) && !strings.HasSuffix(line, proto.BotSuffix) {
+		if line != "" && proto.ValidName(line) && !proto.ReservedName(line) {
 			return line, nil
 		}
 		if err != nil {
 			return "", errors.New("no name given; pass --name you")
 		}
-		fmt.Fprintln(env.out, "Use 1-32 of a-z 0-9 _ - (starting with a letter or digit), not ending in -bot.")
+		fmt.Fprintln(env.out, "Use 1-32 of a-z 0-9 _ - (starting with a letter or digit), not ending in -bot, not \"me\".")
 	}
 	return "", errors.New("no valid name given; pass --name you")
 }

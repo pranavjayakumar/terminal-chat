@@ -47,6 +47,9 @@ func (m *Model) groupCommand(c command) (cmd tea.Cmd, ok bool, err error) {
 	if !proto.ValidName(name) || strings.HasSuffix(name, proto.BotSuffix) {
 		return nil, true, errors.New("group names are 1-32 of a-z 0-9 _ - (lowercase)")
 	}
+	if name == proto.NameMe && len(c.args) > 1 {
+		return nil, true, errors.New(`"me" is reserved: @me means your own notes`)
+	}
 	if _, isUser := m.findUser(name); isUser {
 		return nil, true, fmt.Errorf("%s is a user's name", sanitize.Line(name))
 	}

@@ -431,6 +431,21 @@ func TestBotCannotLogIn(t *testing.T) {
 	ts.register(t, "ci", false)
 }
 
+// "me" is your own notes (@me), never someone's account (#113); names that
+// merely contain it stay free.
+func TestUserNameMeReserved(t *testing.T) {
+	ts := startServer(t, "tcp")
+	code, _ := ts.CreateInvite(context.Background(), false, 0)
+	inv, _ := proto.ParseInvite(code)
+	if _, bye := ts.connect(t, newKey(t), inv.Token, "me"); bye != proto.ByeProtocolError {
+		t.Fatalf("me: BYE %q", bye)
+	}
+	// The failed redemption didn't spend the single-use invite.
+	if _, bye := ts.connect(t, newKey(t), inv.Token, "mel"); bye != "" {
+		t.Fatalf("mel: BYE %q", bye)
+	}
+}
+
 func TestHookText(t *testing.T) {
 	if txt, msg := hookText("application/json; charset=utf-8", []byte(`{"text":"a\tb\r\n"}`)); msg != "" || txt != "a    b" {
 		t.Fatalf("%q %q", txt, msg)

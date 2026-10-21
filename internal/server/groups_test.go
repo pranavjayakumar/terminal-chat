@@ -85,9 +85,11 @@ func TestGroupValidation(t *testing.T) {
 	bob.syncFresh()
 	b := []uint64{bob.user.ID}
 
-	for _, name := range []string{"", "Oncall", "has space", "-x", strings.Repeat("a", 33), "ci-bot"} {
+	for _, name := range []string{"", "Oncall", "has space", "-x", strings.Repeat("a", 33), "ci-bot", "me"} {
 		alice.fail(proto.OpGroupSet, proto.GroupSetArgs{Name: name, Members: b}, proto.ErrBadRequest)
 	}
+	// Deleting a (pre-reservation) "me" group is allowed: a no-op here.
+	alice.ok(proto.OpGroupSet, proto.GroupSetArgs{Name: "me"}, nil)
 	// A group can't shadow a user.
 	alice.fail(proto.OpGroupSet, proto.GroupSetArgs{Name: "bob", Members: b}, proto.ErrConflict)
 	alice.fail(proto.OpGroupSet, proto.GroupSetArgs{Name: "alice", Members: b}, proto.ErrConflict)

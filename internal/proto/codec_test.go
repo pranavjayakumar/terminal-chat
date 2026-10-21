@@ -110,6 +110,20 @@ func TestValidName(t *testing.T) {
 	}
 }
 
+// "me" means your own notes in @me, so no user or group may take it (#113).
+func TestReservedName(t *testing.T) {
+	for _, s := range []string{"me", "ci-bot", "-bot"} {
+		if !ReservedName(s) {
+			t.Errorf("%q should be reserved", s)
+		}
+	}
+	for _, s := range []string{"mel", "ame", "bot", "me-ops", "robot"} {
+		if ReservedName(s) {
+			t.Errorf("%q should be free", s)
+		}
+	}
+}
+
 // FuzzDecode feeds arbitrary bytes through the frame reader and every payload
 // decoder. It must never panic or allocate beyond the frame limit.
 func FuzzDecode(f *testing.F) {

@@ -182,6 +182,16 @@ func TestJoinExplicitKeyAndName(t *testing.T) {
 	if err := runJoin(context.Background(), env, testInvite, "Not Valid", key); err == nil {
 		t.Fatal("invalid --name accepted")
 	}
+	// Reserved names fail before dialing, saying why (#113).
+	for _, n := range []string{"me", "ci-bot"} {
+		err := runJoin(context.Background(), env, testInvite, n, key)
+		if err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Fatalf("--name %s: %v", n, err)
+		}
+	}
+	if len(f.calls) != 1 {
+		t.Fatalf("reserved names reached the server: %+v", f.calls)
+	}
 	if err := runJoin(context.Background(), env, testInvite, "zed", filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Fatal("missing --key accepted")
 	}
@@ -199,6 +209,8 @@ func TestDefaultJoinName(t *testing.T) {
 		{"李雷", "lilei", "lilei"},
 		{"-_Kim", "x", "kim"},
 		{"ci-bot", "dana", "dana"},
+		{"Me Too", "dana", "dana"},
+		{"", "me", ""},
 		{"", "", ""},
 		{"!!!", "???", ""},
 		{strings.Repeat("a", 40), "x", strings.Repeat("a", 32)},
