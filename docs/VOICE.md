@@ -177,7 +177,7 @@ exactly like public-channel text. The TUI marks encrypted huddles with the lock 
   changed`), plus `· /huddle to rejoin` only when that would rejoin it (online, viewing that
   channel, no ring up); `🎧 #chan moved to your other device`. It never replaces another error
   notice and stays quiet when tc stopped (revoked, disabled), whose banner says more.
-- Builds without voice: `/huddle` says "no voice: run tc update --voice"
+- Builds without voice: `/huddle` says "no voice: tc update --voice"
   (switches to the voice build in place, same signed-release path); the roster indicator
   still works.
 - Repeated clock-skew drops (25+ authentic frames a second outside ±60 s) show a sticky

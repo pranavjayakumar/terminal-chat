@@ -28,7 +28,7 @@ const (
 )
 
 // ErrNoVoice: this build has no audio (built without -tags voice).
-var ErrNoVoice = errors.New("no voice: run tc update --voice")
+var ErrNoVoice = errors.New("no voice: tc update --voice")
 
 // Encoder and Decoder are one Opus stream's codec state; not safe for
 // concurrent use.

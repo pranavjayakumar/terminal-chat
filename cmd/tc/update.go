@@ -47,9 +47,9 @@ type updateReq struct {
 	// toVoice switches a plain build to the voice build, even when it's
 	// already the latest release.
 	toVoice bool
-	// runs checks that a downloaded binary starts on this system; nil skips
-	// the check.
-	runs func(ctx context.Context, dir string, bin []byte) error
+	// runs runs a downloaded binary's `tc version` on this system and
+	// returns its output; nil skips the check.
+	runs func(ctx context.Context, dir string, bin []byte) (string, error)
 }
 
 func runUpdate(ctx context.Context, out io.Writer, src *release.Source, exe, current, goos, goarch string, req updateReq) error {
@@ -68,6 +68,13 @@ func runUpdate(ctx context.Context, out io.Writer, src *release.Source, exe, cur
 			fmt.Fprintf(out, "tc %s is up to date (installed with Homebrew; upgrade with `brew upgrade tc`).\n", current)
 		}
 		return nil
+	}
+	if req.toVoice && release.IsRelease(current) && release.Newer(current, latest) {
+		// Switching flavor is not a way to downgrade.
+		return fmt.Errorf("the latest release (%s) is older than this tc (%s); not switching", latest, current)
+	}
+	if req.toVoice && !release.Supported(goos, goarch) {
+		return fmt.Errorf("no voice build for %s/%s", goos, goarch)
 	}
 	if req.check {
 		switch {
@@ -107,12 +114,18 @@ func runUpdate(ctx context.Context, out io.Writer, src *release.Source, exe, cur
 	// that can't start here must not replace a working tc (install.sh does
 	// the same).
 	if req.toVoice && req.runs != nil {
-		if err := req.runs(ctx, filepath.Dir(exe), bin); err != nil {
+		got, err := req.runs(ctx, filepath.Dir(exe), bin)
+		if err != nil {
 			hint := ""
 			if goos == "linux" {
 				hint = " (it needs glibc 2.35 or newer)"
 			}
 			return fmt.Errorf("the voice build doesn't run on this system%s: %v; kept the plain build", hint, err)
+		}
+		// Like CI's smoke test: what we got must say it's this release's
+		// voice build, not just start.
+		if !strings.Contains(got, latest+" (voice)") {
+			return fmt.Errorf("the downloaded voice build says %q, not %q; kept the plain build", sanitize.Line(strings.TrimSpace(got)), "tc "+latest+" (voice)")
 		}
 	}
 	if err := release.Replace(exe, bin); err != nil {
@@ -122,38 +135,36 @@ func runUpdate(ctx context.Context, out io.Writer, src *release.Source, exe, cur
 	return nil
 }
 
-// runsHere runs `tc version` from bin, written to a private temp file in dir
-// (next to the installed tc, so the same mount options apply).
-func runsHere(ctx context.Context, dir string, bin []byte) error {
-	f, err := os.CreateTemp(dir, ".tc-update-probe-*")
+// runsHere runs `tc version` from bin and returns its output. bin goes in a
+// fresh 0700 directory next to the installed tc: the same mount options
+// apply, and in a shared install directory nobody else can swap the file
+// between writing and running it.
+func runsHere(ctx context.Context, dir string, bin []byte) (string, error) {
+	pd, err := os.MkdirTemp(dir, ".tc-update-probe-*")
 	if err != nil {
-		return err
+		return "", err
 	}
-	name := f.Name()
-	defer os.Remove(name)
-	_, werr := f.Write(bin)
-	if err := f.Chmod(0o700); werr == nil {
-		werr = err
-	}
-	if err := f.Close(); werr == nil {
-		werr = err
-	}
-	if werr != nil {
-		return werr
+	defer os.RemoveAll(pd)
+	name := filepath.Join(pd, "tc")
+	if err := os.WriteFile(name, bin, 0o700); err != nil {
+		return "", err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	b, err := exec.CommandContext(ctx, name, "version").CombinedOutput()
-	if err != nil {
-		if msg := strings.TrimSpace(sanitize.Line(string(b))); msg != "" {
-			if r := []rune(msg); len(r) > 200 {
-				msg = string(r[:200]) + "…"
-			}
-			return fmt.Errorf("%w: %s", err, msg)
-		}
-		return err
+	cmd := exec.CommandContext(ctx, name, "version")
+	cmd.WaitDelay = 2 * time.Second
+	b, err := cmd.CombinedOutput()
+	msg := strings.TrimSpace(sanitize.Line(string(b)))
+	if r := []rune(msg); len(r) > 200 {
+		msg = string(r[:200]) + "…"
 	}
-	return nil
+	if err != nil {
+		if msg != "" {
+			return "", fmt.Errorf("%w: %s", err, msg)
+		}
+		return "", err
+	}
+	return msg, nil
 }
 
 // writable fails early (before downloading) when exe's directory can't take
