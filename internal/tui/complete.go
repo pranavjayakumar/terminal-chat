@@ -221,7 +221,9 @@ func (m *Model) userItems(q string) {
 		c.items = append(c.items, compItem{text: "@" + sanitize.Line(m.me.Name), desc: "you", rank: exactRank})
 	}
 	for _, u := range m.userList {
-		if u.ID == m.me.ID || u.Disabled || dm && u.Name == "me" {
+		// An account named "me" (from before the name was reserved) can't
+		// be addressed: @me is always you (#113).
+		if u.ID == m.me.ID || u.Disabled || u.Name == proto.NameMe {
 			continue
 		}
 		r := wordRank(q, strings.ToLower(u.Name))
