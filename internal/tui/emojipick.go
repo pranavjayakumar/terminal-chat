@@ -554,6 +554,7 @@ func (m *Model) drawPicker(c *canvas, g geo) {
 		r.y0++ // it rises into place
 		r.y1++
 	}
+	m.floatGutter(c, g, r)
 	old := c.setClip(r)
 	defer c.setClip(old)
 	act := func(a string) string {

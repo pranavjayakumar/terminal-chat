@@ -77,6 +77,7 @@ func (m *Model) drawPopup(c *canvas, g geo) {
 		r.y0++ // it rises into place over the blank row
 		r.y1++
 	}
+	m.floatGutter(c, g, r)
 	old := c.setClip(rect{r.x0, max(r.y0, 0), r.x1, r.y1})
 	defer c.setClip(old)
 	w := r.x1 - r.x0
@@ -132,7 +133,10 @@ func (m *Model) drawPopup(c *canvas, g geo) {
 		if !framed {
 			x0 = r.x0 + 1
 		}
-		limit := r.x1 - 3 // room for the ↓ mark
+		limit := r.x1 - 3
+		if len(cp.items) > n {
+			limit-- // a gap before the ↑/↓ mark
+		}
 		cut := func(s string, from int) string { return truncate(s, max(limit-from, 0)) }
 		if cp.kind == ':' {
 			m.drawEmojiRow(c, it, act, on, x0, y, limit, pick)
@@ -154,6 +158,36 @@ func (m *Model) drawPopup(c *canvas, g geo) {
 			c.put(r.x1-3, y, "↑", pick(th.faint, 0), act)
 		}
 		y++
+	}
+}
+
+// floatGutter blanks the cell on each side of a floating panel, so text
+// under it never runs into its frame; a sliver too thin to read goes too.
+func (m *Model) floatGutter(c *canvas, g geo, r rect) {
+	lo, hi := g.CX, g.CX+g.CW
+	if g.split && r.x0 >= g.RX {
+		lo, hi = g.RX, m.w
+	}
+	y0 := max(r.y0, 0)
+	blank := func(x0, x1 int) {
+		for x := max(x0, g.L); x < min(x1, m.w); x++ {
+			bg := m.st.th.bg
+			if g.split && x >= g.RX {
+				bg = m.st.th.panel
+			}
+			c.fill(x, y0, 1, r.y1-y0, bg, "")
+		}
+	}
+	const sliver = 8
+	if r.x0-lo < sliver {
+		blank(lo, r.x0)
+	} else {
+		blank(r.x0-1, r.x0)
+	}
+	if hi-r.x1 < sliver {
+		blank(r.x1, hi)
+	} else {
+		blank(r.x1, r.x1+1)
 	}
 }
 
