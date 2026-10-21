@@ -289,7 +289,6 @@ func TestReminderMissedWhileServerDownIsDeliveredOnceOnRestart(t *testing.T) {
 
 	// Another restart delivers nothing new, and the future one is still pending.
 	s2.stop()
-	time.Sleep(700 * time.Millisecond) // let the UDP port go
 	startServer(t, dir, addr)
 	time.Sleep(500 * time.Millisecond)
 	eventually(t, "back online", back.online)

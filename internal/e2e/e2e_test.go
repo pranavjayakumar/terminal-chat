@@ -6,10 +6,13 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -46,10 +49,7 @@ func startServerConfig(t *testing.T, addr string, cfg server.Config) (*srv, stri
 	if err != nil {
 		t.Fatal(err)
 	}
-	ln, err := transport.ListenWith(addr, s.Cert(), transport.ListenOpts{HTTP: true, HTTPCert: s.HTTPCert()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	ln := listenRetry(t, addr, s)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { s.Serve(ctx, ln); close(done) }()
@@ -64,6 +64,26 @@ func startServerConfig(t *testing.T, addr string, cfg server.Config) (*srv, stri
 	}
 	t.Cleanup(stop)
 	return &srv{s, stop}, ln.Addr().String()
+}
+
+// listenRetry listens on addr for s. Restarting on a stopped server's port
+// may find the UDP socket still bound: quic-go closes it only once the old
+// connections' closed-state handlers expire (3 PTO), after Close returns.
+// So a fixed port is retried for a while; port 0 never needs it.
+func listenRetry(t *testing.T, addr string, s *server.Server) transport.Listener {
+	t.Helper()
+	_, port, _ := net.SplitHostPort(addr)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		ln, err := transport.ListenWith(addr, s.Cert(), transport.ListenOpts{HTTP: true, HTTPCert: s.HTTPCert()})
+		if err == nil {
+			return ln
+		}
+		if port == "0" || !errors.Is(err, syscall.EADDRINUSE) || time.Now().After(deadline) {
+			t.Fatal(err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func writeKey(t *testing.T, dir string) string {
