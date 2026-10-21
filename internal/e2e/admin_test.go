@@ -3,6 +3,7 @@ package e2e
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -63,6 +64,33 @@ func TestCreatePrivateStoresCiphertext(t *testing.T) {
 	if plain != 0 || enc == 0 {
 		t.Fatalf("server messages in the private channel: %d plaintext, %d encrypted", plain, enc)
 	}
+}
+
+// Adding someone to an encrypted channel right as their first device
+// registers (#127): its device.new may land after the adder verified
+// devices (the adder verifies again rather than call the new member
+// unverifiable), or after the adder built the bundle (the server calls
+// that a race, stale_epoch, and the retry boxes the device).
+func TestAddMemberWhileTheirDeviceRegisters(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	s, addr := startServer(t, t.TempDir(), "127.0.0.1:0")
+	alice := login(t, s, addr, "alice", true)
+	eventually(t, "online", alice.online)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ch, err := alice.CreateEncryptedChannel(ctx, "secret", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 8 {
+		u := login(t, s, addr, fmt.Sprintf("u%d", i), false)
+		eventually(t, "online", u.online)
+		time.Sleep(time.Duration(i%4) * time.Millisecond) // vary where the add lands
+		if err := alice.AddMember(ctx, ch.ID, u.Me().ID); err != nil {
+			t.Fatalf("adding u%d: %v", i, err)
+		}
+	}
+	eventually(t, "keyed", func() bool { return alice.status(ch.ID).State == client.E2EOK })
 }
 
 // B8: what /disable @bob does (DisableUser) cuts off every session of the

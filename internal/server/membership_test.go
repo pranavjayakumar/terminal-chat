@@ -354,7 +354,8 @@ func TestChanEncrypt(t *testing.T) {
 	wantErr(t, "not a member", enc(admin, ch, bundle(t, b1, sid, ch, 1, nil, roster, b1, c1)), proto.ErrForbidden, "")
 	wantErr(t, "public", enc(admin, generalID(t, snap), bundle(t, b1, sid, ch, 1, nil, roster, b1, c1)), proto.ErrBadRequest, "private")
 	wantErr(t, "roster", enc(bob, ch, bundle(t, b1, sid, ch, 1, nil, []uint64{bob.user.ID}, b1)), proto.ErrStaleEpoch, "roster")
-	wantErr(t, "no box for carol", enc(bob, ch, bundle(t, b1, sid, ch, 1, nil, roster, b1)), proto.ErrBadRequest, "box")
+	// Epoch 1 has no head bob must have seen carol's device by: a race.
+	wantErr(t, "no box for carol", enc(bob, ch, bundle(t, b1, sid, ch, 1, nil, roster, b1)), proto.ErrStaleEpoch, "registered a device")
 	if c, _ := getChannel(t.Context(), ts.st.db, ch); c.E2E || c.Epoch != 0 {
 		t.Fatalf("a refused conversion changed the channel: %+v", c)
 	}

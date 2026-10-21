@@ -48,8 +48,9 @@ const (
 	rotateChanEveryMs = 2_000
 )
 
-// migrateEpochs adds the epochs table, channels.e2e/epoch, epochs.seq and
-// devices.revoked_seq (the seq of the device.revoke event).
+// migrateEpochs adds the epochs table, channels.e2e/epoch, epochs.seq,
+// devices.revoked_seq (the seq of the device.revoke event) and
+// devices.created_seq (of the device.new event).
 func migrateEpochs(db *sql.DB) error {
 	if _, err := db.Exec(epochsSchema); err != nil {
 		return fmt.Errorf("creating epochs schema: %w", err)
@@ -60,6 +61,8 @@ func migrateEpochs(db *sql.DB) error {
 		{"epochs", "seq", `INTEGER NOT NULL DEFAULT 0`},
 		{"epochs", "state", `BLOB`},
 		{"devices", "revoked_seq", `INTEGER`},
+		// seq of the device.new; NULL: registered before this column existed
+		{"devices", "created_seq", `INTEGER`},
 		{"messages", "enc", `BLOB`}, // §13.4; never in msg_fts (body is "" then)
 		{"messages", "mid", `BLOB`}, // e2ecrypto.MID(enc): one message per enc and channel
 		{"messages", "edit_enc", `BLOB`},
@@ -303,19 +306,48 @@ func rosterDevices(ctx context.Context, q querier, users []uint64) (map[e2ecrypt
 	return out, owners, rows.Err()
 }
 
-// boxesEveryUser reports whether every user owning a device in owners has
-// at least one box in eb.
-func boxesEveryUser(eb identity.EpochBundle, owners map[e2ecrypto.DevID]uint64) bool {
+// unboxedUsers lists the users owning a device in owners who have no box
+// in eb.
+func unboxedUsers(eb identity.EpochBundle, owners map[e2ecrypto.DevID]uint64) []uint64 {
 	boxed := map[uint64]bool{}
 	for _, bx := range eb.Boxes {
 		boxed[owners[bx.Dev]] = true
 	}
+	var out []uint64
 	for _, u := range owners {
-		if !boxed[u] {
-			return false
+		if !boxed[u] && !slices.Contains(out, u) {
+			out = append(out, u)
 		}
 	}
-	return true
+	return out
+}
+
+// checkEveryUserBoxed refuses a bundle that leaves a member with an active
+// device without any box. When each such member's devices were all
+// registered after headSeq (the current epoch's key.epoch; 0 at epoch 0),
+// the rotator may not have seen their device.new yet: a race →
+// stale_epoch, and the retry boxes them. Otherwise → bad_request.
+func checkEveryUserBoxed(ctx context.Context, q querier, eb identity.EpochBundle,
+	owners map[e2ecrypto.DevID]uint64, headSeq uint64) error {
+	missing := unboxedUsers(eb, owners)
+	if len(missing) == 0 {
+		return nil
+	}
+	js, err := json.Marshal(missing)
+	if err != nil {
+		return err
+	}
+	// Rows from before created_seq existed (NULL) predate any race.
+	var seen int
+	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM devices WHERE revoked IS NULL
+		AND user IN (SELECT value FROM json_each(?)) AND COALESCE(created_seq, 0) <= ?`,
+		string(js), headSeq).Scan(&seen); err != nil {
+		return err
+	}
+	if seen == 0 {
+		return staleEpoch("a member registered a device since the current epoch")
+	}
+	return badRequest("every member with a device needs at least one box")
 }
 
 // epochState hashes what a rotation answers to: the sorted roster and the
@@ -489,8 +521,8 @@ func (s *Server) rotateTx(ctx context.Context, tx *sql.Tx, u proto.User, ch uint
 	}
 	// Clients may skip devices they haven't verified, but a member left
 	// without any box could only ever get K from someone's key.share.
-	if !boxesEveryUser(eb, owners) {
-		return none, badRequest("every member with a device needs at least one box")
+	if err := checkEveryUserBoxed(ctx, tx, eb, owners, head.seq); err != nil {
+		return none, err
 	}
 
 	now := s.now()

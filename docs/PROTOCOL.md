@@ -789,7 +789,7 @@ so non-members can't make the server parse 16 KiB):
 | no box goes to a device revoked after the current epoch's `key.epoch` seq (any revoked device at epoch 0): the rotator couldn't have seen that revoke | `stale_epoch` |
 | no box goes to any other revoked device (its revoke came before the head the rotator built on) | `bad_request` |
 | no two boxes share an X25519 key | `bad_request` |
-| at least one box for every roster user who has an active device ("every member with a device needs at least one box") | `bad_request` |
+| at least one box for every roster user who has an active device ("every member with a device needs at least one box") | `bad_request`; `stale_epoch` when each such user's active devices were all registered after the current epoch's `key.epoch` seq (any device at epoch 0): the rotator may not have seen their `device.new` yet (devices registered before the server recorded that seq count as seen) |
 | rate cap, below | `rate_limited` |
 
 Rate cap: with each epoch the server stores `state = H("tc-epoch-state-v1\x00"
@@ -807,13 +807,17 @@ anyone. Epoch 1, and epochs stored before `state` existed, are uncapped.
 
 On success the server stores the bundle, sets `Channel.epoch`, appends a
 `key.epoch` event (actor = caller) and answers `{seq}`. Writes are
-serialized and each write's events are fanned out before its RES, so the
-loser of a concurrent rotation always receives the winner's `key.epoch`
+serialized and each write's events are fanned out before its RES, so a
+rotator always receives the event that made its bundle stale (the winner's
+`key.epoch`, a `chan.join`/`chan.leave`, `device.new` or `device.revoke`)
 before its own `stale_epoch` RES. `stale_epoch` means "your view of the
 channel is behind": apply pending events (or `key.fetch`), rebuild, retry.
 It is returned only for races (the CAS, a roster change, a boxed device
-revoked after the head); a bundle that is wrong for the state the client
-must already have seen is `bad_request`, so retrying it can't loop.
+revoked after the head, a member left boxless whose devices all registered
+after the head); a bundle that is wrong for the state the client
+must already have seen is `bad_request`. Where the server can't tell (a
+boxless member whose devices are all newer than the head), it answers
+`stale_epoch`, so clients retry a `stale_epoch` at most once.
 Boxes may be missing for some devices: clients seal only to devices they
 verified, and the rest get the key via `key.share` (§13.7). But every roster
 user who has an active device needs at least one box, so someone of theirs
@@ -1133,8 +1137,8 @@ and the events are, in this order:
 
 Errors, besides those of the op itself (§5) and of `key.rotate` (§13.3;
 `stale_epoch` when the roster isn't exactly the new members, e.g. the
-bundle doesn't include the joiner, or someone rotated meanwhile; the change
-is then not applied either):
+bundle doesn't include the joiner, someone rotated meanwhile, or a member's
+devices changed meanwhile; the change is then not applied either):
 
 | case | error |
 |---|---|
@@ -1306,8 +1310,8 @@ registered device (`not_found`), not revoked, of a current member
   current epoch, roster or devices; for `send`, the `enc` isn't for the
   channel's current epoch or that epoch's bundle is stale (§13.5); for
   `chan.add`/`chan.remove`/`chan.encrypt`, the bundle's roster isn't the
-  members after the change or someone rotated first (the change isn't
-  applied either). Nothing was stored. Retryable after catching up: a
+  members after the change, someone rotated first, or a member's devices
+  changed meanwhile (the change isn't applied either). Nothing was stored. Retryable after catching up: a
   sender re-encrypts with the same nonces (§13.4); a membership change
   rebuilds its bundle.
 - Limits: `enc` ≤ 64 KiB + 1 KiB (Plain ≤ the padded capacity), a delete's or reaction's `enc` ≤ 397 bytes (one padding block); EpochBundle `len(b) + len(sig)` ≤ 16 KiB and ≤ 128 boxes;
