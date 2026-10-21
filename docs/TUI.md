@@ -48,14 +48,15 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
   didn't sign (an admin, the server) reads `removed (not by author)`. `e` refuses messages that aren't
   verified (waiting, invalid, legacy or inserted plaintext).
 - Pinned messages end with a dim `📌` on their footer line; the header shows a dim `📌 N` when the channel has pins.
-- Reactions as pills on a row below: `▐ 👍 2 ▌` (yours in the accent); click one to toggle it. The row ends
+- Reactions as pills on a row below: `▐ 👍 2 ▌` (yours in the accent; more rows when they don't fit); click one to toggle it. The row ends
   with a `☺+` pill that opens the emoji picker for that message. Hovering a pill shows who reacted above it
   (`you, bob and 3 others reacted with :tada:`; five names at most).
 - Thread roots show `↳ N replies`; threads open in a right pane (or full width below 100 cols).
 - An empty channel shows a dim `no messages yet — say hi · F1 help · ⌥K channels & people` (shorter when the message pane is under 64 or 26 columns; in my notes `your notes — only you see them; /remind lands here`) once a history fetch said it is empty.
 - Typing line above the input (`bob is typing •··`); nothing when nobody is typing. Errors, rings and
   lasting hints share that row; passing notices ("copied", "pinned") show as a toast pill there instead
-  (fades in and out, click dismisses). Notices raised while a dialog is open show over its bottom edge.
+  (fades in and out, click dismisses; on the right of the row while typing or an error holds it, one row
+  higher when both don't fit). Notices raised while a dialog is open show over its bottom edge.
 - Input: a rounded box (channel in the top edge, `public`/`private`/`◆ e2e` on its right, key hints in the
   bottom edge) that grows to max 6 lines; `Alt-Enter`/`Ctrl-J` inserts newline; `Enter` sends.
 - Huddle bar: one row under the header while a huddle runs in the open channel:
@@ -290,7 +291,7 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
 - Opening a channel marks it read up to the newest message (MarkRead) when the view is at the bottom.
   Scrolled up → don't mark read; show `↓ N new` pill.
 - Unread counts in the sidebar (dim; a DM's in the accent); `@N` in the accent when there's a mention, pulsing
-  briefly when it grows (bot messages never make a mention).
+  briefly when it grows (bot messages never make a mention). Both stop at `99+`.
 - Notifications: see "Notifications & herdr" below.
 - Never block the UI on network: all client calls run in `tea.Cmd`s.
 - Startup renders from cache immediately, before connecting.
