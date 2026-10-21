@@ -130,7 +130,7 @@ func TestRunsHere(t *testing.T) {
 		t.Fatalf("failing binary: %v", err)
 	}
 	script := "#!/bin/sh\n[ \"$1\" = version ] || exit 2\n" +
-		"[ \"$(stat -f %Lp \"$(dirname \"$0\")\" 2>/dev/null || stat -c %a \"$(dirname \"$0\")\")\" = 700 ] || { echo 'dir not private'; exit 3; }\n" +
+		"[ \"$(ls -ld \"$(dirname \"$0\")\" | cut -c1-10)\" = drwx------ ] || { echo 'dir not private'; exit 3; }\n" +
 		"echo 'tc v9.9.9 (voice)'\n"
 	out, err := runsHere(context.Background(), dir, []byte(script))
 	if err != nil || out != "tc v9.9.9 (voice)" {
