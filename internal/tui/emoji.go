@@ -192,10 +192,13 @@ func shortcodeChar(r rune) bool {
 }
 
 // expandShortcodes turns each known :name: in a message into its emoji,
-// outside code (fenced blocks and inline spans), and only where no letter
-// or digit touches it, so "12:100:3" or a URL's ":8080:" stay as typed;
-// ":tada::rocket:" is two. used gets every emoji it put in.
-func expandShortcodes(s string, used func(string)) string {
+// outside code (fenced blocks and inline spans), and only as a word of its
+// own: after a space, the line's start, an opening bracket or quote, or
+// another converted shortcode (":tada::rocket:"), so "12:100:3", "?q=:x:"
+// and URLs stay as typed. A :name: that keep already holds stays too: an
+// edit doesn't rewrite text the author left alone. used gets every emoji
+// it put in.
+func expandShortcodes(s, keep string, used func(string)) string {
 	if !strings.Contains(s, ":") {
 		return s
 	}
@@ -211,21 +214,25 @@ func expandShortcodes(s string, used func(string)) string {
 			b.WriteString(line)
 			continue
 		}
-		b.WriteString(expandLine(line, used))
+		b.WriteString(expandLine(line, keep, used))
 	}
 	return b.String()
 }
 
-func expandLine(line string, used func(string)) string {
+// opensWord are the characters a shortcode may follow.
+const opensWord = " \t([{\"'>"
+
+func expandLine(line, keep string, used func(string)) string {
 	rs := []rune(line)
 	var b strings.Builder
 	code := false
+	after := -1 // index just past the last converted shortcode
 	for i := 0; i < len(rs); i++ {
 		r := rs[i]
 		if r == '`' {
 			code = !code
 		}
-		if r != ':' || code || i > 0 && (shortcodeChar(rs[i-1]) || rs[i-1] == '/') {
+		if r != ':' || code || i > 0 && i != after && !strings.ContainsRune(opensWord, rs[i-1]) {
 			b.WriteRune(r)
 			continue
 		}
@@ -238,7 +245,7 @@ func expandLine(line string, used func(string)) string {
 			continue
 		}
 		e, ok := emojiByName(string(rs[i+1 : j]))
-		if !ok {
+		if !ok || keep != "" && strings.Contains(keep, string(rs[i:j+1])) {
 			b.WriteRune(r)
 			continue
 		}
@@ -246,7 +253,7 @@ func expandLine(line string, used func(string)) string {
 		if used != nil {
 			used(e)
 		}
-		i = j
+		i, after = j, j+1
 	}
 	return b.String()
 }
@@ -300,11 +307,19 @@ func (m *Model) freqList() []string {
 	return out
 }
 
-// noteEmoji counts one use of e and saves the list. The newest use wins a
-// tie, so something picked once just now sorts before older single uses.
+// noteEmoji counts one use of e and saves the list.
 func (m *Model) noteEmoji(e string) {
+	if m.countEmoji(e) {
+		m.savePrefs()
+	}
+}
+
+// countEmoji counts one use of e in memory, reporting whether the list
+// changed. The newest use wins a tie, so something picked once just now
+// sorts before older single uses.
+func (m *Model) countEmoji(e string) bool {
 	if !gridSafe(e) {
-		return // only what the picker grid can draw
+		return false // only what the picker grid can draw
 	}
 	list := m.ui.Emoji
 	if list == nil {
@@ -314,7 +329,7 @@ func (m *Model) noteEmoji(e string) {
 	}
 	n := 1
 	if i := slices.IndexFunc(list, func(u emojiUse) bool { return u.E == e }); i >= 0 {
-		n += list[i].N
+		n = min(n+list[i].N, 1<<30)
 		list = slices.Delete(list, i, i+1)
 	}
 	i := 0
@@ -326,5 +341,5 @@ func (m *Model) noteEmoji(e string) {
 		list = list[:maxFreq]
 	}
 	m.ui.Emoji = list
-	m.savePrefs()
+	return true
 }

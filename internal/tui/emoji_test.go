@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/skailama/tc/internal/client"
+	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
 )
 
@@ -138,9 +140,16 @@ func TestShortcodesExpandOnSend(t *testing.T) {
 		"a:fire: b":                       "a:fire: b",
 		":fire:s":                         ":fire:s",
 		":FIRE:":                          "🔥",
+		"https://e.com/search?q=:fire:":   "https://e.com/search?q=:fire:",
+		"https://e.com/#:tada:":           "https://e.com/#:tada:",
+		"key=:fire:":                      "key=:fire:",
+		`done (:tada:) ":fire:"`:          `done (🎉) "🔥"`,
+	}
+	if got := expandShortcodes(":tada: was :tada: now :fire:", "was :tada: then", nil); got != ":tada: was :tada: now 🔥" {
+		t.Errorf("keep: %q", got)
 	}
 	for in, want := range cases {
-		if got := expandShortcodes(in, nil); got != want {
+		if got := expandShortcodes(in, "", nil); got != want {
 			t.Errorf("%q -> %q, want %q", in, got, want)
 		}
 	}
@@ -153,6 +162,17 @@ func TestShortcodesExpandOnSend(t *testing.T) {
 	runInput(t, m, "/topic :fire: launch")
 	if f.called("send /topic") || len(f.sent) != 1 {
 		t.Fatalf("a command was sent: %+v", f.sent)
+	}
+	// An edit leaves the shortcodes the message already had.
+	f.msgs[10] = append(f.msgs[10], client.Message{Message: proto.Message{ID: 990, Chan: 10, Author: 1, Body: "raw :tada: here", Time: 1}})
+	m.reloadPane(&m.main)
+	selectMsg(t, m, 990)
+	press(m, "e")
+	m.input.SetValue("raw :tada: here :fire:")
+	m.input.CursorEnd()
+	press(m, "enter")
+	if len(f.edits) != 1 || f.edits[0] != "raw :tada: here 🔥" || m.editOrig != "" {
+		t.Fatalf("edit: %q", f.edits)
 	}
 	runInput(t, m, "//x :tada:")
 	if len(f.sent) != 2 || f.sent[1].Body != "/x 🎉" {

@@ -44,8 +44,11 @@ func loadUIPrefs(path string) uiPrefs {
 	if _, ok := themes[p.Theme]; !ok {
 		p.Theme = ""
 	}
+	seen := map[string]bool{}
 	p.Emoji = slices.DeleteFunc(p.Emoji, func(u emojiUse) bool {
-		return u.N < 0 || !gridSafe(u.E)
+		drop := u.N < 0 || !gridSafe(u.E) || seen[u.E]
+		seen[u.E] = true
+		return drop
 	})
 	if len(p.Emoji) > maxFreq {
 		p.Emoji = p.Emoji[:maxFreq]

@@ -193,8 +193,10 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
   the accent. `Tab`/`Enter` put the emoji in (and a space) and close the popup; `Enter` never sends from
   it. Never inside a fenced block or an inline code span, or after a letter (`http://`, `10:30`).
 - **Shortcodes on send**: each known `:name:` in a message or an edit becomes its emoji when sent
-  (`:fire:` → 🔥, `:tada::rocket:` → 🎉🚀); unknown ones, ones touching a letter or digit (`12:100:3`), and
-  ones in code stay as typed. Slash commands are left alone.
+  (`:fire:` → 🔥, `(:tada:)` → (🎉), `:tada::rocket:` → 🎉🚀). Only as a word of its own: after a space,
+  the line's start, an opening bracket or quote, or another converted shortcode, so `12:100:3`, `?q=:fire:`
+  and URLs stay as typed; unknown ones and ones in code stay too. An edit converts only shortcodes the
+  message didn't already have. Slash commands are left alone. A send saves the frequently used list once.
 - **Frequently used**: picks, completions and converted shortcodes count; kept in `TC_HOME/ui.json` as
   `"emoji"` (most used first, the newest first among equals, 40 at most). A fresh install offers
   👍 🚀 👀 🎉 🔥 😂 🙏 💯 👏 🤔. The picker shows two rows of them.

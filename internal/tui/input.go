@@ -209,7 +209,14 @@ func (m *Model) submit() tea.Cmd {
 	}
 	body := strings.TrimRight(v, " \t\n")
 	if !strings.HasPrefix(v, "/") || strings.HasPrefix(v, "//") || m.editing != 0 {
-		body = expandShortcodes(body, m.noteEmoji)
+		keep, changed := "", false
+		if m.editing != 0 {
+			keep = m.editOrig
+		}
+		body = expandShortcodes(body, keep, func(e string) { changed = m.countEmoji(e) || changed })
+		if changed {
+			m.savePrefs() // once, however many shortcodes the message had
+		}
 	}
 	if m.editing != 0 {
 		id := m.editing

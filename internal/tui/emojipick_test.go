@@ -477,7 +477,7 @@ func TestFrequentlyUsedPersistsAndCaps(t *testing.T) {
 		t.Fatalf("frequently used row: %d", freq)
 	}
 	// A hostile ui.json is cleaned on load.
-	os.WriteFile(path, []byte(`{"emoji":[{"e":"\u001b[31m","n":3},{"e":"👨‍👩‍👧","n":2},{"e":"🔥","n":1},{"e":"x","n":-1}]}`), 0o644)
+	os.WriteFile(path, []byte(`{"emoji":[{"e":"\u001b[31m","n":3},{"e":"👨‍👩‍👧","n":2},{"e":"🔥","n":1},{"e":"x","n":-1},{"e":"🔥","n":9}]}`), 0o644)
 	m3, _ := newM()
 	if got := m3.freqList(); !slices.Equal(got, []string{"🔥"}) {
 		t.Fatalf("hostile ui.json: %q", got)

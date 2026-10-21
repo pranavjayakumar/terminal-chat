@@ -95,11 +95,12 @@ type Model struct {
 	// on screen.
 	afterSecret []tea.Msg
 
-	input   textarea.Model
-	line    textinput.Model // switcher query and react prompt
-	mode    mode
-	editing uint64 // message id whose edit is in the input
-	target  client.Message
+	input    textarea.Model
+	line     textinput.Model // switcher query and react prompt
+	mode     mode
+	editing  uint64 // message id whose edit is in the input
+	editOrig string // that message's text when the edit began
+	target   client.Message
 
 	notice       string
 	noticeErr    bool
@@ -1643,7 +1644,8 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 		// in its slot; cancelEdit puts it back.
 		m.setDraft(m.dk, m.input.Value())
 		m.editing = sel.ID
-		m.input.SetValue(sanitize.Text(sel.Body))
+		m.editOrig = sanitize.Text(sel.Body)
+		m.input.SetValue(m.editOrig)
 		m.layoutInput()
 		m.setHint("editing — Enter to save, Esc to cancel")
 		return nil, true
@@ -1709,7 +1711,7 @@ func (m *Model) cancelEdit() {
 	if m.editing == 0 {
 		return
 	}
-	m.editing = 0
+	m.editing, m.editOrig = 0, ""
 	m.input.SetValue(m.drafts[m.dk])
 	m.hideComp()
 	m.layoutInput()
