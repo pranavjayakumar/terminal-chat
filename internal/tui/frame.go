@@ -304,7 +304,7 @@ func (m *Model) blitRow(c *canvas, r prow, o int, p *pane, key string, x, y, w i
 		}
 		if pop < 1 {
 			if isBar(dst.s) {
-				dst.fg = mix(0xffffff, th.accent, pop)
+				dst.fg = mix(th.fg, th.accent, pop) // the text color, so the flash shows on light themes too
 			} else if dst.s != " " {
 				dst.fg = mix(th.accent, dst.fg, pop)
 			}
@@ -420,8 +420,8 @@ func (m *Model) drawMsgFx(c *canvas, p *pane, o, x, y, w int) {
 						}
 					}
 					fy := yy - 1 - int(pr*3)
-					if c.in(xx+2, fy) {
-						c.put(xx+2, fy, "+1", fgb(mix(th.accent, th.bg, pr)), "")
+					if c.in(xx+3, fy) && c.at(xx+2, fy).s == " " && c.at(xx+3, fy).s == " " {
+						c.put(xx+2, fy, "+1", fgb(mix(th.accent, th.bg, pr)), "") // floats through gaps, never over text
 					}
 					break
 				}
@@ -466,9 +466,9 @@ func (m *Model) drawThreadPane(c *canvas, g geo) {
 	tx := g.RX + 2
 	c.put(tx, g.top, "Thread", fgb(th.fg), "")
 	if m.thread.open() {
-		c.put(tx+7, g.top, m.chanTitle(m.thread.ch), fgc(th.faint), "")
+		c.put(tx+7, g.top, truncate(m.chanTitle(m.thread.ch), threadW-13), fgc(th.faint), "")
 	}
-	c.put(m.w-3, g.top, "✕", fgc(th.dim), "thread:close")
+	c.put(g.RX+threadW-3, g.top, "✕", fgc(th.dim), "thread:close") // slides in with the pane
 	pw := threadW - 4
 	top := g.top + 2
 	h := m.paneHeight(&m.thread)
@@ -490,7 +490,7 @@ func (m *Model) drawIdleInput(c *canvas, g geo) {
 	y := g.statusY - (g.statusY - g.inY - g.inH) - h
 	m.box(c, g.CX, y, g.CW, h, th.line, th.bg)
 	c.put(g.CX+2, y, " "+m.chanTitle(m.active)+" ", fgc(th.faint), "")
-	c.put(g.CX+3, y+1, truncate("Esc closes the thread", g.CW-6), fgc(th.faint), "thread:close")
+	c.put(g.CX+2, y+1, truncate("Esc closes the thread", g.CW-4), fgc(th.faint), "thread:close")
 }
 
 // box draws a rounded frame.
@@ -564,7 +564,7 @@ func (m *Model) drawInput(c *canvas, g geo) {
 		c.put(kx-1, y+h-1, " ", fgc(th.fg), "")
 		for i, k := range keys {
 			if i > 0 {
-				kx = c.put(kx, y+h-1, " · ", fgc(th.line), "")
+				kx = c.put(kx, y+h-1, " · ", fgc(th.faint), "")
 			}
 			kx = c.put(kx, y+h-1, k[0], fgb(th.dim), k[2])
 			kx = c.put(kx, y+h-1, " "+k[1], fgc(th.faint), k[2])

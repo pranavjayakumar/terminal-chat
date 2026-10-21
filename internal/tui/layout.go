@@ -115,16 +115,16 @@ func (m *Model) geo() geo {
 	if g.split && m.thread.open() {
 		finalRX = m.w - threadW
 	}
-	region = finalRX - tl
-	switch {
-	case region >= 70:
-		g.CW = min(maxColumn, region-8)
-	case region >= 30:
-		g.CW = region - 2
-	default:
-		g.CW = max(region, 1)
-	}
+	g.CW = columnWidth(finalRX - tl)
 	g.CX = min(g.L+(g.RX-g.L-g.CW)/2, g.RX-g.CW)
+	if g.split && m.running(m.fx.paneAt, dPane) {
+		// Mid-slide the column glides from where it sat without the pane
+		// to where it sits beside it, never jumping the other way first.
+		at := func(rx int) int { return g.L + (rx-g.L-columnWidth(rx-tl))/2 }
+		k := float64(g.tpW) / threadW
+		g.CX = int(math.Round(float64(at(m.w)) + float64(at(m.w-threadW)-at(m.w))*k))
+		g.CX = max(g.CX, g.L) // the pane, drawn later, covers any overlap
+	}
 	g.CX = max(g.CX, 0)
 
 	g.roomy = m.h >= 30
@@ -169,6 +169,16 @@ func (m *Model) geo() geo {
 		g.noteY, g.msgTop, g.msgBot = -1, 0, 0
 	}
 	return g
+}
+
+// columnWidth is the message column's width in a region of w columns.
+// Margins grow from 1 to 4 as the region widens, and a wider region never
+// gets a narrower column.
+func columnWidth(w int) int {
+	if w < 30 {
+		return max(w, 1)
+	}
+	return min(maxColumn, max(w-8, min(w-2, 62), 29))
 }
 
 // inputRows is how many text rows the input needs at text width w.
