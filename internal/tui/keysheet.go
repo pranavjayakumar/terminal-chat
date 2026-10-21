@@ -21,12 +21,12 @@ var keyGroups = []keyGroup{
 		{"PgUp PgDn", "scroll history"}, {"End", "jump to newest"}, {"esc", "back out of anything"},
 	}},
 	{"Messages", [][2]string{
-		{"↑", "select (empty input)"}, {"r", "reply in thread"}, {"+", "react"}, {"e", "edit yours"},
+		{"↑", "select (empty input)"}, {"r", "reply in thread"}, {"+", "react (emoji picker)"}, {"e", "edit yours"},
 		{"d", "delete yours"}, {"y", "copy"}, {"p", "pin / unpin"}, {"v", "view full"}, {"r d", "failed: retry, discard"},
 	}},
 	{"Write", [][2]string{
 		{"⏎", "send"}, {"⌥⏎ ⌃J", "new line"}, {"@", "mention someone"}, {"#", "link a channel"},
-		{"/", "commands"}, {"⇥", "complete"}, {"⌃U", "clear draft"}, {"esc esc", "clear draft"},
+		{"/", "commands"}, {"⌥E", "emoji picker"}, {":fi", "emoji by name"}, {"⇥", "complete"}, {"⌃U", "clear draft"}, {"esc esc", "clear draft"},
 	}},
 	{"Huddle", [][2]string{
 		{"/huddle", "join here"}, {"⌃T hold", "push to talk"}, {"⌃T tap", "open mic on / off"}, {"/leave-huddle", "leave"},

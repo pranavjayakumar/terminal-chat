@@ -30,12 +30,14 @@ func (m *Model) frame() *canvas {
 	c := reuseCanvas(m.spare, m.w, m.h, th)
 	m.spare = nil
 	g := m.geo()
+	m.emo.anchored = false
 	m.drawMain(c, g)
 	if g.split {
 		m.drawThreadPane(c, g)
 	}
 	m.drawInput(c, g)
 	m.drawPopup(c, g)
+	m.drawPicker(c, g)
 	if g.SB > 0 {
 		m.drawSidebar(c, g)
 	}
@@ -43,6 +45,7 @@ func (m *Model) frame() *canvas {
 	m.drawOverlay(c, g)
 	m.drawToast(c, g)
 	m.hoverPass(c)
+	m.drawReactTip(c, g)
 	m.drawTips(c, g)
 	if m.booting() || m.running(m.fx.bootAt, dBoot) {
 		m.drawBoot(c)
@@ -194,7 +197,7 @@ func (m *Model) viewPane(c *canvas, p *pane, key string, x, y, w, h, unread int)
 	old := c.setClip(rect{x - 3, y, x + w + 4, y + h})
 	defer c.setClip(old)
 	sel := -1
-	if m.mode == modeSelect || m.mode == modeConfirmDelete || m.mode == modeReact {
+	if m.mode == modeSelect || m.mode == modeConfirmDelete || m.mode == modeEmoji && m.emo.react {
 		if p == m.focus() {
 			sel = p.sel
 		}
@@ -223,6 +226,9 @@ func (m *Model) viewPane(c *canvas, p *pane, key string, x, y, w, h, unread int)
 		m.drawMsgFx(c, p, o, x, yy, w)
 		if o == sel || o == hov {
 			m.drawToolbar(c, p, key, o, x, yy, w)
+		}
+		if o == sel {
+			m.emo.anchored, m.emo.ax, m.emo.ay, m.emo.aw = true, x, yy, w
 		}
 	}
 	if p == &m.main && m.histBusy[p.ch] {
@@ -562,11 +568,8 @@ func (m *Model) drawInput(c *canvas, g geo) {
 	}
 }
 
-// inputView is the input's text rows: the editor, or the react prompt.
+// inputView is the input's text rows.
 func (m *Model) inputView() []string {
-	if m.mode == modeReact {
-		return []string{m.line.View()}
-	}
 	return strings.Split(m.input.View(), "\n")
 }
 

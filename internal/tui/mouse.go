@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"context"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -24,7 +22,7 @@ func (m *Model) hoverMsg() (string, int, bool) {
 		return "", 0, false
 	}
 	switch kind {
-	case "msg", "tb", "react", "thread", "copy":
+	case "msg", "tb", "react", "addreact", "thread", "copy":
 	default:
 		return "", 0, false
 	}
@@ -113,6 +111,9 @@ func (m *Model) wheel(msg tea.MouseMsg) tea.Cmd {
 			m.helpScroll = min(m.helpScroll+3, m.helpMaxScroll())
 		}
 		return nil
+	case modeEmoji:
+		m.pickWheel(up)
+		return nil
 	case modeSwitcher:
 		if up && m.pal.sel > 0 {
 			m.pal.sel--
@@ -143,6 +144,16 @@ func (m *Model) wheel(msg tea.MouseMsg) tea.Cmd {
 // click runs the action a.
 func (m *Model) click(a string) tea.Cmd {
 	kind, rest, _ := strings.Cut(a, ":")
+	if m.mode == modeEmoji {
+		switch kind {
+		case "emo", "emotab", "emoclose":
+			return m.pickMouse(kind, rest)
+		case "noop":
+		default:
+			m.closePicker(true) // a click anywhere else closes it
+		}
+		return nil
+	}
 	switch kind {
 	case "":
 		return nil
@@ -255,13 +266,13 @@ func (m *Model) click(a string) tea.Cmd {
 		if x.ID == 0 || x.Deleted || m.mode != modeNormal && m.mode != modeSelect {
 			return nil
 		}
-		id, mine := x.ID, slices.Contains(x.Reactions[arg], m.me.ID)
-		return m.call("react", func(ctx context.Context) error {
-			if mine {
-				return m.c.Unreact(ctx, id, arg)
-			}
-			return m.c.React(ctx, id, arg)
-		})
+		return m.reactWith(x, arg)
+	case "addreact":
+		m.selectAt(p, i)
+		if m.mode == modeSelect {
+			m.openPicker(true)
+		}
+		return nil
 	case "tb":
 		switch arg {
 		case "reply":

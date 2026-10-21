@@ -417,6 +417,9 @@ func (m *Model) drawFooter(g *grower, x client.Message, cw, bw int, mine bool) {
 		}
 		parts = append(parts, part{" " + sanitize.Line(k) + " " + strconv.Itoa(len(us)) + " ", st, "react|" + k, true})
 	}
+	if len(parts) > 0 && x.ID != 0 && !x.Deleted {
+		parts = append(parts, part{" ☺+ ", fgc(th.dim).on(th.element), "addreact|", true})
+	}
 	var tail []part
 	if x.Replies > 0 {
 		tail = append(tail, part{fmt.Sprintf("↳ %d %s", x.Replies, plural(x.Replies, "reply", "replies")), fgc(th.info), "thread|", false})

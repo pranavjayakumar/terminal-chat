@@ -7,10 +7,13 @@ const (
 	kQuit       = "ctrl+c"
 	kSwitcher   = "alt+k" // the palette; Ctrl-K still works where it reaches us
 	kActivity   = "alt+a" // Ctrl-A stays the textarea's line start
+	kEmoji      = "alt+e" // the emoji picker
 	kSidebar    = "ctrl+b"
 	kEnter      = "enter"
 	kEsc        = "esc"
 	kUp         = "up"
+	kLeft       = "left"
+	kRight      = "right"
 	kDown       = "down"
 	kPgUp       = "pgup"
 	kPgDown     = "pgdown"
@@ -55,6 +58,9 @@ func keyName(k tea.KeyMsg) string {
 	}
 	if k.Type == tea.KeyRunes && !k.Alt && k.Runes[0] == '˚' {
 		return kSwitcher // macOS Option-K when Option types characters
+	}
+	if k.Type == tea.KeyRunes && !k.Alt && k.Runes[0] == '´' {
+		return kEmoji // macOS Option-E: the acute dead key
 	}
 	return k.String()
 }
