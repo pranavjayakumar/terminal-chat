@@ -112,6 +112,7 @@ type Model struct {
 	noticeCh     uint64        // nonzero: the notice is about this channel only
 	escAt        time.Time     // first Esc on a non-empty draft
 	helpScroll   int
+	helpBack     bool // the keys sheet was opened from Settings: closing goes back there
 	view         viewer
 	emo          emojiPicker
 
@@ -1554,6 +1555,7 @@ func (m *Model) selectByPage(p *pane, dir int) {
 // ---- help ----
 
 func (m *Model) openHelp() {
+	m.helpBack = m.mode == modeSettings
 	m.leaveSelect()
 	m.mode = modeHelp
 	m.helpScroll = 0
@@ -1566,6 +1568,9 @@ func (m *Model) helpKey(key string) {
 	switch key {
 	case kEsc, kHelp, kHelpAlt, "q", kEnter:
 		m.mode = modeNormal
+		if m.helpBack {
+			m.mode = modeSettings
+		}
 	case kUp, "k":
 		m.helpScroll--
 	case kDown, "j":

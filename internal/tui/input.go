@@ -177,7 +177,7 @@ func (m *Model) selectFooter() string {
 		keys = append(keys, "v view", "y copy")
 	}
 	full := strings.Join(keys, " · ") + " · Esc"
-	if strWidth(full) < m.dims().mainW-1 {
+	if strWidth(full) < m.dims().inputW {
 		return full
 	}
 	// Narrow: just the key letters, Esc last so leaving is always visible.
