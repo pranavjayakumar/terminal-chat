@@ -46,6 +46,14 @@ func styleInput(ta *textarea.Model, st *styles) {
 		LineNumber: st.base, Placeholder: st.placeholder, Prompt: st.base, Text: st.base,
 	}
 	ta.FocusedStyle, ta.BlurredStyle = plain, plain
+	// The textarea draws through a pointer to one of these, taken by its
+	// last Focus/Blur, maybe on a copy since replaced: point it here again
+	// or a theme switch leaves the old theme's text color.
+	if ta.Focused() {
+		ta.Focus()
+	} else {
+		ta.Blur()
+	}
 	ta.Cursor.Style = st.prompt.UnsetBold()
 	ta.Cursor.TextStyle = st.base
 }
