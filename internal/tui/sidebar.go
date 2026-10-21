@@ -130,7 +130,7 @@ func (m *Model) drawSidebar(c *canvas, g geo) {
 		c.put(sb/2-1, y, "⌕", fgc(th.dim), "palette:")
 	} else {
 		c.put(2, y, "⌕ Jump to…", fgc(th.dim), "palette:")
-		c.put(sb-4, y, "⌃K", fgc(th.faint), "palette:")
+		c.put(sb-4, y, "⌥K", fgc(th.faint), "palette:")
 	}
 	y += step
 	meY := g.statusY - 1 - boolInt(g.roomy)

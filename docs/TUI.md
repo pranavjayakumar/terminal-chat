@@ -8,7 +8,7 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
 ```
  tc · 3 online          │        # general  team-wide chatter                       ⌕   ◉ 3
                         │        ▎ ♪ huddle 4:18  bob ▂▅▇▅  carol ▁▁▁▁            join
- ⌕ Jump to…        ⌃K   │
+ ⌕ Jump to…        ⌥K   │
                         │        │ bob  21:46
  Channels               │        │ yep, the api pod crashed around 02:14. pasting:
  # backend           3  │        │  panic.log                                  copy
@@ -21,7 +21,7 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
  ◐ dave away            │        carol is typing •··
                         │        ╭─ #general ───────────────────────────────── public ─╮
                         │        │ message #general                                    │
- ● alice online      ⚙  │        ╰────────────── ⌃K commands · ⌥⏎ newline · ⏎ send ─╯
+ ● alice online      ⚙  │        ╰────────────── ⌥K commands · ⌥⏎ newline · ⏎ send ─╯
  tc  #general                                      F1 keys · ◆ e2e · ● quic · ◐ graphite
 ```
 
@@ -35,9 +35,11 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
   connection (`● quic`/`● tcp`; the state when not online) and `◐ theme` (click: themes). No server name.
 - Header: channel name + topic (one line, truncated); `◉ N` members and `⌕` (palette) on the right. Status
   (Connecting/Offline/Reconnecting) shows in the sidebar title, dim, only when not Online.
-- Messages ("thin bar, split sides"): other people on the left, name (their muted color) and time over
-  the text, a thin `│` bar in their color; mine on the right against an accent bar, time and `◌`/`✓`
-  under them. Identity is the name only. Consecutive messages from the same author within 5 min omit
+- Messages: everyone on the left (Slack style), name in that person's color and time over the text, a
+  thin `│` bar in their color; mine the same in my color, with time and `◌`/`✓` under the text. Settings ›
+  Appearance › Messages: Split (or the palette's Settings tab) puts mine on the right against an accent
+  bar instead (`"split"` in `ui.json`). Each theme has eight name colors of clearly different hues.
+  Identity is the name only. Consecutive messages from the same author within 5 min omit
   the name row. Day dividers (`──── Today ────`). Cozy density leaves a blank row between groups; compact
   doesn't. A message draws at most 120 rows (code blocks 40) in the log; `v` shows all of it.
 - Pending (outbox) messages render dim; failed ones show `! failed — r to retry, d to discard`.
@@ -48,7 +50,7 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
 - Pinned messages end with a dim `📌` on their footer line; the header shows a dim `📌 N` when the channel has pins.
 - Reactions as pills on a row below: `▐ 👍 2 ▌` (yours in the accent); click one to toggle it.
 - Thread roots show `↳ N replies`; threads open in a right pane (or full width below 100 cols).
-- An empty channel shows a dim `no messages yet — say hi · F1 help · Ctrl-K channels & people` (shorter when the message pane is under 64 or 26 columns; in my notes `your notes — only you see them; /remind lands here`) once a history fetch said it is empty.
+- An empty channel shows a dim `no messages yet — say hi · F1 help · ⌥K channels & people` (shorter when the message pane is under 64 or 26 columns; in my notes `your notes — only you see them; /remind lands here`) once a history fetch said it is empty.
 - Typing line above the input (`bob is typing •··`); nothing when nobody is typing. Errors, rings and
   lasting hints share that row; passing notices ("copied", "pinned") show as a toast pill there instead
   (fades in and out, click dismisses). Notices raised while a dialog is open show over its bottom edge.
@@ -98,7 +100,7 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
 | `Enter` | send (completes instead while the completion popup is open, unless the `@`/`#` word already equals the highlighted item) |
 | `/`, `@`, `#` | completion popup above the input (see below) |
 | `Tab` | complete from the popup; reopens it after `Esc` |
-| `Ctrl-K` | command palette: tabs All · Channels · People · Commands · Settings (`Tab`/`Shift-Tab`); fuzzy search keeps the quick switcher's behavior (Enter opens the top channel or person; DMs created on demand); command rows run the slash command, or type it when it needs arguments; theme rows switch the theme |
+| `Option-K` (`Alt-K`; also the `˚` macOS sends when Option types characters; `Ctrl-K` still works as a fallback) | command palette: tabs All · Channels · People · Commands · Settings (`Tab`/`Shift-Tab`); fuzzy search keeps the quick switcher's behavior (Enter opens the top channel or person; DMs created on demand); command rows run the slash command, or type it when it needs arguments; theme rows switch the theme |
 | `Alt-A` | activity view (also `/activity`); `Ctrl-A` stays the textarea's line start |
 | `Alt-↑/↓` or `Ctrl-P/N` | previous / next channel (`Ctrl-P/N` move the completion popup's highlight while it is open) |
 | `Alt-Shift-↑/↓` | previous / next unread channel |
@@ -113,7 +115,7 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
 
 ## Slash commands
 
-`/join #x`, `/leave`, `/create #x [--private [--plaintext]]`, `/add @user`, `/topic text`, `/dm @a @b` (`/dm @me` or my own name: my notes, also in `Ctrl-K`; `@me` is always me, even if an account is named `me`; after `/dm` the popup offers `@me` and my name),
+`/join #x`, `/leave`, `/create #x [--private [--plaintext]]`, `/add @user`, `/topic text`, `/dm @a @b` (`/dm @me` or my own name: my notes, also in `Option-K`; `@me` is always me, even if an account is named `me`; after `/dm` the popup offers `@me` and my name),
 `/invite` (admin; prints code), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps), `/pins` (overlay of this channel's pinned messages, newest pin first, as `author · preview`; Enter jumps, Esc closes),
 `/activity`, `/highlight [word…]`, `/unhighlight word…`, `/group name @a @b…` (admin), `/groups`,
 `/remind <when> <text>`, `/reminders`, `/remind-delete id`, `/snippet path[:range] [message]`,
@@ -255,7 +257,7 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
 - Drafts live in the client cache (`drafts` table, local only, never sent anywhere) and survive restarts
   and snapshot resets. They are written at once on a switch, on clear/send and on quit, and 1 s after
   typing pauses otherwise; a crash can lose at most that last second of typing.
-- A dim `✎` after a channel's name in the sidebar (and in `Ctrl-K`) means it has a draft that the input
+- A dim `✎` after a channel's name in the sidebar (and in the palette) means it has a draft that the input
   isn't showing: another channel's, or the channel's own while one of its threads is open.
 - Edit text (`e`) is never a draft. Starting an edit puts the input's text (for instance the draft a
   jump left there) aside; saving, cancelling (`Esc`), switching channel, `Alt-A` or a jump ends the edit

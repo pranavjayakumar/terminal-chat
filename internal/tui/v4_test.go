@@ -786,3 +786,32 @@ func TestMessageLayoutSetting(t *testing.T) {
 		t.Fatalf("toolbar at %d, column ends at %d", tb, g.CX+g.CW)
 	}
 }
+
+// Option-K opens and closes the palette, as alt+k or as the ˚ macOS types
+// with Option; Ctrl-K still works; hints say ⌥K.
+func TestOptionKOpensPalette(t *testing.T) {
+	for _, k := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune{'k'}, Alt: true},
+		{Type: tea.KeyRunes, Runes: []rune{'˚'}},
+		keyMsg("ctrl+k"),
+	} {
+		m := newTestModel(t, 120, 40)
+		v := checkView(t, m, "hints")
+		if !strings.Contains(v, "⌥K") || strings.Contains(v, "⌃K") {
+			t.Fatalf("hints:\n%s", v)
+		}
+		_, cmd := m.Update(k)
+		run(m, cmd)
+		if m.mode != modeSwitcher || m.line.Value() != "" {
+			t.Fatalf("%q: mode %v query %q", k.String(), m.mode, m.line.Value())
+		}
+		_, cmd = m.Update(k)
+		run(m, cmd)
+		if m.mode != modeNormal || m.input.Value() != "" {
+			t.Fatalf("%q: didn't close: mode %v input %q", k.String(), m.mode, m.input.Value())
+		}
+	}
+	if !strings.Contains(strings.Join(sheetPlain(120), "\n"), "⌥K") {
+		t.Fatal("keys sheet lacks ⌥K")
+	}
+}

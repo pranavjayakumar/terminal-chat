@@ -165,13 +165,13 @@ func (m *Model) viewPane(c *canvas, p *pane, key string, x, y, w, h, unread int)
 		return
 	}
 	if !p.open() {
-		msg := truncate("no channel — Ctrl-K to open one", w)
+		msg := truncate("no channel — ⌥K to open one", w)
 		c.put(x+(w-strWidth(msg))/2, y+h/2, msg, fgc(th.dim), "palette:")
 		return
 	}
 	rows, owner := m.paneLines(p, w)
 	if len(rows) == 0 && p == &m.main && !m.histBusy[p.ch] && m.histDone[p.ch] {
-		hint := "no messages yet — say hi · F1 help · Ctrl-K channels & people"
+		hint := "no messages yet — say hi · F1 help · ⌥K channels & people"
 		switch v, _ := m.chanView(p.ch); {
 		case v.Kind == proto.ChanDM && len(v.Members) == 1:
 			hint = "your notes — only you see them; /remind lands here"
@@ -537,7 +537,7 @@ func (m *Model) drawInput(c *canvas, g geo) {
 		c.putANSI(x+2, y+1+i, dropBidi(lines[i]), w-4, fgc(th.fg).on(th.panel), "focus:input")
 	}
 	// key hints in the bottom edge
-	keys := [][3]string{{"⌃K", "commands", "palette:"}, {"⌥⏎", "newline", ""}, {"⏎", "send", "send"}}
+	keys := [][3]string{{"⌥K", "commands", "palette:"}, {"⌥⏎", "newline", ""}, {"⏎", "send", "send"}}
 	if m.mode == modeSelect {
 		keys = [][3]string{{"esc", "back", ""}}
 	}

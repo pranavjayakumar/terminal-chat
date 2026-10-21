@@ -8,7 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// The command palette (Ctrl-K): the quick switcher's fuzzy jump list plus
+// The command palette (Option-K): the quick switcher's fuzzy jump list plus
 // commands and settings, in tabs. Every command row runs an existing slash
 // command or opens an existing view.
 
@@ -167,7 +167,7 @@ func (m *Model) openPalette(tab string) {
 	m.filterPalette()
 }
 
-// openSwitcher is Ctrl-K: the palette on its All tab.
+// openSwitcher is Option-K: the palette on its All tab.
 func (m *Model) openSwitcher() { m.openPalette("all") }
 
 func (m *Model) filterPalette() {
@@ -236,7 +236,7 @@ func (m *Model) filterPalette() {
 func (m *Model) switcherKey(k tea.KeyMsg) tea.Cmd {
 	p := &m.pal
 	switch keyName(k) {
-	case kEsc, kSwitcher:
+	case kEsc, kSwitcher, "ctrl+k":
 		m.mode = modeNormal
 		return nil
 	case kUp, "ctrl+p":

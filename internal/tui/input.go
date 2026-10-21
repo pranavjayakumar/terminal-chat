@@ -31,7 +31,7 @@ func newInput(st *styles) textarea.Model {
 	styleInput(&ta, st)
 	// Enter sends; these insert a newline.
 	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys(kAltEnter, kCtrlJ))
-	// Ctrl-K/Ctrl-N/Ctrl-P are ours.
+	// Ctrl-K (the palette's fallback), Ctrl-N and Ctrl-P are ours.
 	ta.KeyMap.DeleteAfterCursor = key.NewBinding(key.WithDisabled())
 	ta.KeyMap.LineNext = key.NewBinding(key.WithKeys(kDown))
 	ta.KeyMap.LinePrevious = key.NewBinding(key.WithKeys(kUp))
@@ -189,7 +189,7 @@ func (m *Model) updatePlaceholder() {
 	case m.active != 0:
 		m.input.Placeholder = "message " + m.chanTitle(m.active)
 	default:
-		m.input.Placeholder = "Ctrl-K to open a channel"
+		m.input.Placeholder = "⌥K to open a channel"
 	}
 }
 
@@ -219,7 +219,7 @@ func (m *Model) submit() tea.Cmd {
 	}
 	p := m.focus()
 	if !p.open() {
-		m.setInfo("no channel open — Ctrl-K to pick one")
+		m.setInfo("no channel open — ⌥K to pick one")
 		return nil
 	}
 	if v, _ := m.chanView(p.ch); v.Removed {
