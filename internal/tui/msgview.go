@@ -438,30 +438,43 @@ func (m *Model) drawFooter(g *grower, x client.Message, cw, bw int, mine bool) {
 	if len(parts) == 0 {
 		return
 	}
-	total := 0
-	for i, p := range parts {
-		total += strWidth(p.text)
+	width := func(p part) int {
 		if p.pill {
-			total += 2
+			return strWidth(p.text) + 2
 		}
-		if i > 0 {
-			total += 2
-		}
+		return strWidth(p.text)
 	}
-	xx := 2
-	if mine {
-		xx = max(cw-2-min(total, bw), 1)
-	}
-	y := g.row()
-	for i, p := range parts {
-		if i > 0 {
-			xx += 2
+	// Parts that don't fit the row wrap onto the next, like Slack's.
+	room := max(bw, 1)
+	for len(parts) > 0 {
+		n, total := 0, 0
+		for n < len(parts) {
+			add := width(parts[n])
+			if n > 0 {
+				add += 2
+			}
+			if n > 0 && total+add > room {
+				break
+			}
+			total += add
+			n++
 		}
-		if p.pill {
-			xx = g.c.pill(xx, y, p.text, p.st, p.act)
-		} else {
-			xx = g.c.put(xx, y, p.text, p.st, p.act)
+		xx := 2
+		if mine {
+			xx = max(cw-2-min(total, bw), 1)
 		}
+		y := g.row()
+		for i, p := range parts[:n] {
+			if i > 0 {
+				xx += 2
+			}
+			if p.pill {
+				xx = g.c.pill(xx, y, p.text, p.st, p.act)
+			} else {
+				xx = g.c.put(xx, y, p.text, p.st, p.act)
+			}
+		}
+		parts = parts[n:]
 	}
 }
 

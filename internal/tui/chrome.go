@@ -161,10 +161,11 @@ func (m *Model) drawHuddleBar(c *canvas, g geo) {
 			x = c.put(x, y, m.meter(m.me.ID, meMeterN, h.talking), fgc(mc), "")
 		}
 		if h.talking {
-			x = c.put(x+1, y, "● live", fgb(th.accent), "") // we are broadcasting: never cut
+			c.put(x+1, y, "● live", fgb(th.accent), "") // we are broadcasting: never cut
 		} else {
-			x = c.put(x+1, y, "⊘ muted", fgc(th.faint), "")
+			c.put(x+1, y, "⊘ muted", fgc(th.faint), "")
 		}
+		x += 1 + strWidth("⊘ muted") // the same width either way, so nobody's meter shifts on a toggle
 	}
 	x += 2
 	who := h.hereWho
@@ -260,8 +261,15 @@ func (m *Model) drawToast(c *canvas, g geo) {
 	tw := strWidth(text) + 4
 	x := g.CX + (g.CW-tw)/2
 	y := g.noteY // the row under it is the input's frame, so it only fades
-	if strWidth(m.statusLine(g.CW)) > 0 && g.noteY > g.msgTop {
-		y-- // the row holds an error, a ring or typing: float above it
+	if sw := strWidth(m.statusLine(g.CW)); sw > 0 {
+		// The row holds an error, a ring or typing: share it on the right
+		// when both fit, else float above it, clear of the text there.
+		if right := g.CX + g.CW - tw; sw+3 <= right-g.CX {
+			x = right
+		} else if g.noteY > g.msgTop {
+			y--
+			c.fill(max(x-1, g.CX), y, min(tw+2, g.CW), 1, th.bg, "")
+		}
 	}
 	bg := mix(th.bg, th.element, v)
 	c.fill(x, y, tw, 1, bg, "toast:close")
