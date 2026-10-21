@@ -48,7 +48,9 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
   didn't sign (an admin, the server) reads `removed (not by author)`. `e` refuses messages that aren't
   verified (waiting, invalid, legacy or inserted plaintext).
 - Pinned messages end with a dim `📌` on their footer line; the header shows a dim `📌 N` when the channel has pins.
-- Reactions as pills on a row below: `▐ 👍 2 ▌` (yours in the accent); click one to toggle it.
+- Reactions as pills on a row below: `▐ 👍 2 ▌` (yours in the accent); click one to toggle it. The row ends
+  with a `☺+` pill that opens the emoji picker for that message. Hovering a pill shows who reacted above it
+  (`you, bob and 3 others reacted with :tada:`; five names at most).
 - Thread roots show `↳ N replies`; threads open in a right pane (or full width below 100 cols).
 - An empty channel shows a dim `no messages yet — say hi · F1 help · ⌥K channels & people` (shorter when the message pane is under 64 or 26 columns; in my notes `your notes — only you see them; /remind lands here`) once a history fetch said it is empty.
 - Typing line above the input (`bob is typing •··`); nothing when nobody is typing. Errors, rings and
@@ -89,7 +91,7 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
 - 256-color terminals get each theme's surfaces on distinct grey steps; 16-color terminals keep their own
   background and mark selections in reverse. A selected message's bar becomes `▌`; a mention's bar is `┃`
   and a highlight word's `┇`, so they read without color too.
-- Mouse: click channels, messages (select), reactions, `↳ replies`, the hover toolbar (`☺ ↩ ⧉ ⋯`), huddle
+- Mouse: click channels, messages (select), reactions, `☺+`, `↳ replies`, the hover toolbar (`☺ ↩ ⧉ ⋯`), emoji picker cells and tabs, huddle
   join/leave, palette rows and tabs, settings controls, toasts, the theme in the status bar; the wheel
   scrolls the pane under the pointer. A pointer move that changes nothing reuses the last frame.
 
@@ -98,15 +100,16 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
 | Key | Action |
 |---|---|
 | `Enter` | send (completes instead while the completion popup is open, unless the `@`/`#` word already equals the highlighted item) |
-| `/`, `@`, `#` | completion popup above the input (see below) |
+| `/`, `@`, `#`, `:` | completion popup above the input (see below; `:` under Emoji) |
 | `Tab` | complete from the popup; reopens it after `Esc` |
 | `Option-K` (`Alt-K`; also the `˚` macOS sends when Option types characters; `Ctrl-K` still works as a fallback) | command palette: tabs All · Channels · People · Commands · Settings (`Tab`/`Shift-Tab`); fuzzy search keeps the quick switcher's behavior (Enter opens the top channel or person; DMs created on demand); command rows run the slash command, or type it when it needs arguments; theme rows switch the theme |
 | `Alt-A` | activity view (also `/activity`); `Ctrl-A` stays the textarea's line start |
+| `Option-E` (`Alt-E`; also the `´` macOS sends when Option types characters) | emoji picker: inserts at the cursor; in select mode it reacts like `+`; again closes it |
 | `Alt-↑/↓` or `Ctrl-P/N` | previous / next channel (`Ctrl-P/N` move the completion popup's highlight while it is open) |
 | `Alt-Shift-↑/↓` | previous / next unread channel |
 | `PgUp/PgDn`, mouse wheel | scroll history (fetches older via History at top) |
 | `↑` on empty input | select messages mode (↑/↓ moves selection) |
-| in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (prompt for emoji; `+1`, `:tada:` shortcuts), `y` copy body (OSC 52), `p` pin / unpin (notice "pinned" / "unpinned"), `Esc` leave |
+| in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (emoji picker; typing filters, so `+ +1 Enter` and `+ :tada: Enter` still work), `y` copy body (OSC 52), `p` pin / unpin (notice "pinned" / "unpinned"), `Esc` leave |
 | `Esc` | close the completion popup / thread / palette / dialog / select mode; never quits |
 | `Ctrl-C` twice (the second while `press Ctrl-C again to quit` shows, 4 s), or `/quit` | quit |
 | `F1` or `/help` | keyboard sheet: Navigate, Messages, Write, Huddle, App, then every command (`?` is just text, so messages can start with it) |
@@ -162,6 +165,44 @@ a click picks a row. It fades and rises in unless animations are off, and is nev
 `--plaintext` opts out, e.g. for a private channel webhooks post into (webhooks can't post into encrypted
 channels). Private channels made by older tc versions (whose `/create --private` didn't encrypt) stay unencrypted
 until someone runs `/encrypt` there (earlier messages are then marked legacy); their header has no 🔒.
+
+## Emoji
+
+- **Picker** (`+` or `Option-E` in select mode, the toolbar's `☺`, a reaction row's `☺+`: react to that
+  message; `Option-E` or the palette's "Insert emoji" in the input: insert at the cursor). A floating panel
+  like the completion popup: rounded frame, `React to bob` / `Insert emoji` and `✕` in the top edge,
+  `←↑↓→ move · ⇥ category · ⏎ react · esc` in the bottom edge. Inside: a search box, category tabs
+  (frequently used, smileys, people, nature, food, activities, travel, objects, symbols; no flags), a grid
+  of 10 per row that scrolls as one list with a title per category, and a preview row (the emoji,
+  `:shortcode:`, its other names and keywords, and what Enter does: `⏎ react`, `⏎ remove` for one of
+  mine, `⏎ insert`). Reacting sits right-aligned under the message's first row (above it when there is no
+  room); inserting sits one blank row above the input's left edge. Its frame's cells take the pane's own
+  background, never a message's tint.
+- Keys: arrows move (←/→ run on through the rows), `PgUp`/`PgDn` a page, `Tab`/`Shift-Tab` jump to the
+  next/previous category (and leave a search), typing filters (shortcodes first, then keywords; a pasted
+  emoji is offered as is), `Backspace`/`Ctrl-U` edit the search, `Enter` picks, `Esc` closes. Mouse: hover
+  lights a cell and the preview follows it, click picks, a tab click switches category, the wheel scrolls
+  (the selection follows into view), `✕` or a click outside closes it.
+- Fit: 10 columns at 46 cells; narrower terminals get fewer columns (always 4 cells each with even 2-cell
+  margins), and tabs that don't fit scroll with the selection. Under 9 rows the tabs and preview go; under
+  4 rows or 10 columns the frame goes. It fades and rises in and out like the popup; instant with
+  animations off. A channel switch closes it.
+- **`:` completion**: `:` plus two shortcode letters at the start of a word opens the completion popup
+  (`Emoji`, 44 columns at most) with emoji whose shortcode matches: an exact name first, then frequently
+  used (`frequent`), then prefixes (shorter first), then names containing it. The typed letters show in
+  the accent. `Tab`/`Enter` put the emoji in (and a space) and close the popup; `Enter` never sends from
+  it. Never inside a fenced block or an inline code span, or after a letter (`http://`, `10:30`).
+- **Shortcodes on send**: each known `:name:` in a message or an edit becomes its emoji when sent
+  (`:fire:` → 🔥, `:tada::rocket:` → 🎉🚀); unknown ones, ones touching a letter or digit (`12:100:3`), and
+  ones in code stay as typed. Slash commands are left alone.
+- **Frequently used**: picks, completions and converted shortcodes count; kept in `TC_HOME/ui.json` as
+  `"emoji"` (most used first, the newest first among equals, 40 at most). A fresh install offers
+  👍 🚀 👀 🎉 🔥 😂 🙏 💯 👏 🤔. The picker shows two rows of them.
+- Data: GitHub gemoji (MIT), generated into `internal/tui/emoji_data.go` by `go generate ./internal/tui`
+  (`internal/tui/emojigen`). Only emoji every terminal draws as one wide cell are kept: one code point with
+  `Emoji_Presentation`, or a base plus U+FE0F that measures 2 cells; no ZWJ sequences, skin tones,
+  keycaps or flags, nothing newer than Unicode 13.0. Shortcodes are Slack's (`:ok:` is 🆗); `:check:`
+  stays for ✅.
 
 ## Verifying people (encrypted channels)
 
