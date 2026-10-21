@@ -606,3 +606,35 @@ func TestStatusBarNarrow(t *testing.T) {
 		t.Fatalf("status bar: %q", last)
 	}
 }
+
+// A follow-up in the same group never sits flush under a code or diff
+// panel: one blank row separates them, in both densities.
+func TestBlankRowAfterCodeBlock(t *testing.T) {
+	for _, compact := range []bool{false, true} {
+		m, f := newTestModelFake(t, 120, 40)
+		m.ui.Compact = compact
+		base := time.Now().Add(-time.Minute).UnixMilli()
+		f.msgs[10] = []client.Message{
+			{Message: proto.Message{ID: 1, Chan: 10, Author: 2, Time: base, Body: "pasting:\n```diff\n-old\n+new\n```"}},
+			{Message: proto.Message{ID: 2, Chan: 10, Author: 2, Time: base + 1000, Body: "and then this"}},
+			{Message: proto.Message{ID: 3, Chan: 10, Author: 2, Time: base + 2000, Body: "plain follow-up"}},
+		}
+		m.reloadPane(&m.main)
+		rows, owner := m.paneLines(&m.main, m.dims().msgW)
+		at := func(s string) int {
+			for i, r := range rows {
+				if strings.Contains(r.text(), s) {
+					return i
+				}
+			}
+			t.Fatalf("%q not laid out", s)
+			return -1
+		}
+		if i := at("and then this"); owner[i-1] != -1 || rows[i-1].b != nil || !strings.Contains(rows[i-2].text(), "+new") {
+			t.Errorf("compact=%v: no blank row after the diff", compact)
+		}
+		if i := at("plain follow-up"); owner[i-1] != 1 {
+			t.Errorf("compact=%v: a gap inside a plain group", compact)
+		}
+	}
+}
