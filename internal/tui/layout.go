@@ -123,7 +123,7 @@ func (m *Model) geo() geo {
 		at := func(rx int) int { return g.L + (rx-g.L-columnWidth(rx-tl))/2 }
 		k := float64(g.tpW) / threadW
 		g.CX = int(math.Round(float64(at(m.w)) + float64(at(m.w-threadW)-at(m.w))*k))
-		g.CX = max(g.CX, g.L) // the pane, drawn later, covers any overlap
+		g.CX = max(g.CX, g.L) // overlap with the pane is clipped (frame.go)
 	}
 	g.CX = max(g.CX, 0)
 
@@ -178,7 +178,7 @@ func columnWidth(w int) int {
 	if w < 30 {
 		return max(w, 1)
 	}
-	return min(maxColumn, max(w-8, min(w-2, 62), 29))
+	return min(maxColumn, max(w-8, min(w-2, 67), 29))
 }
 
 // inputRows is how many text rows the input needs at text width w.

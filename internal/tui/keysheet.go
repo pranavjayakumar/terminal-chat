@@ -69,11 +69,13 @@ func keySheetRows(w int) [][]sheetCell {
 			*rows = append(*rows, nil)
 		}
 		*rows = append(*rows, []sheetCell{{x, g.title, 0}}, nil)
-		dx := 12 // one description column per group, past its widest keycap
+		gdx := 12 // one description column per group, past its widest keycap
 		for _, k := range g.keys {
-			dx = max(dx, strWidth(k[0])+3)
+			gdx = max(gdx, strWidth(k[0])+3)
 		}
+		gdx = min(gdx, max(colW/2, 12)) // a narrow column: an over-wide key pushes only its own row
 		for _, k := range g.keys {
+			dx := max(gdx, strWidth(k[0])+3)
 			*rows = append(*rows, []sheetCell{{x, k[0], 1}, {x + dx, truncate(k[1], max(colW-dx-2, 4)), 2}})
 		}
 	}

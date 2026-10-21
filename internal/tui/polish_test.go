@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -174,3 +175,76 @@ func TestKeysSheetReturnsToSettings(t *testing.T) {
 		t.Fatalf("F1 from the chat closed to mode %v", m.mode)
 	}
 }
+
+// In a narrow pane with two people typing, a toast never lands on the
+// failed-send line above.
+func TestToastNarrowKeepsMessages(t *testing.T) {
+	for _, sz := range [][2]int{{40, 12}, {60, 20}} {
+		m, f := newTestModelFake(t, sz[0], sz[1])
+		f.typing[10] = []uint64{2, 3}
+		m.reloadTyping()
+		m.setInfo("copied to the clipboard ok")
+		v := ansi.Strip(m.View())
+		if strings.Contains(v, "! failed") && !strings.Contains(v, "! failed — r") {
+			t.Fatalf("%v: failed line covered:\n%s", sz, v)
+		}
+		if !strings.Contains(v, "copied") {
+			t.Fatalf("%v: toast missing:\n%s", sz, v)
+		}
+	}
+}
+
+// A dialog's rise never covers the status bar.
+func TestDialogRiseKeepsStatusBar(t *testing.T) {
+	m, _, clk := motionModel(t, 80, 24, "")
+	clk.add(5 * time.Second)
+	press(m, "f1")
+	for i := 0; i < 6; i++ {
+		lines := strings.Split(ansi.Strip(m.View()), "\n")
+		if !strings.Contains(lines[23], "#general") {
+			t.Fatalf("frame %d: status bar covered: %q", i, lines[23])
+		}
+		clk.add(20 * time.Millisecond)
+	}
+}
+
+// While the thread pane slides out, the main input stays left of it.
+func TestClosingPaneNotOverdrawn(t *testing.T) {
+	m, _, clk := motionModel(t, 130, 20, "")
+	clk.add(5 * time.Second)
+	run(m, m.openThread(103))
+	clk.add(time.Second)
+	m.View()
+	press(m, "esc")
+	for i := 0; i < 8; i++ {
+		m.View()
+		g := m.geo()
+		c := m.lastCanvas
+		for y := 0; y < g.statusY; y++ {
+			for x := g.RX; x < m.w; x++ {
+				if s := c.at(x, y).s; strings.ContainsAny(s, "╭╮╰╯⌥⏎") {
+					t.Fatalf("frame %d: %q from the input over the pane at %d,%d", i, s, x, y)
+				}
+			}
+		}
+		clk.add(20 * time.Millisecond)
+	}
+}
+
+// Dozens of reactions fold into +N after three rows.
+func TestFooterCapped(t *testing.T) {
+	m, f := newTestModelFake(t, 60, 40)
+	r := map[string][]uint64{}
+	for _, e := range []string{"😀", "😃", "😄", "😁", "😆", "😅", "🤣", "😂", "🙂", "🙃", "😉", "😊", "😇", "🥰", "😍", "🤩", "😘", "😗", "😚", "😙", "🥲", "😋", "😛", "😜"} {
+		r[e] = []uint64{2}
+	}
+	f.msgs[10][len(f.msgs[10])-3].Reactions = r
+	f.msgs[10][len(f.msgs[10])-3].Replies = 4
+	m.Update(updateMsg(client.Update{Msgs: map[uint64]bool{10: true}}))
+	v := checkView(t, m, "reactions")
+	if !strings.Contains(v, "↳ 4 replies") || !strings.Contains(v, "☺+") || !regexpPlus.MatchString(v) {
+		t.Fatalf("footer:\n%s", v)
+	}
+}
+
+var regexpPlus = regexp.MustCompile(`\+\d+ `)

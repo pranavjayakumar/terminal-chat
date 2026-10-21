@@ -35,9 +35,18 @@ func (m *Model) frame() *canvas {
 	if g.split {
 		m.drawThreadPane(c, g)
 	}
-	m.drawInput(c, g)
-	m.drawPopup(c, g)
-	m.drawPicker(c, g)
+	if g.split && !m.thread.open() {
+		// The pane is sliding out: what follows stays left of it.
+		old := c.setClip(rect{0, 0, g.RX, m.h})
+		m.drawInput(c, g)
+		m.drawPopup(c, g)
+		m.drawPicker(c, g)
+		c.setClip(old)
+	} else {
+		m.drawInput(c, g)
+		m.drawPopup(c, g)
+		m.drawPicker(c, g)
+	}
 	if g.SB > 0 {
 		m.drawSidebar(c, g)
 	}
@@ -466,7 +475,7 @@ func (m *Model) drawThreadPane(c *canvas, g geo) {
 	tx := g.RX + 2
 	c.put(tx, g.top, "Thread", fgb(th.fg), "")
 	if m.thread.open() {
-		c.put(tx+7, g.top, truncate(m.chanTitle(m.thread.ch), threadW-13), fgc(th.faint), "")
+		c.put(tx+7, g.top, truncate(m.chanTitle(m.thread.ch), threadW-14), fgc(th.faint), "")
 	}
 	c.put(g.RX+threadW-3, g.top, "✕", fgc(th.dim), "thread:close") // slides in with the pane
 	pw := threadW - 4

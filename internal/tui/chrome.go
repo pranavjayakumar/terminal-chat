@@ -262,11 +262,19 @@ func (m *Model) drawToast(c *canvas, g geo) {
 	x := g.CX + (g.CW-tw)/2
 	y := g.noteY // the row under it is the input's frame, so it only fades
 	if sw := strWidth(m.statusLine(g.CW)); sw > 0 {
-		// The row holds an error, a ring or typing: share it on the right
-		// when both fit, else float above it, clear of the text there.
-		if right := g.CX + g.CW - tw; sw+3 <= right-g.CX {
-			x = right
-		} else if g.noteY > g.msgTop {
+		// The row holds typing, a ring or our huddle. Share it on the
+		// right, shortened if need be; typing alone may be covered while
+		// the toast lasts; a ring or our mic is floated above instead.
+		free := g.CW - sw - 3
+		important := m.nt.ring.ch != 0 || m.hud.in && !m.huddleBarShown()
+		switch {
+		case free >= 12 || free >= tw:
+			text = truncate(m.notice, min(free, g.CW-6)-4)
+			tw = strWidth(text) + 4
+			x = g.CX + g.CW - tw
+		case !important:
+			c.fill(g.CX, y, g.CW, 1, th.bg, "")
+		case g.noteY > g.msgTop:
 			y--
 			c.fill(max(x-1, g.CX), y, min(tw+2, g.CW), 1, th.bg, "")
 		}

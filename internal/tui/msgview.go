@@ -61,6 +61,7 @@ func (c *blockCache) get(k blockKey, draw func() *canvas) *canvas {
 const (
 	maxBlockRows = 120
 	maxCodeRows  = 40
+	footerRows   = 3    // reaction rows under one message
 	maxBlocks    = 1500 // cached blocks: a few screens' worth across channels
 )
 
@@ -388,7 +389,8 @@ func (m *Model) drawCode(g *grower, sg seg, bw int, at func(int) int, pending bo
 	}
 }
 
-// drawFooter draws reaction pills and the reply count on one row.
+// drawFooter draws reaction pills and the reply count, wrapping onto at
+// most footerRows rows.
 func (m *Model) drawFooter(g *grower, x client.Message, cw, bw int, mine bool) {
 	th := m.st.th
 	type part struct {
@@ -446,6 +448,41 @@ func (m *Model) drawFooter(g *grower, x client.Message, cw, bw int, mine bool) {
 	}
 	// Parts that don't fit the row wrap onto the next, like Slack's.
 	room := max(bw, 1)
+	rows := func(ps []part) int {
+		n, total := 1, 0
+		for i, p := range ps {
+			add := width(p)
+			if i > 0 && total > 0 {
+				add += 2
+			}
+			if total > 0 && total+add > room {
+				n, total = n+1, width(p)
+				continue
+			}
+			total += add
+		}
+		return n
+	}
+	// Too many reactions: keep the reply count and ☺+, fold the rest into +N.
+	var react []int
+	for i, p := range parts {
+		if strings.HasPrefix(p.act, "react|") {
+			react = append(react, i)
+		}
+	}
+	for hidden := 1; len(react) > 0 && rows(parts) > footerRows && hidden <= len(react); hidden++ {
+		var kept []part
+		kept = append(kept, parts[:react[0]]...)
+		for _, i := range react[:len(react)-hidden] {
+			kept = append(kept, parts[i])
+		}
+		kept = append(kept, part{"+" + strconv.Itoa(hidden), fgc(th.faint), "", false})
+		kept = append(kept, parts[react[len(react)-1]+1:]...)
+		if rows(kept) <= footerRows || hidden == len(react) {
+			parts = kept
+			break
+		}
+	}
 	for len(parts) > 0 {
 		n, total := 0, 0
 		for n < len(parts) {

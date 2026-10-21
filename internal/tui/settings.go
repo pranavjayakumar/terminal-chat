@@ -460,7 +460,7 @@ func (m *Model) drawCtls(c *canvas, cx, y, cw, bottom int) {
 		off = focusEnd - room
 	}
 	off = min(off, focusTop)
-	more := start-off > room && room > 2
+	more := start-1-off > room && room > 2 // the last control's trailing blank row doesn't count
 	if more {
 		defer func() {
 			c.fill(cx-2, bottom-1, cw+2, 1, th.panel, "")

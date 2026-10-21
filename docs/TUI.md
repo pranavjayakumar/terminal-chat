@@ -48,15 +48,16 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
   didn't sign (an admin, the server) reads `removed (not by author)`. `e` refuses messages that aren't
   verified (waiting, invalid, legacy or inserted plaintext).
 - Pinned messages end with a dim `📌` on their footer line; the header shows a dim `📌 N` when the channel has pins.
-- Reactions as pills on a row below: `▐ 👍 2 ▌` (yours in the accent; more rows when they don't fit); click one to toggle it. The row ends
+- Reactions as pills on a row below: `▐ 👍 2 ▌` (yours in the accent; up to 3 rows when they don't fit, the rest as `+N`); click one to toggle it. The row ends
   with a `☺+` pill that opens the emoji picker for that message. Hovering a pill shows who reacted above it
   (`you, bob and 3 others reacted with :tada:`; five names at most).
 - Thread roots show `↳ N replies`; threads open in a right pane (or full width below 100 cols).
 - An empty channel shows a dim `no messages yet — say hi · F1 help · ⌥K channels & people` (shorter when the message pane is under 64 or 26 columns; in my notes `your notes — only you see them; /remind lands here`) once a history fetch said it is empty.
 - Typing line above the input (`bob is typing •··`); nothing when nobody is typing. Errors, rings and
   lasting hints share that row; passing notices ("copied", "pinned") show as a toast pill there instead
-  (fades in and out, click dismisses; on the right of the row while typing or an error holds it, one row
-  higher when both don't fit). Notices raised while a dialog is open show over its bottom edge.
+  (fades in and out, click dismisses; on the right of the row while someone types or a ring shows, shortened
+  if need be; in a narrow pane it covers the typing line while it lasts, and only a ring or our huddle sends
+  it one row higher). Notices raised while a dialog is open show over its bottom edge.
 - Input: a rounded box (channel in the top edge, `public`/`private`/`◆ e2e` on its right, key hints in the
   bottom edge) that grows to max 6 lines; `Alt-Enter`/`Ctrl-J` inserts newline; `Enter` sends.
 - Huddle bar: one row under the header while a huddle runs in the open channel:
