@@ -177,8 +177,9 @@ exactly like public-channel text. The TUI marks encrypted huddles with the lock 
   changed`), plus `· /huddle to rejoin` only when that would rejoin it (online, viewing that
   channel, no ring up); `🎧 #chan moved to your other device`. It never replaces another error
   notice and stays quiet when tc stopped (revoked, disabled), whose banner says more.
-- Builds without voice: `/huddle` says "this tc build has no voice: reinstall with install.sh
-  --voice"; the roster indicator still works.
+- Builds without voice: `/huddle` says "no voice: run tc update --voice"
+  (switches to the voice build in place, same signed-release path); the roster indicator
+  still works.
 - Repeated clock-skew drops (25+ authentic frames a second outside ±60 s) show a sticky
   "clock skew: some huddle audio dropped — check NTP on both machines", once per participation.
 - herdr: while you're in a huddle the pane's metadata title starts `tc · 🎧` (`tc · 🎧●` with an
@@ -274,7 +275,8 @@ Choice: **miniaudio via `github.com/gen2brain/malgo`** for capture/playback, **l
   frameworks only; Linux — glibc ≥ 2.35 (libc/libm/libdl/libpthread) plus the audio stack
   miniaudio `dlopen`s (PulseAudio, PipeWire-pulse or ALSA). It is listed in the same SSHSIG-
   signed `checksums.txt`. `install.sh --voice` (or `TC_VOICE=1`) installs it; `tc update`
-  keeps the flavor that's running (`voice.Available()`, fixed by the build tag), and
+  keeps the flavor that's running (`voice.Available()`, fixed by the build tag), `tc update
+  --voice` switches a plain install to it (after checking the new binary starts here), and
   `tc version` prints `(voice)` for it. CI builds and tests `-tags voice` on Ubuntu and macOS
   and runs the static release build for the runner's target on every push.
 

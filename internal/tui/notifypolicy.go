@@ -331,7 +331,7 @@ func (m *Model) sendRing(cue notify.Cue) {
 	title := "📞 " + m.r.userName(r.by) + " started a huddle"
 	body := "/huddle to join"
 	if !client.VoiceAvailable() {
-		body = "join with the voice build (install.sh --voice)"
+		body = "to join: tc update --voice"
 	}
 	if m.nt.prefs.Content == "none" {
 		title, body = "tc", "incoming huddle"

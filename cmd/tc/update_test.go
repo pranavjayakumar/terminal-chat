@@ -27,7 +27,7 @@ func TestUpdateReplacesAtomically(t *testing.T) {
 	srv.Publish(t, "v0.3.0", map[string][]byte{"linux_arm64": []byte("NEW-ARM"), "linux_amd64": []byte("NEW-AMD")})
 	exe := fakeInstall(t)
 	var out bytes.Buffer
-	err := runUpdate(context.Background(), &out, srv.Source(), exe, "v0.2.0", "linux", "arm64", false)
+	err := runUpdate(context.Background(), &out, srv.Source(), exe, "v0.2.0", "linux", "arm64", updateReq{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestUpdateReplacesAtomically(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := runUpdate(context.Background(), &out, srv.Source(), exe, "v0.3.0", "linux", "arm64", false); err != nil {
+	if err := runUpdate(context.Background(), &out, srv.Source(), exe, "v0.3.0", "linux", "arm64", updateReq{}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "up to date") {
@@ -66,7 +66,7 @@ func TestUpdateKeepsVoiceFlavor(t *testing.T) {
 		src := srv.Source()
 		src.Voice = c.voice
 		var out bytes.Buffer
-		if err := runUpdate(context.Background(), &out, src, exe, "v0.3.0", "linux", "amd64", false); err != nil {
+		if err := runUpdate(context.Background(), &out, src, exe, "v0.3.0", "linux", "amd64", updateReq{}); err != nil {
 			t.Fatal(err)
 		}
 		if b, _ := os.ReadFile(exe); string(b) != c.want {
@@ -81,7 +81,7 @@ func TestUpdateKeepsVoiceFlavor(t *testing.T) {
 	exe := fakeInstall(t)
 	src := srv.Source()
 	src.Voice = true
-	err := runUpdate(context.Background(), &bytes.Buffer{}, src, exe, "v0.3.0", "linux", "amd64", false)
+	err := runUpdate(context.Background(), &bytes.Buffer{}, src, exe, "v0.3.0", "linux", "amd64", updateReq{})
 	if err == nil || !strings.Contains(err.Error(), "tc-voice_linux_amd64.tar.gz") {
 		t.Fatalf("err = %v", err)
 	}
@@ -96,7 +96,7 @@ func TestUpdateChecksumMismatchRefuses(t *testing.T) {
 	srv.Put("v0.3.0", "tc_darwin_arm64.tar.gz", releasetest.Tarball([]byte("TAMPERED")))
 	exe := fakeInstall(t)
 	var out bytes.Buffer
-	err := runUpdate(context.Background(), &out, srv.Source(), exe, "v0.2.0", "darwin", "arm64", false)
+	err := runUpdate(context.Background(), &out, srv.Source(), exe, "v0.2.0", "darwin", "arm64", updateReq{})
 	if !errors.Is(err, release.ErrChecksum) {
 		t.Fatalf("err = %v", err)
 	}
@@ -118,7 +118,7 @@ func TestUpdateCheckOnly(t *testing.T) {
 		{"dev", "This is a dev build; the latest release is v0.3.0.\n"},
 	} {
 		var out bytes.Buffer
-		if err := runUpdate(context.Background(), &out, src, exe, c.current, "linux", "amd64", true); err != nil {
+		if err := runUpdate(context.Background(), &out, src, exe, c.current, "linux", "amd64", updateReq{check: true}); err != nil {
 			t.Fatal(err)
 		}
 		if out.String() != c.want {
@@ -145,7 +145,7 @@ func TestUpdateRefusesUnwritable(t *testing.T) {
 	dir := filepath.Dir(exe)
 	os.Chmod(dir, 0o555)
 	t.Cleanup(func() { os.Chmod(dir, 0o755) })
-	err := runUpdate(context.Background(), &bytes.Buffer{}, srv.Source(), exe, "v0.2.0", "linux", "amd64", false)
+	err := runUpdate(context.Background(), &bytes.Buffer{}, srv.Source(), exe, "v0.2.0", "linux", "amd64", updateReq{})
 	if err == nil || !strings.Contains(err.Error(), "isn't writable") {
 		t.Fatalf("err = %v", err)
 	}
@@ -162,7 +162,7 @@ func TestUpdatePlaceholderKeyRefuses(t *testing.T) {
 	srv.Publish(t, "v0.3.0", map[string][]byte{"linux_amd64": []byte("NEW")})
 	exe := fakeInstall(t)
 	src := &release.Source{Base: srv.Base, Signers: release.Placeholder}
-	err := runUpdate(context.Background(), &bytes.Buffer{}, src, exe, "v0.2.0", "linux", "amd64", false)
+	err := runUpdate(context.Background(), &bytes.Buffer{}, src, exe, "v0.2.0", "linux", "amd64", updateReq{})
 	if !errors.Is(err, release.ErrNoSigningKey) || !strings.Contains(err.Error(), "no release signing key") {
 		t.Fatalf("err = %v", err)
 	}
@@ -178,7 +178,7 @@ func TestUpdateUntrustedSignatureRefuses(t *testing.T) {
 	exe := fakeInstall(t)
 	src := srv.Source()
 	src.Signers = releasetest.AllowedSigners(releasetest.NewKey(t).PublicKey())
-	err := runUpdate(context.Background(), &bytes.Buffer{}, src, exe, "v0.2.0", "linux", "amd64", false)
+	err := runUpdate(context.Background(), &bytes.Buffer{}, src, exe, "v0.2.0", "linux", "amd64", updateReq{})
 	if !errors.Is(err, release.ErrSignature) {
 		t.Fatalf("err = %v", err)
 	}

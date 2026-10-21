@@ -144,7 +144,7 @@ install line, before the invite (Linux needs glibc 2.35+):
 curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/install.sh | sh -s -- --voice 'tc://host:7443/abc…#pin…'
 ```
 
-Already have tc? Re-run the install line with `--voice` (no invite needed); `tc update` keeps
+Already have tc? Run `tc update --voice` to switch to the voice build in place; `tc update` keeps
 whichever build you have, and `tc version` shows `(voice)`.
 
 - `/huddle` joins the current channel's or DM's huddle (or starts it); `/leave-huddle` leaves.

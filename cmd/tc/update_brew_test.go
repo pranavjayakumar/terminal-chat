@@ -21,7 +21,7 @@ func TestUpdateHomebrewDefersToBrew(t *testing.T) {
 		}
 		os.WriteFile(exe, []byte("OLD"), 0o755)
 		var out bytes.Buffer
-		if err := runUpdate(context.Background(), &out, srv.Source(), exe, "v0.2.0", "linux", "amd64", check); err != nil {
+		if err := runUpdate(context.Background(), &out, srv.Source(), exe, "v0.2.0", "linux", "amd64", updateReq{check: check}); err != nil {
 			t.Fatal(err)
 		}
 		if b, _ := os.ReadFile(exe); string(b) != "OLD" {
