@@ -22,7 +22,7 @@ import (
 // Once closed it stays closed until the input changes.
 
 // compRows is how many items the popup shows at once; more scroll.
-const compRows = 4
+const compRows = 6
 
 type compItem struct {
 	text string // what goes into the input: "/notify", "@bob", "#general"
@@ -159,12 +159,21 @@ func wordRank(q, s string) int {
 	return r
 }
 
-func (m *Model) commandItems(q string) {
+// compCommands are the commands this user can run in this build.
+func (m *Model) compCommands() []cmdSpec {
 	voice := client.VoiceAvailable()
+	var out []cmdSpec
 	for _, c := range commandTable {
 		if c.name == "" || c.more || (c.admin && !m.me.Admin) || (c.voice && !voice) {
 			continue
 		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func (m *Model) commandItems(q string) {
+	for _, c := range m.compCommands() {
 		r := matchRank(q, c.name)
 		switch {
 		case r < 0:
@@ -378,53 +387,4 @@ func (m *Model) tabComplete() bool {
 		m.acceptComp()
 	}
 	return true
-}
-
-// compLines renders the popup in at most h rows of width w.
-func (m *Model) compLines(w, h int) []string {
-	c := &m.comp
-	n := min(len(c.items), compRows, h)
-	if n <= 0 || w <= 0 {
-		return nil
-	}
-	start, end := window(len(c.items), c.sel, n)
-	mw := 0 // columns for the ↑/↓ scroll marks
-	switch {
-	case len(c.items) <= n:
-	case w >= 30:
-		mw = 2
-	case w >= 4:
-		mw = 1
-	}
-	bw := w - mw
-	out := make([]string, 0, n)
-	for i := start; i < end; i++ {
-		it := c.items[i]
-		rest := ""
-		if it.hint != "" {
-			rest = " " + it.hint
-		}
-		if it.desc != "" {
-			rest += "  " + it.desc
-		}
-		// A dim bar sets the popup apart from the messages under it.
-		var l string
-		if i == c.sel {
-			l = m.st.overlaySel.Render(fit(truncate("▌"+it.text+rest, bw), bw))
-		} else {
-			l = fit(truncate(m.st.dim.Render("▏")+m.st.bold.Render(it.text)+m.st.dim.Render(rest), bw), bw)
-		}
-		if mw > 0 {
-			mark := " "
-			switch {
-			case i == start && start > 0:
-				mark = "↑"
-			case i == end-1 && end < len(c.items):
-				mark = "↓"
-			}
-			l += spaces(mw-1) + m.st.dim.Render(mark)
-		}
-		out = append(out, fit(l, w))
-	}
-	return out
 }

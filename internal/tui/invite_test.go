@@ -116,14 +116,20 @@ func TestUpdateNoticeInSidebar(t *testing.T) {
 	for _, sz := range [][2]int{{100, 30}, {69, 20}, {40, 12}, {20, 6}} {
 		m.Update(tea.WindowSizeMsg{Width: sz[0], Height: sz[1]})
 		plain := checkView(t, m, "update notice")
-		if m.dims().side && !strings.Contains(strings.Split(plain, "\n")[0], "tc · update v0.3") {
-			t.Fatalf("%dx%d: no update notice in sidebar title:\n%s", sz[0], sz[1], plain)
+		if sz[0] >= 69 && !strings.Contains(plain, "↑ v0.3") {
+			t.Fatalf("%dx%d: no update notice in the status bar:\n%s", sz[0], sz[1], plain)
 		}
 	}
 	// Offline status wins over the update notice.
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m.status = client.Status{State: client.Offline}
-	if l := ansi.Strip(strings.Split(m.View(), "\n")[0]); strings.Contains(l, "update") || !strings.Contains(l, "offline") {
+	var l string
+	for _, r := range strings.Split(ansi.Strip(m.View()), "\n") {
+		if strings.Contains(r, "tc ·") {
+			l = r
+		}
+	}
+	if strings.Contains(l, "update") || !strings.Contains(strings.ToLower(l), "offline") {
 		t.Fatalf("offline title: %q", l)
 	}
 
@@ -322,8 +328,8 @@ func TestInviteKeyCommand(t *testing.T) {
 	// The help overlay keeps a gap after the long key.
 	for _, w := range []int{60, 100} {
 		var row string
-		for _, l := range m.helpLines(w, 200) {
-			if p := ansi.Strip(l); strings.HasPrefix(p, "/invite --key") {
+		for _, p := range sheetPlain(w) {
+			if strings.HasPrefix(p, "/invite --key") {
 				row = p
 			}
 		}

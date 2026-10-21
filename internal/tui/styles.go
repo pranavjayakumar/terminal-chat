@@ -1,24 +1,24 @@
 package tui
 
 import (
-	"hash/fnv"
 	"io"
 	"os"
-	"strconv"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 )
 
-// authorPalette holds mid-tone 256-color indexes that stay readable on both
-// dark and light backgrounds. lipgloss degrades them on 16-color terminals.
-var authorPalette = [8]string{"167", "71", "68", "133", "37", "172", "98", "131"}
-
-// styles is the whole palette. Every style comes from one renderer so tests
-// can pin the color profile, and so nothing ever queries the terminal
-// (AdaptiveColor would send an OSC 11 query from inside the alt screen).
+// styles is the whole palette, built from one theme. Every style comes from
+// one renderer that always writes truecolor: the frame is re-encoded cell by
+// cell for the real terminal (canvas.go), so tests pin the output profile in
+// prof, and nothing ever queries the terminal (AdaptiveColor would send an
+// OSC 11 query from inside the alt screen).
 type styles struct {
 	color bool
+	th    *theme
+	prof  termenv.Profile // the terminal's; the canvas degrades colors to it
+	enc   *encoder
+	r     *lipgloss.Renderer
 
 	base, dim, bold, italic, faint  lipgloss.Style
 	time, sep, edited, deleted      lipgloss.Style
@@ -36,93 +36,104 @@ type styles struct {
 	overlayTitle, overlaySel        lipgloss.Style
 	diffAdd, diffDel, diffHunk      lipgloss.Style
 	diffHdr                         lipgloss.Style
-	authors                         [len(authorPalette)]lipgloss.Style
 }
 
 // noColor reports whether NO_COLOR is set (https://no-color.org: any non-empty value).
 func noColor() bool { return os.Getenv("NO_COLOR") != "" }
 
 // defaultStyles builds styles for the real terminal on w.
-func defaultStyles(w io.Writer) *styles {
-	r := lipgloss.NewRenderer(w)
-	color := !noColor()
-	if !color {
-		// termenv's Ascii profile would also drop bold/dim; NO_COLOR only
-		// asks us to drop color.
-		r.SetColorProfile(termenv.ANSI)
-	}
-	return newStyles(r, color)
+func defaultStyles(w io.Writer, th *theme) *styles {
+	prof := lipgloss.NewRenderer(w).ColorProfile() // from the environment only
+	color := !noColor() && prof != termenv.Ascii
+	return newStyles(color, prof, th)
 }
 
 // testStyles builds styles with a fixed profile, independent of the
 // environment the tests run in.
 func testStyles(color bool) *styles {
-	r := lipgloss.NewRenderer(io.Discard)
-	r.SetColorProfile(termenv.ANSI256)
-	return newStyles(r, color)
+	return newStyles(color, termenv.ANSI256, themes[defaultTheme])
 }
 
-func newStyles(r *lipgloss.Renderer, color bool) *styles {
+func newStyles(color bool, prof termenv.Profile, th *theme) *styles {
+	r := lipgloss.NewRenderer(io.Discard)
+	r.SetColorProfile(termenv.TrueColor)
 	n := r.NewStyle
-	fg := func(s lipgloss.Style, c string) lipgloss.Style {
+	fg := func(s lipgloss.Style, c rgb) lipgloss.Style {
 		if !color {
 			return s
 		}
-		return s.Foreground(lipgloss.Color(c))
+		return s.Foreground(lipgloss.Color(c.String()))
 	}
-	s := &styles{color: color}
-	s.base = n()
-	s.dim = n().Faint(true)
-	s.bold = n().Bold(true)
-	s.italic = n().Italic(true)
-	s.faint = n().Faint(true)
-	s.time = n().Faint(true)
-	s.sep = n().Faint(true)
-	s.edited = n().Faint(true)
-	s.deleted = n().Faint(true).Italic(true)
-	s.code = fg(n(), "173")
-	s.codeBar = fg(n().Faint(true), "8")
-	s.diffAdd = fg(n(), "34")
-	s.diffDel = fg(n(), "160")
-	s.diffHunk = fg(n().Faint(true), "37")
-	s.diffHdr = n().Bold(true).Faint(true)
-	s.url = fg(n().Underline(true), "39")
-	s.mention = fg(n().Bold(true), "214")
-	s.mentionMark = fg(n().Bold(true), "214")
-	s.selMark = fg(n().Bold(true), "39")
-	s.reaction = n()
-	s.reactionMine = fg(n().Bold(true), "39")
-	s.replies = fg(n(), "39")
-	s.failed = fg(n().Bold(true), "160")
-	s.pending = n().Faint(true)
-	s.header = n().Bold(true)
-	s.topic = n().Faint(true)
-	s.status = n().Faint(true)
-	s.sideTitle = n().Bold(true)
-	s.sideSection = n().Faint(true)
-	s.sideItem = n()
-	s.sideActive = n().Bold(true).Reverse(true)
-	s.sideUnrd = n().Bold(true)
-	s.badge = fg(n().Bold(true), "39")
-	s.mentionBadge = fg(n().Bold(true), "214")
-	s.border = n().Faint(true)
-	s.typing = n().Faint(true).Italic(true)
-	s.pill = n().Reverse(true).Bold(true)
-	s.noticeErr = fg(n().Bold(true), "160")
-	s.noticeInfo = fg(n(), "39")
-	s.prompt = n().Bold(true)
-	s.placeholder = n().Faint(true)
-	s.overlayTitle = n().Bold(true)
-	s.overlaySel = n().Reverse(true)
-	for i, c := range authorPalette {
-		s.authors[i] = fg(n().Bold(true), c)
+	s := &styles{color: color, th: th, prof: prof, enc: newEncoder(prof, color), r: r}
+	s.enc.pinSurfaces(th)
+	// quiet colors become faint text without color.
+	q := func(s lipgloss.Style, c rgb) lipgloss.Style {
+		if !color {
+			return s.Faint(true)
+		}
+		return s.Foreground(lipgloss.Color(c.String()))
+	}
+	s.base = fg(n(), th.fg)
+	s.dim = q(n(), th.dim)
+	s.bold = fg(n().Bold(true), th.fg)
+	s.italic = fg(n().Italic(true), th.fg)
+	s.faint = q(n(), th.faint)
+	s.time = q(n(), th.faint)
+	s.sep = q(n(), th.faint)
+	s.edited = q(n(), th.faint)
+	s.deleted = q(n().Italic(true), th.faint)
+	s.code = fg(n(), th.warn)
+	s.codeBar = q(n(), th.line)
+	s.diffAdd = fg(n(), th.add)
+	s.diffDel = fg(n(), th.del)
+	s.diffHunk = q(n(), th.hunk)
+	s.diffHdr = q(n().Bold(true), th.dim)
+	s.url = fg(n().Underline(true), th.info)
+	s.mention = fg(n().Bold(true), th.accent)
+	s.mentionMark = fg(n().Bold(true), th.accent)
+	s.selMark = fg(n().Bold(true), th.accent)
+	s.reaction = q(n(), th.dim)
+	s.reactionMine = fg(n().Bold(true), th.accent)
+	s.replies = fg(n(), th.info)
+	s.failed = fg(n().Bold(true), th.err)
+	s.pending = q(n(), th.faint)
+	s.header = fg(n().Bold(true), th.fg)
+	s.topic = q(n(), th.dim)
+	s.status = q(n(), th.dim)
+	s.sideTitle = fg(n().Bold(true), th.fg)
+	s.sideSection = q(n(), th.faint)
+	s.sideItem = q(n(), th.dim)
+	s.sideActive = fg(n().Bold(true), th.fg)
+	s.sideUnrd = fg(n().Bold(true), th.fg)
+	s.badge = q(n().Bold(true), th.dim)
+	s.mentionBadge = fg(n().Bold(true), th.accent)
+	s.border = q(n(), th.line)
+	s.typing = q(n(), th.faint)
+	s.pill = n().Bold(true)
+	if color {
+		s.pill = s.pill.Foreground(lipgloss.Color(th.accentFg.String())).Background(lipgloss.Color(th.accent.String()))
+	} else {
+		s.pill = s.pill.Reverse(true)
+	}
+	s.noticeErr = fg(n().Bold(true), th.err)
+	s.noticeInfo = fg(n(), th.info)
+	s.prompt = fg(n().Bold(true), th.accent)
+	s.placeholder = q(n(), th.faint)
+	s.overlayTitle = fg(n().Bold(true), th.fg)
+	s.overlaySel = n().Bold(true)
+	if color {
+		s.overlaySel = s.overlaySel.Foreground(lipgloss.Color(th.accentFg.String())).Background(lipgloss.Color(th.accent.String()))
+	} else {
+		s.overlaySel = s.overlaySel.Reverse(true)
 	}
 	return s
 }
 
-// author is the stable color for a user id.
+// author is the stable name color for a user id.
 func (s *styles) author(id uint64) lipgloss.Style {
-	h := fnv.New32a()
-	h.Write([]byte(strconv.FormatUint(id, 10)))
-	return s.authors[h.Sum32()%uint32(len(s.authors))]
+	st := s.r.NewStyle().Bold(true)
+	if s.color {
+		st = st.Foreground(lipgloss.Color(s.th.nick(id).String()))
+	}
+	return st
 }

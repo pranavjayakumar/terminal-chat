@@ -42,13 +42,13 @@ func TestMarkReadWhileBlurred(t *testing.T) {
 // 2. Unread summary in the header when the sidebar is hidden.
 func TestHeaderUnreadSummary(t *testing.T) {
 	m := newTestModel(t, 40, 12)
-	first := strings.Split(checkView(t, m, "start"), "\n")[0]
-	if !strings.HasSuffix(strings.TrimRight(first, " "), "· 3 unread · 1@") || !strings.HasPrefix(first, "#general") {
+	first := strings.TrimSpace(strings.Split(checkView(t, m, "start"), "\n")[0])
+	if !strings.HasSuffix(first, "· 3 unread · 1@") || !strings.HasPrefix(first, "#general") {
 		t.Fatalf("header: %q", first)
 	}
 	// Narrower than the summary allows: the name wins.
 	m.Update(tea.WindowSizeMsg{Width: 20, Height: 8})
-	first = strings.Split(checkView(t, m, "narrow"), "\n")[0]
+	first = strings.TrimSpace(strings.Split(checkView(t, m, "narrow"), "\n")[0])
 	if !strings.HasPrefix(first, "#general") {
 		t.Fatalf("narrow header lost the channel: %q", first)
 	}
@@ -59,7 +59,7 @@ func TestHeaderUnreadSummary(t *testing.T) {
 	}
 }
 
-// 3. Help overlay: aliases, order, scrolling, "↓ more".
+// 3. The keys sheet: F1 and /help open it, it scrolls, "↓ more" marks a cut.
 func TestHelpOverlay(t *testing.T) {
 	m := newTestModel(t, 40, 12)
 	run(m, m.handleKey(keyMsg("f1")))
@@ -67,17 +67,14 @@ func TestHelpOverlay(t *testing.T) {
 		t.Fatal("F1 should open help")
 	}
 	v := checkView(t, m, "help")
-	if !strings.Contains(v, "↓ more") {
-		t.Fatalf("truncated help has no more hint:\n%s", v)
-	}
-	if lines := strings.Split(v, "\n"); !strings.HasPrefix(lines[2], "Esc") {
-		t.Fatalf("Esc should come first: %q", lines[2])
+	if !strings.Contains(v, "↓ more") || !strings.Contains(v, "Navigate") {
+		t.Fatalf("truncated sheet:\n%s", v)
 	}
 	run(m, m.handleKey(keyMsg("pgdown")))
 	if m.helpScroll == 0 {
 		t.Fatal("pgdown didn't scroll help")
 	}
-	for i := 0; i < 4*len(helpLines); i++ { // rows wrap at 40 columns
+	for i := 0; i < 400; i++ {
 		run(m, m.handleKey(keyMsg("down")))
 	}
 	if v := checkView(t, m, "help end"); strings.Contains(v, "↓ more") || !strings.Contains(v, "//text") {
@@ -248,12 +245,16 @@ func TestStatusRowReserved(t *testing.T) {
 		t.Fatalf("body height changed %d -> %d", h, m.dims().bodyH)
 	}
 	v := checkView(t, m, "status")
-	if !strings.Contains(v, "note · bob is typing…") {
+	if !strings.Contains(v, "note") {
+		t.Fatalf("no toast:\n%s", v)
+	}
+	m.clearNotice()
+	if v := checkView(t, m, "typing"); !strings.Contains(v, "bob is typing") {
 		t.Fatalf("status row:\n%s", v)
 	}
 }
 
-// 9. Sidebar toggles: too narrow notice, F2 alias.
+// 9. Ctrl-B and F2 cycle the sidebar normal → wide → icons; too narrow says so.
 func TestSidebarToggle(t *testing.T) {
 	m := newTestModel(t, 30, 10)
 	run(m, m.handleKey(keyMsg("ctrl+b")))
@@ -261,14 +262,22 @@ func TestSidebarToggle(t *testing.T) {
 		t.Fatalf("narrow toggle: shown=%v notice %q", m.sidebarShown(), m.notice)
 	}
 	checkView(t, m, "narrow toggle")
-	m2 := newTestModel(t, 80, 24)
-	run(m2, m2.handleKey(keyMsg("f2")))
-	if m2.sidebarShown() {
-		t.Fatal("F2 didn't hide the sidebar")
+	m2 := newTestModel(t, 120, 30)
+	for _, want := range []string{sbWide, sbIcons, sbNormal} {
+		run(m2, m2.handleKey(keyMsg("f2")))
+		if m2.sbMode() != want {
+			t.Fatalf("after F2: %q, want %q", m2.sbMode(), want)
+		}
+		checkView(t, m2, want)
 	}
-	run(m2, m2.handleKey(keyMsg("f2")))
-	if !m2.sidebarShown() {
-		t.Fatal("F2 didn't show the sidebar")
+	run(m2, m2.handleKey(keyMsg("ctrl+b")))
+	if m2.sbMode() != sbWide {
+		t.Fatalf("ctrl+b: %q", m2.sbMode())
+	}
+	// Narrow terminals shrink it to icons whatever the choice.
+	m2.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	if m2.sbMode() != sbIcons {
+		t.Fatalf("80 cols: %q", m2.sbMode())
 	}
 }
 
@@ -346,10 +355,14 @@ func TestSelectFooterCompactKeepsEsc(t *testing.T) {
 		m := newTestModel(t, w, 14)
 		run(m, m.handleKey(keyMsg("up")))
 		plain := checkView(t, m, "select narrow")
-		rows := strings.Split(strings.TrimRight(plain, "\n"), "\n")
-		last := rows[len(rows)-1]
+		var last string
+		for _, r := range strings.Split(plain, "\n") {
+			if strings.Contains(r, "Esc") {
+				last = r // the input box shows the select footer
+			}
+		}
 		if !strings.Contains(last, "Esc") || !strings.Contains(last, "r") {
-			t.Errorf("%d cols: footer %q", w, last)
+			t.Errorf("%d cols: footer %q\n%s", w, last, plain)
 		}
 	}
 }

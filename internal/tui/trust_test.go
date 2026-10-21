@@ -178,7 +178,7 @@ func TestVerifyOverlay(t *testing.T) {
 			}
 		}
 		if sz[1] >= 24 {
-			for _, want := range []string{"Press v if every", "you (@alice)", "SHA256:BBBB", "SHA256:CCCC"} {
+			for _, want := range []string{"Press v", "you (@alice)", "SHA256:BBBB", "SHA256:CCCC"} {
 				if !strings.Contains(v, want) {
 					t.Errorf("%v: missing %q in\n%s", sz, want, v)
 				}
@@ -304,7 +304,14 @@ func TestKeyChangeBanner(t *testing.T) {
 		run(m, m.applyUpdate(client.Update{Channels: true}))
 		run(m, m.openChannel(20))
 		v := ansi.Strip(checkView(t, m, "banner"))
-		if !strings.Contains(strings.Split(v, "\n")[1], "/accept-key @bob") {
+		banner := ""
+		for _, l := range strings.Split(v, "\n") {
+			if strings.Contains(l, "⚠") {
+				banner = l
+				break
+			}
+		}
+		if !strings.Contains(banner, "/accept-key @bob") {
 			t.Errorf("%v: the command didn't survive truncation:\n%s", sz, v)
 		}
 		if n := strings.Count(v, "⚠ /accept-key"); n != 1 {
@@ -314,7 +321,7 @@ func TestKeyChangeBanner(t *testing.T) {
 			t.Errorf("banner text:\n%s", v)
 		}
 		lines := strings.Split(v, "\n")
-		if !strings.Contains(lines[1], "⚠ /accept-key") {
+		if g := m.geo(); g.banner < 0 || !strings.Contains(lines[g.banner], "⚠ /accept-key") || g.banner > g.top+2 {
 			t.Errorf("%v: banner not under the header:\n%s", sz, v)
 		}
 		typeVia(m, "psst")

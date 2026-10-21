@@ -104,18 +104,27 @@ func highlightModel(t *testing.T, w, h int) (*Model, *fakeClient) {
 // keyword marker in their gutter.
 func markedLines(m *Model) []string { return gutterLines(m, "▎", "*") }
 
-// gutterLines returns the lines whose gutter is one of marks, without it.
+// gutterLines returns the text of rows whose bar marks them: "▎" is a
+// mention (accent bar), "*" a highlight word (warn bar).
 func gutterLines(m *Model, marks ...string) []string {
 	lines, owner := m.paneLines(&m.main, m.dims().msgW)
 	var out []string
 	for i, l := range lines {
-		if owner[i] < 0 {
+		if owner[i] < 0 || l.b == nil {
 			continue
 		}
-		p := ansi.Strip(l)
+		bar := l.b.at(0, l.y)
 		for _, mark := range marks {
-			if strings.HasPrefix(p, mark) {
-				out = append(out, strings.TrimSpace(strings.TrimPrefix(p, mark)))
+			want := m.st.th.accent
+			if mark == "*" {
+				want = m.st.th.warn
+			}
+			glyph := "┃"
+			if mark == "*" {
+				glyph = "┇"
+			}
+			if bar.s == glyph && bar.fg == want {
+				out = append(out, strings.TrimSpace(strings.TrimPrefix(l.text(), glyph)))
 			}
 		}
 	}

@@ -4,300 +4,16 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 	"unicode"
-
-	"github.com/charmbracelet/x/ansi"
 
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
 )
 
-const sidebarW = 18
-
-// dims is the layout for the current size and state.
-type dims struct {
-	side           bool
-	mainW          int
-	msgW, thrW     int
-	split, thrFull bool
-	inputH, bodyH  int
-	banner         bool // the key-change banner row under the header
-}
-
 // statusRows is the notice/typing row. It is always reserved so the log
 // doesn't jump when someone starts typing or a notice appears.
 const statusRows = 1
-
-func (m *Model) sidebarShown() bool {
-	if m.mode == modeViewer && m.view.wide {
-		return false // text to copy: a mouse selection mustn't pick up the sidebar
-	}
-	switch m.sidebar {
-	case 1:
-		return m.w >= minSidebarCols
-	case -1:
-		return false
-	}
-	return m.w >= 70
-}
-
-func (m *Model) dims() dims {
-	var d dims
-	if m.w <= 0 || m.h <= 0 {
-		return d
-	}
-	d.mainW = m.w
-	if m.sidebarShown() {
-		d.side = true
-		d.mainW = m.w - sidebarW - 1
-	}
-	d.msgW = d.mainW
-	if m.thread.open() {
-		if m.w >= 100 {
-			d.split = true
-			d.thrW = max(d.mainW*2/5, 30)
-			d.msgW = d.mainW - d.thrW - 1
-		} else {
-			d.thrFull = true
-			d.thrW = d.mainW
-		}
-	}
-	d.inputH = 1
-	if m.mode != modeReact {
-		d.inputH = min(inputLines(m.input.Value(), d.mainW-2), m.inputMax())
-	}
-	d.banner = m.bannerText() != ""
-	extra := 0
-	if d.banner {
-		extra = 1
-	}
-	d.bodyH = max(m.h-1-extra-statusRows-1-d.inputH, 0)
-	return d
-}
-
-// ---- panes ----
-
-// paneLines lays out every message of p at width w (gutter included) and
-// says which message owns each line (-1 for day separators). Memoized: it
-// only re-runs after a reload, resize or selection change.
-func (m *Model) paneLines(p *pane, w int) ([]string, []int) {
-	sel := -1
-	if m.mode == modeSelect || m.mode == modeConfirmDelete || m.mode == modeReact {
-		sel = p.sel
-	}
-	if p.memoLines != nil && p.memoVer == p.ver && p.memoW == w && p.memoSel == sel {
-		return p.memoLines, p.memoOwner
-	}
-	cw := max(w-1, 1)
-	var lines []string
-	var owner []int
-	for i, x := range p.msgs {
-		sep := i == 0 || !sameDay(p.msgs[i-1].Time, x.Time)
-		if sep {
-			lines = append(lines, " "+m.r.daySep(time.UnixMilli(x.Time).Local(), cw))
-			owner = append(owner, -1)
-		}
-		header := sep || !grouped(p.msgs[i-1], x)
-		gutter := " "
-		switch {
-		case i == sel:
-			gutter = m.st.selMark.Render("▌")
-		case x.Author != m.me.ID && !x.Deleted && !m.users[x.Author].Bot:
-			gutter = m.concernMark(x.Body)
-		}
-		for _, l := range m.rc.get(&m.r, x, cw, header) {
-			lines = append(lines, gutter+l)
-			owner = append(owner, i)
-		}
-		if p.root != 0 && i == 0 && len(p.msgs) > 1 {
-			lines = append(lines, " "+m.st.sep.Render(truncate("── replies ──", cw)))
-			owner = append(owner, -1)
-		}
-	}
-	if lines == nil {
-		lines, owner = []string{}, []int{}
-	}
-	p.memoLines, p.memoOwner, p.memoVer, p.memoW, p.memoSel = lines, owner, p.ver, w, sel
-	return lines, owner
-}
-
-// viewPane is the visible window of p: exactly h lines of width w,
-// bottom-anchored.
-func (m *Model) viewPane(p *pane, w, h int, unread int) []string {
-	if h <= 0 {
-		return nil
-	}
-	out := make([]string, 0, h)
-	if !p.open() {
-		msg := "no channel — Ctrl-K to open one"
-		for i := 0; i < h; i++ {
-			if i == h/2 {
-				out = append(out, fit(m.st.dim.Render(truncate(msg, w)), w))
-			} else {
-				out = append(out, spaces(w))
-			}
-		}
-		return out
-	}
-	lines, _ := m.paneLines(p, w)
-	if len(lines) == 0 && p == &m.main && !m.histBusy[p.ch] && m.histDone[p.ch] {
-		// What a brand-new user sees first: say what to do, not a blank pane.
-		hint := "no messages yet — say hi · F1 help · Ctrl-K channels & people"
-		switch v, _ := m.chanView(p.ch); {
-		case v.Kind == proto.ChanDM && len(v.Members) == 1:
-			hint = "your notes — only you see them; /remind lands here"
-		case w < 26:
-			hint = "no messages yet"
-		case w < 64:
-			hint = "no messages yet · F1 help"
-		}
-		lines = []string{m.st.dim.Render(truncate(hint, w))}
-	}
-	total := len(lines)
-	scroll := min(max(p.scroll, 0), max(total-h, 0))
-	end := total - scroll
-	start := max(end-h, 0)
-	for i := 0; i < h-(end-start); i++ {
-		out = append(out, spaces(w))
-	}
-	for _, l := range lines[start:end] {
-		out = append(out, fit(l, w))
-	}
-	if p == &m.main && m.histBusy[p.ch] {
-		out[0] = fit(m.st.dim.Render(truncate(" loading older messages…", w)), w)
-	}
-	if scroll > 0 && unread > 0 {
-		pill := m.st.pill.Render(truncate(fmt.Sprintf(" ↓ %d new ", unread), w))
-		out[h-1] = spaces(w-strWidth(pill)) + pill
-	}
-	return out
-}
-
-// ---- View ----
-
-// View renders the screen: exactly h lines, none wider than w.
-func (m *Model) View() string {
-	if m.w <= 0 || m.h <= 0 {
-		return ""
-	}
-	d := m.dims()
-	main := m.mainColumn(d)
-	if !d.side {
-		return strings.Join(main, "\n")
-	}
-	side := m.sidebarLines(sidebarW, m.h)
-	bar := m.st.border.Render("│")
-	var b strings.Builder
-	for i := 0; i < m.h; i++ {
-		if i > 0 {
-			b.WriteByte('\n')
-		}
-		b.WriteString(fit(side[i], sidebarW))
-		b.WriteString(bar)
-		b.WriteString(main[i])
-	}
-	return b.String()
-}
-
-func (m *Model) mainColumn(d dims) []string {
-	w := d.mainW
-	out := make([]string, 0, m.h)
-	out = append(out, fit(m.headerLine(w), w))
-	if d.banner {
-		out = append(out, fit(m.st.noticeErr.Render(truncate(m.bannerText(), w)), w))
-	}
-	out = append(out, m.bodyLines(d)...)
-	out = append(out, fit(m.statusLine(w), w))
-	if m.compShown() {
-		// The popup covers the bottom of the body, just above the status
-		// line (which keeps showing notices and connection state).
-		rows := m.compLines(w, d.bodyH)
-		copy(out[len(out)-1-len(rows):], rows)
-	}
-	out = append(out, m.st.border.Render(strings.Repeat("─", w)))
-	var in []string
-	if m.mode == modeReact {
-		in = []string{dropBidi(m.line.View())}
-	} else {
-		in = strings.Split(dropBidi(m.input.View()), "\n")
-	}
-	for i := 0; i < d.inputH; i++ {
-		l := ""
-		if i < len(in) {
-			l = in[i]
-		}
-		out = append(out, fit(l, w))
-	}
-	// Tiny terminals: keep the bottom (input) and lose the header first.
-	if len(out) > m.h {
-		out = out[len(out)-m.h:]
-	}
-	for len(out) < m.h {
-		out = append([]string{spaces(w)}, out...)
-	}
-	return out
-}
-
-func (m *Model) bodyLines(d dims) []string {
-	w, h := d.mainW, d.bodyH
-	if h <= 0 {
-		return nil
-	}
-	switch m.mode {
-	case modeHelp:
-		return m.helpLines(w, h)
-	case modeVerify:
-		return m.verifyLines(w, h)
-	case modeDevices:
-		return m.devicesLines(w, h)
-	case modeDisable:
-		return m.disableLines(w, h)
-	case modeSwitcher:
-		return m.switcherLines(w, h)
-	case modeSearch:
-		return m.searchLines(w, h)
-	case modeActivity:
-		return m.activityLines(w, h)
-	case modeList:
-		return m.listLines(w, h)
-	case modeViewer:
-		return m.viewerLines(w, h)
-	case modePanePick:
-		return m.panePickLines(w, h)
-	case modeSharePreview:
-		return m.sharePreviewLines(w, h)
-	}
-	unread := 0
-	if v, ok := m.chanView(m.active); ok {
-		unread = v.Unread
-	}
-	switch {
-	case d.thrFull:
-		return m.threadPane(w, h)
-	case d.split:
-		left := m.viewPane(&m.main, d.msgW, h, unread)
-		right := m.threadPane(d.thrW, h)
-		bar := m.st.border.Render("│")
-		out := make([]string, h)
-		for i := range out {
-			out[i] = left[i] + bar + right[i]
-		}
-		return out
-	}
-	return m.viewPane(&m.main, w, h, unread)
-}
-
-func (m *Model) threadPane(w, h int) []string {
-	title := "thread"
-	if n := len(m.thread.msgs); n > 0 {
-		title = fmt.Sprintf("thread · %d %s", n-1, plural(n-1, "reply", "replies"))
-	}
-	title += " — Esc to close"
-	out := []string{fit(m.st.header.Render(truncate(title, w)), w)}
-	return append(out, m.viewPane(&m.thread, w, h-1, 0)...)
-}
 
 func plural(n int, one, many string) string {
 	if n == 1 {
@@ -325,9 +41,10 @@ func (m *Model) statusText() string {
 	return m.status.State.String()
 }
 
-// statusLine is an error notice (if any), our huddle (if any; just its
-// head while a notice shows), another notice, then who is typing. The parts
-// that matter most come first so truncation cuts the least important.
+// statusLine is the row above the input: an error notice (if any), our
+// huddle (unless the huddle bar shows it), a lasting notice, then who is
+// typing. Passing notices show as a toast instead. The parts that matter
+// most come first so truncation cuts the least important.
 func (m *Model) statusLine(w int) string {
 	var b strings.Builder
 	sep := func() {
@@ -336,7 +53,10 @@ func (m *Model) statusLine(w int) string {
 		}
 	}
 	head, roster := m.huddleHead(m.notice != "" || m.nt.ring.ch != 0 || w < 40)
-	// In a huddle its head (🎧 ● = our mic) comes first: a sticky error
+	if m.huddleBarShown() {
+		head, roster = "", ""
+	}
+	// In a huddle its head (♪ ● = our mic) comes first: a sticky error
 	// must never hide that we're broadcasting.
 	if m.hud.in && head != "" {
 		b.WriteString(head + roster)
@@ -358,7 +78,7 @@ func (m *Model) statusLine(w int) string {
 		sep()
 		b.WriteString(m.st.dim.Render(q))
 	}
-	if m.notice != "" && !m.noticeErr {
+	if m.notice != "" && !m.noticeErr && !m.toastShown() {
 		sep()
 		switch {
 		case m.noticeTTL == escWindow || m.noticeSticky || m.noticeDim:
@@ -371,7 +91,7 @@ func (m *Model) statusLine(w int) string {
 		if b.Len() > 0 {
 			b.WriteString(m.st.dim.Render(" · "))
 		}
-		b.WriteString(m.st.typing.Render(t))
+		b.WriteString(m.st.typing.Render(strings.TrimSuffix(t, "…") + " " + m.dots()))
 	}
 	return truncate(b.String(), w)
 }
@@ -406,12 +126,12 @@ func (m *Model) headerLine(w int) string {
 		return left
 	}
 	sum := m.unreadSummary()
-	// No sidebar, so no 🎧n markers: say a huddle runs elsewhere.
+	// No sidebar, so no ♪n markers: say a huddle runs elsewhere.
 	if n := m.huddlesElsewhere(); n > 0 {
 		if sum != "" {
 			sum += " · "
 		}
-		sum += "🎧" + strconv.Itoa(n)
+		sum += "♪" + strconv.Itoa(n)
 	}
 	if sum == "" {
 		return left
@@ -512,198 +232,7 @@ func (m *Model) typingText() string {
 	return strconv.Itoa(len(names)) + " people are typing…"
 }
 
-// ---- sidebar ----
-
-func (m *Model) sidebarLines(w, h int) []string {
-	head := []string{m.sidebarTitle(), ""}
-	var lines []string
-	active := -1
-	section := func(name string, dm bool) {
-		first := true
-		for _, v := range m.sidebarOrder() {
-			if (v.Kind == proto.ChanDM) != dm {
-				continue
-			}
-			if first {
-				if len(lines) > 0 {
-					lines = append(lines, "")
-				}
-				lines = append(lines, m.st.sideSection.Render(name))
-				first = false
-			}
-			if v.ID == m.active {
-				active = len(lines)
-			}
-			lines = append(lines, m.sideEntry(v, w))
-		}
-	}
-	section("CHANNELS", false)
-	section("DIRECT", true)
-
-	room := h - len(head)
-	if room < 0 {
-		head = head[:h]
-		room = 0
-	}
-	start := 0
-	if len(lines) > room && active >= room {
-		start = min(active-room/2, len(lines)-room)
-	}
-	out := append([]string{}, head...)
-	for i := start; i < len(lines) && len(out) < h; i++ {
-		out = append(out, lines[i])
-	}
-	for len(out) < h {
-		out = append(out, "")
-	}
-	return out
-}
-
-func (m *Model) sideEntry(v client.ChannelView, w int) string {
-	var prefix, name string
-	if v.Kind == proto.ChanDM {
-		prefix = "○ "
-		if others := m.dmOthers(v); len(others) == 1 {
-			switch m.presence[others[0]].State {
-			case proto.PresOnline:
-				prefix = "● "
-			case proto.PresAway:
-				prefix = "◐ "
-			}
-		} else {
-			prefix = "◆ "
-		}
-		name = sanitize.Line(v.Display)
-	} else {
-		prefix = "# "
-		name = sanitize.Line(v.Name)
-	}
-	badge := ""
-	muted := m.muted(v.ID)
-	switch {
-	case v.Mention:
-		badge = "@" // a muted channel still shows a direct mention
-	case muted:
-	case v.Unread > 99:
-		badge = "99+"
-	case v.Unread > 0:
-		badge = strconv.Itoa(v.Unread)
-	}
-	// A dim pencil marks a channel (or one of its threads) with an unsent
-	// draft that the input isn't showing.
-	draft := ""
-	if m.hasDraft(v.ID) {
-		draft = " ✎"
-	}
-	// 🎧n: a huddle is on there (docs/VOICE.md "UX"). Dropped before the
-	// name gets too short to read.
-	hud := m.huddleMarker(v.ID)
-	labelW := w - 1 - strWidth(draft)
-	if badge != "" {
-		labelW = w - strWidth(badge) - 2 - strWidth(draft)
-	}
-	if hud != "" && labelW-strWidth(hud)-strWidth(prefix) < 6 {
-		hud = " 🎧" // the count goes before the name gets unreadable
-	}
-	if hud != "" && labelW-strWidth(hud)-strWidth(prefix) >= 6 {
-		labelW -= strWidth(hud)
-	} else {
-		hud = ""
-	}
-	label := fit(truncate(prefix+name, labelW), labelW)
-	if v.ID == m.active {
-		return m.st.sideActive.Render(fit(label+hud+draft+" "+badge, w-1))
-	}
-	st := m.st.sideItem
-	switch {
-	case v.Mention || (v.Unread > 0 && !muted):
-		st = m.st.sideUnrd
-	case muted:
-		st = m.st.dim
-	}
-	out := st.Render(label)
-	if hud != "" {
-		out += m.st.dim.Render(hud)
-	}
-	if draft != "" {
-		out += m.st.dim.Render(draft)
-	}
-	if badge != "" {
-		bs := m.st.badge
-		if v.Mention {
-			bs = m.st.mentionBadge
-		}
-		out += " " + bs.Render(badge)
-	}
-	return out
-}
-
 // ---- overlays ----
-
-func (m *Model) helpMaxScroll() int {
-	return max(len(m.helpRows(m.dims().mainW))-(m.dims().bodyH-1), 0)
-}
-
-// helpRows is the help text laid out for width w: a key column, then the
-// description, wrapped (never cut) under itself.
-func (m *Model) helpRows(w int) []string {
-	// The key column fits the longest key plus a gap, up to half the width.
-	kw := 0
-	if w >= 60 {
-		for _, kv := range helpLines {
-			if kv[1] != "" {
-				kw = max(kw, strWidth(kv[0])+1)
-			}
-		}
-		kw = min(max(kw, 24), w/2)
-	}
-	var out []string
-	for _, kv := range helpLines {
-		switch {
-		case kv[1] == "":
-			out = append(out, fit(kv[0], w))
-		case kw == 0: // narrow: "key: description", continued indented
-			for i, l := range strings.Split(ansi.Wrap(kv[0]+": "+kv[1], max(w-2, 1), ""), "\n") {
-				if i == 0 {
-					k, d, _ := strings.Cut(l, ": ")
-					if d != "" || strings.HasSuffix(l, ":") {
-						l = k + ": " + m.st.dim.Render(d)
-					}
-					out = append(out, fit(l, w))
-					continue
-				}
-				out = append(out, fit("  "+m.st.dim.Render(l), w))
-			}
-		default:
-			for i, l := range strings.Split(ansi.Wrap(kv[1], max(w-kw, 1), ""), "\n") {
-				key := ""
-				if i == 0 {
-					key = kv[0]
-				}
-				out = append(out, fit(fit(key, kw)+m.st.dim.Render(l), w))
-			}
-		}
-	}
-	return out
-}
-
-// helpLines is the scrollable help overlay; a "↓ more" row marks a cut.
-func (m *Model) helpLines(w, h int) []string {
-	out := []string{fit(m.st.overlayTitle.Render(truncate("help — ↑/↓ PgUp/PgDn scroll, Esc closes", w)), w)}
-	all := m.helpRows(w)
-	rows := h - 1
-	scroll := min(max(m.helpScroll, 0), max(len(all)-rows, 0))
-	items := all[scroll:]
-	more := len(items) > rows
-	if more {
-		items = items[:max(rows-1, 0)]
-	}
-	out = append(out, items...)
-	if more && rows > 0 {
-		out = append(out, fit(m.st.dim.Render(" ↓ more"), w))
-	}
-	return padLines(out, w, h)
-}
 
 func padLines(out []string, w, h int) []string {
 	if len(out) > h {

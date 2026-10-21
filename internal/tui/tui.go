@@ -12,6 +12,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -114,6 +115,7 @@ func Run(ctx context.Context, c *client.Client, version string) error {
 	o := Options{Out: os.Stdout, Notifier: notify.New(env, os.Stdout), AwayAfter: awayAfter(os.Getenv("TC_AWAY_MIN")), Version: version, ExtCopy: defaultExtCopy,
 		Tmux: os.Getenv("TMUX") != "", SSH: os.Getenv("SSH_TTY") != "" || os.Getenv("SSH_CONNECTION") != "",
 		NotifyEnv: NotifyEnv{Sound: os.Getenv("TC_SOUND"), Content: os.Getenv("TC_NOTIFY_CONTENT"), Quiet: os.Getenv("TC_QUIET")}}
+	o.UIPrefs = filepath.Join(c.Home(), "ui.json")
 	o.UpdateCheck = func() string {
 		return release.Check(ctx, c.Home(), version, release.NewSource(), time.Now())
 	}
@@ -122,7 +124,7 @@ func Run(ctx context.Context, c *client.Client, version string) error {
 	}
 	m := New(ctx, c, o)
 	defer m.Close()
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus(),
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion(), tea.WithReportFocus(),
 		tea.WithContext(ctx), tea.WithOutput(os.Stdout))
 	_, err := p.Run()
 	if errors.Is(err, tea.ErrProgramKilled) && ctx.Err() != nil {
@@ -165,7 +167,12 @@ type Options struct {
 	// SnippetDir is the base for relative /snippet paths; "": the working directory.
 	SnippetDir string
 
+	// UIPrefs is the look-and-feel file (theme, density, sidebar,
+	// animations); "": kept in memory only.
+	UIPrefs string
+
 	styles *styles // nil: from Out and NO_COLOR
+	motion bool    // tests: run animations (off when styles is set)
 }
 
 // awayAfter parses TC_AWAY_MIN (minutes, default 15, 0 disables).

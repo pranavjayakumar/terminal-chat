@@ -5,8 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/x/ansi"
-
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
 )
@@ -86,7 +84,7 @@ func msg(id, author uint64, body string) client.Message {
 }
 
 func TestMessageNeverExceedsWidth(t *testing.T) {
-	r := testRenderer(true)
+	m := blockModel(true)
 	bodies := []string{
 		"short",
 		strings.Repeat("word ", 50),
@@ -105,9 +103,13 @@ func TestMessageNeverExceedsWidth(t *testing.T) {
 			x.Edited = 1
 			for w := 1; w <= 130; w++ {
 				for _, header := range []bool{true, false} {
-					for _, l := range r.message(x, w, header) {
-						if lw := strWidth(l); lw > w && w > 2 {
-							t.Fatalf("w=%d header=%v body=%.20q: line %q is %d wide", w, header, body, ansi.Strip(l), lw)
+					b, rows := block(m, x, w, header)
+					if b.w != w || b.h == 0 {
+						t.Fatalf("w=%d: block %dx%d", w, b.w, b.h)
+					}
+					for _, l := range rows {
+						if lw := strWidth(l); lw > w {
+							t.Fatalf("w=%d header=%v body=%.20q: row %q is %d wide", w, header, body, l, lw)
 						}
 					}
 				}
@@ -117,26 +119,25 @@ func TestMessageNeverExceedsWidth(t *testing.T) {
 }
 
 func TestCodeFence(t *testing.T) {
-	r := testRenderer(false)
+	m := blockModel(false)
 	x := msg(1, 2, "see:\n```go\npanic: nil map write "+strings.Repeat("z", 100)+"\n  at handler.go:42\n```\nafter")
-	lines := r.message(x, 60, true)
-	plain := ansi.Strip(strings.Join(lines, "\n"))
+	b, rows := block(m, x, 66, true)
+	plain := strings.Join(rows, "\n")
 	if strings.Contains(plain, "```") {
 		t.Fatalf("fence markers rendered:\n%s", plain)
 	}
-	if strings.Count(plain, "┃") != 2 {
-		t.Fatalf("want 2 code lines with bar:\n%s", plain)
+	hdr := rowWith(rows, " go")
+	if hdr < 0 || !strings.Contains(rows[hdr], "copy") {
+		t.Fatalf("no code header with the language and copy:\n%s", plain)
 	}
-	if !strings.Contains(plain, "…") {
+	if c := cellAt(b, rows, hdr+1, "panic"); c == nil || c.bg != m.st.th.panel {
+		t.Fatalf("code line not on the panel:\n%s", plain)
+	}
+	if !strings.Contains(rows[hdr+1], "…") {
 		t.Fatalf("long code line not truncated with …:\n%s", plain)
 	}
-	if !strings.Contains(plain, "┃   at handler.go:42") {
+	if !strings.Contains(plain, "   at handler.go:42") {
 		t.Fatalf("code indentation not preserved:\n%s", plain)
-	}
-	for _, l := range lines {
-		if strWidth(l) > 60 {
-			t.Fatalf("too wide: %q", l)
-		}
 	}
 	if !strings.Contains(plain, "after") {
 		t.Fatalf("text after fence lost")
@@ -144,17 +145,18 @@ func TestCodeFence(t *testing.T) {
 }
 
 func TestEscapesStripped(t *testing.T) {
-	r := testRenderer(true)
+	m := blockModel(true)
 	x := msg(1, 3, "a\x1b[31mred\x1b]0;pwned\a b‮evil⁦x \x9b2J\x00")
 	x.Reactions = map[string][]uint64{"\x1b]52;c;AAAA\a": {2}}
-	out := strings.Join(r.message(x, 80, true), "\n")
+	b, rows := block(m, x, 80, true)
+	out := b.encode(m.st.enc)
 	for _, bad := range []string{"\x1b[31m", "\x1b]", "\a", "‮", "⁦", "\x9b", "\x00", "\x1b[2J"} {
 		if strings.Contains(out, bad) {
 			t.Errorf("output contains %q: %q", bad, out)
 		}
 	}
-	if !strings.Contains(ansi.Strip(out), "[31mred") {
-		t.Errorf("text around stripped escape lost: %q", ansi.Strip(out))
+	if !strings.Contains(strings.Join(rows, "\n"), "[31mred") {
+		t.Errorf("text around stripped escape lost: %q", rows)
 	}
 }
 
@@ -211,56 +213,61 @@ func TestMentions(t *testing.T) {
 			t.Errorf("parseInline(%q) mention = %v", body, hit)
 		}
 	}
-	// Highlighted in rendered output with color.
-	r := testRenderer(true)
-	out := strings.Join(r.message(msg(1, 2, "hey @alice"), 80, true), "")
-	if !strings.Contains(out, "38;5;214") {
-		t.Fatalf("mention not colored: %q", out)
+	// Highlighted in rendered output with the accent.
+	bm := blockModel(true)
+	b, rows := block(bm, msg(1, 2, "hey @alice"), 80, true)
+	if c := cellAt(b, rows, rowWith(rows, "@alice"), "@alice"); c == nil || c.fg != bm.st.th.accent || c.attr&aBold == 0 {
+		t.Fatalf("mention not accented: %+v", c)
 	}
 }
 
 func TestNoColor(t *testing.T) {
 	x := msg(1, 2, "hi @alice **b** https://x.io")
 	x.Reactions = map[string][]uint64{"👍": {1}}
-	nc := strings.Join(testRenderer(false).message(x, 80, true), "\n")
-	if strings.Contains(nc, "38;5;") || strings.Contains(nc, "48;5;") {
+	enc := func(color bool) (string, []string) {
+		m := blockModel(color)
+		b, rows := block(m, x, 80, true)
+		return b.encode(m.st.enc), rows
+	}
+	nc, ncRows := enc(false)
+	if strings.Contains(nc, "38;") || strings.Contains(nc, "48;") {
 		t.Fatalf("NO_COLOR output has colors: %q", nc)
 	}
-	if !strings.Contains(nc, "\x1b[1m") && !strings.Contains(nc, "\x1b[1;") {
+	if !strings.Contains(nc, ";1m") && !strings.Contains(nc, ";1;") {
 		t.Fatalf("NO_COLOR output lost bold: %q", nc)
 	}
-	c := strings.Join(testRenderer(true).message(x, 80, true), "\n")
+	c, cRows := enc(true)
 	if !strings.Contains(c, "38;5;") {
 		t.Fatalf("color output has no colors: %q", c)
 	}
-	if ansi.Strip(nc) != ansi.Strip(c) {
-		t.Fatalf("text differs:\n%q\n%q", ansi.Strip(nc), ansi.Strip(c))
+	if strings.Join(ncRows, "\n") != strings.Join(cRows, "\n") {
+		t.Fatalf("text differs:\n%q\n%q", ncRows, cRows)
 	}
 }
 
 func TestMessageLayout(t *testing.T) {
-	r := testRenderer(false)
+	m := blockModel(false)
 	x := msg(1, 2, "morning! anyone seen the deploy logs from last night?")
-	lines := r.message(x, 60, true)
-	first := ansi.Strip(lines[0])
-	if !strings.HasPrefix(first, "10:42 bob       morning!") {
-		t.Fatalf("header layout: %q", first)
+	_, rows := block(m, x, 60, true)
+	if rows[0] != "│ bob  10:42" {
+		t.Fatalf("header row: %q", rows[0])
 	}
-	lay := layoutFor(60)
-	for _, l := range lines[1:] {
-		p := ansi.Strip(l)
-		if strings.TrimLeft(p, " ") == "" || len(p)-len(strings.TrimLeft(p, " ")) != lay.indent {
-			t.Fatalf("continuation not aligned to body column %d: %q", lay.indent, p)
+	for _, l := range rows[1:] {
+		if !strings.HasPrefix(l, "│ ") || strings.HasPrefix(l, "│  ") {
+			t.Fatalf("body not under the name, after the bar: %q", l)
 		}
 	}
-	g := r.message(x, 60, false)
-	if strings.Contains(ansi.Strip(g[0]), "bob") || strings.Contains(ansi.Strip(g[0]), "10:42") {
+	_, g := block(m, x, 60, false)
+	if strings.Contains(g[0], "bob") || strings.Contains(g[0], "10:42") {
 		t.Fatalf("grouped message shows header: %q", g[0])
 	}
-	// Narrow: stacked.
-	n := r.message(x, 30, true)
-	if ansi.Strip(n[0]) != "10:42 bob" {
-		t.Fatalf("stacked header: %q", ansi.Strip(n[0]))
+	// Mine: right-aligned against an accent bar, time and status under it.
+	b, mine := block(m, msg(2, 1, "on it"), 60, true)
+	if !strings.HasSuffix(mine[0], "on it │") || b.at(59, 0).fg != m.st.th.accent {
+		t.Fatalf("own message: %q", mine)
+	}
+	if !strings.HasSuffix(mine[len(mine)-1], "10:42 ✓") {
+		t.Fatalf("own meta: %q", mine)
 	}
 }
 
@@ -291,35 +298,40 @@ func TestGrouping(t *testing.T) {
 }
 
 func TestFooterAndStates(t *testing.T) {
-	r := testRenderer(true)
+	m := blockModel(true)
 	x := msg(1, 2, "hello")
 	x.Reactions = map[string][]uint64{"👍": {1, 2}, "🎉": {3}}
 	x.Replies = 3
 	x.Edited = 5
-	out := r.message(x, 80, true)
-	plain := ansi.Strip(strings.Join(out, "\n"))
+	b, rows := block(m, x, 80, true)
+	plain := strings.Join(rows, "\n")
 	for _, want := range []string{"🎉 1", "👍 2", "↳ 3 replies", "(edited)"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("missing %q in %q", want, plain)
 		}
 	}
-	if !strings.Contains(strings.Join(out, ""), r.st.reactionMine.Render("👍 2")) {
-		t.Errorf("own reaction not highlighted")
+	y := rowWith(rows, "👍 2")
+	if c := cellAt(b, rows, y, "2"); c == nil || c.fg != m.st.th.accent || c.bg != m.st.th.accentBg {
+		t.Errorf("own reaction not highlighted: %+v", c)
+	}
+	if c := cellAt(b, rows, y, "1"); c == nil || c.fg == m.st.th.accent {
+		t.Errorf("someone else's reaction highlighted: %+v", c)
 	}
 	del := msg(2, 2, "secret")
 	del.Deleted = true
-	if p := ansi.Strip(strings.Join(r.message(del, 80, true), "")); !strings.Contains(p, "message deleted") || strings.Contains(p, "secret") {
-		t.Errorf("deleted: %q", p)
+	if _, r := block(m, del, 80, true); !strings.Contains(strings.Join(r, ""), "message deleted") || strings.Contains(strings.Join(r, ""), "secret") {
+		t.Errorf("deleted: %q", r)
 	}
 	f := msg(0, 1, "oops")
 	f.Failed = "forbidden"
-	if p := ansi.Strip(strings.Join(r.message(f, 80, true), "\n")); !strings.Contains(p, "! failed — r to retry, d to discard") {
-		t.Errorf("failed: %q", p)
+	if _, r := block(m, f, 80, true); !strings.Contains(strings.Join(r, "\n"), "! failed — r to retry, d to discard") {
+		t.Errorf("failed: %q", r)
 	}
 	pend := msg(0, 1, "wait")
 	pend.Pending = true
-	if p := strings.Join(r.message(pend, 80, true), ""); !strings.Contains(p, "\x1b[2") && !strings.Contains(p, ";2m") {
-		t.Errorf("pending not dim: %q", p)
+	pb, pr := block(m, pend, 80, true)
+	if c := cellAt(pb, pr, 0, "wait"); c == nil || c.fg != m.st.th.dim || !strings.Contains(strings.Join(pr, ""), "◌") {
+		t.Errorf("pending not dim or no ◌: %q %+v", pr, c)
 	}
 }
 
@@ -330,8 +342,11 @@ func TestDaySeparatorsInPane(t *testing.T) {
 	for i, o := range owner {
 		if o == -1 {
 			seps++
-			if !strings.Contains(ansi.Strip(lines[i]), "── ") {
-				t.Fatalf("separator line: %q", ansi.Strip(lines[i]))
+			if lines[i].b != nil && !strings.Contains(lines[i].text(), "── ") {
+				t.Fatalf("separator line: %q", lines[i].text())
+			}
+			if lines[i].b == nil {
+				seps-- // a blank gap row, not a separator
 			}
 		}
 	}

@@ -221,12 +221,14 @@ func TestE2ETimeDriftMarker(t *testing.T) {
 	if !drift.TimeDrift() || near.TimeDrift() {
 		t.Fatal("TimeDrift")
 	}
-	r := testRenderer(false)
-	lines := ansi.Strip(strings.Join(r.message(drift, 80, true), "\n"))
+	bm := blockModel(false)
+	_, dr := block(bm, drift, 80, true)
+	lines := strings.Join(dr, "\n")
 	if !strings.Contains(lines, "09:30") || strings.Contains(lines, "14:00") || !strings.Contains(lines, driftMark) {
 		t.Fatalf("drifting message:\n%s", lines)
 	}
-	if l := ansi.Strip(strings.Join(r.message(near, 80, true), "\n")); !strings.Contains(l, "14:00") || strings.Contains(l, driftMark) {
+	_, nr := block(bm, near, 80, true)
+	if l := strings.Join(nr, "\n"); !strings.Contains(l, "14:00") || strings.Contains(l, driftMark) {
 		t.Fatalf("message within the skew:\n%s", l)
 	}
 	if grouped(first, drift) || grouped(drift, near) {

@@ -199,6 +199,7 @@ func TestNotifyDNDQuietSounds(t *testing.T) {
 	if len(notes(m).sent()) != 0 {
 		t.Fatal("notified during DND")
 	}
+	m.clearNotice() // the confirmation toast shares the row
 	if v := ansi.Strip(checkView(t, m, "dnd mark")); !strings.Contains(v, "🔕 dnd "+m.now().Add(2*time.Hour).Local().Format("15:04")) {
 		t.Fatalf("no DND mark:\n%s", v)
 	}
@@ -391,7 +392,7 @@ func TestRingLifecycle(t *testing.T) {
 	}
 }
 
-// Channel huddle starts are silent by default (the 🎧 marker says it); at
+// Channel huddle starts are silent by default (the ♪ marker says it); at
 // level all one popup per channel per 5 minutes.
 func TestChannelHuddleStart(t *testing.T) {
 	m, h := newHuddleModel(t, 80, 24)
@@ -463,7 +464,7 @@ func TestEscMicBeforeRing(t *testing.T) {
 	runInput(t, m, "/huddle")
 	runInput(t, m, "/talk")
 	startHuddle(m, h, 20, 2)
-	if v := ansi.Strip(checkView(t, m, "narrow ring")); !strings.Contains(v, "📞") || !strings.Contains(v, "🎧 ●") {
+	if v := ansi.Strip(checkView(t, m, "narrow ring")); !strings.Contains(v, "📞") || !strings.Contains(v, "● live") {
 		t.Fatalf("ring or mic hidden:\n%s", v)
 	}
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})

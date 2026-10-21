@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -26,17 +27,8 @@ func newInput(st *styles) textarea.Model {
 	ta.CharLimit = 0
 	ta.MaxHeight = 0 // no line cap; the visible height is capped in layoutInput
 	ta.MaxWidth = 0
-	ta.SetPromptFunc(2, func(i int) string {
-		if i == 0 {
-			return st.prompt.Render("> ")
-		}
-		return "  "
-	})
-	plain := textarea.Style{
-		Base: st.base, CursorLine: st.base, CursorLineNumber: st.base, EndOfBuffer: st.base,
-		LineNumber: st.base, Placeholder: st.placeholder, Prompt: st.base, Text: st.base,
-	}
-	ta.FocusedStyle, ta.BlurredStyle = plain, plain
+	ta.Prompt = "" // the rounded box around it says where it goes
+	styleInput(&ta, st)
 	// Enter sends; these insert a newline.
 	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys(kAltEnter, kCtrlJ))
 	// Ctrl-K/Ctrl-N/Ctrl-P are ours.
@@ -48,14 +40,40 @@ func newInput(st *styles) textarea.Model {
 	return ta
 }
 
+func styleInput(ta *textarea.Model, st *styles) {
+	plain := textarea.Style{
+		Base: st.base, CursorLine: st.base, CursorLineNumber: st.base, EndOfBuffer: st.base,
+		LineNumber: st.base, Placeholder: st.placeholder, Prompt: st.base, Text: st.base,
+	}
+	ta.FocusedStyle, ta.BlurredStyle = plain, plain
+	ta.Cursor.Style = st.prompt.UnsetBold()
+	ta.Cursor.TextStyle = st.base
+}
+
 func newLine(st *styles) textinput.Model {
 	ti := textinput.New()
 	ti.Prompt = "> "
+	styleLine(&ti, st)
+	ti.CharLimit = 200
+	return ti
+}
+
+func styleLine(ti *textinput.Model, st *styles) {
 	ti.PromptStyle = st.prompt
 	ti.TextStyle = st.base
 	ti.PlaceholderStyle = st.placeholder
-	ti.CharLimit = 200
-	return ti
+	ti.Cursor.Style = st.prompt.UnsetBold()
+	ti.Cursor.TextStyle = st.base
+}
+
+// applyCursorMode makes the cursor blink only while animations are on.
+func (m *Model) applyCursorMode() {
+	mode := cursor.CursorBlink
+	if m.fx.off {
+		mode = cursor.CursorStatic
+	}
+	m.input.Cursor.SetMode(mode)
+	m.line.Cursor.SetMode(mode)
 }
 
 // inputLines is how many rows the textarea needs for v at text width w.
@@ -111,14 +129,14 @@ func (m *Model) inputMax() int { return min(max(m.h/3, 1), maxInputH) }
 // shrunk to what the content needs.
 func (m *Model) layoutInput() {
 	d := m.dims()
-	if d.mainW <= 2 {
+	if d.inputW <= 2 {
 		return
 	}
-	m.input.SetWidth(d.mainW)
+	m.input.SetWidth(d.inputW)
 	m.input.SetHeight(m.inputMax())
 	m.input, _ = m.input.Update(nil)
 	m.input.SetHeight(d.inputH)
-	m.line.Width = max(d.mainW-strWidth(m.line.Prompt)-1, 1)
+	m.line.Width = max(d.inputW-strWidth(m.line.Prompt)-1, 1)
 }
 
 // selectFooter lists only the keys that do something for the selected
@@ -317,6 +335,20 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 		return tea.Quit, nil
 	case "help":
 		m.openHelp()
+		return nil, nil
+	case "settings":
+		m.openSettings("")
+		return nil, nil
+	case "theme":
+		if c.rest == "" {
+			m.openPalette("settings")
+			return m.palRun(palItem{run: "app:themes"}), nil
+		}
+		name := strings.ToLower(c.rest)
+		if _, ok := themes[name]; !ok {
+			return nil, fmt.Errorf("no theme %s · %s", sanitize.Line(c.rest), strings.Join(themeOrder, ", "))
+		}
+		m.setTheme(name)
 		return nil, nil
 	case "activity":
 		m.openActivity()

@@ -427,10 +427,13 @@ func TestBotsNeverNotify(t *testing.T) {
 			Body: body, Time: f.msgs[10][len(f.msgs[10])-1].Time + 1}})
 		m.openChannel(10)
 		m.reloadPane(&m.main)
-		for _, l := range strings.Split(m.View(), "\n") {
-			if l = ansi.Strip(l); strings.Contains(l, body) {
-				return strings.Contains(l, "│▎")
+		for _, l := range gutterLines(m, "▎") {
+			if strings.Contains(l, body) {
+				return true
 			}
+		}
+		if strings.Contains(ansi.Strip(m.View()), body) {
+			return false
 		}
 		t.Fatalf("%q not on screen:\n%s", body, ansi.Strip(m.View()))
 		return false
