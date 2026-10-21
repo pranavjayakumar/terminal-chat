@@ -221,6 +221,9 @@ func (m *Model) viewPane(c *canvas, p *pane, key string, x, y, w, h, unread int)
 			firstRow[o] = yy
 		}
 		m.blitRow(c, r, o, p, key, x, yy, w, o >= 0 && (o == sel || o == hov), o == sel)
+		if o >= 0 && o == sel {
+			m.emo.ayEnd = yy
+		}
 	}
 	for o, yy := range firstRow {
 		m.drawMsgFx(c, p, o, x, yy, w)
@@ -544,7 +547,9 @@ func (m *Model) drawInput(c *canvas, g geo) {
 	}
 	// key hints in the bottom edge
 	keys := [][3]string{{"⌥K", "commands", "palette:"}, {"⌥⏎", "newline", ""}, {"⏎", "send", "send"}}
-	if m.mode == modeSelect {
+	if m.mode == modeEmoji {
+		keys = [][3]string{{"esc", "close emoji", ""}}
+	} else if m.mode == modeSelect {
 		keys = [][3]string{{"esc", "back", ""}}
 	}
 	kw := 0

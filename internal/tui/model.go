@@ -96,7 +96,7 @@ type Model struct {
 	afterSecret []tea.Msg
 
 	input    textarea.Model
-	line     textinput.Model // switcher query and react prompt
+	line     textinput.Model // the palette's query
 	mode     mode
 	editing  uint64 // message id whose edit is in the input
 	editOrig string // that message's text when the edit began

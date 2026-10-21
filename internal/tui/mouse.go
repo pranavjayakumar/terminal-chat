@@ -54,6 +54,11 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 			return nil
 		}
 		m.hover = a
+		if i, ok := strings.CutPrefix(a, "emo:"); ok && m.mode == modeEmoji {
+			if n, err := strconv.Atoi(i); err == nil && n >= 0 && n < len(m.emo.items) {
+				m.emo.sel = n // one highlight for keys and pointer
+			}
+		}
 		return nil
 	case tea.MouseActionRelease:
 		if m.drag {
@@ -149,10 +154,9 @@ func (m *Model) click(a string) tea.Cmd {
 		case "emo", "emotab", "emoclose":
 			return m.pickMouse(kind, rest)
 		case "noop":
-		default:
-			m.closePicker(true) // a click anywhere else closes it
+			return nil
 		}
-		return nil
+		m.closePicker(true) // a click anywhere else closes it and still acts
 	}
 	switch kind {
 	case "":

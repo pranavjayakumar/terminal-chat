@@ -104,7 +104,7 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
 | `Tab` | complete from the popup; reopens it after `Esc` |
 | `Option-K` (`Alt-K`; also the `˚` macOS sends when Option types characters; `Ctrl-K` still works as a fallback) | command palette: tabs All · Channels · People · Commands · Settings (`Tab`/`Shift-Tab`); fuzzy search keeps the quick switcher's behavior (Enter opens the top channel or person; DMs created on demand); command rows run the slash command, or type it when it needs arguments; theme rows switch the theme |
 | `Alt-A` | activity view (also `/activity`); `Ctrl-A` stays the textarea's line start |
-| `Option-E` (`Alt-E`; also the `´` macOS sends when Option types characters) | emoji picker: inserts at the cursor; in select mode it reacts like `+`; again closes it |
+| `Option-E` (`Alt-E`; on macOS set Option as Meta: Option-E alone is the accent dead key) | emoji picker: inserts at the cursor; in select mode it reacts like `+`; again closes it |
 | `Alt-↑/↓` or `Ctrl-P/N` | previous / next channel (`Ctrl-P/N` move the completion popup's highlight while it is open) |
 | `Alt-Shift-↑/↓` | previous / next unread channel |
 | `PgUp/PgDn`, mouse wheel | scroll history (fetches older via History at top) |
@@ -175,14 +175,16 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
   (frequently used, smileys, people, nature, food, activities, travel, objects, symbols; no flags), a grid
   of 10 per row that scrolls as one list with a title per category, and a preview row (the emoji,
   `:shortcode:`, its other names and keywords, and what Enter does: `⏎ react`, `⏎ remove` for one of
-  mine, `⏎ insert`). Reacting sits right-aligned under the message's first row (above it when there is no
-  room); inserting sits one blank row above the input's left edge. Its frame's cells take the pane's own
+  mine, `⏎ insert`). Reacting sits right-aligned below the message (above it when there is no room, over
+  its body under the name row when neither fits), never under the sidebar; inserting sits one blank row
+  above the input's left edge. Its frame's cells take the pane's own
   background, never a message's tint.
 - Keys: arrows move (←/→ run on through the rows), `PgUp`/`PgDn` a page, `Tab`/`Shift-Tab` jump to the
-  next/previous category (and leave a search), typing filters (shortcodes first, then keywords; a pasted
-  emoji is offered as is), `Backspace`/`Ctrl-U` edit the search, `Enter` picks, `Esc` closes. Mouse: hover
-  lights a cell and the preview follows it, click picks, a tab click switches category, the wheel scrolls
-  (the selection follows into view), `✕` or a click outside closes it.
+  next/previous category (and leave a search), typing filters (shortcodes first, then keywords; more words narrow it,
+  `thumbs up`; a pasted emoji is offered as is), `Backspace`/`Ctrl-U` edit the search, `Enter` picks, `Esc` closes. Mouse: hover
+  moves the one highlight (keys move it on from there), click picks, a tab click switches category, the
+  wheel scrolls (the highlight follows into view), `✕` closes, and a click outside closes it and acts.
+  The input's bottom edge says `esc close emoji` while it is open.
 - Fit: 10 columns at 46 cells; narrower terminals get fewer columns (always 4 cells each with even 2-cell
   margins), and tabs that don't fit scroll with the selection. Under 9 rows the tabs and preview go; under
   4 rows or 10 columns the frame goes. It fades and rises in and out like the popup; instant with
@@ -201,8 +203,9 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
   `"emoji"` (most used first, the newest first among equals, 40 at most). A fresh install offers
   👍 🚀 👀 🎉 🔥 😂 🙏 💯 👏 🤔. The picker shows two rows of them.
 - Data: GitHub gemoji (MIT), generated into `internal/tui/emoji_data.go` by `go generate ./internal/tui`
-  (`internal/tui/emojigen`). Only emoji every terminal draws as one wide cell are kept: one code point with
-  `Emoji_Presentation`, or a base plus U+FE0F that measures 2 cells; no ZWJ sequences, skin tones,
+  (`internal/tui/emojigen`). Only emoji terminals draw as one wide cell are kept: one code point with
+  `Emoji_Presentation`, or a base plus U+FE0F that measures 2 cells (after one, the frame encoder moves
+  the cursor to the next cell, for terminals that advance one column); no ZWJ sequences, skin tones,
   keycaps or flags, nothing newer than Unicode 13.0. Shortcodes are Slack's (`:ok:` is 🆗); `:check:`
   stays for ✅.
 

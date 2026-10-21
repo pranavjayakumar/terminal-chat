@@ -251,9 +251,15 @@ func TestPickerNotOnUnsent(t *testing.T) {
 	}
 }
 
-// ⌥E (and the ´ macOS types for Option-E) inserts at the cursor.
+// ⌥E inserts at the cursor. A lone ´ is text: it is a dead key on macOS
+// and a key of its own on German or Spanish keyboards.
 func TestPickerInsert(t *testing.T) {
-	for _, k := range []tea.KeyMsg{altE, {Type: tea.KeyRunes, Runes: []rune{'´'}}} {
+	m0 := newTestModel(t, 120, 40)
+	send(m0, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'´'}})
+	if m0.mode != modeNormal || m0.input.Value() != "´" {
+		t.Fatalf("´: mode %v input %q", m0.mode, m0.input.Value())
+	}
+	for _, k := range []tea.KeyMsg{altE} {
 		m := newTestModel(t, 120, 40)
 		typeKeys(m, "ab")
 		press(m, "left")
@@ -649,5 +655,136 @@ func TestPickerHostileQuery(t *testing.T) {
 	send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("🫠"), Paste: true})
 	if pickedItem(m) != "🫠" {
 		t.Fatalf("literal: %q", pickedItem(m))
+	}
+}
+
+// The review's repros: one highlight for keys and pointer, a search
+// selects its own top match, the search box takes clicks, several words
+// search, the panel stays out of the sidebar and off the message.
+func TestPickerReviewRepros(t *testing.T) {
+	m := newTestModel(t, 120, 40)
+	send(m, altE)
+	x, y := find(t, m, "emo:5")
+	m.Update(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionMotion})
+	if m.emo.sel != 5 {
+		t.Fatalf("hover: sel %d", m.emo.sel)
+	}
+	press(m, "down", "down", "right")
+	want := pickedItem(m)
+	m.View()
+	if m.lastCanvas.at(x, y).bg == m.st.th.accent {
+		t.Fatal("the hovered cell stays lit after the keys moved on")
+	}
+	press(m, "enter")
+	if got := m.input.Value(); got != want {
+		t.Fatalf("Enter inserted %q, highlighted %q", got, want)
+	}
+	// Each search selects its own first result.
+	for _, q := range []string{"ship", "rock", "eye", "bu", "smile"} {
+		m.input.Reset()
+		send(m, altE)
+		for i := range len(q) {
+			typeKeys(m, q[i:i+1])
+			if hits := searchEmoji(q[:i+1], m.freqList(), true, 1); m.emo.sel != 0 || pickedItem(m) != emojiTable[hits[0].def].e {
+				t.Fatalf("%q: picked %q (sel %d), first match %q", q[:i+1], pickedItem(m), m.emo.sel, emojiTable[hits[0].def].e)
+			}
+		}
+		press(m, "ctrl+u", "s", "backspace")
+		press(m, "esc")
+	}
+	// A click in the search box keeps it open.
+	send(m, altE)
+	g := m.geo()
+	r := m.pickPlace(g, m.pickSize(g))
+	_, cmd := m.Update(tea.MouseMsg{X: r.x0 + 8, Y: r.y0 + 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	run(m, cmd)
+	if m.mode != modeEmoji {
+		t.Fatal("a click in the search box closed it")
+	}
+	// Several words.
+	typeKeys(m, "thumbs up")
+	if pickedItem(m) != "👍" {
+		t.Fatalf("thumbs up: %q", pickedItem(m))
+	}
+	press(m, "esc")
+	// Option-K's ˚ is not typed into the search.
+	send(m, altE)
+	send(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'˚'}})
+	if m.emo.query != "" {
+		t.Fatalf("˚ typed: %q", m.emo.query)
+	}
+	press(m, "esc")
+
+	// Narrow with the sidebar forced on: the panel is right of it.
+	for _, w := range []int{45, 50, 55, 70} {
+		m := newTestModel(t, w, 30)
+		press(m, "ctrl+b")
+		if !m.sidebarShown() {
+			press(m, "ctrl+b")
+		}
+		selectMsg(t, m, 105)
+		press(m, "+")
+		checkView(t, m, "sidebar")
+		g := m.geo()
+		r := m.pickPlace(g, m.pickSize(g))
+		if r.x0 < g.L || r.x1 > w {
+			t.Fatalf("%d: panel %d..%d, chat from %d", w, r.x0, r.x1, g.L)
+		}
+	}
+}
+
+// The react panel sits below the message, or above it, not on its body.
+func TestPickerBesideTheMessage(t *testing.T) {
+	m := newTestModel(t, 120, 40)
+	selectMsg(t, m, 105) // high on the screen: room below
+	press(m, "+")
+	m.View()
+	g := m.geo()
+	r := m.pickPlace(g, m.pickSize(g))
+	if !m.emo.anchored || r.y0 != m.emo.ayEnd+1 {
+		t.Fatalf("panel at %d, message %d..%d", r.y0, m.emo.ay, m.emo.ayEnd)
+	}
+	press(m, "esc", "esc")
+	selectMsg(t, m, 139) // the newest sent one: no room below
+	press(m, "+")
+	m.View()
+	r = m.pickPlace(g, m.pickSize(g))
+	if r.y1 != m.emo.ay {
+		t.Fatalf("panel %d..%d, message from %d", r.y0, r.y1, m.emo.ay)
+	}
+}
+
+// A reaction that arrives while the picker is open changes what Enter does.
+func TestPickerSeesNewReactions(t *testing.T) {
+	m, f := newTestModelFake(t, 120, 40)
+	selectMsg(t, m, 105)
+	press(m, "+")
+	for i, x := range f.msgs[10] {
+		if x.ID == 105 {
+			f.msgs[10][i].Reactions = map[string][]uint64{"👍": {1}}
+		}
+	}
+	m.reloadPane(&m.main)
+	if v := checkView(t, m, "mine now"); !strings.Contains(v, "⏎ remove") {
+		t.Fatalf("preview:\n%s", v)
+	}
+	press(m, "enter")
+	if !f.called("unreact 👍") {
+		t.Fatalf("calls %v", f.calls)
+	}
+}
+
+// After a base+U+FE0F emoji the encoder puts the cursor at the next cell,
+// so a terminal that advances one column can't shift the row.
+func TestEncoderResyncsAfterVS16(t *testing.T) {
+	m := newTestModel(t, 20, 3)
+	c := newCanvas(20, 3, m.st.th)
+	c.put(2, 1, "❤️x", fgc(m.st.th.fg), "")
+	out := strings.Split(c.encode(m.st.enc), "\n")[1]
+	if !strings.Contains(out, "❤️\x1b[5G") {
+		t.Fatalf("no resync: %q", out)
+	}
+	if strings.Contains(strings.Split(c.encode(m.st.enc), "\n")[0], "G") {
+		t.Fatal("resync on a row without one")
 	}
 }

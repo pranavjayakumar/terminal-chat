@@ -60,7 +60,7 @@ func emojiByName(name string) (string, bool) {
 	return e, ok
 }
 
-// gridSafe reports whether e draws as one wide cell in any terminal: one
+// gridSafe reports whether e draws as one wide cell in terminals: one
 // code point, or a base and U+FE0F, two cells by the TUI's measure. ZWJ
 // sequences and skin tones measure 2 here but not in every terminal.
 func gridSafe(e string) bool {
@@ -119,11 +119,16 @@ type emojiHit struct {
 // shortcode first, then emoji used often, then shortcode prefixes, then
 // shortcodes containing q, then keyword matches. kw false leaves keyword
 // matches out (":" completion matches names only).
+//
+// Several words ("thumbs up") rank by the first; each other word must
+// start a keyword or be in a shortcode.
 func searchEmoji(q string, freq []string, kw bool, limit int) []emojiHit {
-	q = strings.ToLower(strings.Trim(q, ":"))
-	if q == "" {
+	words := strings.Fields(strings.ToLower(strings.Trim(q, ": ")))
+	if len(words) == 0 {
 		return nil
 	}
+	q = words[0]
+	more := words[1:]
 	type scored struct {
 		emojiHit
 		rank int
@@ -156,7 +161,7 @@ func searchEmoji(q string, freq []string, kw bool, limit int) []emojiHit {
 				}
 			}
 		}
-		if best.rank == 99 {
+		if best.rank == 99 || !matchesAll(d, more) {
 			continue
 		}
 		if best.rank > 0 && slices.Contains(freq, d.e) {
@@ -184,6 +189,17 @@ func searchEmoji(q string, freq []string, kw bool, limit int) []emojiHit {
 		hits[i] = s.emojiHit
 	}
 	return hits
+}
+
+// matchesAll reports whether every word is in one of d's shortcodes or
+// starts one of its keywords.
+func matchesAll(d emojiDef, words []string) bool {
+	for _, w := range words {
+		if !strings.Contains(d.names, w) && !slices.ContainsFunc(strings.Fields(d.keys), func(k string) bool { return strings.HasPrefix(k, w) }) {
+			return false
+		}
+	}
+	return true
 }
 
 // shortcodeChar is a character a :shortcode: may contain.

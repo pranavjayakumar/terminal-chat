@@ -58,6 +58,7 @@ type emojiPicker struct {
 	// Where the selected message's first row was drawn in the last frame.
 	anchored   bool
 	ax, ay, aw int
+	ayEnd      int // its last row
 }
 
 // pickBox is the picker's geometry for the current screen.
@@ -76,7 +77,7 @@ func (m *Model) pickSize(g geo) pickBox {
 	if !g.boxed {
 		bottom = g.inY
 	}
-	availW := m.w
+	availW := m.w - g.L // never under the sidebar
 	if !m.emo.react {
 		availW = g.inW
 	}
@@ -121,15 +122,19 @@ func (m *Model) pickPlace(g geo, b pickBox) rect {
 	if m.emo.react {
 		x, y = m.w-w, bottom-h
 		if e := &m.emo; e.anchored {
+			// Below the message, else above it, so it stays readable;
+			// over its body (under the name row) only when neither fits.
 			x = e.ax + e.aw - w
 			switch {
-			case e.ay+1+h <= bottom:
-				y = e.ay + 1
+			case e.ayEnd+1+h <= bottom:
+				y = e.ayEnd + 1
 			case e.ay-h >= g.top:
 				y = e.ay - h
+			default:
+				y = e.ay + 1
 			}
 		}
-		x = min(max(x, 0), m.w-w)
+		x = min(max(x, g.L), m.w-w)
 	}
 	y = min(max(y, g.top), bottom-h)
 	return rect{x, y, x + w, y + h}
@@ -201,7 +206,8 @@ func (m *Model) fillPicker() {
 			e.all = append(e.all, pickItem{e: d.e, def: i, sec: int(d.cat)})
 		}
 	}
-	e.sel, e.top, e.cols, e.rows = 0, 0, 0, nil
+	e.sel, e.top, e.cols, e.rows, e.items = 0, 0, 0, nil, e.items[:0]
+	m.hover = "" // its index named another emoji
 	m.pickLayout(max(m.pickSize(m.geo()).cols, 1))
 }
 
@@ -402,7 +408,7 @@ func (m *Model) emojiKey(k tea.KeyMsg) tea.Cmd {
 		m.setPickQuery("")
 		return nil
 	default:
-		if k.Type == tea.KeyRunes && !k.Alt {
+		if k.Type == tea.KeyRunes && !k.Alt && key != kSwitcher {
 			m.setPickQuery(e.query + string(k.Runes))
 		} else if k.Type == tea.KeySpace {
 			m.setPickQuery(e.query + " ")
@@ -444,7 +450,20 @@ func (m *Model) pickEmoji(i int) tea.Cmd {
 		m.layoutInput()
 		return nil
 	}
-	return m.reactWith(m.target, emoji)
+	return m.reactWith(m.currentTarget(), emoji)
+}
+
+// currentTarget is the message being reacted to as it is now: reactions
+// from elsewhere may have arrived while the picker was open.
+func (m *Model) currentTarget() client.Message {
+	for _, p := range []*pane{&m.main, &m.thread} {
+		for _, x := range p.msgs {
+			if x.ID == m.target.ID {
+				return x
+			}
+		}
+	}
+	return m.target
 }
 
 // reactWith toggles my reaction emoji on message x.
@@ -496,6 +515,7 @@ func (m *Model) pickWheel(up bool) {
 		e.top += 3
 	}
 	e.top = min(max(e.top, 0), max(len(e.rows)-b.grid, 0))
+	m.hover = ""
 	if r := m.pickRowOf(e.sel); r >= e.top && r < e.top+b.grid {
 		return
 	}
@@ -558,24 +578,19 @@ func (m *Model) drawPicker(c *canvas, g geo) {
 		c.fill(x, r.y0, 1, h, base, act("noop"))
 	}
 	lit := e.sel
-	if strings.HasPrefix(m.hover, "emo:") && live {
-		if i, err := strconv.Atoi(m.hover[4:]); err == nil && i >= 0 && i < len(e.items) {
-			lit = i
-		}
-	}
 	gx := r.x0 + 3 // grid's first column
 	y := r.y0
 	if !b.framed {
 		gx = r.x0
 		c.fill(r.x0, r.y0, w, h, pbg, act("noop"))
-		m.pickSearch(c, r.x0, y, w, k, pbg)
+		m.pickSearch(c, r.x0, y, w, k, pbg, act("noop"))
 		y++
 	} else {
 		m.box(c, r.x0, r.y0, w, h, line, pbg)
 		c.fill(r.x0+1, r.y0+1, w-2, h-2, pbg, act("noop"))
 		m.pickTitle(c, r, k, pbg, act)
 		y++
-		m.pickSearch(c, r.x0+2, y, w-4, k, pbg)
+		m.pickSearch(c, r.x0+2, y, w-4, k, pbg, act("noop"))
 		y++
 		if b.tabs {
 			m.pickTabStrip(c, r, y, gx, b.cols, k, pbg, line, act)
@@ -668,10 +683,10 @@ func (m *Model) pickTitle(c *canvas, r rect, k float64, pbg rgb, act func(string
 }
 
 // pickSearch draws the search box: ⌕, the query and a cursor, or the hint.
-func (m *Model) pickSearch(c *canvas, x, y, w int, k float64, pbg rgb) {
+func (m *Model) pickSearch(c *canvas, x, y, w int, k float64, pbg rgb, act string) {
 	th := m.st.th
 	bg := mix(pbg, th.element, k)
-	c.fill(x, y, w, 1, bg, "")
+	c.fill(x, y, w, 1, bg, act)
 	if w < 4 {
 		return
 	}
@@ -749,7 +764,7 @@ func (m *Model) pickPreview(c *canvas, r rect, y, i int, k float64, showEmoji bo
 	verb := "⏎ insert"
 	if e.react {
 		verb = "⏎ react"
-		if slices.Contains(m.target.Reactions[it.e], m.me.ID) {
+		if slices.Contains(m.currentTarget().Reactions[it.e], m.me.ID) {
 			verb = "⏎ remove"
 		}
 	}

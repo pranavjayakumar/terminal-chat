@@ -8,7 +8,7 @@
 //   - Unicode emoji-data.txt (Unicode License v3), for Emoji_Presentation
 //     https://www.unicode.org/Public/15.1.0/ucd/emoji/emoji-data.txt
 //
-// Only emoji that every terminal draws as one wide cell are kept: a single
+// Only emoji that terminals draw as one wide cell are kept: a single
 // code point with Emoji_Presentation=Yes, or a base plus U+FE0F that
 // measures 2 cells. ZWJ sequences, skin tones, keycaps and flags are
 // dropped, and so is anything newer than Unicode 13.0, which older
