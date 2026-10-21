@@ -208,6 +208,9 @@ func (m *Model) submit() tea.Cmd {
 		return nil
 	}
 	body := strings.TrimRight(v, " \t\n")
+	if !strings.HasPrefix(v, "/") || strings.HasPrefix(v, "//") || m.editing != 0 {
+		body = expandShortcodes(body, m.noteEmoji)
+	}
 	if m.editing != 0 {
 		id := m.editing
 		m.cancelEdit()
@@ -673,32 +676,4 @@ func (m *Model) openDM(users []uint64) tea.Cmd {
 		ch, err := be.OpenDM(ctx, users)
 		return openChanMsg{ch.ID}, err
 	})
-}
-
-// ---- reactions ----
-
-var emojiNames = map[string]string{
-	"+1": "👍", "thumbsup": "👍", "-1": "👎", "thumbsdown": "👎",
-	"tada": "🎉", "heart": "❤️", "smile": "😄", "joy": "😂", "laughing": "😆",
-	"eyes": "👀", "rocket": "🚀", "fire": "🔥", "check": "✅", "white_check_mark": "✅",
-	"thinking": "🤔", "pray": "🙏", "100": "💯", "ok": "👌", "ok_hand": "👌",
-	"wave": "👋", "clap": "👏", "sob": "😭", "x": "❌", "warning": "⚠️",
-}
-
-// resolveEmoji turns "+1", ":tada:" or a literal emoji into the emoji to
-// send.
-func resolveEmoji(s string) (string, bool) {
-	s = strings.TrimSpace(s)
-	if e, ok := emojiNames[strings.ToLower(strings.Trim(s, ":"))]; ok {
-		return e, true
-	}
-	if s == "" || strings.ContainsAny(s, " \t\n") || sanitize.Line(s) != s || strWidth(s) > 4 || len(s) > 32 {
-		return "", false
-	}
-	for _, r := range s {
-		if r < 0x80 {
-			return "", false
-		}
-	}
-	return s, true
 }

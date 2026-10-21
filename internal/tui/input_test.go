@@ -116,20 +116,6 @@ func TestCreatePrivateIsEncrypted(t *testing.T) {
 	checkView(t, m, "create errors")
 }
 
-func TestResolveEmoji(t *testing.T) {
-	ok := map[string]string{"+1": "👍", ":tada:": "🎉", "tada": "🎉", "🚀": "🚀", " 👀 ": "👀"}
-	for in, want := range ok {
-		if got, good := resolveEmoji(in); !good || got != want {
-			t.Errorf("%q -> %q %v", in, got, good)
-		}
-	}
-	for _, in := range []string{"", "hello", ":nope:", "a b", "\x1b[1m", "👍 👍"} {
-		if got, good := resolveEmoji(in); good {
-			t.Errorf("%q accepted as %q", in, got)
-		}
-	}
-}
-
 // A theme switch recolors the input's text (the textarea draws through a
 // pointer to its style).
 func TestThemeSwitchRecolorsInput(t *testing.T) {
