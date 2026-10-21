@@ -19,7 +19,8 @@ set -eu
 
 # Keys allowed to sign releases, in ssh-keygen allowed_signers format. Must
 # equal AllowedSigners in internal/release/signers.go (a test checks).
-ALLOWED_SIGNERS='tc-release namespaces="tc-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC1SfY3aK2Wa29kJtVWVGatvoRjOd4rQPWq6d53vWy7D'
+ALLOWED_SIGNERS='tc-release namespaces="tc-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC1SfY3aK2Wa29kJtVWVGatvoRjOd4rQPWq6d53vWy7D
+tc-release namespaces="tc-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL2Kxhb2cj9GLxqi74JV26F0MLVfUI9QlDbddzK6jpvm'
 
 say() { printf 'tc-install: %s\n' "$*" >&2; }
 die() { say "error: $*"; exit 1; }
