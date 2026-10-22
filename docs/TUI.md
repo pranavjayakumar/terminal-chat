@@ -478,6 +478,34 @@ and are not listed; they appear in the log as usual. Rows are kept for the newes
   (list), `/sounds on|off` (`TC_SOUND`), `/sounds mention|message|ring|huddle|join|mic on|off`,
   `/sounds volume 0-100` (huddle cues only). `/mute` stays the mic. Env vars win over stored
   settings. Settings live in the local cache (`notify_prefs`, `meta`), never on the server.
+  The `/notify` list ends with `when tc is closed: on|off` (whether `tc background` is installed).
+- **Policy code**: everything above (levels, coalescing, the 2 s cap, rings, privacy) lives in
+  `internal/alert` (an `Engine` that returns the timers its caller schedules); the TUI answers its
+  `World` from the loaded model and turns timers into ticks. `tc background` runs the same engine.
+- **When tc is closed: `tc background on|off|status`** (`internal/background`). `on` installs and
+  starts a LaunchAgent (`dev.tc.background`, `~/Library/LaunchAgents`) or a systemd user unit
+  (`tc-background.service`, `systemctl --user enable` + `restart`), both running
+  `tc background run` with KeepAlive/`Restart=always` and 30 s between restarts. A non-default
+  `TC_HOME` gets its own entry (`dev.tc.background.<8 hex>`, `tc-background-<8 hex>`). The entry
+  carries `TC_HOME` (absolute) and copies `TC_SOUND`, `TC_NOTIFY_CONTENT`, `TC_QUIET`, `TC_NOTIFY`
+  and `SSH_AUTH_SOCK` (not launchd's own per-boot socket on macOS); re-run `on` after changing
+  them. Homebrew installs run the prefix's `bin/tc` link, not the versioned Cellar path. `on` is
+  idempotent (rewrites the file and reloads); `off` stops it and removes the file, status and logs.
+  - `run` connects with the normal client (cache, reconnect with backoff, local E2E decryption) as
+    a **passive** session (PROTOCOL.md §4.3: not counted for presence, no typing, no huddles),
+    feeds `Update.New`/`HuddleStarted` to the engine and shows popups through the OS backend only
+    (`osascript`/`notify-send`; `TC_NOTIFY=off` silences it). It never calls `MarkRead` or
+    changes unread state.
+  - **No double popups**: every chat window holds a shared `flock` on `TC_HOME/ui.lock` for its
+    lifetime (the OS drops it on exit or crash). The notifier probes it (exclusive, non-blocking)
+    before handling anything and again right before each popup; while it's held it drops what
+    was pending. The next message after the window closes notifies.
+  - One notifier per `TC_HOME` (`background.lock`, exclusive; a second instance waits). It
+    writes `background.json` (state, transport, last error, count of popups; never text) for
+    `status`, and logs state changes to `background.log` (rotated at 1 MiB). Not logged in, or
+    shut out (revoked), it waits for `config.json` to change. When its binary is replaced
+    (checked every 30 s) it exits so the service manager starts the new one; `tc update` also
+    restarts it right away.
 - **Unread badge** (herdr only): the pane's herdr title is set to `tc · 3 unread · 1@` (same
   counts as the header summary) with `herdr pane report-metadata <pane> --source tc --title …`,
   or `--clear-title` when nothing is unread. Reported only when the text changes, 1 s after the
