@@ -394,7 +394,19 @@ func (c *Client) e2ePass(ctx context.Context, s *session, sid e2ecrypto.ServerID
 	c.reopenMsgs(sid, chans)
 	c.requeueKeyChange() // a change accepted elsewhere (another process)
 	if changed {
-		c.post(Update{Channels: true})
+		u := Update{Channels: true}
+		// Why a message still waits (Message.Wait) can change with the
+		// devices and keys we know: redraw those channels.
+		if rows, err := c.db.Query(`SELECT DISTINCT chan FROM msgs WHERE sec = ?`, SecWaiting); err == nil {
+			for rows.Next() {
+				var ch uint64
+				if rows.Scan(&ch) == nil {
+					u.msgs(ch)
+				}
+			}
+			rows.Close()
+		}
+		c.post(u)
 	}
 }
 

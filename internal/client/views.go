@@ -22,6 +22,8 @@ type Message struct {
 	// verified, is waiting for a key, is invalid, or is plaintext (legacy
 	// or inserted by the server). Body is "" unless the text can be shown.
 	Sec Sec
+	// Wait says why a SecWaiting message can't be read yet.
+	Wait WaitReason
 	// SignedTime is a verified encrypted message's own timestamp (its
 	// author's clock, Plain ts), 0 otherwise. Time is the server's claim.
 	SignedTime int64
@@ -254,6 +256,8 @@ func (c *Client) queryMsgs(q string, args ...any) []Message {
 		m.Message = pm
 		out = append(out, m)
 	}
+	rows.Close()
+	c.setWaitReasons(out)
 	return out
 }
 

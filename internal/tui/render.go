@@ -57,6 +57,24 @@ func deletedText(m client.Message) string {
 	return "removed (not by author)"
 }
 
+// waitingText is what a message we can't open yet shows: why, and what to
+// do when waiting won't help (#94).
+func (m *Model) waitingText(x client.Message) string {
+	switch x.Wait {
+	case client.WaitKeyChange:
+		n := m.atName(x.Author)
+		if x.Author == m.me.ID {
+			return "🔒 from your other key: /accept-key " + n
+		}
+		return "🔒 " + n + "'s key changed: /accept-key " + n
+	case client.WaitDevice:
+		return "🔒 waiting for the sender's device"
+	case client.WaitRoot:
+		return "🔒 waiting for the thread's first message"
+	}
+	return "🔒 waiting for key"
+}
+
 // truncate cuts s (which may contain styling) to at most w cells, ending in
 // "…" when something was cut.
 func truncate(s string, w int) string {

@@ -179,7 +179,7 @@ func (m *Model) drawBlock(x client.Message, cw int, header, tail, mine, own bool
 	default:
 		switch x.Sec {
 		case client.SecWaiting:
-			line("🔒 waiting for key", fgc(th.dim))
+			line(m.waitingText(x), fgc(th.dim))
 		case client.SecInvalid:
 			line("⚠ invalid encrypted message (hidden)", fgb(th.err))
 		case client.SecInserted:
