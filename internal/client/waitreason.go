@@ -1,6 +1,7 @@
 package client
 
 import (
+	"crypto/sha256"
 	"slices"
 
 	"golang.org/x/crypto/ssh"
@@ -56,10 +57,16 @@ type waitJudge struct {
 	ok      bool
 	memo    *keyMemo
 	pending map[uint64][]string // user → fingerprints of pending key changes
+	changed map[devKey]bool     // underKeyChange, once per (author, device)
+}
+
+type devKey struct {
+	user uint64
+	dev  e2ecrypto.DevID
 }
 
 func (c *Client) newWaitJudge() *waitJudge {
-	w := &waitJudge{c: c, memo: newKeyMemo()}
+	w := &waitJudge{c: c, memo: newKeyMemo(), changed: map[devKey]bool{}}
 	w.sid, w.ok = c.cacheServerID()
 	return w
 }
@@ -76,7 +83,13 @@ func (w *waitJudge) reason(ch, author uint64, enc []byte) WaitReason {
 		return WaitKey
 	}
 	if w.memo.device(w.c.trust, w.sid, e.Dev) == nil {
-		if w.underKeyChange(author, e.Dev) {
+		k := devKey{author, e.Dev}
+		changed, ok := w.changed[k]
+		if !ok {
+			changed = w.underKeyChange(author, e.Dev)
+			w.changed[k] = changed
+		}
+		if changed {
 			return WaitKeyChange
 		}
 		return WaitDevice
@@ -111,8 +124,9 @@ func (w *waitJudge) underKeyChange(author uint64, dev e2ecrypto.DevID) bool {
 	}
 	rows.Close()
 	for _, raw := range certs {
+		h := sha256.Sum256(raw)
 		var s proto.Signed
-		if proto.Unmarshal(raw, &s) != nil {
+		if w.c.badCert(h) || proto.Unmarshal(raw, &s) != nil {
 			continue
 		}
 		dc, err := identity.PeekDeviceCert(identity.Signed(s))
@@ -125,9 +139,12 @@ func (w *waitJudge) underKeyChange(author uint64, dev e2ecrypto.DevID) bool {
 		}
 		// Only a cert that really verifies under that key: the server can't
 		// make an arbitrary message claim a key change.
-		if _, err := identity.Signed(s).VerifyDeviceCert(w.sid, dc.SSH); err == nil {
-			return true
+		// A forged one is marked, so redraws don't check it again.
+		if _, err := identity.Signed(s).VerifyDeviceCert(w.sid, dc.SSH); err != nil {
+			w.c.markBadCert(h)
+			continue
 		}
+		return true
 	}
 	return false
 }

@@ -253,6 +253,8 @@ func printMsg(w io.Writer, c *client.Client, m client.Message) {
 		body = "(removed, not by author)"
 	case m.Deleted:
 		body = "(deleted)"
+	case m.Sec == client.SecWaiting && m.Wait == client.WaitKeyChange && m.Author == c.Me().ID:
+		body = "🔒 sent under an SSH key of yours this device doesn't trust"
 	case m.Sec == client.SecWaiting && m.Wait == client.WaitKeyChange:
 		body = "🔒 @" + name + "'s key changed: accept it with /accept-key @" + name + " in tc"
 	case m.Sec == client.SecWaiting:

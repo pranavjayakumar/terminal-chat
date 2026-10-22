@@ -2,8 +2,8 @@ package client
 
 import (
 	"slices"
-	"time"
 	"testing"
+	"time"
 
 	"github.com/skailama/tc/internal/proto"
 )
@@ -89,29 +89,26 @@ func TestWaitReasonRelabels(t *testing.T) {
 	}
 }
 
-// My own devices under another SSH key of mine (an add-key invite) can be
-// accepted too, and what they sent opens (#94).
-func TestWaitOwnKeyChangeAccepted(t *testing.T) {
+// A device "of mine" under an SSH key I don't hold is labelled, but can't be
+// trusted from a prompt: the server can make such a key up, and accepting
+// it would hand its device every channel key (#94 security review).
+func TestWaitOwnKeyChangeNotAcceptable(t *testing.T) {
 	d := newEncDM(t, proto.Snapshot{})
 	other := newPeer(t, alice, nil)
 	d.f.event(proto.KDeviceNew, 0, alice, proto.DeviceRegisterArgs{Cert: other.cert})
-	waitFor(t, "own key change", func() bool { return len(d.c.PendingKeys(alice)) == 1 })
-	if len(d.c.KeyChanges()) != 0 {
-		t.Fatal("my own key change shows as someone's")
-	}
-	id := d.f.post(proto.Message{Chan: dm, Author: alice, Enc: sealAs(t, other.dev, d.k1, 1, d.e1, plainMsg{T: "msg", TS: 1, Body: "from my other computer"})})
-	waitFor(t, "waiting on my key change", func() bool {
+	id := d.f.post(proto.Message{Chan: dm, Author: alice, Enc: sealAs(t, other.dev, d.k1, 1, d.e1, plainMsg{T: "msg", TS: 1, Body: "from a key the server made up"})})
+	waitFor(t, "labelled as my changed key", func() bool {
 		sec, w, ok := waitOf(d.c, id)
 		return ok && sec == SecWaiting && w == WaitKeyChange
 	})
-	if err := d.c.AcceptKeyChanges(alice, d.c.PendingKeys(alice), false); err != nil {
-		t.Fatal(err)
+	if len(d.c.KeyChanges()) != 0 || !slices.Equal(d.c.PendingKeys(alice), nil) {
+		t.Fatalf("my own key change is offered for acceptance: %v %v", d.c.KeyChanges(), d.c.PendingKeys(alice))
 	}
-	waitFor(t, "opens", func() bool {
-		m, ok := findMsg(d.c, id)
-		return ok && m.Sec == SecE2E && m.Body == "from my other computer"
-	})
-	if !slices.Equal(d.c.PendingKeys(alice), nil) {
-		t.Fatalf("still pending: %v", d.c.PendingKeys(alice))
+	fp := fpOf(other.ssh)
+	if err := d.c.AcceptKeyChanges(alice, []string{fp}, true); err == nil {
+		t.Fatal("accepted a key the server says is mine")
+	}
+	if sec, _, _ := waitOf(d.c, id); sec != SecWaiting {
+		t.Fatalf("opened: %v", sec)
 	}
 }

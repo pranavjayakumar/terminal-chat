@@ -23,14 +23,31 @@ func TestWaitingMessagesSayWhy(t *testing.T) {
 		run(m, m.applyUpdate(client.Update{Channels: true}))
 		run(m, m.openChannel(20))
 		v := ansi.Strip(checkView(t, m, "waiting"))
+		// Narrow: the reason may be cut, the command not.
+		for _, want := range []string{"🔒 /accept-key @bob"} {
+			if !strings.Contains(v, want) {
+				t.Errorf("%d cols: missing %q in\n%s", sz[0], want, v)
+			}
+		}
 		if sz[0] < 120 {
-			continue // narrow: they must fit, and may be cut
+			continue
 		}
 		for _, want := range []string{"🔒 waiting for key", "🔒 waiting for the sender's device",
-			"🔒 @bob's key changed: /accept-key @bob", "🔒 from your other key: /accept-key @alice"} {
+			"🔒 /accept-key @bob to read: @bob's key changed", "🔒 sent under an SSH key of yours this device doesn't trust"} {
 			if !strings.Contains(v, want) {
 				t.Errorf("missing %q in\n%s", want, v)
 			}
+		}
+
+		// Only the reason changes (the cert arrived under a changed key):
+		// the row is redrawn, not served from the render cache.
+		f.mu.Lock()
+		f.msgs[20][1].Wait = client.WaitKeyChange
+		f.mu.Unlock()
+		run(m, m.applyUpdate(client.Update{Msgs: map[uint64]bool{20: true}}))
+		v = ansi.Strip(checkView(t, m, "relabelled"))
+		if strings.Contains(v, "sender's device") || strings.Count(v, "/accept-key @bob") != 2 {
+			t.Errorf("reason change not redrawn:\n%s", v)
 		}
 
 		// Accepted: the client opens it, the view follows.
@@ -39,7 +56,7 @@ func TestWaitingMessagesSayWhy(t *testing.T) {
 		f.mu.Unlock()
 		run(m, m.applyUpdate(client.Update{Msgs: map[uint64]bool{20: true}}))
 		v = ansi.Strip(checkView(t, m, "accepted"))
-		if !strings.Contains(v, "from the new laptop") || strings.Contains(v, "@bob's key changed") {
+		if !strings.Contains(v, "from the new laptop") || strings.Count(v, "@bob's key changed") != 1 {
 			t.Errorf("after accept:\n%s", v)
 		}
 	}

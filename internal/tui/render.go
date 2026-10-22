@@ -62,11 +62,14 @@ func deletedText(m client.Message) string {
 func (m *Model) waitingText(x client.Message) string {
 	switch x.Wait {
 	case client.WaitKeyChange:
-		n := m.atName(x.Author)
 		if x.Author == m.me.ID {
-			return "🔒 from your other key: /accept-key " + n
+			// No command: trusting a key the server says is mine would
+			// hand its devices every channel key (#94 review).
+			return "🔒 sent under an SSH key of yours this device doesn't trust"
 		}
-		return "🔒 " + n + "'s key changed: /accept-key " + n
+		// The command first, so a narrow pane still shows it.
+		n := m.atName(x.Author)
+		return "🔒 /accept-key " + n + " to read: " + n + "'s key changed"
 	case client.WaitDevice:
 		return "🔒 waiting for the sender's device"
 	case client.WaitRoot:
@@ -438,12 +441,13 @@ type renderKey struct {
 	reacts  string
 	width   int
 	header  bool
-	sec     client.Sec // a waiting message changes when it decrypts
+	sec     client.Sec        // a waiting message changes when it decrypts
+	wait    client.WaitReason // ...or when why it waits changes
 }
 
 func keyFor(m client.Message, w int, header bool) renderKey {
 	k := renderKey{id: m.ID, local: m.Local, edited: m.Edited, deleted: m.Deleted, pending: m.Pending,
-		failed: m.Failed, replies: m.Replies, pinned: m.Pinned, width: w, header: header, sec: m.Sec}
+		failed: m.Failed, replies: m.Replies, pinned: m.Pinned, width: w, header: header, sec: m.Sec, wait: m.Wait}
 	if len(m.Reactions) > 0 {
 		keys := make([]string, 0, len(m.Reactions))
 		for e, us := range m.Reactions {

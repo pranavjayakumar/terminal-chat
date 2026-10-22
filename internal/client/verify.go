@@ -466,20 +466,12 @@ func (c *Client) requeueKeyChange() {
 }
 
 // PendingKeys lists the fingerprints of user's pending key changes, sorted.
-// Unlike KeyChanges it includes my own: my devices under another SSH key of
-// mine (an add-key invite) are trusted only once I accept that key, or
-// what they send stays unreadable here (#94).
+// Never my own: a key the server says is mine must not be trusted on a
+// prompt the server can trigger, since its devices would get every channel
+// key (#94 review); that needs an endorsement signed by a key I hold.
 func (c *Client) PendingKeys(user uint64) []string {
-	sid, ok := c.cacheServerID()
-	if !ok {
-		return nil
-	}
-	ks, err := c.trust.PendingKeyChanges(sid)
-	if err != nil {
-		return nil
-	}
 	var out []string
-	for _, k := range ks {
+	for _, k := range c.KeyChanges() {
 		if k.User == user {
 			out = append(out, k.Fingerprint)
 		}
