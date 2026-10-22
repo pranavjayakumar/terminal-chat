@@ -276,7 +276,11 @@ func (m *Model) huddleStarted(starts []client.HuddleStart) tea.Cmd {
 					}
 					m.nt.rangAt[s.Chan] = now
 					m.lastNotify = now
-					title, body := m.private("📞 "+who+" started a huddle", "/huddle in that DM to join", 1)
+					join := "/huddle in that DM to join"
+					if !client.VoiceAvailable() {
+						join = plainJoinHint
+					}
+					title, body := m.private("📞 "+who+" started a huddle", join, 1)
 					m.sendNote(notify.Note{Title: title, Body: body, Cue: notify.CueMention, Tag: noteTag(s.Chan)})
 				}
 				continue
@@ -316,6 +320,9 @@ func (m *Model) huddleStarted(starts []client.HuddleStart) tea.Cmd {
 		}
 		m.nt.huddleAt[s.Chan] = now
 		title, body := "🎧 "+who+" started a huddle in "+m.chanTitle(s.Chan), "/huddle to join"
+		if !client.VoiceAvailable() {
+			body = plainJoinHint
+		}
 		if m.nt.prefs.Content == "none" {
 			title, body = "tc", "huddle started"
 		}
@@ -331,7 +338,7 @@ func (m *Model) sendRing(cue notify.Cue) {
 	title := "📞 " + m.r.userName(r.by) + " started a huddle"
 	body := "/huddle to join"
 	if !client.VoiceAvailable() {
-		body = "join with the voice build (install.sh --voice)"
+		body = plainJoinHint
 	}
 	if m.nt.prefs.Content == "none" {
 		title, body = "tc", "incoming huddle"
@@ -407,6 +414,10 @@ func (m *Model) checkRing() {
 	}
 }
 
+// plainJoinHint replaces "/huddle to join" in builds without voice, where
+// /huddle can only fail (#85).
+const plainJoinHint = "to join: tc update --voice"
+
 // ringLine is the status-line prompt while ringing; compact (name cut,
 // just the command) when the line is narrow.
 func (m *Model) ringLine(compact bool) string {
@@ -417,9 +428,9 @@ func (m *Model) ringLine(compact bool) string {
 	who := m.r.userName(r.by)
 	if !client.VoiceAvailable() {
 		if compact {
-			return "📞 " + truncate(who, 12) + " · voice build"
+			return "📞 " + truncate(who, 12) + " · tc update --voice"
 		}
-		return "📞 " + who + " started a huddle · needs the voice build · Esc dismiss"
+		return "📞 " + who + " started a huddle · " + plainJoinHint + " · Esc dismiss"
 	}
 	if compact {
 		return "📞 " + truncate(who, 12) + " /huddle"

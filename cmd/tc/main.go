@@ -38,7 +38,8 @@ const usage = `tc — terminal team chat
                              (admin) shut an account out for good, e.g. after a stolen SSH key
   tc server [--listen :7443] [--public host:port] [--data dir] [--member-invites=false]
   tc server invite [--uses N] [--ttl 72h] [--admin] [--key github:user] [--raw]
-  tc update [--check]        install the latest release (or just check)
+  tc update [--check] [--voice]
+                             install the latest release (or just check; --voice: the voice build)
   tc version
 `
 

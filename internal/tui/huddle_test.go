@@ -268,12 +268,19 @@ func TestHuddleJoinTalkLeave(t *testing.T) {
 	}
 }
 
+// The plain build's /huddle error names a command the user can run, whole,
+// down to a 40-column status line (#85).
 func TestHuddleJoinErrorShown(t *testing.T) {
-	m, h := newHuddleModel(t, 100, 24)
-	h.joinErr = voice.ErrNoVoice
-	runInput(t, m, "/huddle")
-	if !m.noticeErr || !strings.Contains(m.notice, "no voice") {
-		t.Fatalf("notice %q", m.notice)
+	for _, w := range []int{40, 60, 100} {
+		m, h := newHuddleModel(t, w, 15)
+		h.joinErr = voice.ErrNoVoice
+		runInput(t, m, "/huddle")
+		if !m.noticeErr || !strings.Contains(m.notice, "no voice") {
+			t.Fatalf("notice %q", m.notice)
+		}
+		if v := checkView(t, m, "no voice"); !strings.Contains(v, "tc update --voice") {
+			t.Fatalf("%d cols: the command is cut off or missing:\n%s", w, v)
+		}
 	}
 }
 
