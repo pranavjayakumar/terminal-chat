@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/skailama/tc/internal/alert"
@@ -53,6 +54,11 @@ func backgroundOn(ctx context.Context, out io.Writer, m background.Manager, home
 	if _, err := background.OSSender(); err != nil {
 		return err
 	}
+	// launchd would create its stderr log following symlinks, with the
+	// default umask: make it ourselves first.
+	if f, err := os.OpenFile(filepath.Join(home, "background.err.log"), os.O_WRONLY|os.O_CREATE|syscall.O_NOFOLLOW, 0o600); err == nil {
+		f.Close()
+	}
 	if err := m.Install(ctx); err != nil {
 		return err
 	}
@@ -72,8 +78,12 @@ func backgroundOff(ctx context.Context, out io.Writer, m background.Manager, hom
 		return err
 	}
 	stopped := waitFor(5*time.Second, func() bool { return !background.Running(home) })
-	for _, f := range []string{background.StatusFile, background.RunLockFile, background.LogFile, background.LogFile + ".1", "background.err.log"} {
-		_ = os.Remove(filepath.Join(home, f))
+	// The lock file stays: removing it under a notifier that still holds
+	// it would let a second one start beside it.
+	if stopped {
+		for _, f := range []string{background.StatusFile, background.LogFile, background.LogFile + ".1", "background.err.log"} {
+			_ = os.Remove(filepath.Join(home, f))
+		}
 	}
 	switch {
 	case !stopped:

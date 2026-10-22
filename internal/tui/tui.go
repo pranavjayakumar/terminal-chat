@@ -117,9 +117,12 @@ func Run(ctx context.Context, c *client.Client, version string) error {
 	o := Options{Out: os.Stdout, Notifier: notify.New(env, os.Stdout), AwayAfter: awayAfter(os.Getenv("TC_AWAY_MIN")), Version: version, ExtCopy: defaultExtCopy,
 		Tmux: os.Getenv("TMUX") != "", SSH: os.Getenv("SSH_TTY") != "" || os.Getenv("SSH_CONNECTION") != "",
 		NotifyEnv: alert.OSEnv()}
-	o.Background = func() bool {
+	o.Background = func() (bool, bool) {
 		m, err := background.Local(c.Home())
-		return err == nil && m.Installed()
+		if err != nil {
+			return false, false // can't tell (or can't install here): say nothing
+		}
+		return m.Installed(), true
 	}
 	o.UIPrefs = filepath.Join(c.Home(), "ui.json")
 	o.UpdateCheck = func() string {
@@ -158,8 +161,8 @@ type Options struct {
 	// NotifyEnv overrides stored notification settings (from the env).
 	NotifyEnv NotifyEnv
 	// Background reports whether tc background (notifications while tc is
-	// closed) is on; /notify mentions it. nil: don't mention it.
-	Background func() bool
+	// closed) is on; /notify mentions it unless known is false. nil: never.
+	Background func() (on, known bool)
 	// Herdr is set when running inside herdr: unread badge, /share-pane.
 	Herdr Herdr
 	// AwayAfter sets presence to away after this long without a key; 0: never.

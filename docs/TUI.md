@@ -478,7 +478,9 @@ and are not listed; they appear in the log as usual. Rows are kept for the newes
   (list), `/sounds on|off` (`TC_SOUND`), `/sounds mention|message|ring|huddle|join|mic on|off`,
   `/sounds volume 0-100` (huddle cues only). `/mute` stays the mic. Env vars win over stored
   settings. Settings live in the local cache (`notify_prefs`, `meta`), never on the server.
-  The `/notify` list ends with `when tc is closed: on|off` (whether `tc background` is installed).
+  The `/notify` list ends with `when tc is closed: on|off (shell: tc background off|on)` (whether
+  `tc background` is installed; the hint is a shell command, dropped under 50 columns like the
+  others; the row is left out when the state can't be read). Only `/notify` mentions it.
 - **Policy code**: everything above (levels, coalescing, the 2 s cap, rings, privacy) lives in
   `internal/alert` (an `Engine` that returns the timers its caller schedules); the TUI answers its
   `World` from the loaded model and turns timers into ticks. `tc background` runs the same engine.
@@ -489,7 +491,9 @@ and are not listed; they appear in the log as usual. Rows are kept for the newes
   `TC_HOME` gets its own entry (`dev.tc.background.<8 hex>`, `tc-background-<8 hex>`). The entry
   carries `TC_HOME` (absolute) and copies `TC_SOUND`, `TC_NOTIFY_CONTENT`, `TC_QUIET`, `TC_NOTIFY`
   and `SSH_AUTH_SOCK` (not launchd's own per-boot socket on macOS); re-run `on` after changing
-  them. Homebrew installs run the prefix's `bin/tc` link, not the versioned Cellar path. `on` is
+  them (a forwarded or per-login `/tmp/ssh-*` agent socket isn't copied). Homebrew installs run the
+  prefix's `bin/tc` link, not the versioned Cellar path. `on` refuses a binary another local user
+  could replace (it or a parent directory world-writable or owned by someone else, e.g. `/tmp`). `on` is
   idempotent (rewrites the file and reloads); `off` stops it and removes the file, status and logs.
   - `run` connects with the normal client (cache, reconnect with backoff, local E2E decryption) as
     a **passive** session (PROTOCOL.md §4.3: not counted for presence, no typing, no huddles),

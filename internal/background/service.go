@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/skailama/tc/internal/release"
@@ -85,6 +86,11 @@ func NewService(s ServiceSpec) (Service, error) {
 		// copy of this login's would go stale at the next reboot.
 		if k == "SSH_AUTH_SOCK" && s.GOOS == "darwin" &&
 			(strings.HasPrefix(v, "/private/tmp/com.apple.launchd.") || strings.HasPrefix(v, "/tmp/com.apple.launchd.")) {
+			continue
+		}
+		// A forwarded or per-login agent (/tmp/ssh-XXXX/agent.N) is gone
+		// at logout, and its path in a readable unit invites a squatter.
+		if k == "SSH_AUTH_SOCK" && (s.Getenv("SSH_CONNECTION") != "" || strings.HasPrefix(v, "/tmp/ssh-")) {
 			continue
 		}
 		sv.Env[k] = v
@@ -249,6 +255,9 @@ type Manager struct {
 	UID int
 	// Sleep waits between launchctl retries (tests: no-op).
 	Sleep func(time.Duration)
+	// CheckExe vets the binary before Install points a login service at
+	// it (SafeExe); nil: no check (tests).
+	CheckExe func(string) error
 }
 
 func (m Manager) domain() string { return "gui/" + strconv.Itoa(m.UID) }
@@ -266,6 +275,11 @@ func (m Manager) Installed() bool {
 // Install writes the service file and (re)starts the service. Running it
 // again picks up a new binary path or environment.
 func (m Manager) Install(ctx context.Context) error {
+	if m.CheckExe != nil {
+		if err := m.CheckExe(m.S.Exe); err != nil {
+			return err
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(m.S.File), 0o755); err != nil {
 		return fmt.Errorf("creating %s: %w", filepath.Dir(m.S.File), err)
 	}
@@ -375,7 +389,42 @@ func Local(home string) (Manager, error) {
 	if err != nil {
 		return Manager{}, err
 	}
-	return Manager{S: sv, Run: ExecRunner, UID: os.Getuid()}, nil
+	uid := os.Getuid()
+	return Manager{S: sv, Run: ExecRunner, UID: uid, CheckExe: func(p string) error { return SafeExe(p, uid) }}, nil
+}
+
+// SafeExe refuses a binary another local user could replace: the service
+// would run it as us at every login (and every restart). The file and every
+// directory above it must be owned by us or root and not world-writable;
+// a sticky /tmp doesn't help, since once our file there is cleaned up
+// anyone can create the same path.
+func SafeExe(exe string, uid int) error {
+	bad := func(p string) error {
+		return fmt.Errorf("%s could be replaced by another user of this machine, so tc background won't run it at every login; install tc first (install.sh or brew), then run tc background on with that tc", p)
+	}
+	// A Homebrew bin/tc link: its target's directories count too.
+	if real, err := filepath.EvalSymlinks(exe); err == nil && real != exe {
+		if err := safePath(real, uid, bad); err != nil {
+			return err
+		}
+	}
+	return safePath(exe, uid, bad)
+}
+
+func safePath(exe string, uid int, bad func(string) error) error {
+	for p := exe; ; p = filepath.Dir(p) {
+		fi, err := os.Lstat(p)
+		if err != nil {
+			return fmt.Errorf("checking %s: %w", p, err)
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok || (int(st.Uid) != uid && st.Uid != 0) || fi.Mode().Perm()&0o002 != 0 && fi.Mode()&os.ModeSymlink == 0 {
+			return bad(p)
+		}
+		if p == filepath.Dir(p) {
+			return nil
+		}
+	}
 }
 
 // ServiceExe is the path the service should run: this binary, except that

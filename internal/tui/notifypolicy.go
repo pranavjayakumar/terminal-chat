@@ -522,10 +522,11 @@ func (m *Model) notifySummary() []string {
 		"sounds: "+sounds+hint("/sounds"))
 	if m.opt.Background != nil {
 		// The one place tc mentions it: popups while this window is closed.
-		if m.opt.Background() {
-			rows = append(rows, "when tc is closed: on"+hint("tc background off"))
-		} else {
-			rows = append(rows, "when tc is closed: off · run tc background on")
+		// It's a shell command, not a slash command: say so.
+		if on, known := m.opt.Background(); known && on {
+			rows = append(rows, "when tc is closed: on"+hint("shell: tc background off"))
+		} else if known {
+			rows = append(rows, "when tc is closed: off"+hint("shell: tc background on"))
 		}
 	}
 	return rows
