@@ -21,12 +21,12 @@ var keyGroups = []keyGroup{
 		{"PgUp PgDn", "scroll history"}, {"End", "jump to newest"}, {"esc", "back out of anything"},
 	}},
 	{"Messages", [][2]string{
-		{"↑", "select (empty input)"}, {"r", "reply in thread"}, {"+", "react"}, {"e", "edit yours"},
+		{"↑", "select (empty input)"}, {"r", "reply in thread"}, {"+", "react (emoji picker)"}, {"e", "edit yours"},
 		{"d", "delete yours"}, {"y", "copy"}, {"p", "pin / unpin"}, {"v", "view full"}, {"r d", "failed: retry, discard"},
 	}},
 	{"Write", [][2]string{
 		{"⏎", "send"}, {"⌥⏎ ⌃J", "new line"}, {"@", "mention someone"}, {"#", "link a channel"},
-		{"/", "commands"}, {"⇥", "complete"}, {"⌃U", "clear draft"}, {"esc esc", "clear draft"},
+		{"/", "commands"}, {"⌥E", "emoji picker"}, {":fi", "emoji by name"}, {"⇥", "complete"}, {"⌃U", "clear draft"}, {"esc esc", "clear draft"},
 	}},
 	{"Huddle", [][2]string{
 		{"/huddle", "join here"}, {"⌃T hold", "push to talk"}, {"⌃T tap", "open mic on / off"}, {"/leave-huddle", "leave"},
@@ -69,9 +69,13 @@ func keySheetRows(w int) [][]sheetCell {
 			*rows = append(*rows, nil)
 		}
 		*rows = append(*rows, []sheetCell{{x, g.title, 0}}, nil)
+		gdx := 12 // one description column per group, past its widest keycap
 		for _, k := range g.keys {
-			kw := strWidth(k[0]) + 2
-			dx := max(kw+1, 12)
+			gdx = max(gdx, strWidth(k[0])+3)
+		}
+		gdx = min(gdx, max(colW/2, 12)) // a narrow column: an over-wide key pushes only its own row
+		for _, k := range g.keys {
+			dx := max(gdx, strWidth(k[0])+3)
 			*rows = append(*rows, []sheetCell{{x, k[0], 1}, {x + dx, truncate(k[1], max(colW-dx-2, 4)), 2}})
 		}
 	}
@@ -127,8 +131,11 @@ func (m *Model) drawKeys(c *canvas) {
 	th := m.st.th
 	r := m.dialog(c, 112, 36, "Keyboard shortcuts")
 	w, h := m.keySheetSize()
-	if r.x1-r.x0 >= 70 {
-		c.put(r.x0+23, r.y0+1, "↑↓ scroll · /settings · type / for every command", fgc(th.faint), "")
+	for _, sub := range []string{"↑↓ scroll · /settings · type / for every command", "↑↓ scroll"} {
+		if 23+strWidth(sub)+8 <= r.x1-r.x0 { // clear of the esc on the right
+			c.put(r.x0+23, r.y0+1, sub, fgc(th.faint), "")
+			break
+		}
 	}
 	rows := keySheetRows(w)
 	scroll := min(max(m.helpScroll, 0), max(len(rows)-h, 0))

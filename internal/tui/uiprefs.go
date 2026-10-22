@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 // Sidebar sizes. sbAuto is never stored: it means "no choice made yet".
@@ -17,11 +18,14 @@ const (
 // uiPrefs are this device's look-and-feel settings, kept in TC_HOME/ui.json.
 // Only the UI reads or writes the file; the server never sees it.
 type uiPrefs struct {
-	Theme      string `json:"theme,omitempty"`
-	Compact    bool   `json:"compact,omitempty"`
-	Sidebar    string `json:"sidebar,omitempty"`
-	Split      bool   `json:"split,omitempty"` // messages: ours on the right
-	NoMotion   bool   `json:"no_motion,omitempty"`
+	Theme    string `json:"theme,omitempty"`
+	Compact  bool   `json:"compact,omitempty"`
+	Sidebar  string `json:"sidebar,omitempty"`
+	Split    bool   `json:"split,omitempty"` // messages: ours on the right
+	NoMotion bool   `json:"no_motion,omitempty"`
+	// Emoji is the frequently used list, most used first; nil until the
+	// first pick, so a fresh install shows freqSeed.
+	Emoji      []emojiUse `json:"emoji,omitempty"`
 	path       string
 	loadFailed bool
 }
@@ -39,6 +43,15 @@ func loadUIPrefs(path string) uiPrefs {
 	}
 	if _, ok := themes[p.Theme]; !ok {
 		p.Theme = ""
+	}
+	seen := map[string]bool{}
+	p.Emoji = slices.DeleteFunc(p.Emoji, func(u emojiUse) bool {
+		drop := u.N < 0 || !gridSafe(u.E) || seen[u.E]
+		seen[u.E] = true
+		return drop
+	})
+	if len(p.Emoji) > maxFreq {
+		p.Emoji = p.Emoji[:maxFreq]
 	}
 	switch p.Sidebar {
 	case sbNormal, sbWide, sbIcons:

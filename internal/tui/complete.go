@@ -25,14 +25,16 @@ import (
 const compRows = 6
 
 type compItem struct {
-	text string // what goes into the input: "/notify", "@bob", "#general"
+	text string // what goes into the input: "/notify", "@bob", "#general", "🔥"
 	hint string // argument hint (commands only)
 	desc string // sanitized one-line description
 	rank int    // sort key: lower first
+	name string // emoji: the shortcode shown, with the query at name[at:at+len(query)]
+	at   int
 }
 
 type completer struct {
-	kind  byte // '/', '@' or '#'; 0 = nothing to show
+	kind  byte // '/', '@', '#' or ':'; 0 = nothing to show
 	items []compItem
 	sel   int
 	val   string // the input value the items are for; any other value hides them
@@ -96,8 +98,14 @@ func (m *Model) fillComp(v string) {
 			kind, query = '/', strings.ToLower(v[1:])
 		}
 	default:
-		if w, before, _ := m.cursorWord(); before > 0 && (w[0] == '@' || w[0] == '#') {
+		w, before, _ := m.cursorWord()
+		switch {
+		case before > 0 && (w[0] == '@' || w[0] == '#'):
 			kind, query = w[0], strings.ToLower(string([]rune(w)[1:before]))
+		case before > 2 && w[0] == ':':
+			if q := string([]rune(w)[1:before]); !strings.ContainsFunc(q, func(r rune) bool { return !shortcodeChar(r) }) && !m.cursorInCode() {
+				kind, query = ':', strings.ToLower(q)
+			}
 		}
 	}
 	// Same query: keep the highlight on the same item, even if users or
@@ -118,6 +126,8 @@ func (m *Model) fillComp(v string) {
 		m.userItems(query)
 	case '#':
 		m.chanItems(query)
+	case ':':
+		m.emojiItems(query)
 	}
 	slices.SortStableFunc(c.items, func(a, b compItem) int { return a.rank - b.rank })
 	if len(c.items) == 0 {
@@ -283,6 +293,25 @@ func (m *Model) chanItems(q string) {
 	}
 }
 
+// emojiItems lists emoji whose shortcode matches, ranked by searchEmoji.
+func (m *Model) emojiItems(q string) {
+	freq := m.freqList()
+	for i, h := range searchEmoji(q, freq, false, 100) {
+		e := emojiTable[h.def].e
+		it := compItem{text: e, name: h.name, at: h.at, rank: i}
+		if slices.Contains(freq, e) {
+			it.desc = "frequent"
+		}
+		m.comp.items = append(m.comp.items, it)
+	}
+}
+
+// cursorInCode reports whether the cursor is inside a code block or span.
+func (m *Model) cursorInCode() bool {
+	_, col := m.cursorLine()
+	return inCode(m.input.Value(), m.input.Line(), col)
+}
+
 // cursorWord is the whitespace-delimited word around the input's cursor,
 // with how many of its runes are before and after the cursor.
 func (m *Model) cursorWord() (word string, before, after int) {
@@ -339,7 +368,7 @@ func (m *Model) compKey(key string) (tea.Cmd, bool) {
 // highlighted item. Commands never count: Enter on the menu always completes.
 func (m *Model) exactComp() bool {
 	c := &m.comp
-	if c.kind == '/' || c.sel < 0 || c.sel >= len(c.items) {
+	if c.kind == '/' || c.kind == ':' || c.sel < 0 || c.sel >= len(c.items) {
 		return false
 	}
 	w, _, _ := m.cursorWord()
@@ -353,6 +382,9 @@ func (m *Model) acceptComp() {
 		return
 	}
 	it := c.items[c.sel]
+	if c.kind == ':' {
+		m.noteEmoji(it.text)
+	}
 	if c.kind == '/' {
 		m.input.SetValue(it.text + " ")
 	} else {

@@ -28,6 +28,7 @@ type fakeClient struct {
 	typing      map[uint64][]uint64
 	updates     chan client.Update
 	sent        []client.Message
+	edits       []string
 	reads       map[uint64]uint64
 	history     int
 	histMore    bool
@@ -178,6 +179,9 @@ func (f *fakeClient) MarkRead(ch, seq uint64) error {
 }
 func (f *fakeClient) Edit(ctx context.Context, msg uint64, body string) error {
 	f.record("edit")
+	f.mu.Lock()
+	f.edits = append(f.edits, body)
+	f.mu.Unlock()
 	return nil
 }
 func (f *fakeClient) Delete(ctx context.Context, msg uint64) error { f.record("delete"); return nil }

@@ -61,6 +61,7 @@ func (c *blockCache) get(k blockKey, draw func() *canvas) *canvas {
 const (
 	maxBlockRows = 120
 	maxCodeRows  = 40
+	footerRows   = 3    // reaction rows under one message
 	maxBlocks    = 1500 // cached blocks: a few screens' worth across channels
 )
 
@@ -388,7 +389,8 @@ func (m *Model) drawCode(g *grower, sg seg, bw int, at func(int) int, pending bo
 	}
 }
 
-// drawFooter draws reaction pills and the reply count on one row.
+// drawFooter draws reaction pills and the reply count, wrapping onto at
+// most footerRows rows.
 func (m *Model) drawFooter(g *grower, x client.Message, cw, bw int, mine bool) {
 	th := m.st.th
 	type part struct {
@@ -417,6 +419,9 @@ func (m *Model) drawFooter(g *grower, x client.Message, cw, bw int, mine bool) {
 		}
 		parts = append(parts, part{" " + sanitize.Line(k) + " " + strconv.Itoa(len(us)) + " ", st, "react|" + k, true})
 	}
+	if len(parts) > 0 && x.ID != 0 && !x.Deleted {
+		parts = append(parts, part{" ☺+ ", fgc(th.dim).on(th.element), "addreact|", true})
+	}
 	var tail []part
 	if x.Replies > 0 {
 		tail = append(tail, part{fmt.Sprintf("↳ %d %s", x.Replies, plural(x.Replies, "reply", "replies")), fgc(th.info), "thread|", false})
@@ -435,30 +440,78 @@ func (m *Model) drawFooter(g *grower, x client.Message, cw, bw int, mine bool) {
 	if len(parts) == 0 {
 		return
 	}
-	total := 0
-	for i, p := range parts {
-		total += strWidth(p.text)
+	width := func(p part) int {
 		if p.pill {
-			total += 2
+			return strWidth(p.text) + 2
 		}
-		if i > 0 {
-			total += 2
+		return strWidth(p.text)
+	}
+	// Parts that don't fit the row wrap onto the next, like Slack's.
+	room := max(bw, 1)
+	rows := func(ps []part) int {
+		n, total := 1, 0
+		for i, p := range ps {
+			add := width(p)
+			if i > 0 && total > 0 {
+				add += 2
+			}
+			if total > 0 && total+add > room {
+				n, total = n+1, width(p)
+				continue
+			}
+			total += add
+		}
+		return n
+	}
+	// Too many reactions: keep the reply count and ☺+, fold the rest into +N.
+	var react []int
+	for i, p := range parts {
+		if strings.HasPrefix(p.act, "react|") {
+			react = append(react, i)
 		}
 	}
-	xx := 2
-	if mine {
-		xx = max(cw-2-min(total, bw), 1)
+	for hidden := 1; len(react) > 0 && rows(parts) > footerRows && hidden <= len(react); hidden++ {
+		var kept []part
+		kept = append(kept, parts[:react[0]]...)
+		for _, i := range react[:len(react)-hidden] {
+			kept = append(kept, parts[i])
+		}
+		kept = append(kept, part{"+" + strconv.Itoa(hidden), fgc(th.faint), "", false})
+		kept = append(kept, parts[react[len(react)-1]+1:]...)
+		if rows(kept) <= footerRows || hidden == len(react) {
+			parts = kept
+			break
+		}
 	}
-	y := g.row()
-	for i, p := range parts {
-		if i > 0 {
-			xx += 2
+	for len(parts) > 0 {
+		n, total := 0, 0
+		for n < len(parts) {
+			add := width(parts[n])
+			if n > 0 {
+				add += 2
+			}
+			if n > 0 && total+add > room {
+				break
+			}
+			total += add
+			n++
 		}
-		if p.pill {
-			xx = g.c.pill(xx, y, p.text, p.st, p.act)
-		} else {
-			xx = g.c.put(xx, y, p.text, p.st, p.act)
+		xx := 2
+		if mine {
+			xx = max(cw-2-min(total, bw), 1)
 		}
+		y := g.row()
+		for i, p := range parts[:n] {
+			if i > 0 {
+				xx += 2
+			}
+			if p.pill {
+				xx = g.c.pill(xx, y, p.text, p.st, p.act)
+			} else {
+				xx = g.c.put(xx, y, p.text, p.st, p.act)
+			}
+		}
+		parts = parts[n:]
 	}
 }
 
