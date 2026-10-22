@@ -30,12 +30,23 @@ func (m *Model) frame() *canvas {
 	c := reuseCanvas(m.spare, m.w, m.h, th)
 	m.spare = nil
 	g := m.geo()
+	m.emo.anchored = false
 	m.drawMain(c, g)
 	if g.split {
 		m.drawThreadPane(c, g)
 	}
-	m.drawInput(c, g)
-	m.drawPopup(c, g)
+	if g.split && !m.thread.open() {
+		// The pane is sliding out: what follows stays left of it.
+		old := c.setClip(rect{0, 0, g.RX, m.h})
+		m.drawInput(c, g)
+		m.drawPopup(c, g)
+		m.drawPicker(c, g)
+		c.setClip(old)
+	} else {
+		m.drawInput(c, g)
+		m.drawPopup(c, g)
+		m.drawPicker(c, g)
+	}
 	if g.SB > 0 {
 		m.drawSidebar(c, g)
 	}
@@ -43,6 +54,7 @@ func (m *Model) frame() *canvas {
 	m.drawOverlay(c, g)
 	m.drawToast(c, g)
 	m.hoverPass(c)
+	m.drawReactTip(c, g)
 	m.drawTips(c, g)
 	if m.booting() || m.running(m.fx.bootAt, dBoot) {
 		m.drawBoot(c)
@@ -194,7 +206,7 @@ func (m *Model) viewPane(c *canvas, p *pane, key string, x, y, w, h, unread int)
 	old := c.setClip(rect{x - 3, y, x + w + 4, y + h})
 	defer c.setClip(old)
 	sel := -1
-	if m.mode == modeSelect || m.mode == modeConfirmDelete || m.mode == modeReact {
+	if m.mode == modeSelect || m.mode == modeConfirmDelete || m.mode == modeEmoji && m.emo.react {
 		if p == m.focus() {
 			sel = p.sel
 		}
@@ -218,11 +230,17 @@ func (m *Model) viewPane(c *canvas, p *pane, key string, x, y, w, h, unread int)
 			firstRow[o] = yy
 		}
 		m.blitRow(c, r, o, p, key, x, yy, w, o >= 0 && (o == sel || o == hov), o == sel)
+		if o >= 0 && o == sel {
+			m.emo.ayEnd = yy
+		}
 	}
 	for o, yy := range firstRow {
 		m.drawMsgFx(c, p, o, x, yy, w)
 		if o == sel || o == hov {
 			m.drawToolbar(c, p, key, o, x, yy, w)
+		}
+		if o == sel {
+			m.emo.anchored, m.emo.ax, m.emo.ay, m.emo.aw = true, x, yy, w
 		}
 	}
 	if p == &m.main && m.histBusy[p.ch] {
@@ -295,7 +313,7 @@ func (m *Model) blitRow(c *canvas, r prow, o int, p *pane, key string, x, y, w i
 		}
 		if pop < 1 {
 			if isBar(dst.s) {
-				dst.fg = mix(0xffffff, th.accent, pop)
+				dst.fg = mix(th.fg, th.accent, pop) // the text color, so the flash shows on light themes too
 			} else if dst.s != " " {
 				dst.fg = mix(th.accent, dst.fg, pop)
 			}
@@ -411,8 +429,8 @@ func (m *Model) drawMsgFx(c *canvas, p *pane, o, x, y, w int) {
 						}
 					}
 					fy := yy - 1 - int(pr*3)
-					if c.in(xx+2, fy) {
-						c.put(xx+2, fy, "+1", fgb(mix(th.accent, th.bg, pr)), "")
+					if c.in(xx+3, fy) && c.at(xx+2, fy).s == " " && c.at(xx+3, fy).s == " " {
+						c.put(xx+2, fy, "+1", fgb(mix(th.accent, th.bg, pr)), "") // floats through gaps, never over text
 					}
 					break
 				}
@@ -457,9 +475,9 @@ func (m *Model) drawThreadPane(c *canvas, g geo) {
 	tx := g.RX + 2
 	c.put(tx, g.top, "Thread", fgb(th.fg), "")
 	if m.thread.open() {
-		c.put(tx+7, g.top, m.chanTitle(m.thread.ch), fgc(th.faint), "")
+		c.put(tx+7, g.top, truncate(m.chanTitle(m.thread.ch), threadW-14), fgc(th.faint), "")
 	}
-	c.put(m.w-3, g.top, "✕", fgc(th.dim), "thread:close")
+	c.put(g.RX+threadW-3, g.top, "✕", fgc(th.dim), "thread:close") // slides in with the pane
 	pw := threadW - 4
 	top := g.top + 2
 	h := m.paneHeight(&m.thread)
@@ -481,7 +499,7 @@ func (m *Model) drawIdleInput(c *canvas, g geo) {
 	y := g.statusY - (g.statusY - g.inY - g.inH) - h
 	m.box(c, g.CX, y, g.CW, h, th.line, th.bg)
 	c.put(g.CX+2, y, " "+m.chanTitle(m.active)+" ", fgc(th.faint), "")
-	c.put(g.CX+3, y+1, truncate("Esc closes the thread", g.CW-6), fgc(th.faint), "thread:close")
+	c.put(g.CX+2, y+1, truncate("Esc closes the thread", g.CW-4), fgc(th.faint), "thread:close")
 }
 
 // box draws a rounded frame.
@@ -538,7 +556,9 @@ func (m *Model) drawInput(c *canvas, g geo) {
 	}
 	// key hints in the bottom edge
 	keys := [][3]string{{"⌥K", "commands", "palette:"}, {"⌥⏎", "newline", ""}, {"⏎", "send", "send"}}
-	if m.mode == modeSelect {
+	if m.mode == modeEmoji {
+		keys = [][3]string{{"esc", "close emoji", ""}}
+	} else if m.mode == modeSelect {
 		keys = [][3]string{{"esc", "back", ""}}
 	}
 	kw := 0
@@ -553,7 +573,7 @@ func (m *Model) drawInput(c *canvas, g geo) {
 		c.put(kx-1, y+h-1, " ", fgc(th.fg), "")
 		for i, k := range keys {
 			if i > 0 {
-				kx = c.put(kx, y+h-1, " · ", fgc(th.line), "")
+				kx = c.put(kx, y+h-1, " · ", fgc(th.faint), "")
 			}
 			kx = c.put(kx, y+h-1, k[0], fgb(th.dim), k[2])
 			kx = c.put(kx, y+h-1, " "+k[1], fgc(th.faint), k[2])
@@ -562,11 +582,8 @@ func (m *Model) drawInput(c *canvas, g geo) {
 	}
 }
 
-// inputView is the input's text rows: the editor, or the react prompt.
+// inputView is the input's text rows.
 func (m *Model) inputView() []string {
-	if m.mode == modeReact {
-		return []string{m.line.View()}
-	}
 	return strings.Split(m.input.View(), "\n")
 }
 
