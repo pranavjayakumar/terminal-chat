@@ -48,6 +48,7 @@ func (m *Model) palCommands() []palItem {
 		{group: "Commands", label: "Change theme…", icon: "◐", run: "app:themes", tabs: "am"},
 		{group: "Messages", label: "Activity", desc: "mentions, replies, reactions, DMs", meta: "⌥A", icon: "@", run: "/activity", tabs: "m"},
 		{group: "Messages", label: "Search", meta: "/search", icon: "⌕", run: "/search ", tabs: "m"},
+		{group: "Messages", label: "Insert emoji", desc: "picker; + reacts in select mode, :name completes", meta: "⌥E", icon: "☺", run: "app:emoji", tabs: "m"},
 		{group: "Messages", label: "Pinned messages", meta: "/pins", icon: "¶", run: "/pins", tabs: "m"},
 		{group: "Messages", label: "Remind me", meta: "/remind", icon: "⏰", run: "/remind ", tabs: "m"},
 		{group: "You", label: "Set away", meta: "/away", icon: "◑", run: "/away", tabs: "m"},
@@ -335,6 +336,8 @@ func (m *Model) appAction(run string) tea.Cmd {
 		m.openHelp()
 	case run == "app:sidebar":
 		m.cycleSidebar()
+	case run == "app:emoji":
+		m.openPicker(false)
 	case run == "app:closethread":
 		m.closeThread()
 		m.layoutInput()

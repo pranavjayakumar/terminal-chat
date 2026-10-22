@@ -7,7 +7,7 @@ package tui
 // overlayShown reports whether a dialog covers the chat.
 func (m *Model) overlayShown() bool {
 	switch m.mode {
-	case modeNormal, modeSelect, modeConfirmDelete, modeReact:
+	case modeNormal, modeSelect, modeConfirmDelete, modeEmoji:
 		return false
 	case modeViewer:
 		return !m.view.wide

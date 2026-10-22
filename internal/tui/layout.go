@@ -173,9 +173,6 @@ func (m *Model) geo() geo {
 
 // inputRows is how many text rows the input needs at text width w.
 func (m *Model) inputRows(w int) int {
-	if m.mode == modeReact {
-		return 1
-	}
 	return min(inputLines(m.input.Value(), max(w, 1)), m.inputMax())
 }
 

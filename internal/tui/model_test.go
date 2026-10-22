@@ -101,11 +101,9 @@ func checkView(t *testing.T, m *Model, step string) string {
 		if top < 0 || bot <= top+1 {
 			t.Fatalf("%dx%d after %s: input box not visible\n%s", m.w, m.h, step, plain)
 		}
-		if m.mode == modeReact && !strings.Contains(pl[top+1], "react: ") {
-			t.Fatalf("%dx%d after %s: react prompt not visible: %q", m.w, m.h, step, pl[top+1])
-		}
-	case m.mode == modeReact && !strings.Contains(plain, "react: "):
-		t.Fatalf("%dx%d after %s: react prompt not visible\n%s", m.w, m.h, step, plain)
+	}
+	if m.mode == modeEmoji && m.w >= 30 && m.h >= 12 && !strings.Contains(plain, "⌕") {
+		t.Fatalf("%dx%d after %s: emoji picker not visible\n%s", m.w, m.h, step, plain)
 	}
 	if strings.ContainsAny(plain, "\x1b\a‮") {
 		t.Fatalf("%dx%d after %s: control characters leaked", m.w, m.h, step)
@@ -273,10 +271,10 @@ func TestSelectModeActions(t *testing.T) {
 		}
 	}
 	run(m, m.handleKey(keyMsg("+")))
-	if m.mode != modeReact {
-		t.Fatal("+ should prompt")
+	if m.mode != modeEmoji || !m.emo.react {
+		t.Fatal("+ should open the picker")
 	}
-	checkView(t, m, "react prompt")
+	checkView(t, m, "react picker")
 	run(m, m.handleKey(keyMsg("+")))
 	run(m, m.handleKey(keyMsg("1")))
 	run(m, m.handleKey(keyMsg("enter")))

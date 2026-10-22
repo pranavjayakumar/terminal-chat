@@ -7,10 +7,13 @@ const (
 	kQuit       = "ctrl+c"
 	kSwitcher   = "alt+k" // the palette; Ctrl-K still works where it reaches us
 	kActivity   = "alt+a" // Ctrl-A stays the textarea's line start
+	kEmoji      = "alt+e" // the emoji picker
 	kSidebar    = "ctrl+b"
 	kEnter      = "enter"
 	kEsc        = "esc"
 	kUp         = "up"
+	kLeft       = "left"
+	kRight      = "right"
 	kDown       = "down"
 	kPgUp       = "pgup"
 	kPgDown     = "pgdown"
