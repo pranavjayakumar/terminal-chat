@@ -221,6 +221,22 @@ Kinds:
 handshake_timeout, protocol_error, slow_consumer, server_shutdown, revoked`.
 (`key_exists` now only when a concurrent redemption registered the key first, §4.)
 
+### 4.3 Passive sessions (cap `passive`)
+
+A client that only listens (`tc background`, which shows desktop notifications while the chat
+window is closed) puts `passive` in HELLO `caps`. A server that supports it echoes `passive` in
+WELCOME (only when asked: unlike other WELCOME caps it says "this session is passive", so it is
+never advertised unconditionally) and, for that session:
+
+- doesn't count it toward the user's presence: connecting or disconnecting it never broadcasts
+  `presence`, and a user whose only sessions are passive is `offline` to everyone;
+- drops its `typing` and `presence` EPHEMERALs (`key.need` still works, §13.7);
+- refuses `huddle.join` with `forbidden` before any other check (`unknown_op` without `voice1`,
+  §14); rosters still arrive with cap `voice1`, so it can ring.
+
+Everything else (sync, events, requests) is as for any session. Older servers ignore the cap;
+the session then counts as online like any other.
+
 ## 5. Requests
 
 Every REQ gets exactly one RES with the same `id`. Client chooses ids. Error codes:
@@ -436,8 +452,8 @@ with `⏰ `, and then notify and count it as unread like a DM from someone else.
 
 | kind | fields | notes |
 |---|---|---|
-| `typing` | `{chan, user}` | C→S at most every 3 s while typing; dropped unless sender is a member; fan-out to members |
-| `presence` | `{user, state: "online"\|"away"\|"offline", status?: str}` | S→C on change; C→S sets own away/status |
+| `typing` | `{chan, user}` | C→S at most every 3 s while typing; dropped unless sender is a member, and from passive sessions (§4.3); fan-out to members |
+| `presence` | `{user, state: "online"\|"away"\|"offline", status?: str}` | S→C on change; C→S sets own away/status (dropped from passive sessions, §4.3) |
 | `huddle` | `{chan, parts: [Part]}` | S→C only, cap `voice1` (§14.2) |
 
 The server overwrites `user` in every C→S EPHEMERAL with the authenticated user.
@@ -1347,7 +1363,7 @@ whether or not their build can play audio (rosters are useful on their own).
 | `huddle.leave` | `{}` | `{}` |
 
 - **huddle.join** joins the channel's huddle, creating it if empty. Checks, in order: the
-  session is QUIC with datagrams negotiated (else `bad_request`, "voice needs UDP"); the channel
+  session isn't passive (`forbidden`, §4.3); the session is QUIC with datagrams negotiated (else `bad_request`, "voice needs UDP"); the channel
   exists (`not_found`); the caller is a current member (`forbidden`). In an encrypted channel
   `dev` and `stream` are required (`bad_request`) and `dev` must be a registered, non-revoked
   device of the caller (`forbidden`); elsewhere both are ignored and not relayed. Joining

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/skailama/tc/internal/alert"
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
@@ -24,14 +25,7 @@ func plural(n int, one, many string) string {
 
 // chanTitle is "#name" or "@names" for a DM.
 func (m *Model) chanTitle(id uint64) string {
-	v, ok := m.chanView(id)
-	if !ok {
-		return "#?"
-	}
-	if v.Kind == proto.ChanDM {
-		return "@" + sanitize.Line(v.Display)
-	}
-	return "#" + sanitize.Line(v.Name)
+	return alert.ChanTitle(m.chanView(id))
 }
 
 func (m *Model) statusText() string {
@@ -52,7 +46,7 @@ func (m *Model) statusLine(w int) string {
 			b.WriteString(m.st.dim.Render(" · "))
 		}
 	}
-	head, roster := m.huddleHead(m.notice != "" || m.nt.ring.ch != 0 || w < 40)
+	head, roster := m.huddleHead(m.notice != "" || m.al.Ring.Ch != 0 || w < 40)
 	if m.huddleBarShown() {
 		head, roster = "", ""
 	}

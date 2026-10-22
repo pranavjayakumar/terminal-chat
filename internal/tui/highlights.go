@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/skailama/tc/internal/alert"
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/sanitize"
 )
@@ -103,7 +104,7 @@ func (m *Model) refreshHighlights() {
 // highlight words. The caller has already excluded my own, deleted and bot
 // messages.
 func (m *Model) concernsMe(body string) bool {
-	return client.Mentioned(outsideCode(body), m.mentionAs) || client.Highlighted(body, m.highlights)
+	return alert.ConcernsMe(body, m.mentionAs, m.highlights)
 }
 
 // concernMark is the log gutter for a message by someone else: "▎" for an
@@ -126,23 +127,5 @@ func joinWords(ss []string) string {
 	return strings.Join(out, ", ")
 }
 
-// outsideCode is body without its fenced code blocks (the renderer's fence
-// rule): a pasted package.json full of "@alice/utils" isn't a mention, just
-// as highlight words don't match inside code.
-func outsideCode(body string) string {
-	if !strings.Contains(body, "```") {
-		return body
-	}
-	var keep []string
-	in := false
-	for _, ln := range strings.Split(body, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(ln), "```") {
-			in = !in
-			continue
-		}
-		if !in {
-			keep = append(keep, ln)
-		}
-	}
-	return strings.Join(keep, "\n")
-}
+// outsideCode is body without its fenced code blocks (alert.OutsideCode).
+func outsideCode(body string) string { return alert.OutsideCode(body) }

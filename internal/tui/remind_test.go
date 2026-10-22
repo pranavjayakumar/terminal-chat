@@ -218,7 +218,7 @@ func TestReminderNotifiesEvenThoughItIsMine(t *testing.T) {
 	got := nt.got()
 	if n := len(got); n != 2 {
 		// Coalesced into the open window for this channel; flush it.
-		m.Update(notifyFlushMsg{ch: notesChan, gen: m.notes[notesChan].gen})
+		m.Update(notifyFlushMsg{ch: notesChan, gen: m.al.Notes[notesChan].Gen})
 		got = nt.got()
 	}
 	for _, g := range got {
@@ -234,7 +234,7 @@ func TestReminderNotificationsCoalesce(t *testing.T) {
 	nt := notes(m)
 	withNotes(m, f)
 	deliver(m, newMsg(401, notesChan, 1, "⏰ one"))
-	gen := m.notes[notesChan].gen
+	gen := m.al.Notes[notesChan].Gen
 	clk.add(time.Second)
 	deliver(m, newMsg(402, notesChan, 1, "⏰ two"), newMsg(403, notesChan, 1, "⏰ three"))
 	if n := len(nt.got()); n != 1 {

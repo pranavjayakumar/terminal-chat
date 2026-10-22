@@ -174,6 +174,19 @@ looking at doesn't. Per channel, on this device:
 - `/sounds` lists the sounds and turns each on or off. `/notify test` plays one of each through
   the real backend, so you can see what works on your setup.
 
+### When tc is closed
+
+`tc background on` keeps a small listener running (it starts when you log in) that shows the same
+desktop notifications while the chat window is closed: same levels, mutes, DND, quiet hours,
+content setting and sounds. It stays quiet while tc is open, so nothing pops up twice, and it
+never marks anything read. It doesn't make you look online. `tc background status` shows whether
+it's running and connected; `tc background off` stops and removes it. The installer offers it
+after you join (`TC_BACKGROUND=0` to skip, `=1` to say yes without asking).
+
+It is a LaunchAgent on macOS (`~/Library/LaunchAgents/dev.tc.background.plist`) and a systemd user
+unit on Linux (`tc-background.service`; needs `notify-send`). `tc update` restarts it on the new
+binary; after `brew upgrade tc` it restarts itself within a minute.
+
 ## herdr
 
 Run tc in a herdr pane and it notices (`HERDR_ENV=1`):

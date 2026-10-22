@@ -89,7 +89,7 @@ func TestNotifyCoalesce(t *testing.T) {
 	nt := notes(m)
 
 	deliver(m, newMsg(301, 20, 2, "one"))
-	gen := m.notes[20].gen
+	gen := m.al.Notes[20].Gen
 	clk.add(time.Second)
 	deliver(m, newMsg(302, 20, 2, "two"))
 	clk.add(time.Second)
@@ -108,7 +108,7 @@ func TestNotifyCoalesce(t *testing.T) {
 	if len(got) != 2 || got[1] != [2]string{"bob (DM)", "3 new messages"} {
 		t.Fatalf("summary: %q", got)
 	}
-	if m.notes[20] != nil {
+	if m.al.Notes[20] != nil {
 		t.Fatal("window not closed")
 	}
 
@@ -117,7 +117,7 @@ func TestNotifyCoalesce(t *testing.T) {
 	if len(nt.got()) != 2 {
 		t.Fatal("notified within the global cap")
 	}
-	g11 := m.notes[11].gen
+	g11 := m.al.Notes[11].Gen
 	clk.add(5 * time.Second)
 	m.Update(notifyFlushMsg{ch: 11, gen: g11})
 	got = nt.got()
@@ -128,7 +128,7 @@ func TestNotifyCoalesce(t *testing.T) {
 	// A flush still inside the cap reschedules instead of firing.
 	deliver(m, newMsg(311, 13, 2, "@alice a"))
 	deliver(m, newMsg(312, 13, 2, "@alice b"))
-	g13 := m.notes[13].gen
+	g13 := m.al.Notes[13].Gen
 	clk.add(time.Second)
 	if _, cmd := m.Update(notifyFlushMsg{ch: 13, gen: g13}); cmd == nil || len(nt.got()) != 3 {
 		t.Fatal("flush inside the cap should reschedule")

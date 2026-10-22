@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/skailama/tc/internal/background"
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/tui"
 )
@@ -20,6 +21,13 @@ func cmdChat() error {
 		return err
 	}
 	defer c.Close()
+	// While this window is open tc background stays quiet (no double
+	// popups); the OS drops the lock when we exit, crash or not.
+	release, err := background.HoldUI(c.Home())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "tc: warning:", err)
+	}
+	defer release()
 	ctx, cancel := signalContext()
 	defer cancel()
 	go c.Run(ctx)

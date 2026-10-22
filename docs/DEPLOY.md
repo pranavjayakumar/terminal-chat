@@ -116,7 +116,10 @@ not argv, so it isn't visible for the length of the join.
   user, server or channel data, but GitHub sees the machine's IP and that it runs tc. On private or
   air-gapped teams, set `TC_NO_UPDATE_CHECK=1` in teammates' environment. The server never checks.
 - Upgrade: `tc update` as root on the server (or copy a new binary), then `systemctl restart tc`.
-  Clients reconnect and catch up automatically; they update themselves with `tc update`.
+  Clients reconnect and catch up automatically; they update themselves with `tc update` (which
+  also restarts a teammate's `tc background` notifier). Servers before passive sessions
+  (PROTOCOL.md §4.3) show a user with `tc background` on as online whenever it runs: upgrade the
+  server before teammates turn it on.
 - Backup: `sqlite3 /var/lib/tc/tc.db ".backup /root/tc-$(date +%F).db"` (safe while running), plus
   `server.key`/`server.crt` — **losing the key invalidates every client's pin and every invite**.
 

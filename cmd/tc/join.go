@@ -18,6 +18,7 @@ import (
 	"github.com/mattn/go-isatty"
 	"golang.org/x/crypto/ssh"
 
+	"github.com/skailama/tc/internal/background"
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/identity"
 	"github.com/skailama/tc/internal/proto"
@@ -51,8 +52,25 @@ func osJoinEnv() joinEnv {
 	return joinEnv{
 		in: os.Stdin, out: os.Stdout, tty: isTerminal(os.Stdin),
 		home: client.DefaultHome(), sshDir: sshDir, gitName: gitUserName, user: u,
-		herdr: os.Getenv("HERDR_ENV") == "1", login: client.Login,
+		herdr: os.Getenv("HERDR_ENV") == "1", login: pausedLogin,
 	}
+}
+
+// pausedLogin is client.Login with tc background paused: a login wipes the
+// cache for the new account, and a notifier still connected as the old one
+// must not write into it. Holding the UI lock makes it let go of its
+// connection (within a second); we wait for that before logging in.
+func pausedLogin(ctx context.Context, home, invite, name, keyPath string) (proto.User, error) {
+	if background.Running(home) {
+		if release, err := background.HoldUI(home); err == nil {
+			defer release()
+			waitFor(5*time.Second, func() bool {
+				st, err := background.ReadStatus(home)
+				return err == nil && st.State == "paused" || !background.Running(home)
+			})
+		}
+	}
+	return client.Login(ctx, home, invite, name, keyPath)
 }
 
 // isTerminal reports whether f is a terminal; /dev/null is a character

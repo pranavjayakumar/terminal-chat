@@ -3,13 +3,13 @@ package tui
 import (
 	"errors"
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/skailama/tc/internal/alert"
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/notify"
 	"github.com/skailama/tc/internal/proto"
@@ -34,63 +34,27 @@ var _ NotifyBackend = (*client.Client)(nil)
 
 // NotifyEnv are the env overrides (TC_SOUND, TC_NOTIFY_CONTENT, TC_QUIET):
 // they win over stored settings, for scripts and SSH.
-type NotifyEnv struct {
-	Sound, Content, Quiet string
-}
+type NotifyEnv = alert.Env
 
-type noteKind int
+type noteKind = alert.Kind
 
 const (
-	noteMessage noteKind = iota // any message (level all)
-	noteMention                 // DM, mention, highlight, reminder, reply in my thread
-	noteRing                    // a DM huddle started
-	noteHuddle                  // a channel huddle started
+	noteMessage = alert.Message // any message (level all)
+	noteMention = alert.Mention // DM, mention, highlight, reminder, reply in my thread
+	noteRing    = alert.Ring    // a DM huddle started
+	noteHuddle  = alert.Huddle  // a channel huddle started
 )
 
 const (
-	allWindow     = 30 * time.Second // coalescing for level-all channels
-	ringResend    = 10 * time.Second
-	ringFor       = 30 * time.Second
-	ringCooldown  = 5 * time.Minute  // after a dismissed or unanswered ring
-	ringRepeat    = 2 * time.Minute  // a DM rings at most this often, however a ring ended
-	ringEvery     = 10 * time.Second // across all DMs (a hostile server cycling DMs)
-	huddleNoteGap = 5 * time.Minute  // channel huddle-start popups per channel
+	allWindow     = alert.AllWindow
+	ringCooldown  = alert.RingCooldown
+	ringRepeat    = alert.RingRepeat
+	huddleNoteGap = alert.HuddleNoteGap
 )
 
-// decide is the policy: whether ev pops up in ch at now, and its sound.
+// decide is the shared policy (internal/alert).
 func decide(p client.NotifyPrefs, now time.Time, ch uint64, kind noteKind) (bool, notify.Cue) {
-	lvl, _ := p.Level(ch, now)
-	if lvl == client.LevelOff || p.DND(now) || p.InQuiet(now) {
-		return false, notify.CueNone
-	}
-	var cue notify.Cue
-	var sound string
-	switch kind {
-	case noteMessage:
-		if lvl != client.LevelAll {
-			return false, notify.CueNone
-		}
-		cue, sound = notify.CueMessage, "message"
-	case noteMention:
-		cue, sound = notify.CueMention, "mention"
-	case noteRing:
-		cue, sound = notify.CueRing, "ring"
-	case noteHuddle:
-		if lvl != client.LevelAll {
-			return false, notify.CueNone
-		}
-		cue, sound = notify.CueHuddle, "huddle"
-	}
-	if !p.Sound(sound) {
-		cue = notify.CueNone
-	}
-	return true, cue
-}
-
-type ringState struct {
-	ch, by uint64
-	gen    int
-	since  time.Time
+	return alert.Decide(p, now, ch, kind)
 }
 
 type ringMsg struct {
@@ -98,19 +62,65 @@ type ringMsg struct {
 	resend bool // else: time's up
 }
 
-// notifyUI is the model's notification state beyond the coalescing queue.
+// notifyUI is the model's notification state beyond the shared engine
+// (m.al: coalescing, caps, rings).
 type notifyUI struct {
-	prefs     client.NotifyPrefs
-	ring      ringState
-	ringGen   int
-	ringCool  map[uint64]time.Time
-	rangAt    map[uint64]time.Time // when each DM last rang
-	answering bool                 // /huddle sent for the ringing DM
+	answering int // the ring generation /huddle was sent for
 	prefsGen  int
 	prefsAt   time.Time // when the scheduled re-render tick fires
-	lastRing  time.Time
-	huddleAt  map[uint64]time.Time // last channel huddle-start popup
 	testQueue []notify.Cue
+}
+
+// tuiWorld answers the engine from the model's loaded state.
+type tuiWorld struct{ m *Model }
+
+func (w tuiWorld) Me() uint64                                    { return w.m.me.ID }
+func (w tuiWorld) Chan(id uint64) (client.ChannelView, bool)     { return w.m.chanView(id) }
+func (w tuiWorld) User(id uint64) proto.User                     { return w.m.users[id] }
+func (w tuiWorld) MentionNames() []string                        { return w.m.mentionAs }
+func (w tuiWorld) Highlights() []string                          { return w.m.highlights }
+func (w tuiWorld) Current(x proto.Message) (proto.Message, bool) { return w.m.currentMessage(x) }
+func (w tuiWorld) Looking(ch uint64) bool                        { return ch == w.m.active && w.m.focused }
+func (w tuiWorld) InHuddle(ch uint64) bool                       { return w.m.hud.in && w.m.hud.cur == ch }
+
+func (w tuiWorld) InMyThread(x proto.Message) bool {
+	nb, ok := w.m.notifyBackend()
+	return ok && nb.InMyThread(x)
+}
+
+func (w tuiWorld) Roster(ch uint64) ([]uint64, bool) {
+	hb, ok := w.m.huddleBackend()
+	if !ok {
+		return nil, false
+	}
+	return hb.Huddle(ch), true
+}
+
+// tuiSender sends through whatever Notifier the options hold now.
+type tuiSender struct{ m *Model }
+
+func (s tuiSender) Send(n notify.Note) bool {
+	if s.m.opt.Notifier == nil {
+		return false
+	}
+	return s.m.opt.Notifier.Send(n)
+}
+
+// alertCmd turns the engine's timers into ticks.
+func alertCmd(ts []alert.Timer) tea.Cmd {
+	var cmds []tea.Cmd
+	for _, t := range ts {
+		ch, gen := t.Ch, t.Gen
+		switch t.Kind {
+		case alert.FlushTimer:
+			cmds = append(cmds, tea.Tick(t.After, func(time.Time) tea.Msg { return notifyFlushMsg{ch, gen} }))
+		case alert.RingResendT:
+			cmds = append(cmds, tea.Tick(t.After, func(time.Time) tea.Msg { return ringMsg{gen: gen, resend: true} }))
+		case alert.RingEndT:
+			cmds = append(cmds, tea.Tick(t.After, func(time.Time) tea.Msg { return ringMsg{gen: gen} }))
+		}
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m *Model) notifyBackend() (NotifyBackend, bool) {
@@ -120,36 +130,13 @@ func (m *Model) notifyBackend() (NotifyBackend, bool) {
 
 // refreshPrefs re-reads the stored settings and applies env overrides.
 func (m *Model) refreshPrefs() {
-	p := client.NotifyPrefs{Chans: map[uint64]client.ChanNotify{}, CueOff: map[string]bool{}, Volume: client.DefaultCueVolume}
+	p := alert.DefaultPrefs()
 	if nb, ok := m.notifyBackend(); ok {
 		p = nb.NotifyPrefs()
 	}
-	e := m.opt.NotifyEnv
-	switch strings.ToLower(e.Sound) {
-	case "off", "0", "no":
-		p.SoundOff = true
-	case "on", "1", "yes":
-		p.SoundOff = false
-	}
-	switch strings.ToLower(e.Content) {
-	case "full":
-		p.Content = ""
-	case "name", "none":
-		p.Content = strings.ToLower(e.Content)
-	}
-	if e.Quiet != "" {
-		if strings.EqualFold(e.Quiet, "off") {
-			p.Quiet = ""
-		} else if _, _, err := client.ParseQuiet(e.Quiet); err == nil {
-			p.Quiet = e.Quiet
-		}
-	}
-	m.nt.prefs = p
-	// Said no to rings (DND, muted the DM): stop the one going.
-	if r := m.nt.ring; r.ch != 0 {
-		if popup, _ := decide(p, m.now(), r.ch, noteRing); !popup {
-			m.stopRing(false)
-		}
+	m.al.SetPrefs(m.opt.NotifyEnv.Apply(p))
+	if m.al.Ring.Ch == 0 {
+		m.nt.answering = 0
 	}
 }
 
@@ -159,7 +146,7 @@ type prefsTickMsg struct{ gen int }
 // showing (DND, a timed mute, quiet hours), so 🔕 marks and dimming don't
 // go stale in an idle pane.
 func (m *Model) schedulePrefsTick() tea.Cmd {
-	p, now := m.nt.prefs, m.now()
+	p, now := m.al.Prefs, m.now()
 	timed := p.DNDUntil > 0 || p.Quiet != ""
 	for _, c := range p.Chans {
 		timed = timed || c.Until > 0
@@ -194,156 +181,20 @@ func (m *Model) untilLabel(ms int64) string {
 }
 
 // muted reports whether ch is at level off now (sidebar dims it).
-func (m *Model) muted(ch uint64) bool { return m.nt.prefs.Muted(ch, m.now()) }
+func (m *Model) muted(ch uint64) bool { return m.al.Prefs.Muted(ch, m.now()) }
 
 // eligible is the trigger rule every notification passes first: never
 // bots, my own messages (but my reminders), or the channel I'm looking at.
-func (m *Model) eligible(x proto.Message) bool {
-	if x.Deleted || m.users[x.Author].Bot {
-		return false
-	}
-	if x.Chan == m.active && m.focused {
-		return false
-	}
-	if x.Author == m.me.ID {
-		return m.isReminder(x)
-	}
-	return true
-}
+func (m *Model) eligible(x proto.Message) bool { return m.al.Eligible(x) }
 
 // mentionClass: DMs, @mentions, highlights, my reminders, replies in my
 // threads.
-func (m *Model) mentionClass(x proto.Message) bool {
-	if x.Author == m.me.ID {
-		return m.isReminder(x)
-	}
-	if v, ok := m.chanView(x.Chan); ok && v.Kind == proto.ChanDM {
-		return true
-	}
-	if m.concernsMe(x.Body) {
-		return true
-	}
-	nb, ok := m.notifyBackend()
-	return ok && x.Thread != 0 && nb.InMyThread(x)
-}
-
-// private applies the content setting: name hides the text, none the
-// sender and channel too (popups persist in OS notification history).
-func (m *Model) private(title, body string, n int) (string, string) {
-	switch m.nt.prefs.Content {
-	case "name":
-		body = "new message"
-	case "none":
-		title, body = "tc", "new message"
-	default:
-		return title, body
-	}
-	if n > 1 {
-		body = strconv.Itoa(n) + " new messages"
-	}
-	return title, body
-}
-
-func noteTag(ch uint64) string { return "tc-" + strconv.FormatUint(ch, 10) }
+func (m *Model) mentionClass(x proto.Message) bool { return m.al.MentionClass(x) }
 
 // ---- huddle starts: rings and popups ----
 
 func (m *Model) huddleStarted(starts []client.HuddleStart) tea.Cmd {
-	var cmds []tea.Cmd
-	now := m.now()
-	for _, s := range starts {
-		v, ok := m.chanView(s.Chan)
-		if !ok || !v.Member || m.users[s.By].Bot {
-			continue
-		}
-		// Rosters aren't end-to-end authenticated: only name a starter
-		// who is a live member (for a DM, someone in it besides us).
-		if s.By == m.me.ID || !slices.Contains(v.Members, s.By) || m.users[s.By].Disabled {
-			continue
-		}
-		who := m.r.userName(s.By)
-		if v.Kind == proto.ChanDM {
-			// One ring per DM per ringRepeat however it ended (a peer
-			// flapping join/leave), one per ringEvery overall.
-			if now.Before(m.nt.ringCool[s.Chan]) || (s.Chan == m.active && m.focused) ||
-				now.Sub(m.nt.rangAt[s.Chan]) < ringRepeat || now.Sub(m.nt.lastRing) < ringEvery {
-				continue
-			}
-			if m.nt.ring.ch != 0 { // already ringing: a plain popup for the second
-				if popup, _ := decide(m.nt.prefs, now, s.Chan, noteRing); popup && now.Sub(m.lastNotify) >= notifyEvery {
-					if m.nt.rangAt == nil {
-						m.nt.rangAt = map[uint64]time.Time{}
-					}
-					m.nt.rangAt[s.Chan] = now
-					m.lastNotify = now
-					join := "/huddle in that DM to join"
-					if !client.VoiceAvailable() {
-						join = plainJoinHint
-					}
-					title, body := m.private("📞 "+who+" started a huddle", join, 1)
-					m.sendNote(notify.Note{Title: title, Body: body, Cue: notify.CueMention, Tag: noteTag(s.Chan)})
-				}
-				continue
-			}
-			if in, ok := m.hud.cur, m.hud.in; ok && in == s.Chan {
-				continue
-			}
-			popup, cue := decide(m.nt.prefs, now, s.Chan, noteRing)
-			if !popup {
-				continue
-			}
-			m.nt.ringGen++
-			m.nt.ring = ringState{ch: s.Chan, by: s.By, gen: m.nt.ringGen, since: now}
-			if m.nt.rangAt == nil {
-				m.nt.rangAt = map[uint64]time.Time{}
-			}
-			m.nt.rangAt[s.Chan], m.nt.lastRing = now, now
-			m.sendRing(cue)
-			gen := m.nt.ringGen
-			cmds = append(cmds,
-				tea.Tick(ringResend, func(time.Time) tea.Msg { return ringMsg{gen: gen, resend: true} }),
-				tea.Tick(ringFor, func(time.Time) tea.Msg { return ringMsg{gen: gen} }))
-			continue
-		}
-		if s.Chan == m.active && m.focused {
-			continue
-		}
-		popup, cue := decide(m.nt.prefs, now, s.Chan, noteHuddle)
-		// The 2 s cap covers these too; the sidebar's 🎧 still shows a
-		// start that is skipped here.
-		if !popup || now.Sub(m.nt.huddleAt[s.Chan]) < huddleNoteGap || now.Sub(m.lastNotify) < notifyEvery {
-			continue
-		}
-		m.lastNotify = now
-		if m.nt.huddleAt == nil {
-			m.nt.huddleAt = map[uint64]time.Time{}
-		}
-		m.nt.huddleAt[s.Chan] = now
-		title, body := "🎧 "+who+" started a huddle in "+m.chanTitle(s.Chan), "/huddle to join"
-		if !client.VoiceAvailable() {
-			body = plainJoinHint
-		}
-		if m.nt.prefs.Content == "none" {
-			title, body = "tc", "huddle started"
-		}
-		m.sendNote(notify.Note{Title: title, Body: body, Cue: cue, Tag: noteTag(s.Chan)})
-	}
-	return tea.Batch(cmds...)
-}
-
-// sendRing shows the ring popup; rings skip the queue and the 2 s cap
-// (the Notifier gives them their own slot).
-func (m *Model) sendRing(cue notify.Cue) {
-	r := m.nt.ring
-	title := "📞 " + m.r.userName(r.by) + " started a huddle"
-	body := "/huddle to join"
-	if !client.VoiceAvailable() {
-		body = plainJoinHint
-	}
-	if m.nt.prefs.Content == "none" {
-		title, body = "tc", "incoming huddle"
-	}
-	m.sendNote(notify.Note{Title: title, Body: body, Cue: cue, Tag: "tc-ring-" + strconv.FormatUint(r.ch, 10)})
+	return alertCmd(m.al.HuddleStarts(starts))
 }
 
 func (m *Model) sendNote(n notify.Note) {
@@ -353,79 +204,41 @@ func (m *Model) sendNote(n notify.Note) {
 }
 
 func (m *Model) ringMsg(msg ringMsg) tea.Cmd {
-	if msg.gen != m.nt.ring.gen || m.nt.ring.ch == 0 {
-		return nil
+	m.al.RingTimer(msg.gen, msg.resend)
+	if m.al.Ring.Ch == 0 {
+		m.nt.answering = 0
 	}
-	if msg.resend {
-		if popup, cue := decide(m.nt.prefs, m.now(), m.nt.ring.ch, noteRing); popup {
-			m.sendRing(cue)
-		}
-		return nil
-	}
-	m.stopRing(true)
 	return nil
 }
 
 // stopRing ends the ring; cool keeps the same DM from ringing again soon
 // (dismissed or unanswered — a join/leave flapper can't spam).
 func (m *Model) stopRing(cool bool) {
-	if m.nt.ring.ch == 0 {
-		return
-	}
-	if cool {
-		if m.nt.ringCool == nil {
-			m.nt.ringCool = map[uint64]time.Time{}
-		}
-		m.nt.ringCool[m.nt.ring.ch] = m.now().Add(ringCooldown)
-	}
-	m.nt.ring = ringState{}
-	m.nt.answering = false
+	m.al.StopRing(cool)
+	m.nt.answering = 0
 }
 
 // checkRing stops the ring once it's answered (we joined, from any
 // device), over (the huddle ended), or seen (the DM is open and focused).
 func (m *Model) checkRing() {
-	r := m.nt.ring
-	if r.ch == 0 {
-		return
-	}
-	if m.hud.in && m.hud.cur == r.ch {
-		m.stopRing(false)
-		return
-	}
-	if r.ch == m.active && m.focused {
-		m.stopRing(false)
-		return
-	}
-	hb, ok := m.huddleBackend()
-	if !ok {
-		return
-	}
-	roster := hb.Huddle(r.ch)
-	if len(roster) == 0 {
-		m.stopRing(false)
-		return
-	}
-	for _, u := range roster {
-		if u == m.me.ID {
-			m.stopRing(false)
-			return
-		}
+	m.al.CheckRing()
+	if m.al.Ring.Ch == 0 {
+		m.nt.answering = 0
 	}
 }
 
 // plainJoinHint replaces "/huddle to join" in builds without voice, where
 // /huddle can only fail (#85).
-const plainJoinHint = "to join: tc update --voice"
+const plainJoinHint = alert.PlainJoinHint
 
 // ringLine is the status-line prompt while ringing; compact (name cut,
 // just the command) when the line is narrow.
 func (m *Model) ringLine(compact bool) string {
-	r := m.nt.ring
-	if r.ch == 0 {
+	r := m.al.Ring
+	if r.Ch == 0 {
 		return ""
 	}
-	who := m.r.userName(r.by)
+	who := m.r.userName(r.By)
 	if !client.VoiceAvailable() {
 		if compact {
 			return "📞 " + truncate(who, 12) + " · tc update --voice"
@@ -441,7 +254,7 @@ func (m *Model) ringLine(compact bool) string {
 // quietMark is the status line's DND / quiet-hours mark.
 func (m *Model) quietMark() string {
 	now := m.now()
-	p := m.nt.prefs
+	p := m.al.Prefs
 	switch {
 	case p.DND(now):
 		return "🔕 dnd " + m.untilLabel(p.DNDUntil)
@@ -453,7 +266,7 @@ func (m *Model) quietMark() string {
 
 // muteMark is the header's mark for a muted open channel.
 func (m *Model) muteMark(ch uint64) string {
-	p := m.nt.prefs
+	p := m.al.Prefs
 	lvl, over := p.Level(ch, m.now())
 	if lvl != client.LevelOff {
 		return ""
@@ -664,7 +477,7 @@ func (m *Model) backendName() string {
 // notifySummary is the /notify settings, one per row: a status-line notice
 // would be cut at 80 columns.
 func (m *Model) notifySummary() []string {
-	p, now := m.nt.prefs, m.now()
+	p, now := m.al.Prefs, m.now()
 	var rows []string
 	if m.active != 0 {
 		lvl, over := p.Level(m.active, now)
@@ -700,13 +513,23 @@ func (m *Model) notifySummary() []string {
 		}
 		return " (" + h + ")"
 	}
-	return append(rows,
+	rows = append(rows,
 		"default: "+string(def)+hint("/notify global LEVEL"),
 		"content: "+content+hint("/notify content full|name|none"),
 		"quiet hours: "+quiet+hint("/notify quiet 22:00-08:00|off"),
 		"do not disturb: "+dnd+hint("/dnd"),
 		"via: "+m.backendName()+hint("/notify test"),
 		"sounds: "+sounds+hint("/sounds"))
+	if m.opt.Background != nil {
+		// The one place tc mentions it: popups while this window is closed.
+		// It's a shell command, not a slash command: say so.
+		if on, known := m.opt.Background(); known && on {
+			rows = append(rows, "when tc is closed: on"+hint("shell: tc background off"))
+		} else if known {
+			rows = append(rows, "when tc is closed: off"+hint("shell: tc background on"))
+		}
+	}
+	return rows
 }
 
 // showList opens the read-only list overlay.
@@ -723,7 +546,7 @@ func (m *Model) notifyTestNext() tea.Cmd {
 	m.nt.testQueue = m.nt.testQueue[1:]
 	name := map[notify.Cue]string{notify.CueMention: "mention", notify.CueMessage: "message", notify.CueRing: "ring", notify.CueHuddle: "huddle"}[cue]
 	sound := map[notify.Cue]string{notify.CueMention: "mention", notify.CueMessage: "message", notify.CueRing: "ring", notify.CueHuddle: "huddle"}[cue]
-	if !m.nt.prefs.Sound(sound) {
+	if !m.al.Prefs.Sound(sound) {
 		cue = notify.CueNone
 	}
 	m.sendNote(notify.Note{Title: "tc test: " + name, Body: "this is how a " + name + " notification looks", Cue: cue})
@@ -738,7 +561,7 @@ func (m *Model) dndCmd(nb NotifyBackend, args []string) error {
 	var until int64
 	switch {
 	case len(args) == 0:
-		if m.nt.prefs.DND(now) {
+		if m.al.Prefs.DND(now) {
 			until = 0 // toggle off
 		} else {
 			until = now.Add(time.Hour).UnixMilli()
@@ -774,7 +597,7 @@ func (m *Model) soundsCmd(nb NotifyBackend, args []string) error {
 	set := func(k, v string) error { return nb.SetNotifySetting(k, v) }
 	switch {
 	case len(args) == 0:
-		p := m.nt.prefs
+		p := m.al.Prefs
 		master := "on"
 		if p.SoundOff {
 			master = "off"

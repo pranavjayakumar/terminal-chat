@@ -67,6 +67,9 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 	if e2eOps[op] && !sess.e2e || voiceOps[op] && !sess.voice {
 		return nil, proto.Errf(proto.ErrUnknownOp, "")
 	}
+	if op == proto.OpHuddleJoin && sess.passive {
+		return nil, proto.Errf(proto.ErrForbidden, "a passive session can't join a huddle")
+	}
 	s.mu.Lock()
 	disabled := s.disabled[u.ID]
 	// huddle.leave is exempt: refusing a cleanup would leave a ghost listener.

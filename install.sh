@@ -10,6 +10,10 @@
 # --voice (or TC_VOICE=1) installs the voice build (tc-voice_<os>_<arch>,
 # voice huddles; Linux needs glibc 2.35+). tc update keeps whichever is installed.
 #
+# After joining on a terminal it asks whether to turn on tc background
+# (notifications while tc is closed); TC_BACKGROUND=1 says yes without
+# asking, TC_BACKGROUND=0 no.
+#
 # Environment: TC_VERSION (e.g. v0.2.0), TC_INSTALL_DIR, TC_RELEASE_BASE
 # (default https://github.com/pranavjayakumar/terminal-chat/releases; must be
 # https, or http only to localhost/127.0.0.1/[::1]).
@@ -193,6 +197,32 @@ other_tc() {
 	printf '%s' "$what"
 }
 
+# offer_background runs after a successful join: on a terminal ($1 = tty)
+# it asks whether to turn on tc background (notifications while tc is
+# closed; starts at login). TC_BACKGROUND=1 turns it on without asking,
+# TC_BACKGROUND=0 never asks; without a terminal it is skipped silently.
+offer_background() {
+	case "${TC_BACKGROUND:-}" in
+	0) return 0 ;;
+	1) ;;
+	*)
+		[ "${1:-}" = tty ] || return 0
+		printf 'tc-install: Get notifications when tc is closed? [Y/n] ' >&2
+		ans=""
+		read -r ans </dev/tty || ans=n
+		case "$ans" in
+		"" | [Yy] | [Yy][Ee][Ss]) ;;
+		*)
+			say "no background notifications; turn them on any time with: tc background on"
+			return 0
+			;;
+		esac
+		;;
+	esac
+	"$dir/tc" background on </dev/null ||
+		say "couldn't turn on notifications while tc is closed; try again later with: tc background on"
+}
+
 main() {
 	need curl
 	need tar
@@ -295,8 +325,10 @@ main() {
 		# (or nothing, so it uses defaults without prompting).
 		if [ -t 1 ] && (: </dev/tty) 2>/dev/null; then
 			TC_INVITE=$invite "$dir/tc" join </dev/tty
+			offer_background tty
 		else
 			TC_INVITE=$invite "$dir/tc" join </dev/null
+			offer_background
 		fi
 		# join's tips say "tc", which in this shell isn't ours yet.
 		if [ "$found" != "$dir/tc" ]; then

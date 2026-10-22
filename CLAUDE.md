@@ -25,7 +25,7 @@ correctness and speed over adding another feature.
 ## Layout
 
 ```
-cmd/tc/              entrypoint + subcommands (tc, tc server, tc join/login, tc send, tc tail, tc update)
+cmd/tc/              entrypoint + subcommands (tc, tc server, tc join/login, tc send, tc tail, tc update, tc background)
 internal/proto/      frame codec, frame/op/event types (pure, no I/O deps)
 internal/transport/  QUIC + TLS-over-TCP listeners/dialers, Conn interface, cert pinning
 internal/identity/   SSH key loading, ssh-agent signing, auth signature payloads
@@ -33,6 +33,8 @@ internal/server/     hub (sessions, fan-out), handlers, auth, store (SQLite)
 internal/client/     connection manager, reconnect, outbox, local cache (SQLite), event apply
 internal/trust/      E2E trust store TC_HOME/e2e.db (device keys, pins, devices, chain heads)
 internal/tui/        Bubble Tea UI
+internal/alert/      notification policy engine (levels, coalescing, caps, rings), shared by tui and background
+internal/background/ tc background: passive notifier while tc is closed, ui.lock handover, LaunchAgent/systemd unit
 internal/sanitize/   terminal-safe text rendering
 internal/release/    GitHub Releases: latest tag, SSHSIG-signed checksums (signers.go), https-only download, atomic self-replace, daily check
 internal/e2e/        real client against real server over loopback
@@ -41,7 +43,8 @@ install.sh           one-line installer (POSIX sh; tested by internal/release/in
 .github/workflows/   ci.yml (tests), release.yml (vX.Y.Z tags on main → DRAFT release; `make release-sign` signs + publishes, docs/DEPLOY.md)
 ```
 
-Dependency direction: `tui → client → proto/transport/identity/trust`, `tui → release`, `trust → e2ecrypto`; `server → proto/transport/identity`.
+Dependency direction: `tui → client → proto/transport/identity/trust`, `tui → release`, `tui → alert/background`,
+`background → alert → client/notify`, `trust → e2ecrypto`; `server → proto/transport/identity`.
 `client` and `server` never import each other. `proto` imports nothing internal.
 
 ## Stack

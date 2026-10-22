@@ -402,15 +402,15 @@ func TestEscMenuBeforeMicAndRing(t *testing.T) {
 	}
 	checkView(t, m, "menu over ring")
 	press(m, "esc")
-	if m.compShown() || !h.Talking() || m.nt.ring.ch == 0 {
-		t.Fatalf("first Esc: menu %v talking %v ring %d", m.compShown(), h.Talking(), m.nt.ring.ch)
+	if m.compShown() || !h.Talking() || m.al.Ring.Ch == 0 {
+		t.Fatalf("first Esc: menu %v talking %v ring %d", m.compShown(), h.Talking(), m.al.Ring.Ch)
 	}
 	press(m, "esc")
-	if h.Talking() || m.nt.ring.ch == 0 {
-		t.Fatalf("second Esc: talking %v ring %d", h.Talking(), m.nt.ring.ch)
+	if h.Talking() || m.al.Ring.Ch == 0 {
+		t.Fatalf("second Esc: talking %v ring %d", h.Talking(), m.al.Ring.Ch)
 	}
 	press(m, "esc")
-	if m.nt.ring.ch != 0 {
+	if m.al.Ring.Ch != 0 {
 		t.Fatal("third Esc didn't dismiss the ring")
 	}
 	if m.input.Value() != "/hu" {
