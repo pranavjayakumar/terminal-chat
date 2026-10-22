@@ -21,7 +21,6 @@ import (
 
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/server"
-	"github.com/skailama/tc/internal/transport"
 )
 
 // Team-scale chaos (QA pass before real use): one server, a team of
@@ -62,17 +61,7 @@ func TestQAChaosTeamScale(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var ln transport.Listener
-		for i := 0; ; i++ { // the old listener's port may take a moment to free
-			ln, err = transport.ListenWith(addr, s.Cert(), transport.ListenOpts{HTTP: true, HTTPCert: s.HTTPCert()})
-			if err == nil || i > 50 {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
+		ln := listenRetry(t, addr, s)
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
 		go func() { s.Serve(ctx, ln); close(done) }()
