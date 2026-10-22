@@ -56,7 +56,7 @@ func TestNotify_BreakSoundsOffMidWindowSummaryStillSounds(t *testing.T) {
 	if n := lastNote(t, m); n.Cue != notify.CueMessage {
 		t.Fatalf("first: %+v", n)
 	}
-	gen := m.notes[13].gen
+	gen := m.al.Notes[13].Gen
 	deliver(m, newMsg(902, 13, 3, "two"), newMsg(903, 13, 3, "three"))
 	runInput(t, m, "/sounds off")
 	clk.add(allWindow)
@@ -98,7 +98,7 @@ func TestDND_BreakUntilInRepeatedHourOnDSTDay(t *testing.T) {
 		t.Skipf("no DST data: %s %d %v", name, off, clk.t)
 	}
 	runInput(t, m, "/dnd until 01:50")
-	until := time.UnixMilli(m.nt.prefs.DNDUntil).In(ny)
+	until := time.UnixMilli(m.al.Prefs.DNDUntil).In(ny)
 	if d := until.Sub(clk.t); d > 12*time.Hour || d <= 0 {
 		t.Fatalf("/dnd until 01:50 at 01:10 EST ends %s (in %v), not in 40 min", until.Format("Jan 2 15:04 MST"), d)
 	}
@@ -112,7 +112,7 @@ func TestDND_BreakDanglingForTurnsDNDOff(t *testing.T) {
 	newClock(m)
 	runInput(t, m, "/dnd 2h")
 	runInput(t, m, "/dnd for")
-	if !m.nt.prefs.DND(m.now()) {
+	if !m.al.Prefs.DND(m.now()) {
 		t.Fatal(`"/dnd for" turned DND off`)
 	}
 	if !m.noticeErr {

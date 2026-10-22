@@ -266,7 +266,7 @@ func (m *Model) drawToast(c *canvas, g geo) {
 		// right, shortened if need be; typing alone may be covered while
 		// the toast lasts; a ring or our mic is floated above instead.
 		free := g.CW - sw - 3
-		important := m.nt.ring.ch != 0 || m.hud.in && !m.huddleBarShown()
+		important := m.al.Ring.Ch != 0 || m.hud.in && !m.huddleBarShown()
 		switch {
 		case free >= 12 || free >= tw:
 			text = truncate(m.notice, min(free, g.CW-6)-4)

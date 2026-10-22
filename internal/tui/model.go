@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/skailama/tc/internal/alert"
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
@@ -124,9 +125,7 @@ type Model struct {
 	lastTyping time.Time
 	now        func() time.Time
 
-	notes      map[uint64]*pendingNote
-	noteGen    int
-	lastNotify time.Time
+	al *alert.Engine // notification policy and state (notifypolicy.go)
 
 	badge                *badgeWriter
 	badgeWant, badgeSent string
@@ -241,8 +240,9 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 		limits: map[uint64]int{}, histBusy: map[uint64]bool{}, histDone: map[uint64]bool{},
 		focused: true, now: time.Now,
 		main: pane{sel: -1}, thread: pane{sel: -1},
-		notes: map[uint64]*pendingNote{}, badge: &badgeWriter{},
+		badge: &badgeWriter{},
 	}
+	m.al = alert.New(tuiWorld{m}, tuiSender{m}, func() time.Time { return m.now() })
 	m.lastKey = m.now()
 	m.fx.init()
 	// Tests (o.styles set) run without motion unless they ask for it.
@@ -1005,7 +1005,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case updatesClosedMsg:
 		return m, nil
 	case errMsg:
-		if msg.what == "huddle" && m.nt.answering {
+		if msg.what == "huddle" && m.nt.answering != 0 && m.nt.answering == m.al.Ring.Gen {
 			m.stopRing(true) // answering failed: let the error show
 		}
 		m.setErr(msg.what, msg.err)
@@ -1343,7 +1343,7 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 		if m.micOff() {
 			return nil
 		}
-		if m.nt.ring.ch != 0 {
+		if m.al.Ring.Ch != 0 {
 			m.stopRing(true) // dismissed
 			return nil
 		}

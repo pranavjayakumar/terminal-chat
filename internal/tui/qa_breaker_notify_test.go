@@ -33,7 +33,7 @@ func TestNotify_BreakDeletedMessageStillPopsUp(t *testing.T) {
 	first := newMsg(501, 20, 2, "hey")
 	setFakeMsg(f, 20, client.Message{Message: first})
 	deliver(m, first)
-	gen := m.notes[20].gen
+	gen := m.al.Notes[20].Gen
 	clk.add(time.Second)
 	secret := newMsg(502, 20, 2, "prod db password: hunter2")
 	setFakeMsg(f, 20, client.Message{Message: secret})
@@ -61,7 +61,7 @@ func TestNotify_BreakEditedMessagePopsUpOldText(t *testing.T) {
 	first := newMsg(511, 20, 2, "hey")
 	setFakeMsg(f, 20, client.Message{Message: first})
 	deliver(m, first)
-	gen := m.notes[20].gen
+	gen := m.al.Notes[20].Gen
 	clk.add(time.Second)
 	x := newMsg(512, 20, 2, "token ghp_LEAKED123")
 	setFakeMsg(f, 20, client.Message{Message: x})
@@ -104,12 +104,12 @@ func TestNotify_BreakMentionDropsCountedLevelAllMessages(t *testing.T) {
 	deliver(m, newMsg(531, 13, 3, "one"))
 	clk.add(time.Second)
 	deliver(m, newMsg(532, 13, 3, "two"), newMsg(533, 13, 3, "three"))
-	if m.notes[13] == nil || m.notes[13].n != 2 {
-		t.Fatalf("setup: want 2 counted messages, got %+v", m.notes[13])
+	if m.al.Notes[13] == nil || m.al.Notes[13].N != 2 {
+		t.Fatalf("setup: want 2 counted messages, got %+v", m.al.Notes[13])
 	}
 	clk.add(3 * time.Second)
 	deliver(m, newMsg(534, 13, 3, "hey @alice"))
-	gen := m.notes[13].gen
+	gen := m.al.Notes[13].Gen
 	clk.add(allWindow)
 	m.Update(notifyFlushMsg{ch: 13, gen: gen})
 	s := notes(m).sent()

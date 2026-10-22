@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/skailama/tc/internal/alert"
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/notify"
 	"github.com/skailama/tc/internal/proto"
@@ -35,8 +35,6 @@ type Herdr interface {
 var _ Herdr = (*notify.HerdrCLI)(nil)
 
 const (
-	notifyWindow  = 5 * time.Second // per-channel coalescing
-	notifyEvery   = 2 * time.Second // global cap
 	badgeDebounce = time.Second
 	shareLines    = 60
 )
@@ -60,180 +58,27 @@ type (
 	}
 )
 
-// ---- notifications ----
+// ---- notifications (the policy lives in internal/alert) ----
 
-// pendingNote is a channel's coalescing window: the first message notifies
-// at once, later ones within the window are counted and summarized when
-// it closes. The strongest cue in the window wins.
-type pendingNote struct {
-	gen         int
-	n           int // messages not yet notified
-	title, body string
-	group       string // title for a summary
-	cue         notify.Cue
-	kind        noteKind      // the strongest in the window
-	last        proto.Message // the message title/body show, re-read before showing
-}
+const notifyWindow, notifyEvery = alert.MentionWindow, alert.Every
 
 // shouldNotify is the mention-class trigger (DMs, mentions, highlights,
 // reminders, replies in my threads) for a message that passes eligible.
-func (m *Model) shouldNotify(x proto.Message) bool {
-	return m.eligible(x) && m.mentionClass(x)
-}
-
-// noteText is the notification for x: "#chan · alice" or "alice (DM)",
-// and the first non-empty line of the body.
-func (m *Model) noteText(x proto.Message) (title, body, group string) {
-	if m.isReminder(x) {
-		title = "⏰ Reminder"
-		return title, firstNonEmptyLine(strings.TrimPrefix(x.Body, proto.RemindPrefix)), title
-	}
-	who := m.r.userName(x.Author)
-	if v, ok := m.chanView(x.Chan); ok && v.Kind == proto.ChanDM {
-		title = who + " (DM)"
-		group = title
-	} else {
-		group = m.chanTitle(x.Chan)
-		title = group + " · " + who
-	}
-	return title, firstNonEmptyLine(x.Body), group
-}
-
-func firstNonEmptyLine(s string) string {
-	for _, l := range strings.Split(sanitize.Text(s), "\n") {
-		if l = strings.TrimSpace(l); l != "" {
-			return l
-		}
-	}
-	return ""
-}
+func (m *Model) shouldNotify(x proto.Message) bool { return m.al.ShouldNotify(x) }
 
 func (m *Model) notifyFor(news []client.Message) tea.Cmd {
 	if m.opt.Notifier == nil {
 		return nil
 	}
-	var cmds []tea.Cmd
-	now := m.now()
-	for _, x := range news {
-		// Text that isn't verifiably its author's (inserted by the server,
-		// invalid) never notifies.
-		if !x.Sec.Trusted() || !m.eligible(x.Message) {
-			continue
-		}
-		kind, window := noteMessage, allWindow
-		if m.mentionClass(x.Message) {
-			kind, window = noteMention, notifyWindow
-		}
-		if popup, cue := decide(m.nt.prefs, now, x.Chan, kind); popup {
-			cmds = append(cmds, m.queueNote(x.Message, kind, cue, window))
-		}
-	}
-	return tea.Batch(cmds...)
+	return alertCmd(m.al.Messages(news))
 }
 
-func (m *Model) queueNote(x proto.Message, kind noteKind, cue notify.Cue, window time.Duration) tea.Cmd {
-	title, body, group := m.noteText(x)
-	var soft *pendingNote
-	if p := m.notes[x.Chan]; p != nil && kind == noteMention && p.kind < noteMention {
-		// A mention never waits out a level-all channel's 30 s window: it
-		// opens its own, and the soft messages still unannounced are
-		// announced when that one closes.
-		delete(m.notes, x.Chan)
-		if p.n > 0 {
-			soft = p
-		}
-	}
-	if p := m.notes[x.Chan]; p != nil {
-		p.n++
-		p.title, p.body, p.group, p.last = title, body, group, x
-		if cueRank(cue) > cueRank(p.cue) {
-			p.cue = cue
-		}
-		p.kind = max(p.kind, kind)
-		return nil
-	}
-	m.noteGen++
-	p := &pendingNote{gen: m.noteGen, title: title, body: body, group: group, cue: cue, kind: kind, last: x}
-	m.notes[x.Chan] = p
-	if m.now().Sub(m.lastNotify) >= notifyEvery {
-		m.fire(x.Chan, title, body, 1, cue)
-		if soft != nil {
-			p.n = soft.n
-			if soft.n == 1 { // the window ends with the soft one, not a repeat
-				p.title, p.body, p.last = soft.title, soft.body, soft.last
-			}
-		}
-	} else {
-		p.n = 1 // over the global cap: say it when the window closes
-		if soft != nil {
-			p.n += soft.n
-		}
-	}
-	return m.noteTimer(x.Chan, p.gen, window)
-}
-
-// cueRank orders cues so a mention in a window of soft messages wins.
-func cueRank(c notify.Cue) int {
-	switch c {
-	case notify.CueMention:
-		return 3
-	case notify.CueMessage:
-		return 2
-	case notify.CueNone:
-		return 1
-	}
-	return 0
-}
-
-func (m *Model) noteTimer(ch uint64, gen int, d time.Duration) tea.Cmd {
-	return tea.Tick(d, func(time.Time) tea.Msg { return notifyFlushMsg{ch, gen} })
-}
-
-func (m *Model) flushNote(msg notifyFlushMsg) tea.Cmd {
-	p := m.notes[msg.ch]
-	if p == nil || p.gen != msg.gen {
-		return nil
-	}
-	if p.n == 0 {
-		delete(m.notes, msg.ch)
-		return nil
-	}
-	if wait := notifyEvery - m.now().Sub(m.lastNotify); wait > 0 {
-		return m.noteTimer(msg.ch, msg.gen, wait)
-	}
-	delete(m.notes, msg.ch)
-	// Settings may have changed while it waited (muted, DND).
-	popup, cue := decide(m.nt.prefs, m.now(), msg.ch, p.kind)
-	if !popup {
-		return nil
-	}
-	if p.n == 1 {
-		// It may have been deleted or edited while it waited: never show
-		// text its author took back.
-		cur, ok := m.currentMessage(p.last)
-		if ok && cur.Deleted {
-			return nil
-		}
-		if ok && cur.Body != p.last.Body {
-			p.title, p.body, _ = m.noteText(cur)
-		}
-		m.fire(msg.ch, p.title, p.body, 1, cue)
-	} else {
-		m.fire(msg.ch, p.group, strconv.Itoa(p.n)+" new messages", p.n, cue)
-	}
-	return nil
-}
-
-func (m *Model) fire(ch uint64, title, body string, n int, cue notify.Cue) {
-	m.lastNotify = m.now()
-	title, body = m.private(title, body, n)
-	m.opt.Notifier.Send(notify.Note{Title: title, Body: body, Cue: cue, Tag: noteTag(ch)})
-}
+func (m *Model) flushNote(msg notifyFlushMsg) tea.Cmd { return alertCmd(m.al.Flush(msg.ch, msg.gen)) }
 
 // seen drops pending notifications for a channel the user is now looking at.
 func (m *Model) seen(ch uint64) {
 	if m.focused {
-		delete(m.notes, ch)
+		m.al.Seen(ch)
 	}
 }
 

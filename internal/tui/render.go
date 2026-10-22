@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -11,9 +10,9 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/rivo/uniseg"
 
+	"github.com/skailama/tc/internal/alert"
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
-	"github.com/skailama/tc/internal/sanitize"
 )
 
 // ---- width helpers (display cells, never bytes or runes) ----
@@ -384,14 +383,11 @@ type renderer struct {
 }
 
 func (r *renderer) userName(id uint64) string {
-	n := ""
+	var u proto.User
 	if r.name != nil {
-		n = sanitize.Line(r.name(id))
+		u.Name = r.name(id)
 	}
-	if n == "" {
-		n = "user" + strconv.FormatUint(id, 10)
-	}
-	return n
+	return alert.UserName(u, id)
 }
 
 // sameDay reports whether two unix-ms times fall on the same local day.

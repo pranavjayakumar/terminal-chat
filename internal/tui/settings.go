@@ -150,7 +150,7 @@ func (m *Model) setCtls() []setCtl {
 				pick: func(i int) tea.Cmd { m.setMotion(i == 1); return nil }},
 		}
 	case "notifications":
-		p := m.nt.prefs
+		p := m.al.Prefs
 		lvl := map[client.NotifyLevel]int{client.LevelAll: 0, client.LevelMentions: 1, client.LevelOff: 2}[p.Default]
 		if p.Default == client.LevelDefault {
 			lvl = 1

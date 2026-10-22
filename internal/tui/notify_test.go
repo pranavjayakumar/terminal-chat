@@ -210,15 +210,15 @@ func TestNotifyDNDQuietSounds(t *testing.T) {
 		t.Fatal("no notification after DND")
 	}
 	runInput(t, m, "/dnd") // toggles on for an hour
-	if !m.nt.prefs.DND(m.now()) {
+	if !m.al.Prefs.DND(m.now()) {
 		t.Fatal("/dnd didn't toggle on")
 	}
 	runInput(t, m, "/dnd")
-	if m.nt.prefs.DND(m.now()) {
+	if m.al.Prefs.DND(m.now()) {
 		t.Fatal("/dnd didn't toggle off")
 	}
 	runInput(t, m, "/dnd until 13:30")
-	if got := time.UnixMilli(m.nt.prefs.DNDUntil).Format("15:04"); got != "13:30" || !m.nt.prefs.DND(m.now()) {
+	if got := time.UnixMilli(m.al.Prefs.DNDUntil).Format("15:04"); got != "13:30" || !m.al.Prefs.DND(m.now()) {
 		t.Fatalf("until: %s", got)
 	}
 	runInput(t, m, "/dnd off")
@@ -253,7 +253,7 @@ func TestNotifyDNDQuietSounds(t *testing.T) {
 	}
 	m.opt.NotifyEnv.Sound = "off"
 	m.refreshPrefs()
-	if !m.nt.prefs.SoundOff {
+	if !m.al.Prefs.SoundOff {
 		t.Fatal("TC_SOUND=off ignored")
 	}
 }
@@ -312,7 +312,7 @@ func TestRingLifecycle(t *testing.T) {
 	if v := ansi.Strip(checkView(t, m, "ringing")); !strings.Contains(v, "📞 bob") {
 		t.Fatalf("no ring prompt:\n%s", v)
 	}
-	gen := m.nt.ring.gen
+	gen := m.al.Ring.Gen
 	m.Update(ringMsg{gen: gen, resend: true})
 	if len(notes(m).sent()) != 2 {
 		t.Fatal("no resend")
@@ -322,7 +322,7 @@ func TestRingLifecycle(t *testing.T) {
 	if ch, in := h.InHuddle(); !in || ch != 20 {
 		t.Fatalf("answered into %d %v", ch, in)
 	}
-	if m.nt.ring.ch != 0 {
+	if m.al.Ring.Ch != 0 {
 		t.Fatal("still ringing after joining")
 	}
 	runInput(t, m, "/leave-huddle")
@@ -334,7 +334,7 @@ func TestRingLifecycle(t *testing.T) {
 	h.rosters[20] = nil
 	h.hmu.Unlock()
 	h.update(m)
-	if m.nt.ring.ch != 0 {
+	if m.al.Ring.Ch != 0 {
 		t.Fatal("still ringing after the huddle ended")
 	}
 
@@ -342,13 +342,13 @@ func TestRingLifecycle(t *testing.T) {
 	clk.add(ringRepeat)
 	startHuddle(m, h, 20, 2)
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if m.nt.ring.ch != 0 {
+	if m.al.Ring.Ch != 0 {
 		t.Fatal("Esc didn't dismiss")
 	}
 	before := len(notes(m).sent())
 	h.rosters[20] = nil
 	startHuddle(m, h, 20, 2)
-	if len(notes(m).sent()) != before || m.nt.ring.ch != 0 {
+	if len(notes(m).sent()) != before || m.al.Ring.Ch != 0 {
 		t.Fatal("rang again during the cooldown")
 	}
 	clk.add(ringCooldown + time.Second)
@@ -356,8 +356,8 @@ func TestRingLifecycle(t *testing.T) {
 	// Unanswered: stops after 30 s.
 	h.rosters[20] = nil
 	startHuddle(m, h, 20, 2)
-	m.Update(ringMsg{gen: m.nt.ring.gen})
-	if m.nt.ring.ch != 0 {
+	m.Update(ringMsg{gen: m.al.Ring.Gen})
+	if m.al.Ring.Ch != 0 {
 		t.Fatal("ring didn't time out")
 	}
 	clk.add(ringCooldown + time.Second)
@@ -368,7 +368,7 @@ func TestRingLifecycle(t *testing.T) {
 	h.rosters[20] = nil
 	before = len(notes(m).sent())
 	startHuddle(m, h, 20, 2)
-	if len(notes(m).sent()) != before || m.nt.ring.ch != 0 {
+	if len(notes(m).sent()) != before || m.al.Ring.Ch != 0 {
 		t.Fatal("rang during DND")
 	}
 	runInput(t, m, "/dnd off")
@@ -387,7 +387,7 @@ func TestRingLifecycle(t *testing.T) {
 	runInput(t, m, "/notify default")
 	h.rosters[20] = nil
 	startHuddle(m, h, 20, 2)
-	if m.nt.ring.ch != 0 {
+	if m.al.Ring.Ch != 0 {
 		t.Fatal("rang in the open DM")
 	}
 }
@@ -451,7 +451,7 @@ func TestRingFlapAndFakeCaller(t *testing.T) {
 	}
 	clk.add(time.Hour)
 	startHuddle(m, h, 20, 3) // carol isn't in the DM with bob
-	if n := len(notes(m).sent()); n != 1 || m.nt.ring.ch != 0 {
+	if n := len(notes(m).sent()); n != 1 || m.al.Ring.Ch != 0 {
 		t.Fatalf("a non-member's start rang (%d)", n)
 	}
 }
@@ -468,11 +468,11 @@ func TestEscMicBeforeRing(t *testing.T) {
 		t.Fatalf("ring or mic hidden:\n%s", v)
 	}
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if h.Talking() || m.nt.ring.ch == 0 {
-		t.Fatalf("first Esc: talking=%v ring=%d", h.Talking(), m.nt.ring.ch)
+	if h.Talking() || m.al.Ring.Ch == 0 {
+		t.Fatalf("first Esc: talking=%v ring=%d", h.Talking(), m.al.Ring.Ch)
 	}
 	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if m.nt.ring.ch != 0 {
+	if m.al.Ring.Ch != 0 {
 		t.Fatal("second Esc didn't dismiss the ring")
 	}
 	runInput(t, m, "/notify off for")
@@ -480,7 +480,7 @@ func TestEscMicBeforeRing(t *testing.T) {
 		t.Fatalf("'/notify off for' muted forever (notice %q)", m.notice)
 	}
 	runInput(t, m, "/sounds OFF")
-	if m.noticeErr || !m.nt.prefs.SoundOff {
+	if m.noticeErr || !m.al.Prefs.SoundOff {
 		t.Fatalf("/sounds OFF: %q", m.notice)
 	}
 	// /dnd stops a ring that's going.
@@ -491,11 +491,11 @@ func TestEscMicBeforeRing(t *testing.T) {
 	h.rosters[20] = nil
 	h.hmu.Unlock()
 	startHuddle(m, h, 20, 2)
-	if m.nt.ring.ch == 0 {
+	if m.al.Ring.Ch == 0 {
 		t.Fatal("no ring")
 	}
 	runInput(t, m, "/dnd 1h")
-	if m.nt.ring.ch != 0 {
+	if m.al.Ring.Ch != 0 {
 		t.Fatal("ring survived /dnd")
 	}
 }

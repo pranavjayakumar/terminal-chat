@@ -181,7 +181,7 @@ func (m *Model) huddleEndedText(why error) string {
 		return "♪ " + where + " moved to your other device"
 	}
 	s := "♪ " + where + " ended: " + why.Error()
-	if m.status.State == client.Online && m.hud.last == m.active && m.nt.ring.ch == 0 {
+	if m.status.State == client.Online && m.hud.last == m.active && m.al.Ring.Ch == 0 {
 		s += " · /huddle to rejoin"
 	}
 	return s
@@ -260,8 +260,8 @@ func (m *Model) huddleCommand(c command) (tea.Cmd, bool, error) {
 		return nil, true, nil
 	}
 	ch := m.active
-	if m.nt.ring.ch != 0 { // answering a ring
-		ch = m.nt.ring.ch
+	if m.al.Ring.Ch != 0 { // answering a ring
+		ch = m.al.Ring.Ch
 	}
 	if ch == 0 {
 		return nil, true, errors.New("no channel open")
@@ -283,8 +283,8 @@ func (m *Model) huddleCommand(c command) (tea.Cmd, bool, error) {
 	if in {
 		prev = cur
 	}
-	if ch == m.nt.ring.ch {
-		m.nt.answering = true
+	if ch == m.al.Ring.Ch {
+		m.nt.answering = m.al.Ring.Gen
 	}
 	return m.callThen("huddle", func(ctx context.Context) (tea.Msg, error) {
 		return huddleJoinMsg{ch, prev}, hb.JoinHuddle(ctx, ch)
