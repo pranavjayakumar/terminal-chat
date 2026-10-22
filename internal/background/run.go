@@ -35,7 +35,10 @@ type Config struct {
 	// Poll is how often to re-check config.json while not logged in or
 	// stopped, a held run lock and Exe (default 30 s).
 	Poll time.Duration
-	Now  func() time.Time
+	// UIPoll is how often to look for a chat window opening or closing
+	// (default 1 s; one non-blocking flock each time).
+	UIPoll time.Duration
+	Now    func() time.Time
 }
 
 // ErrBinaryChanged: the tc binary was replaced; exit so the new one starts.
@@ -74,6 +77,9 @@ func OSSender() (*notify.Notifier, error) {
 func Run(ctx context.Context, cfg Config) error {
 	if cfg.Poll <= 0 {
 		cfg.Poll = 30 * time.Second
+	}
+	if cfg.UIPoll <= 0 {
+		cfg.UIPoll = time.Second
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -117,7 +123,10 @@ func Run(ctx context.Context, cfg Config) error {
 	}()
 	cfg.Log.Info("started", "version", cfg.Version, "pid", os.Getpid())
 	for {
-		err := r.session(ctx)
+		err := r.waitUIClosed(ctx)
+		if err == nil {
+			err = r.session(ctx)
+		}
 		if ctx.Err() != nil {
 			cfg.Log.Info("stopping")
 			return nil
@@ -126,6 +135,9 @@ func Run(ctx context.Context, cfg Config) error {
 			cfg.Log.Info("binary changed: exiting so the new one starts")
 			return err
 		}
+		if errors.Is(err, errUIOpened) {
+			continue
+		}
 		r.setErr("waiting", err)
 		cfg.Log.Warn("waiting for a login change", "err", sanitize.Line(err.Error()))
 		if err := r.waitConfig(ctx); err != nil {
@@ -133,6 +145,41 @@ func Run(ctx context.Context, cfg Config) error {
 				return err
 			}
 			return nil
+		}
+	}
+}
+
+// errUIOpened: a chat window opened, so the session was closed.
+var errUIOpened = errors.New("tc is open")
+
+// waitUIClosed returns once no chat window is open. While one is, the
+// notifier holds no connection at all: the window does the notifying, and
+// two processes on one cache would race to open waiting encrypted messages
+// (whoever opens one first is the one that reports it as new).
+func (r *runner) waitUIClosed(ctx context.Context) error {
+	if !r.probe.Open() {
+		return nil
+	}
+	r.setErr("paused", nil)
+	r.cfg.Log.Info("tc is open: paused")
+	t := time.NewTicker(r.cfg.UIPoll)
+	defer t.Stop()
+	check := time.Now()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+			if !r.probe.Open() {
+				r.cfg.Log.Info("tc closed: resuming")
+				return nil
+			}
+			if time.Since(check) >= r.cfg.Poll {
+				check = time.Now()
+				if r.binaryChanged() {
+					return ErrBinaryChanged
+				}
+			}
 		}
 	}
 }
@@ -206,6 +253,8 @@ func (r *runner) session(ctx context.Context) error {
 	}
 	tick := time.NewTicker(r.cfg.Poll)
 	defer tick.Stop()
+	uiTick := time.NewTicker(r.cfg.UIPoll)
+	defer uiTick.Stop()
 	var last client.Status
 	for {
 		select {
@@ -228,6 +277,10 @@ func (r *runner) session(ctx context.Context) error {
 		case <-tick.C:
 			if r.binaryChanged() {
 				return ErrBinaryChanged
+			}
+		case <-uiTick.C:
+			if r.probe.Open() {
+				return errUIOpened
 			}
 		}
 	}

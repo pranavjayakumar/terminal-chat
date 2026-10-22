@@ -502,8 +502,10 @@ and are not listed; they appear in the log as usual. Rows are kept for the newes
     changes unread state.
   - **No double popups**: every chat window holds a shared `flock` on `TC_HOME/ui.lock` for its
     lifetime (the OS drops it on exit or crash). The notifier probes it (exclusive, non-blocking)
-    before handling anything and again right before each popup; while it's held it drops what
-    was pending. The next message after the window closes notifies.
+    before handling anything and again right before each popup, and once a second: while it's
+    held the notifier drops what was pending and closes its connection (status `paused`), so the
+    window alone talks to the server and the cache. When the last window closes it reconnects
+    within a second and syncs; what arrived after the window's last sync notifies.
   - One notifier per `TC_HOME` (`background.lock`, exclusive; a second instance waits). It
     writes `background.json` (state, transport, last error, count of popups; never text) for
     `status`, and logs state changes to `background.log` (rotated at 1 MiB). Not logged in, or

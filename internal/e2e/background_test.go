@@ -104,18 +104,40 @@ func TestBackgroundNotifier(t *testing.T) {
 		t.Fatalf("%d notifications for one DM", n)
 	}
 
-	// A chat window opens: quiet.
+	// A chat window opens: the notifier lets go of its connection, the
+	// window's client gets the DM.
 	release, err := background.HoldUI(bobHome)
 	if err != nil {
 		t.Fatal(err)
 	}
+	eventually(t, "background pauses", func() bool {
+		st, err := background.ReadStatus(bobHome)
+		return err == nil && st.State == "paused"
+	})
+	win, err := client.Open(bobHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wctx, wcancel := context.WithCancel(context.Background())
+	go win.Run(wctx)
 	send("while tc is open")
-	time.Sleep(2 * time.Second)
+	eventually(t, "the window gets it", func() bool {
+		for _, m := range win.Messages(dm.ID, 50) {
+			if m.Body == "while tc is open" {
+				return true
+			}
+		}
+		return false
+	})
+	time.Sleep(1500 * time.Millisecond)
 	if n := len(out.get()); n != 1 {
 		t.Fatalf("%d notifications with tc open", n)
 	}
-	// It closes: the next DM notifies at once.
+	// It closes: the notifier reconnects and the next DM notifies.
+	wcancel()
+	win.Close()
 	release()
+	eventually(t, "background resumes", online)
 	send("after tc closed")
 	eventually(t, "notified after the window closed", func() bool { return len(out.get()) == 2 })
 	if n := out.get()[1]; n.Body != "after tc closed" {

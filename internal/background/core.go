@@ -142,8 +142,7 @@ func (c *Core) Handle(u client.Update) []alert.Timer {
 		return nil
 	}
 	if c.uiOpen() {
-		clear(c.Eng.Notes)
-		c.Eng.StopRing(false)
+		c.quiet()
 		return nil
 	}
 	c.refresh()
@@ -153,9 +152,19 @@ func (c *Core) Handle(u client.Update) []alert.Timer {
 	return ts
 }
 
+// quiet forgets pending windows and the ring: the chat window has them.
+func (c *Core) quiet() {
+	clear(c.Eng.Notes)
+	c.Eng.StopRing(false)
+}
+
 // Fire runs a timer the engine asked for.
 func (c *Core) Fire(t alert.Timer) []alert.Timer {
 	if c.uiOpen() {
+		// Drop the window or ring this timer belonged to: left open with
+		// its timer gone, it would swallow the channel's next messages
+		// (or keep "ringing" forever).
+		c.quiet()
 		return nil
 	}
 	c.refresh()
