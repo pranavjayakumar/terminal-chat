@@ -180,3 +180,71 @@ func TestBackgroundNotifier(t *testing.T) {
 		t.Fatalf("server's read marker moved: %d unread, read %d", n, r)
 	}
 }
+
+// A chat window that opens while a channel's notification window is still
+// pending (the user clicked the popup and opened tc) must not leave that
+// window open with its timer gone: after tc closes again, the next DM in
+// that channel must still notify.
+func TestBackgroundPauseMidWindow(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	dir := t.TempDir()
+	s, addr := startServer(t, dir, "127.0.0.1:0")
+	alice := login(t, s, addr, "alice", true)
+	bob := login(t, s, addr, "bob", false)
+	eventually(t, "both online", func() bool { return alice.online() && bob.online() })
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	dm, err := alice.OpenDM(ctx, []uint64{bob.Me().ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := alice.Send(dm.ID, "warm up", 0); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "bob decrypts the warm-up", func() bool { return bob.has(dm.ID, "warm up") })
+	bobHome := bob.home
+	bob.cancel()
+	bob.Close()
+
+	out := &noteLog{}
+	rctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- background.Run(rctx, background.Config{Home: bobHome, Version: "test", Out: out,
+			Poll: 200 * time.Millisecond, UIPoll: 50 * time.Millisecond})
+	}()
+	defer func() {
+		stop()
+		if err := <-done; err != nil {
+			t.Errorf("Run: %v", err)
+		}
+	}()
+	state := func(want string) func() bool {
+		return func() bool {
+			st, err := background.ReadStatus(bobHome)
+			return err == nil && st.State == want
+		}
+	}
+	eventually(t, "background online", state("online"))
+	send := func(body string) {
+		t.Helper()
+		if err := alice.Send(dm.ID, body, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send("first")
+	eventually(t, "first notification", func() bool { return len(out.get()) == 1 })
+
+	// tc opens inside the DM's 5 s window, and closes again.
+	release, err := background.HoldUI(bobHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "background pauses", state("paused"))
+	release()
+	eventually(t, "background resumes", state("online"))
+	time.Sleep(alert.MentionWindow + alert.Every)
+
+	send("second")
+	eventually(t, "notified after tc closed", func() bool { return len(out.get()) == 2 })
+}
