@@ -31,7 +31,7 @@ func newInput(st *styles) textarea.Model {
 	styleInput(&ta, st)
 	// Enter sends; these insert a newline.
 	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys(kAltEnter, kCtrlJ))
-	// Ctrl-K/Ctrl-N/Ctrl-P are ours.
+	// Ctrl-K (the palette's fallback), Ctrl-N and Ctrl-P are ours.
 	ta.KeyMap.DeleteAfterCursor = key.NewBinding(key.WithDisabled())
 	ta.KeyMap.LineNext = key.NewBinding(key.WithKeys(kDown))
 	ta.KeyMap.LinePrevious = key.NewBinding(key.WithKeys(kUp))
@@ -46,6 +46,14 @@ func styleInput(ta *textarea.Model, st *styles) {
 		LineNumber: st.base, Placeholder: st.placeholder, Prompt: st.base, Text: st.base,
 	}
 	ta.FocusedStyle, ta.BlurredStyle = plain, plain
+	// The textarea draws through a pointer to one of these, taken by its
+	// last Focus/Blur, maybe on a copy since replaced: point it here again
+	// or a theme switch leaves the old theme's text color.
+	if ta.Focused() {
+		ta.Focus()
+	} else {
+		ta.Blur()
+	}
 	ta.Cursor.Style = st.prompt.UnsetBold()
 	ta.Cursor.TextStyle = st.base
 }
@@ -169,7 +177,7 @@ func (m *Model) selectFooter() string {
 		keys = append(keys, "v view", "y copy")
 	}
 	full := strings.Join(keys, " · ") + " · Esc"
-	if strWidth(full) < m.dims().mainW-1 {
+	if strWidth(full) < m.dims().inputW {
 		return full
 	}
 	// Narrow: just the key letters, Esc last so leaving is always visible.
@@ -189,7 +197,7 @@ func (m *Model) updatePlaceholder() {
 	case m.active != 0:
 		m.input.Placeholder = "message " + m.chanTitle(m.active)
 	default:
-		m.input.Placeholder = "Ctrl-K to open a channel"
+		m.input.Placeholder = "⌥K to open a channel"
 	}
 }
 
@@ -200,6 +208,16 @@ func (m *Model) submit() tea.Cmd {
 		return nil
 	}
 	body := strings.TrimRight(v, " \t\n")
+	if !strings.HasPrefix(v, "/") || strings.HasPrefix(v, "//") || m.editing != 0 {
+		keep, changed := "", false
+		if m.editing != 0 {
+			keep = m.editOrig
+		}
+		body = expandShortcodes(body, keep, func(e string) { changed = m.countEmoji(e) || changed })
+		if changed {
+			m.savePrefs() // once, however many shortcodes the message had
+		}
+	}
 	if m.editing != 0 {
 		id := m.editing
 		m.cancelEdit()
@@ -219,7 +237,7 @@ func (m *Model) submit() tea.Cmd {
 	}
 	p := m.focus()
 	if !p.open() {
-		m.setInfo("no channel open — Ctrl-K to pick one")
+		m.setInfo("no channel open — ⌥K to pick one")
 		return nil
 	}
 	if v, _ := m.chanView(p.ch); v.Removed {
@@ -665,32 +683,4 @@ func (m *Model) openDM(users []uint64) tea.Cmd {
 		ch, err := be.OpenDM(ctx, users)
 		return openChanMsg{ch.ID}, err
 	})
-}
-
-// ---- reactions ----
-
-var emojiNames = map[string]string{
-	"+1": "👍", "thumbsup": "👍", "-1": "👎", "thumbsdown": "👎",
-	"tada": "🎉", "heart": "❤️", "smile": "😄", "joy": "😂", "laughing": "😆",
-	"eyes": "👀", "rocket": "🚀", "fire": "🔥", "check": "✅", "white_check_mark": "✅",
-	"thinking": "🤔", "pray": "🙏", "100": "💯", "ok": "👌", "ok_hand": "👌",
-	"wave": "👋", "clap": "👏", "sob": "😭", "x": "❌", "warning": "⚠️",
-}
-
-// resolveEmoji turns "+1", ":tada:" or a literal emoji into the emoji to
-// send.
-func resolveEmoji(s string) (string, bool) {
-	s = strings.TrimSpace(s)
-	if e, ok := emojiNames[strings.ToLower(strings.Trim(s, ":"))]; ok {
-		return e, true
-	}
-	if s == "" || strings.ContainsAny(s, " \t\n") || sanitize.Line(s) != s || strWidth(s) > 4 || len(s) > 32 {
-		return "", false
-	}
-	for _, r := range s {
-		if r < 0x80 {
-			return "", false
-		}
-	}
-	return s, true
 }

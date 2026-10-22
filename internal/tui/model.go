@@ -28,7 +28,7 @@ const (
 	modeHelp
 	modeSearch
 	modeConfirmDelete
-	modeReact
+	modeEmoji // emojipick.go
 	modePanePick
 	modeSharePreview
 	modeActivity
@@ -95,11 +95,12 @@ type Model struct {
 	// on screen.
 	afterSecret []tea.Msg
 
-	input   textarea.Model
-	line    textinput.Model // switcher query and react prompt
-	mode    mode
-	editing uint64 // message id whose edit is in the input
-	target  client.Message
+	input    textarea.Model
+	line     textinput.Model // the palette's query
+	mode     mode
+	editing  uint64 // message id whose edit is in the input
+	editOrig string // that message's text when the edit began
+	target   client.Message
 
 	notice       string
 	noticeErr    bool
@@ -111,7 +112,9 @@ type Model struct {
 	noticeCh     uint64        // nonzero: the notice is about this channel only
 	escAt        time.Time     // first Esc on a non-empty draft
 	helpScroll   int
+	helpBack     bool // the keys sheet was opened from Settings: closing goes back there
 	view         viewer
+	emo          emojiPicker
 
 	sw     switcher
 	search searchState
@@ -553,7 +556,8 @@ func (m *Model) openChannel(ch uint64) tea.Cmd {
 	m.seen(ch)
 	m.main = pane{ch: ch, sel: -1}
 	m.closeThread()
-	if m.mode == modeSelect || m.mode == modeConfirmDelete || m.mode == modeReact {
+	m.closePicker(false)
+	if m.mode == modeSelect || m.mode == modeConfirmDelete {
 		m.mode = modeNormal
 	}
 	m.cancelEdit()
@@ -1265,8 +1269,8 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 			return m.call("delete", func(ctx context.Context) error { return m.c.Delete(ctx, id) })
 		}
 		return nil
-	case modeReact:
-		return m.reactKey(k)
+	case modeEmoji:
+		return m.emojiKey(k)
 	case modePanePick:
 		return m.panePickKey(key)
 	case modeSharePreview:
@@ -1293,11 +1297,14 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 	switch {
 	case key == kTab && m.tabComplete():
 		return nil
-	case key == kSwitcher:
+	case isSwitcher(key):
 		m.openSwitcher()
 		return nil
 	case key == kActivity:
 		m.openActivity()
+		return nil
+	case key == kEmoji:
+		m.openPicker(false)
 		return nil
 	case key == kSidebar || key == kSidebarAlt:
 		m.cycleSidebar()
@@ -1548,6 +1555,7 @@ func (m *Model) selectByPage(p *pane, dir int) {
 // ---- help ----
 
 func (m *Model) openHelp() {
+	m.helpBack = m.mode == modeSettings
 	m.leaveSelect()
 	m.mode = modeHelp
 	m.helpScroll = 0
@@ -1560,6 +1568,9 @@ func (m *Model) helpKey(key string) {
 	switch key {
 	case kEsc, kHelp, kHelpAlt, "q", kEnter:
 		m.mode = modeNormal
+		if m.helpBack {
+			m.mode = modeSettings
+		}
 	case kUp, "k":
 		m.helpScroll--
 	case kDown, "j":
@@ -1638,7 +1649,8 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 		// in its slot; cancelEdit puts it back.
 		m.setDraft(m.dk, m.input.Value())
 		m.editing = sel.ID
-		m.input.SetValue(sanitize.Text(sel.Body))
+		m.editOrig = sanitize.Text(sel.Body)
+		m.input.SetValue(m.editOrig)
 		m.layoutInput()
 		m.setHint("editing — Enter to save, Esc to cancel")
 		return nil, true
@@ -1675,16 +1687,8 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 		cmd := m.openThread(root)
 		m.layoutInput()
 		return cmd, true
-	case kSelReact:
-		if sel.ID == 0 || sel.Deleted {
-			return nil, true
-		}
-		m.target = sel
-		m.mode = modeReact
-		m.line.Reset()
-		m.line.Prompt = "react: "
-		m.line.Placeholder = "+1, :tada:, or an emoji"
-		m.line.Focus()
+	case kSelReact, kEmoji:
+		m.openPicker(true)
 		return nil, true
 	case kSelCopy:
 		return m.copyCmd(sanitize.Text(sel.Body)), true
@@ -1706,39 +1710,13 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 	return nil, false
 }
 
-func (m *Model) reactKey(k tea.KeyMsg) tea.Cmd {
-	switch keyName(k) {
-	case kEsc:
-		m.mode = modeSelect
-		return nil
-	case kEnter:
-		m.mode = modeSelect
-		emoji, ok := resolveEmoji(m.line.Value())
-		if !ok {
-			m.setErr("", fmt.Errorf("unknown emoji %q", m.line.Value()))
-			return nil
-		}
-		id := m.target.ID
-		mine := slices.Contains(m.target.Reactions[emoji], m.me.ID)
-		return m.call("react", func(ctx context.Context) error {
-			if mine {
-				return m.c.Unreact(ctx, id, emoji)
-			}
-			return m.c.React(ctx, id, emoji)
-		})
-	}
-	var cmd tea.Cmd
-	m.line, cmd = m.line.Update(k)
-	return cmd
-}
-
 // cancelEdit ends an edit: its text leaves the input and the draft that was
 // there when the edit began (held in m.drafts meanwhile) comes back.
 func (m *Model) cancelEdit() {
 	if m.editing == 0 {
 		return
 	}
-	m.editing = 0
+	m.editing, m.editOrig = 0, ""
 	m.input.SetValue(m.drafts[m.dk])
 	m.hideComp()
 	m.layoutInput()

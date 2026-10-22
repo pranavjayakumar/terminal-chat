@@ -524,6 +524,11 @@ func (c *canvas) encode(e *encoder) string {
 				cur, first = k, false
 			}
 			b.WriteString(cl.s)
+			if next := x + int(cl.w); next < c.w && strings.ContainsRune(cl.s, 0xFE0F) {
+				// Some terminals advance one column for a base plus VS16;
+				// put the cursor where the next cell starts either way.
+				b.WriteString("\x1b[" + strconv.Itoa(next+1) + "G")
+			}
 		}
 		b.WriteString("\x1b[0m")
 	}

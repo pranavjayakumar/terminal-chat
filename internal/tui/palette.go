@@ -8,7 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// The command palette (Ctrl-K): the quick switcher's fuzzy jump list plus
+// The command palette (Option-K): the quick switcher's fuzzy jump list plus
 // commands and settings, in tabs. Every command row runs an existing slash
 // command or opens an existing view.
 
@@ -24,6 +24,7 @@ type palItem struct {
 	meta   string
 	icon   string
 	iconFg rgb
+	iconBg rgb // a swatch: drawn on its own background, selected or not
 	fg     rgb
 	sw     *switchItem
 	run    string // "/cmd args" to run, "/cmd " to type, or an app action
@@ -48,6 +49,7 @@ func (m *Model) palCommands() []palItem {
 		{group: "Commands", label: "Change theme…", icon: "◐", run: "app:themes", tabs: "am"},
 		{group: "Messages", label: "Activity", desc: "mentions, replies, reactions, DMs", meta: "⌥A", icon: "@", run: "/activity", tabs: "m"},
 		{group: "Messages", label: "Search", meta: "/search", icon: "⌕", run: "/search ", tabs: "m"},
+		{group: "Messages", label: "Insert emoji", desc: "picker; + reacts in select mode, :name completes", meta: "⌥E", icon: "☺", run: "app:emoji", tabs: "m"},
 		{group: "Messages", label: "Pinned messages", meta: "/pins", icon: "¶", run: "/pins", tabs: "m"},
 		{group: "Messages", label: "Remind me", meta: "/remind", icon: "⏰", run: "/remind ", tabs: "m"},
 		{group: "You", label: "Set away", meta: "/away", icon: "◑", run: "/away", tabs: "m"},
@@ -90,9 +92,14 @@ func (m *Model) palSettings() []palItem {
 		anim = "Animations: off"
 	}
 	out = append(out, palItem{group: "Settings", label: anim, desc: "fades, pops, slides", icon: "✦", run: "app:motion", tabs: "s"})
+	layout := "Messages: left"
+	if m.ui.Split {
+		layout = "Messages: split"
+	}
+	out = append(out, palItem{group: "Settings", label: layout, desc: "everyone on the left, or yours on the right", icon: "≡", run: "app:split", tabs: "s"})
 	for _, id := range themeOrder {
 		t := themes[id]
-		it := palItem{group: "Theme", label: id, desc: t.desc, icon: "■", iconFg: t.accent, run: "theme:" + id, tabs: "as"}
+		it := palItem{group: "Theme", label: id, desc: t.desc, icon: "■", iconFg: t.accent, iconBg: t.bg, run: "theme:" + id, tabs: "as"}
 		if t == m.st.th {
 			it.meta = "✓ current"
 		}
@@ -130,9 +137,9 @@ func (m *Model) palItems() []palItem {
 		}
 		switch {
 		case s.mention:
-			it.meta = "@" + strconv.Itoa(max(s.unread, 1))
+			it.meta = "@" + unreadCount(max(s.unread, 1))
 		case s.unread > 0:
-			it.meta = strconv.Itoa(s.unread) + " new"
+			it.meta = unreadCount(s.unread) + " new"
 		}
 		out = append(out, it)
 	}
@@ -162,7 +169,7 @@ func (m *Model) openPalette(tab string) {
 	m.filterPalette()
 }
 
-// openSwitcher is Ctrl-K: the palette on its All tab.
+// openSwitcher is Option-K: the palette on its All tab.
 func (m *Model) openSwitcher() { m.openPalette("all") }
 
 func (m *Model) filterPalette() {
@@ -231,7 +238,7 @@ func (m *Model) filterPalette() {
 func (m *Model) switcherKey(k tea.KeyMsg) tea.Cmd {
 	p := &m.pal
 	switch keyName(k) {
-	case kEsc, kSwitcher:
+	case kEsc, kSwitcher, "ctrl+k":
 		m.mode = modeNormal
 		return nil
 	case kUp, "ctrl+p":
@@ -300,6 +307,13 @@ func (m *Model) palRun(it palItem) tea.Cmd {
 			}
 		}
 		return nil
+	case run == "app:split":
+		m.setSplit(!m.ui.Split)
+		m.pal.items = m.palItems()
+		sel := m.pal.sel
+		m.filterPalette()
+		m.pal.sel = sel
+		return nil
 	case run == "app:motion":
 		m.setMotion(m.fx.off)
 		m.pal.items = m.palItems()
@@ -323,6 +337,8 @@ func (m *Model) appAction(run string) tea.Cmd {
 		m.openHelp()
 	case run == "app:sidebar":
 		m.cycleSidebar()
+	case run == "app:emoji":
+		m.openPicker(false)
 	case run == "app:closethread":
 		m.closeThread()
 		m.layoutInput()
@@ -468,7 +484,11 @@ func (m *Model) palRow(c *canvas, x, y, w, i int) {
 		if ic == 0 {
 			ic = th.dim
 		}
-		c.put(e, y, it.icon, pick(ic), act)
+		st := pick(ic)
+		if it.iconBg != 0 {
+			st = fgc(ic).on(it.iconBg)
+		}
+		c.put(e, y, it.icon, st, act)
 		e += 3
 	}
 	fg := it.fg

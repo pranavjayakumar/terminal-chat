@@ -28,6 +28,7 @@ type blockKey struct {
 	renderKey
 	th      *theme
 	left    bool // thread pane: everyone on the left
+	split   bool // Settings › Messages: Split (ours on the right)
 	tail    bool // last of its group: ours shows time and status
 	concern concern
 }
@@ -60,6 +61,7 @@ func (c *blockCache) get(k blockKey, draw func() *canvas) *canvas {
 const (
 	maxBlockRows = 120
 	maxCodeRows  = 40
+	footerRows   = 3    // reaction rows under one message
 	maxBlocks    = 1500 // cached blocks: a few screens' worth across channels
 )
 
@@ -121,15 +123,22 @@ func (m *Model) msgBlock(x client.Message, cw int, header, tail, left bool) *can
 
 // msgBlockFrom is msgBlock, first looking in prev (a pane's last layout).
 func (m *Model) msgBlockFrom(prev map[blockKey]*canvas, x client.Message, cw int, header, tail, left bool) *canvas {
-	mine := x.Author == m.me.ID && !left
-	k := blockKey{renderKey: keyFor(x, cw, header), th: m.st.th, left: left, tail: tail, concern: m.concernOf(x)}
+	own := x.Author == m.me.ID
+	mine := own && !left && m.ui.Split // drawn on the right
+	k := m.blockKeyOf(x, cw, header, tail, left)
 	if b, ok := prev[k]; ok {
 		return b
 	}
-	return m.blocks.get(k, func() *canvas { return m.drawBlock(x, cw, header, tail, mine, k.concern) })
+	return m.blocks.get(k, func() *canvas { return m.drawBlock(x, cw, header, tail, mine, own, k.concern) })
 }
 
-func (m *Model) drawBlock(x client.Message, cw int, header, tail, mine bool, cc concern) *canvas {
+func (m *Model) blockKeyOf(x client.Message, cw int, header, tail, left bool) blockKey {
+	return blockKey{renderKey: keyFor(x, cw, header), th: m.st.th, left: left, split: m.ui.Split, tail: tail, concern: m.concernOf(x)}
+}
+
+// drawBlock draws one message. mine: ours on the right (split layout);
+// own: ours, wherever it goes.
+func (m *Model) drawBlock(x client.Message, cw int, header, tail, mine, own bool, cc concern) *canvas {
 	th := m.st.th
 	g := newGrower(cw, th)
 	c := func() *canvas { return g.c }
@@ -154,8 +163,10 @@ func (m *Model) drawBlock(x client.Message, cw int, header, tail, mine bool, cc 
 		if m.users[x.Author].Bot {
 			e = c().put(e, y, botTag, fgc(th.faint), "")
 		}
-		ts := time.UnixMilli(x.ShownTime()).Local().Format("15:04")
-		c().put(e+2, y, ts, fgc(th.faint), "")
+		if !own { // ours shows its time and status under the text
+			ts := time.UnixMilli(x.ShownTime()).Local().Format("15:04")
+			c().put(e+2, y, ts, fgc(th.faint), "")
+		}
 		first = 1
 	}
 	line := func(text string, st cstyle) {
@@ -202,7 +213,7 @@ func (m *Model) drawBlock(x client.Message, cw int, header, tail, mine bool, cc 
 		}
 	}
 	barEnd := g.n
-	if mine && (tail || x.Pending || x.Failed != "") && x.Failed == "" {
+	if own && (tail || x.Pending) && x.Failed == "" {
 		y := g.row()
 		st := "✓"
 		if x.Pending {
@@ -210,13 +221,16 @@ func (m *Model) drawBlock(x client.Message, cw int, header, tail, mine bool, cc 
 		}
 		meta := time.UnixMilli(x.ShownTime()).Local().Format("15:04") + " " + st
 		c().put(at(strWidth(meta)), y, meta, fgc(th.faint), "")
+		if !mine {
+			barEnd = g.n // on the left the bar runs down to it
+		}
 	}
 	if g.n == first {
 		g.row()
 		barEnd = g.n
 	}
 	out := g.done()
-	bar := mix(th.bg, th.nick(x.Author), 0.55)
+	bar := mix(th.bg, th.nick(x.Author), 0.9)
 	bx, glyph := 0, "│"
 	switch {
 	case mine:
@@ -375,7 +389,8 @@ func (m *Model) drawCode(g *grower, sg seg, bw int, at func(int) int, pending bo
 	}
 }
 
-// drawFooter draws reaction pills and the reply count on one row.
+// drawFooter draws reaction pills and the reply count, wrapping onto at
+// most footerRows rows.
 func (m *Model) drawFooter(g *grower, x client.Message, cw, bw int, mine bool) {
 	th := m.st.th
 	type part struct {
@@ -404,6 +419,9 @@ func (m *Model) drawFooter(g *grower, x client.Message, cw, bw int, mine bool) {
 		}
 		parts = append(parts, part{" " + sanitize.Line(k) + " " + strconv.Itoa(len(us)) + " ", st, "react|" + k, true})
 	}
+	if len(parts) > 0 && x.ID != 0 && !x.Deleted {
+		parts = append(parts, part{" ☺+ ", fgc(th.dim).on(th.element), "addreact|", true})
+	}
 	var tail []part
 	if x.Replies > 0 {
 		tail = append(tail, part{fmt.Sprintf("↳ %d %s", x.Replies, plural(x.Replies, "reply", "replies")), fgc(th.info), "thread|", false})
@@ -422,30 +440,78 @@ func (m *Model) drawFooter(g *grower, x client.Message, cw, bw int, mine bool) {
 	if len(parts) == 0 {
 		return
 	}
-	total := 0
-	for i, p := range parts {
-		total += strWidth(p.text)
+	width := func(p part) int {
 		if p.pill {
-			total += 2
+			return strWidth(p.text) + 2
 		}
-		if i > 0 {
-			total += 2
+		return strWidth(p.text)
+	}
+	// Parts that don't fit the row wrap onto the next, like Slack's.
+	room := max(bw, 1)
+	rows := func(ps []part) int {
+		n, total := 1, 0
+		for i, p := range ps {
+			add := width(p)
+			if i > 0 && total > 0 {
+				add += 2
+			}
+			if total > 0 && total+add > room {
+				n, total = n+1, width(p)
+				continue
+			}
+			total += add
+		}
+		return n
+	}
+	// Too many reactions: keep the reply count and ☺+, fold the rest into +N.
+	var react []int
+	for i, p := range parts {
+		if strings.HasPrefix(p.act, "react|") {
+			react = append(react, i)
 		}
 	}
-	xx := 2
-	if mine {
-		xx = max(cw-2-min(total, bw), 1)
+	for hidden := 1; len(react) > 0 && rows(parts) > footerRows && hidden <= len(react); hidden++ {
+		var kept []part
+		kept = append(kept, parts[:react[0]]...)
+		for _, i := range react[:len(react)-hidden] {
+			kept = append(kept, parts[i])
+		}
+		kept = append(kept, part{"+" + strconv.Itoa(hidden), fgc(th.faint), "", false})
+		kept = append(kept, parts[react[len(react)-1]+1:]...)
+		if rows(kept) <= footerRows || hidden == len(react) {
+			parts = kept
+			break
+		}
 	}
-	y := g.row()
-	for i, p := range parts {
-		if i > 0 {
-			xx += 2
+	for len(parts) > 0 {
+		n, total := 0, 0
+		for n < len(parts) {
+			add := width(parts[n])
+			if n > 0 {
+				add += 2
+			}
+			if n > 0 && total+add > room {
+				break
+			}
+			total += add
+			n++
 		}
-		if p.pill {
-			xx = g.c.pill(xx, y, p.text, p.st, p.act)
-		} else {
-			xx = g.c.put(xx, y, p.text, p.st, p.act)
+		xx := 2
+		if mine {
+			xx = max(cw-2-min(total, bw), 1)
 		}
+		y := g.row()
+		for i, p := range parts[:n] {
+			if i > 0 {
+				xx += 2
+			}
+			if p.pill {
+				xx = g.c.pill(xx, y, p.text, p.st, p.act)
+			} else {
+				xx = g.c.put(xx, y, p.text, p.st, p.act)
+			}
+		}
+		parts = parts[n:]
 	}
 }
 

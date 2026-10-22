@@ -11,10 +11,16 @@ import (
 
 const popupMaxW = 72
 
+// emojiPopupW is the ":" popup's width: an emoji and a shortcode need less.
+const emojiPopupW = 44
+
 // popupRect is the panel's box and how many items it lists. framed is
 // false when only bare rows fit (tiny terminals).
 func (m *Model) popupRect(g geo) (r rect, n int, framed bool) {
 	w := min(popupMaxW, g.inW, g.CW)
+	if m.comp.kind == ':' {
+		w = min(w, emojiPopupW)
+	}
 	bottom := g.inY - 1 // the blank row above the input
 	if !g.boxed {
 		bottom = g.inY
@@ -71,6 +77,7 @@ func (m *Model) drawPopup(c *canvas, g geo) {
 		r.y0++ // it rises into place over the blank row
 		r.y1++
 	}
+	m.floatGutter(c, g, r)
 	old := c.setClip(rect{r.x0, max(r.y0, 0), r.x1, r.y1})
 	defer c.setClip(old)
 	w := r.x1 - r.x0
@@ -79,12 +86,16 @@ func (m *Model) drawPopup(c *canvas, g geo) {
 	y := r.y0
 	if framed {
 		m.box(c, r.x0, r.y0, w, r.y1-r.y0, mix(th.bg, th.line, k), pbg)
-		kind := " " + map[byte]string{'/': "Commands", '@': "People", '#': "Channels"}[cp.kind] + " "
+		kind := " " + map[byte]string{'/': "Commands", '@': "People", '#': "Channels", ':': "Emoji"}[cp.kind] + " "
 		c.put(r.x0+2, y, kind, fgc(mix(pbg, th.dim, k)), "noop")
 		if count := " " + strconv.Itoa(cp.sel+1) + "/" + strconv.Itoa(len(cp.items)) + " "; w >= strWidth(kind)+strWidth(count)+6 {
 			c.put(r.x1-2-strWidth(count), y, count, fgc(th.faint), "noop")
 		}
-		if hint := " ↑↓ move · ⇥ complete · ⏎ run · esc "; w >= strWidth(hint)+4 {
+		hint := " ↑↓ move · ⇥ complete · ⏎ run · esc "
+		if cp.kind == ':' {
+			hint = " ↑↓ move · ⇥/⏎ insert · esc "
+		}
+		if w >= strWidth(hint)+4 {
 			c.put(r.x1-2-strWidth(hint), r.y1-1, hint, fgc(th.faint), "noop")
 		} else if short := " ↑↓ ⇥ ⏎ esc "; w >= strWidth(short)+4 {
 			c.put(r.x1-2-strWidth(short), r.y1-1, short, fgc(th.faint), "noop")
@@ -122,8 +133,16 @@ func (m *Model) drawPopup(c *canvas, g geo) {
 		if !framed {
 			x0 = r.x0 + 1
 		}
-		limit := r.x1 - 3 // room for the ↓ mark
+		limit := r.x1 - 3
+		if len(cp.items) > n {
+			limit-- // a gap before the ↑/↓ mark
+		}
 		cut := func(s string, from int) string { return truncate(s, max(limit-from, 0)) }
+		if cp.kind == ':' {
+			m.drawEmojiRow(c, it, act, on, x0, y, limit, pick)
+			y++
+			continue
+		}
 		c.put(x0, y, cut(it.text, x0), pick(th.fg, aBold), act)
 		switch {
 		case args > 0 && it.hint != "":
@@ -140,4 +159,69 @@ func (m *Model) drawPopup(c *canvas, g geo) {
 		}
 		y++
 	}
+}
+
+// floatGutter blanks the cell on each side of a floating panel, so text
+// under it never runs into its frame; a sliver too thin to read goes too.
+func (m *Model) floatGutter(c *canvas, g geo, r rect) {
+	lo, hi := g.CX, g.CX+g.CW
+	if g.split && r.x0 >= g.RX {
+		lo, hi = g.RX, m.w
+	}
+	y0 := max(r.y0, 0)
+	blank := func(x0, x1 int) {
+		for x := max(x0, g.L); x < min(x1, m.w); x++ {
+			bg := m.st.th.bg
+			if g.split && x >= g.RX {
+				bg = m.st.th.panel
+			}
+			c.fill(x, y0, 1, r.y1-y0, bg, "")
+		}
+	}
+	const sliver = 8
+	if r.x0-lo < sliver {
+		blank(lo, r.x0)
+	} else {
+		blank(r.x0-1, r.x0)
+	}
+	if hi-r.x1 < sliver {
+		blank(r.x1, hi)
+	} else {
+		blank(r.x1, r.x1+1)
+	}
+}
+
+// drawEmojiRow draws a ":" completion row: the emoji, then :shortcode:
+// with the typed letters in the accent, and "frequent" on the right.
+func (m *Model) drawEmojiRow(c *canvas, it compItem, act string, on bool, x, y, limit int, pick func(rgb, attr) cstyle) {
+	th := m.st.th
+	hit := aBold
+	if on {
+		hit |= aUnderline // the accent is the row's background here
+	}
+	if x+2 <= limit {
+		c.put(x, y, it.text, pick(th.fg, 0), act)
+	}
+	x += 4
+	right := limit
+	if it.desc != "" && limit-x >= strWidth(it.desc)+10 {
+		right = limit - strWidth(it.desc)
+		c.put(right, y, it.desc, pick(th.faint, 0), act)
+		right -= 2
+	}
+	name := ":" + it.name + ":"
+	if strWidth(name) > right-x {
+		c.put(x, y, truncate(name, max(right-x, 0)), pick(th.fg, 0), act)
+		return
+	}
+	q := len(m.comp.query)
+	x = c.put(x, y, ":", pick(th.faint, 0), act)
+	if it.at >= 0 && it.at+q <= len(it.name) {
+		x = c.put(x, y, it.name[:it.at], pick(th.fg, 0), act)
+		x = c.put(x, y, it.name[it.at:it.at+q], pick(th.accent, hit), act)
+		x = c.put(x, y, it.name[it.at+q:], pick(th.fg, 0), act)
+	} else {
+		x = c.put(x, y, it.name, pick(th.fg, 0), act)
+	}
+	c.put(x, y, ":", pick(th.faint, 0), act)
 }

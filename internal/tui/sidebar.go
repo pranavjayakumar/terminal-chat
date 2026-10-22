@@ -77,16 +77,14 @@ func (m *Model) sideEntry(v client.ChannelView) sideItem {
 	it.unread = v.Mention || (v.Unread > 0 && !it.muted)
 	switch {
 	case v.Mention:
-		n := max(v.Unread, 1)
-		it.badge, it.badgeFg = "@"+strconv.Itoa(n), th.accent
+		it.badge, it.badgeFg = "@"+unreadCount(max(v.Unread, 1)), th.accent
 		if t, ok := m.fx.pulse[v.ID]; ok && m.running(t, dPulse) {
-			it.badgeFg = mix(th.accent, 0xffffff, 0.5*absSin(m.progress(t, dPulse)*6))
+			// toward the text color: white would vanish on a light theme
+			it.badgeFg = mix(th.accent, th.fg, 0.5*absSin(m.progress(t, dPulse)*6))
 		}
 	case it.muted:
-	case v.Unread > 99:
-		it.badge, it.badgeFg = "99+", th.dim
 	case v.Unread > 0:
-		it.badge, it.badgeFg = strconv.Itoa(v.Unread), th.dim
+		it.badge, it.badgeFg = unreadCount(v.Unread), th.dim
 		if v.Kind == proto.ChanDM {
 			it.badgeFg = th.accent
 		}
@@ -130,7 +128,7 @@ func (m *Model) drawSidebar(c *canvas, g geo) {
 		c.put(sb/2-1, y, "⌕", fgc(th.dim), "palette:")
 	} else {
 		c.put(2, y, "⌕ Jump to…", fgc(th.dim), "palette:")
-		c.put(sb-4, y, "⌃K", fgc(th.faint), "palette:")
+		c.put(sb-4, y, "⌥K", fgc(th.faint), "palette:")
 	}
 	y += step
 	meY := g.statusY - 1 - boolInt(g.roomy)
@@ -274,11 +272,21 @@ func (m *Model) drawTips(c *canvas, g geo) {
 			t += "  " + it.badge
 		}
 		x := g.SB + 1
+		t = truncate(t, max(m.w-x-5, 1))
 		x = c.put(x, y, "▐", fgc(th.element), "")
 		x = c.put(x, y, " "+t+" ", fgc(th.fg).on(th.element), "")
-		c.put(x, y, "▌", fgc(th.element), "")
+		x = c.put(x, y, "▌", fgc(th.element), "")
+		c.fill(x, y, 1, 1, th.bg, "") // a gap before the text it floats over
 		return
 	}
+}
+
+// unreadCount is an unread badge's number, capped so it fits the column.
+func unreadCount(n int) string {
+	if n > 99 {
+		return "99+"
+	}
+	return strconv.Itoa(n)
 }
 
 func boolInt(b bool) int {

@@ -8,7 +8,7 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
 ```
  tc · 3 online          │        # general  team-wide chatter                       ⌕   ◉ 3
                         │        ▎ ♪ huddle 4:18  bob ▂▅▇▅  carol ▁▁▁▁            join
- ⌕ Jump to…        ⌃K   │
+ ⌕ Jump to…        ⌥K   │
                         │        │ bob  21:46
  Channels               │        │ yep, the api pod crashed around 02:14. pasting:
  # backend           3  │        │  panic.log                                  copy
@@ -21,7 +21,7 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
  ◐ dave away            │        carol is typing •··
                         │        ╭─ #general ───────────────────────────────── public ─╮
                         │        │ message #general                                    │
- ● alice online      ⚙  │        ╰────────────── ⌃K commands · ⌥⏎ newline · ⏎ send ─╯
+ ● alice online      ⚙  │        ╰────────────── ⌥K commands · ⌥⏎ newline · ⏎ send ─╯
  tc  #general                                      F1 keys · ◆ e2e · ● quic · ◐ graphite
 ```
 
@@ -35,9 +35,11 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
   connection (`● quic`/`● tcp`; the state when not online) and `◐ theme` (click: themes). No server name.
 - Header: channel name + topic (one line, truncated); `◉ N` members and `⌕` (palette) on the right. Status
   (Connecting/Offline/Reconnecting) shows in the sidebar title, dim, only when not Online.
-- Messages ("thin bar, split sides"): other people on the left, name (their muted color) and time over
-  the text, a thin `│` bar in their color; mine on the right against an accent bar, time and `◌`/`✓`
-  under them. Identity is the name only. Consecutive messages from the same author within 5 min omit
+- Messages: everyone on the left (Slack style), name in that person's color and time over the text, a
+  thin `│` bar in their color; mine the same in my color, with time and `◌`/`✓` under the text. Settings ›
+  Appearance › Messages: Split (or the palette's Settings tab) puts mine on the right against an accent
+  bar instead (`"split"` in `ui.json`). Each theme has eight name colors of clearly different hues.
+  Identity is the name only. Consecutive messages from the same author within 5 min omit
   the name row. Day dividers (`──── Today ────`). Cozy density leaves a blank row between groups; compact
   doesn't. A message draws at most 120 rows (code blocks 40) in the log; `v` shows all of it.
 - Pending (outbox) messages render dim; failed ones show `! failed — r to retry, d to discard`.
@@ -46,12 +48,16 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
   didn't sign (an admin, the server) reads `removed (not by author)`. `e` refuses messages that aren't
   verified (waiting, invalid, legacy or inserted plaintext).
 - Pinned messages end with a dim `📌` on their footer line; the header shows a dim `📌 N` when the channel has pins.
-- Reactions as pills on a row below: `▐ 👍 2 ▌` (yours in the accent); click one to toggle it.
+- Reactions as pills on a row below: `▐ 👍 2 ▌` (yours in the accent; up to 3 rows when they don't fit, the rest as `+N`); click one to toggle it. The row ends
+  with a `☺+` pill that opens the emoji picker for that message. Hovering a pill shows who reacted above it
+  (`you, bob and 3 others reacted with :tada:`; five names at most).
 - Thread roots show `↳ N replies`; threads open in a right pane (or full width below 100 cols).
-- An empty channel shows a dim `no messages yet — say hi · F1 help · Ctrl-K channels & people` (shorter when the message pane is under 64 or 26 columns; in my notes `your notes — only you see them; /remind lands here`) once a history fetch said it is empty.
+- An empty channel shows a dim `no messages yet — say hi · F1 help · ⌥K channels & people` (shorter when the message pane is under 64 or 26 columns; in my notes `your notes — only you see them; /remind lands here`) once a history fetch said it is empty.
 - Typing line above the input (`bob is typing •··`); nothing when nobody is typing. Errors, rings and
   lasting hints share that row; passing notices ("copied", "pinned") show as a toast pill there instead
-  (fades in and out, click dismisses). Notices raised while a dialog is open show over its bottom edge.
+  (fades in and out, click dismisses; on the right of the row while someone types or a ring shows, shortened
+  if need be; in a narrow pane it covers the typing line while it lasts, and only a ring or our huddle sends
+  it one row higher). Notices raised while a dialog is open show over its bottom edge.
 - Input: a rounded box (channel in the top edge, `public`/`private`/`◆ e2e` on its right, key hints in the
   bottom edge) that grows to max 6 lines; `Alt-Enter`/`Ctrl-J` inserts newline; `Enter` sends.
 - Huddle bar: one row under the header while a huddle runs in the open channel:
@@ -87,7 +93,7 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
 - 256-color terminals get each theme's surfaces on distinct grey steps; 16-color terminals keep their own
   background and mark selections in reverse. A selected message's bar becomes `▌`; a mention's bar is `┃`
   and a highlight word's `┇`, so they read without color too.
-- Mouse: click channels, messages (select), reactions, `↳ replies`, the hover toolbar (`☺ ↩ ⧉ ⋯`), huddle
+- Mouse: click channels, messages (select), reactions, `☺+`, `↳ replies`, the hover toolbar (`☺ ↩ ⧉ ⋯`), emoji picker cells and tabs, huddle
   join/leave, palette rows and tabs, settings controls, toasts, the theme in the status bar; the wheel
   scrolls the pane under the pointer. A pointer move that changes nothing reuses the last frame.
 
@@ -96,15 +102,16 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
 | Key | Action |
 |---|---|
 | `Enter` | send (completes instead while the completion popup is open, unless the `@`/`#` word already equals the highlighted item) |
-| `/`, `@`, `#` | completion popup above the input (see below) |
+| `/`, `@`, `#`, `:` | completion popup above the input (see below; `:` under Emoji) |
 | `Tab` | complete from the popup; reopens it after `Esc` |
-| `Ctrl-K` | command palette: tabs All · Channels · People · Commands · Settings (`Tab`/`Shift-Tab`); fuzzy search keeps the quick switcher's behavior (Enter opens the top channel or person; DMs created on demand); command rows run the slash command, or type it when it needs arguments; theme rows switch the theme |
+| `Option-K` (`Alt-K`; also the `˚` macOS sends when Option types characters; `Ctrl-K` still works as a fallback) | command palette: tabs All · Channels · People · Commands · Settings (`Tab`/`Shift-Tab`); fuzzy search keeps the quick switcher's behavior (Enter opens the top channel or person; DMs created on demand); command rows run the slash command, or type it when it needs arguments; theme rows switch the theme |
 | `Alt-A` | activity view (also `/activity`); `Ctrl-A` stays the textarea's line start |
+| `Option-E` (`Alt-E`; on macOS set Option as Meta: Option-E alone is the accent dead key) | emoji picker: inserts at the cursor; in select mode it reacts like `+`; again closes it |
 | `Alt-↑/↓` or `Ctrl-P/N` | previous / next channel (`Ctrl-P/N` move the completion popup's highlight while it is open) |
 | `Alt-Shift-↑/↓` | previous / next unread channel |
 | `PgUp/PgDn`, mouse wheel | scroll history (fetches older via History at top) |
 | `↑` on empty input | select messages mode (↑/↓ moves selection) |
-| in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (prompt for emoji; `+1`, `:tada:` shortcuts), `y` copy body (OSC 52), `p` pin / unpin (notice "pinned" / "unpinned"), `Esc` leave |
+| in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (emoji picker; typing filters, so `+ +1 Enter` and `+ :tada: Enter` still work), `y` copy body (OSC 52), `p` pin / unpin (notice "pinned" / "unpinned"), `Esc` leave |
 | `Esc` | close the completion popup / thread / palette / dialog / select mode; never quits |
 | `Ctrl-C` twice (the second while `press Ctrl-C again to quit` shows, 4 s), or `/quit` | quit |
 | `F1` or `/help` | keyboard sheet: Navigate, Messages, Write, Huddle, App, then every command (`?` is just text, so messages can start with it) |
@@ -113,7 +120,7 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
 
 ## Slash commands
 
-`/join #x`, `/leave`, `/create #x [--private [--plaintext]]`, `/add @user`, `/topic text`, `/dm @a @b` (`/dm @me` or my own name: my notes, also in `Ctrl-K`; `@me` is always me, even if an account is named `me`; after `/dm` the popup offers `@me` and my name),
+`/join #x`, `/leave`, `/create #x [--private [--plaintext]]`, `/add @user`, `/topic text`, `/dm @a @b` (`/dm @me` or my own name: my notes, also in `Option-K`; `@me` is always me, even if an account is named `me`; after `/dm` the popup offers `@me` and my name),
 `/invite` (admin; prints code), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps), `/pins` (overlay of this channel's pinned messages, newest pin first, as `author · preview`; Enter jumps, Esc closes),
 `/activity`, `/highlight [word…]`, `/unhighlight word…`, `/group name @a @b…` (admin), `/groups`,
 `/remind <when> <text>`, `/reminders`, `/remind-delete id`, `/snippet path[:range] [message]`,
@@ -160,6 +167,49 @@ a click picks a row. It fades and rises in unless animations are off, and is nev
 `--plaintext` opts out, e.g. for a private channel webhooks post into (webhooks can't post into encrypted
 channels). Private channels made by older tc versions (whose `/create --private` didn't encrypt) stay unencrypted
 until someone runs `/encrypt` there (earlier messages are then marked legacy); their header has no 🔒.
+
+## Emoji
+
+- **Picker** (`+` or `Option-E` in select mode, the toolbar's `☺`, a reaction row's `☺+`: react to that
+  message; `Option-E` or the palette's "Insert emoji" in the input: insert at the cursor). A floating panel
+  like the completion popup: rounded frame, `React to bob` / `Insert emoji` and `✕` in the top edge,
+  `←↑↓→ move · ⇥ category · ⏎ react · esc` in the bottom edge. Inside: a search box, category tabs
+  (frequently used, smileys, people, nature, food, activities, travel, objects, symbols; no flags), a grid
+  of 10 per row that scrolls as one list with a title per category, and a preview row (the emoji,
+  `:shortcode:`, its other names and keywords, and what Enter does: `⏎ react`, `⏎ remove` for one of
+  mine, `⏎ insert`). Reacting sits right-aligned below the message (above it when there is no room, over
+  its body under the name row when neither fits), never under the sidebar; inserting sits one blank row
+  above the input's left edge. Its frame's cells take the pane's own
+  background, never a message's tint.
+- Keys: arrows move (←/→ run on through the rows), `PgUp`/`PgDn` a page, `Tab`/`Shift-Tab` jump to the
+  next/previous category (and leave a search), typing filters (shortcodes first, then keywords; more words narrow it,
+  `thumbs up`; a pasted emoji is offered as is), `Backspace`/`Ctrl-U` edit the search, `Enter` picks, `Esc` closes. Mouse: hover
+  moves the one highlight (keys move it on from there), click picks, a tab click switches category, the
+  wheel scrolls (the highlight follows into view), `✕` closes, and a click outside closes it and acts.
+  The input's bottom edge says `esc close emoji` while it is open.
+- Fit: 10 columns at 46 cells; narrower terminals get fewer columns (always 4 cells each with even 2-cell
+  margins), and tabs that don't fit scroll with the selection. Under 9 rows the tabs and preview go; under
+  4 rows or 10 columns the frame goes. It fades and rises in and out like the popup; instant with
+  animations off. A channel switch closes it.
+- **`:` completion**: `:` plus two shortcode letters at the start of a word opens the completion popup
+  (`Emoji`, 44 columns at most) with emoji whose shortcode matches: an exact name first, then frequently
+  used (`frequent`), then prefixes (shorter first), then names containing it. The typed letters show in
+  the accent. `Tab`/`Enter` put the emoji in (and a space) and close the popup; `Enter` never sends from
+  it. Never inside a fenced block or an inline code span, or after a letter (`http://`, `10:30`).
+- **Shortcodes on send**: each known `:name:` in a message or an edit becomes its emoji when sent
+  (`:fire:` → 🔥, `(:tada:)` → (🎉), `:tada::rocket:` → 🎉🚀). Only as a word of its own: after a space,
+  the line's start, an opening bracket or quote, or another converted shortcode, so `12:100:3`, `?q=:fire:`
+  and URLs stay as typed; unknown ones and ones in code stay too. An edit converts only shortcodes the
+  message didn't already have. Slash commands are left alone. A send saves the frequently used list once.
+- **Frequently used**: picks, completions and converted shortcodes count; kept in `TC_HOME/ui.json` as
+  `"emoji"` (most used first, the newest first among equals, 40 at most). A fresh install offers
+  👍 🚀 👀 🎉 🔥 😂 🙏 💯 👏 🤔. The picker shows two rows of them.
+- Data: GitHub gemoji (MIT), generated into `internal/tui/emoji_data.go` by `go generate ./internal/tui`
+  (`internal/tui/emojigen`). Only emoji terminals draw as one wide cell are kept: one code point with
+  `Emoji_Presentation`, or a base plus U+FE0F that measures 2 cells (after one, the frame encoder moves
+  the cursor to the next cell, for terminals that advance one column); no ZWJ sequences, skin tones,
+  keycaps or flags, nothing newer than Unicode 13.0. Shortcodes are Slack's (`:ok:` is 🆗); `:check:`
+  stays for ✅.
 
 ## Verifying people (encrypted channels)
 
@@ -242,7 +292,7 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
 - Opening a channel marks it read up to the newest message (MarkRead) when the view is at the bottom.
   Scrolled up → don't mark read; show `↓ N new` pill.
 - Unread counts in the sidebar (dim; a DM's in the accent); `@N` in the accent when there's a mention, pulsing
-  briefly when it grows (bot messages never make a mention).
+  briefly when it grows (bot messages never make a mention). Both stop at `99+`.
 - Notifications: see "Notifications & herdr" below.
 - Never block the UI on network: all client calls run in `tea.Cmd`s.
 - Startup renders from cache immediately, before connecting.
@@ -255,7 +305,7 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
 - Drafts live in the client cache (`drafts` table, local only, never sent anywhere) and survive restarts
   and snapshot resets. They are written at once on a switch, on clear/send and on quit, and 1 s after
   typing pauses otherwise; a crash can lose at most that last second of typing.
-- A dim `✎` after a channel's name in the sidebar (and in `Ctrl-K`) means it has a draft that the input
+- A dim `✎` after a channel's name in the sidebar (and in the palette) means it has a draft that the input
   isn't showing: another channel's, or the channel's own while one of its threads is open.
 - Edit text (`e`) is never a draft. Starting an edit puts the input's text (for instance the draft a
   jump left there) aside; saving, cancelling (`Esc`), switching channel, `Alt-A` or a jump ends the edit

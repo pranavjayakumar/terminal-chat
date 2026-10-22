@@ -54,6 +54,18 @@ func (m *Model) setMotion(on bool) {
 	m.applyCursorMode()
 }
 
+// setSplit picks the message layout: everyone on the left, or ours on the
+// right.
+func (m *Model) setSplit(on bool) {
+	if m.ui.Split == on {
+		return
+	}
+	m.ui.Split = on
+	m.savePrefs()
+	m.main.ver++
+	m.thread.ver++
+}
+
 func (m *Model) setCompact(on bool) {
 	m.ui.Compact = on
 	m.savePrefs()
@@ -130,6 +142,8 @@ func (m *Model) setCtls() []setCtl {
 				pick: func(i int) tea.Cmd { m.setCompact(i == 1); return nil }},
 			{label: "Sidebar", sub: "or click its edge, or ⌃B", opts: []string{"Icons", "Normal", "Wide"}, cur: sb,
 				pick: func(i int) tea.Cmd { m.setSidebar([]string{sbIcons, sbNormal, sbWide}[i]); return nil }},
+			{label: "Messages", sub: "split puts yours on the right", opts: []string{"Left", "Split"}, cur: boolInt(m.ui.Split),
+				pick: func(i int) tea.Cmd { m.setSplit(i == 1); return nil }},
 			{label: "Show people as", sub: "more styles later", opts: []string{"Name", "~Stripe", "~Tag", "~Shape"},
 				pick: func(int) tea.Cmd { return nil }},
 			{label: "Animations", sub: "fades, pops, slides · off = instant", toggle: true, cur: boolInt(!m.fx.off),
@@ -168,7 +182,7 @@ func (m *Model) setCtls() []setCtl {
 		}
 	case "account":
 		return []setCtl{
-			{label: "Devices", button: "/devices", pick: func(int) tea.Cmd { m.mode = modeNormal; return m.runQuiet("/devices") }},
+			{label: "Devices", sub: "revoke a lost one; keys rotate so it reads nothing new", button: "/devices", pick: func(int) tea.Cmd { m.mode = modeNormal; return m.runQuiet("/devices") }},
 		}
 	}
 	return nil
@@ -330,8 +344,8 @@ func (m *Model) drawSettings(c *canvas) {
 			c.put(cx-2, y, "›", fgc(th.accent), "")
 		}
 		c.put(cx, y, s, st, "")
-		if sub != "" {
-			c.put(cx+strWidth(s)+2, y, sub, fgc(th.faint), "")
+		if sx := cx + strWidth(s) + 2; sub != "" && cx+cw-sx > 4 {
+			c.put(sx, y, truncate(sub, cx+cw-sx), fgc(th.faint), "")
 		}
 		y++
 	}
@@ -340,7 +354,7 @@ func (m *Model) drawSettings(c *canvas) {
 		label("Keyboard shortcuts", "", true)
 		y++
 		c.put(cx, y, "Enter or F1 opens the keys sheet.", fgc(th.dim), "")
-		c.put(cx, y+1, "Open it", fgb(th.info), "app:keys")
+		c.pill(cx, y+2, " Open keys sheet ", fgc(th.info).on(th.element), "app:keys")
 		return
 	case "account":
 		label("You", "", false)
@@ -353,8 +367,8 @@ func (m *Model) drawSettings(c *canvas) {
 			c.put(e+10, y, d, fgc(th.dim), "")
 		}
 		y += 2
-		label("Devices", "revoke a lost one; keys rotate so it reads nothing new", false)
-		y++
+		m.drawCtls(c, cx, y, cw, r.y1-1)
+		y += 3
 		devs := m.c.Devices(m.me.ID)
 		for i, d := range devs {
 			if i >= 6 {
@@ -376,8 +390,6 @@ func (m *Model) drawSettings(c *canvas) {
 			c.put(cx, y, truncate("⚠ "+sanitize.Line(err.Error()), cw), fgc(th.warn), "")
 			y++
 		}
-		y++
-		m.drawCtls(c, cx, y, cw, r.y1-1)
 		return
 	case "about":
 		label("tc", "terminal chat", false)
@@ -448,6 +460,13 @@ func (m *Model) drawCtls(c *canvas, cx, y, cw, bottom int) {
 		off = focusEnd - room
 	}
 	off = min(off, focusTop)
+	more := start-1-off > room && room > 2 // the last control's trailing blank row doesn't count
+	if more {
+		defer func() {
+			c.fill(cx-2, bottom-1, cw+2, 1, th.panel, "")
+			c.put(cx+cw-8, bottom-1, " ↓ more ", fgc(th.faint), "")
+		}()
+	}
 	y -= off
 	for row, ctl := range ctls {
 		focused := row == m.set.row
@@ -458,8 +477,8 @@ func (m *Model) drawCtls(c *canvas, cx, y, cw, bottom int) {
 		}
 		if !ctl.toggle {
 			c.put(cx, y, ctl.label, st, "")
-			if ctl.sub != "" {
-				c.put(cx+strWidth(ctl.label)+2, y, ctl.sub, fgc(th.faint), "")
+			if sx := cx + strWidth(ctl.label) + 2; ctl.sub != "" && cx+cw-sx > 4 {
+				c.put(sx, y, truncate(ctl.sub, cx+cw-sx), fgc(th.faint), "")
 			}
 			y++
 		}
@@ -479,8 +498,8 @@ func (m *Model) drawCtls(c *canvas, cx, y, cw, bottom int) {
 			}
 			c.pill(cx, y, knob, kst, a)
 			e := c.put(cx+8, y, ctl.label, st, a)
-			if ctl.sub != "" {
-				c.put(e+2, y, ctl.sub, fgc(th.faint), "")
+			if ctl.sub != "" && cx+cw-e-2 > 4 {
+				c.put(e+2, y, truncate(ctl.sub, cx+cw-e-2), fgc(th.faint), "")
 			}
 			y += 2
 		case ctl.button != "":

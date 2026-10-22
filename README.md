@@ -55,7 +55,7 @@ user, server or chat data, but GitHub sees your IP address and that it runs tc.
 |---|---|
 | `Enter` / `Alt-Enter` | send / newline |
 | `/` · `Tab` | `/` shows commands; `@`/`#` pop up names and channels — `Enter` or `Tab` completes, `Esc` hides |
-| `Ctrl-K` | jump to any channel or person |
+| `Option-K` (`Alt-K`) | command palette: jump to any channel or person, run any command, change settings (`Ctrl-K` works too where the terminal passes it) |
 | `Alt-A` | activity: mentions, replies to you, reactions, DMs (Enter jumps) |
 | `Alt-↑/↓` | previous / next channel (`Alt-Shift` for unread) |
 | `↑` on empty input | select a message: `e` edit · `d` delete · `r` thread · `+` react · `y` copy · `v` view full · `p` pin/unpin |

@@ -5,12 +5,15 @@ import tea "github.com/charmbracelet/bubbletea"
 // Key names as Bubble Tea v1 spells them (tea.KeyMsg.String()).
 const (
 	kQuit       = "ctrl+c"
-	kSwitcher   = "ctrl+k"
+	kSwitcher   = "alt+k" // the palette; Ctrl-K still works where it reaches us
 	kActivity   = "alt+a" // Ctrl-A stays the textarea's line start
+	kEmoji      = "alt+e" // the emoji picker
 	kSidebar    = "ctrl+b"
 	kEnter      = "enter"
 	kEsc        = "esc"
 	kUp         = "up"
+	kLeft       = "left"
+	kRight      = "right"
 	kDown       = "down"
 	kPgUp       = "pgup"
 	kPgDown     = "pgdown"
@@ -53,5 +56,12 @@ func keyName(k tea.KeyMsg) string {
 	if k.Type == tea.KeyRunes && (len(k.Runes) != 1 || k.Paste) {
 		return ""
 	}
+	if k.Type == tea.KeyRunes && !k.Alt && k.Runes[0] == '˚' {
+		return kSwitcher // macOS Option-K when Option types characters
+	}
 	return k.String()
 }
+
+// isSwitcher: the key opens or closes the palette. Ctrl-K is a silent
+// fallback: some terminals and multiplexers keep it for themselves.
+func isSwitcher(key string) bool { return key == kSwitcher || key == "ctrl+k" }
