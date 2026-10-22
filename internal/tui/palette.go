@@ -24,6 +24,7 @@ type palItem struct {
 	meta   string
 	icon   string
 	iconFg rgb
+	iconBg rgb // a swatch: drawn on its own background, selected or not
 	fg     rgb
 	sw     *switchItem
 	run    string // "/cmd args" to run, "/cmd " to type, or an app action
@@ -98,7 +99,7 @@ func (m *Model) palSettings() []palItem {
 	out = append(out, palItem{group: "Settings", label: layout, desc: "everyone on the left, or yours on the right", icon: "≡", run: "app:split", tabs: "s"})
 	for _, id := range themeOrder {
 		t := themes[id]
-		it := palItem{group: "Theme", label: id, desc: t.desc, icon: "■", iconFg: t.accent, run: "theme:" + id, tabs: "as"}
+		it := palItem{group: "Theme", label: id, desc: t.desc, icon: "■", iconFg: t.accent, iconBg: t.bg, run: "theme:" + id, tabs: "as"}
 		if t == m.st.th {
 			it.meta = "✓ current"
 		}
@@ -136,9 +137,9 @@ func (m *Model) palItems() []palItem {
 		}
 		switch {
 		case s.mention:
-			it.meta = "@" + strconv.Itoa(max(s.unread, 1))
+			it.meta = "@" + unreadCount(max(s.unread, 1))
 		case s.unread > 0:
-			it.meta = strconv.Itoa(s.unread) + " new"
+			it.meta = unreadCount(s.unread) + " new"
 		}
 		out = append(out, it)
 	}
@@ -483,7 +484,11 @@ func (m *Model) palRow(c *canvas, x, y, w, i int) {
 		if ic == 0 {
 			ic = th.dim
 		}
-		c.put(e, y, it.icon, pick(ic), act)
+		st := pick(ic)
+		if it.iconBg != 0 {
+			st = fgc(ic).on(it.iconBg)
+		}
+		c.put(e, y, it.icon, st, act)
 		e += 3
 	}
 	fg := it.fg

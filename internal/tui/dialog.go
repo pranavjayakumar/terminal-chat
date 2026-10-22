@@ -27,7 +27,10 @@ func (m *Model) dialogBox(dw, dh int) rect {
 	}
 	dw, dh = max(dw, 1), max(dh, 1)
 	x := (m.w - dw) / 2
-	y := max((m.h-dh)/2-1, 0)
+	y := (m.h - dh) / 2
+	if m.h-dh >= 4 {
+		y-- // optically centered; a near-full panel stays balanced instead
+	}
 	return rect{x, y, x + dw, y + dh}
 }
 
@@ -44,7 +47,7 @@ func (m *Model) dialog(c *canvas, dw, dh int, title string) rect {
 		}
 	})
 	r := m.dialogBox(dw, dh)
-	if op < 0.7 && r.y0+1 < r.y1 && r.y1 < m.h {
+	if op < 0.7 && r.y0+1 < r.y1 && r.y1 < m.h-1 { // the rise never covers the status bar
 		r.y0++
 		r.y1++
 	}

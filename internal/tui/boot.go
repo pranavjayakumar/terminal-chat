@@ -51,7 +51,7 @@ func (m *Model) drawBoot(c *canvas) {
 	for j, ln := range logo {
 		for i, r := range []rune(ln) {
 			glow := max(0, 1-abs(float64(i)-sweep)/2.5)
-			c.put(lx+i, ly+j, string(r), fgc(mix(th.accent, 0xffffff, glow*0.55)), "")
+			c.put(lx+i, ly+j, string(r), fgc(mix(th.accent, th.fg, glow*0.55)), "")
 		}
 	}
 	tag := "terminal chat"
