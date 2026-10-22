@@ -505,7 +505,9 @@ and are not listed; they appear in the log as usual. Rows are kept for the newes
     before handling anything and again right before each popup, and once a second: while it's
     held the notifier drops what was pending and closes its connection (status `paused`), so the
     window alone talks to the server and the cache. When the last window closes it reconnects
-    within a second and syncs; what arrived after the window's last sync notifies.
+    within a second and syncs; what arrived after the window's last sync notifies. `tc join` and
+    `tc login` hold the same lock while they log in (they wipe the cache for the new account), and
+    a session that sees `config.json` change reconnects as the new login with a fresh engine.
   - One notifier per `TC_HOME` (`background.lock`, exclusive; a second instance waits). It
     writes `background.json` (state, transport, last error, count of popups; never text) for
     `status`, and logs state changes to `background.log` (rotated at 1 MiB). Not logged in, or

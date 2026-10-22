@@ -135,7 +135,7 @@ func Run(ctx context.Context, cfg Config) error {
 			cfg.Log.Info("binary changed: exiting so the new one starts")
 			return err
 		}
-		if errors.Is(err, errUIOpened) {
+		if errors.Is(err, errUIOpened) || errors.Is(err, errLoginChanged) {
 			continue
 		}
 		r.setErr("waiting", err)
@@ -151,6 +151,9 @@ func Run(ctx context.Context, cfg Config) error {
 
 // errUIOpened: a chat window opened, so the session was closed.
 var errUIOpened = errors.New("tc is open")
+
+// errLoginChanged: config.json changed under a live session.
+var errLoginChanged = errors.New("login changed")
 
 // waitUIClosed returns once no chat window is open. While one is, the
 // notifier holds no connection at all: the window does the notifying, and
@@ -189,6 +192,9 @@ type runner struct {
 	probe *UIProbe
 	exe   os.FileInfo
 
+	core      *Core       // kept across sessions of one login
+	coreLogin os.FileInfo // config.json when core was made
+
 	mu sync.Mutex
 	st Status
 }
@@ -222,6 +228,8 @@ type errClientStopped string
 func (e errClientStopped) Error() string { return string(e) }
 
 func (r *runner) session(ctx context.Context) error {
+	cfgPath := filepath.Join(r.cfg.Home, "config.json")
+	login := statOf(cfgPath)
 	c, err := client.Open(r.cfg.Home)
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", r.cfg.Home, err)
@@ -232,7 +240,14 @@ func (r *runner) session(ctx context.Context) error {
 	defer cancel()
 	go c.Run(cctx)
 
-	core := NewCore(c, r.cfg.Out, r.cfg.Env, r.probe.Open, r.cfg.Now)
+	// The engine outlives a pause for the chat window (ring cooldowns,
+	// the cap), but not a change of login.
+	if r.core == nil || changed(r.coreLogin, login) {
+		r.core = NewCore(c, r.cfg.Out, r.cfg.Env, r.probe.Open, r.cfg.Now)
+		r.coreLogin = login
+	}
+	core := r.core
+	core.w.src = c
 	core.Sent = func() {
 		r.mu.Lock()
 		r.st.Notified++
@@ -277,6 +292,12 @@ func (r *runner) session(ctx context.Context) error {
 		case <-tick.C:
 			if r.binaryChanged() {
 				return ErrBinaryChanged
+			}
+			// tc join/login here wipes the cache for another account:
+			// never keep feeding it the old one's events.
+			if changed(login, statOf(cfgPath)) {
+				r.cfg.Log.Info("login changed: reconnecting")
+				return errLoginChanged
 			}
 		case <-uiTick.C:
 			if r.probe.Open() {

@@ -69,16 +69,10 @@ func TestBackground_BreakKeepsOldAccountAfterRelogin(t *testing.T) {
 	if c.Me().Name != "bob-b" {
 		t.Fatalf("config is %q, want bob-b", c.Me().Name)
 	}
-	var leaked []string
-	for _, v := range c.Channels() {
-		for _, m := range c.Messages(v.ID, 100) {
-			if m.Body == "@bob team A only" {
-				leaked = append(leaked, "#"+v.Name)
-			}
+	for _, m := range c.Messages(genA, 100) {
+		if m.Body == "@bob team A only" {
+			t.Errorf("team A's message was written into team B's cache (chan id %d)", genA)
 		}
-	}
-	if len(leaked) > 0 {
-		t.Errorf("team A's message was written into team B's cache (channel %v)", leaked)
 	}
 	if n := len(out.get()) - before; n > 0 {
 		t.Errorf("after switching to team B, %d notification(s) for team A: %+v", n, out.get()[before:])
