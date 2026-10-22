@@ -247,6 +247,9 @@ func (r *runner) session(ctx context.Context) error {
 		r.coreLogin = login
 	}
 	core := r.core
+	// The last session's timers died with its context: a window or ring
+	// left pending without one would swallow that channel for good.
+	core.quiet()
 	core.w.src = c
 	core.Sent = func() {
 		r.mu.Lock()
