@@ -48,6 +48,8 @@ type installOpts struct {
 	onPath         bool
 	signers        string            // ALLOWED_SIGNERS in the script; "": the server's key
 	stubs          map[string]string // extra commands on PATH: name → script
+	tty            bool              // run on a pseudo-terminal (script(1)); output lands in stdout
+	input          string            // typed on that terminal
 }
 
 var allowedSignersRE = regexp.MustCompile(`(?m)^ALLOWED_SIGNERS='([^']*)'$`)
@@ -118,6 +120,9 @@ func runInstall(t *testing.T, srv *releasetest.Server, o installOpts) installRun
 	}, o.env...)
 	if o.installDir != "" {
 		cmd.Env = append(cmd.Env, "TC_INSTALL_DIR="+o.installDir)
+	}
+	if o.tty {
+		cmd = onTTY(t, cmd, o.input)
 	}
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
