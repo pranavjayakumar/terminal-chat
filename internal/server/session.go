@@ -217,6 +217,9 @@ func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp str
 			if strings.HasSuffix(a.Name, proto.BotSuffix) {
 				return nil, fail(proto.ByeProtocolError, `names ending in "-bot" are reserved for webhook bots`)
 			}
+			if a.Name == proto.NameMe {
+				return nil, fail(proto.ByeProtocolError, `the name "me" is reserved (@me means your own notes); pick another`)
+			}
 			var n int
 			tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE name = ?`, a.Name).Scan(&n)
 			if n > 0 || groupNameTaken(ctx, tx, a.Name) {

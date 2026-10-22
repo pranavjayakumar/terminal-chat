@@ -96,6 +96,9 @@ func (c *Client) SetGroup(ctx context.Context, name string, members []uint64) er
 	if !proto.ValidName(name) {
 		return errors.New("group names are 1-32 of a-z 0-9 _ - (lowercase)")
 	}
+	if name == proto.NameMe && len(members) > 0 {
+		return errors.New(`"me" is reserved: @me means your own notes`)
+	}
 	if len(members) > proto.MaxGroupMembers {
 		return errors.New("a group has at most 50 members")
 	}

@@ -320,6 +320,11 @@ func (m *Model) atNames(ids []uint64) string {
 
 func (m *Model) findUser(name string) (uint64, bool) {
 	name = strings.ToLower(strings.TrimPrefix(name, "@"))
+	// @me is always you, even where an account was named "me" before the
+	// name was reserved (#113): /add, /group or /trust must not pick them.
+	if name == proto.NameMe {
+		return m.me.ID, m.me.ID != 0
+	}
 	for _, u := range m.userList {
 		if strings.ToLower(u.Name) == name {
 			return u.ID, true
@@ -442,6 +447,9 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 			if !ok {
 				return nil, fmt.Errorf("unknown user %s", sanitize.Line(a))
 			}
+			if id == m.me.ID {
+				return nil, errors.New("you're already here: /add is for others")
+			}
 			ids = append(ids, id)
 		}
 		each := make([]string, len(ids)) // resolved here: the Cmd runs off the UI goroutine
@@ -481,6 +489,10 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 			id, ok := m.findUser(a)
 			if !ok {
 				return nil, fmt.Errorf("unknown user %s", sanitize.Line(a))
+			}
+			if id == m.me.ID {
+				// @me is you (#113): never leave by accident.
+				return nil, errors.New("/remove is for others; /leave to go yourself")
 			}
 			ids = append(ids, id)
 		}

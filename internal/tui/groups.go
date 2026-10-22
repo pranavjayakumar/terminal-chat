@@ -44,10 +44,17 @@ func (m *Model) groupCommand(c command) (cmd tea.Cmd, ok bool, err error) {
 		return nil, true, errors.New("only admins can change groups")
 	}
 	name := strings.ToLower(strings.TrimPrefix(c.args[0], "@"))
-	if !proto.ValidName(name) || strings.HasSuffix(name, proto.BotSuffix) {
+	if !proto.ValidName(name) {
 		return nil, true, errors.New("group names are 1-32 of a-z 0-9 _ - (lowercase)")
 	}
-	if _, isUser := m.findUser(name); isUser {
+	if strings.HasSuffix(name, proto.BotSuffix) {
+		return nil, true, errors.New("names ending in -bot are reserved for webhook bots")
+	}
+	if name == proto.NameMe && len(c.args) > 1 {
+		return nil, true, errors.New(`"me" is reserved: @me means your own notes`)
+	}
+	// Deleting a "me" group from before the reservation stays possible.
+	if _, isUser := m.findUser(name); isUser && name != proto.NameMe {
 		return nil, true, fmt.Errorf("%s is a user's name", sanitize.Line(name))
 	}
 	var ids []uint64

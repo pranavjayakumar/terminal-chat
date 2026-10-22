@@ -207,8 +207,11 @@ constant time. `pin` = base64url (no padding) SHA-256 SPKI pin.
 Kinds:
 - **new user**: requires `name`; `--admin` invites (CLI only) create admins.
   Admin rights come from the invite, never from registration order. Names ending in
-  `-bot` are reserved for webhook bots (§5 `hook.create`) → BYE `protocol_error`; a name
-  that exists → BYE `name_taken`.
+  `-bot` are reserved for webhook bots (§5 `hook.create`), and `me` is reserved because
+  clients read `@me` as the caller's own notes; either → BYE `protocol_error`. A name
+  that exists → BYE `name_taken`. Accounts named `me` from before the reservation keep
+  working (login doesn't check names), but clients resolve `@me` to the caller, so others
+  can't address such an account by name.
 - **add key** (`invite.create {user}`): attaches `pubkey` to an existing user
   (new laptop). `name` is ignored.
 
@@ -323,8 +326,8 @@ Rules:
 - **dm.open** returns the existing DM for that exact member set (caller included)
   or creates it. DMs have `name = ""`.
 - **group.set** replaces a group's members (sorted, duplicates dropped) and emits `group.update`;
-  non-admins get `forbidden`. `name` follows the user/channel name rule (§9) and must not end in
-  `-bot` (`bad_request`); it must not be a user's name (`conflict`), and registering a user whose
+  non-admins get `forbidden`. `name` follows the user/channel name rule (§9), must not end in
+  `-bot` and, unless `members` is empty (a delete), must not be `me` (`bad_request`); it must not be a user's name (`conflict`), and registering a user whose
   name is a group's fails with BYE `name_taken`. Members must be existing, enabled, non-bot users
   (`not_found` / `bad_request`) and number at most 50 (`bad_request`); at most 200 groups
   (`conflict`). **Empty `members` deletes** the group. Setting what is already stored, or deleting
@@ -484,7 +487,7 @@ All sizes are UTF-8 bytes.
 | Field | Limit |
 |---|---|
 | message body | ≤ 64 KiB |
-| user/channel `name` | `^[a-z0-9][a-z0-9_-]{0,31}$` |
+| user/channel `name` | `^[a-z0-9][a-z0-9_-]{0,31}$`; new user and group names also not `me` or `*-bot` (§4.1, §5) |
 | `display` | ≤ 64 B |
 | `topic` | ≤ 256 B |
 | `status` | ≤ 128 B |

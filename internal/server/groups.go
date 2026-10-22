@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"slices"
-	"strings"
 
 	"github.com/skailama/tc/internal/proto"
 )
@@ -48,8 +47,9 @@ func (s *Server) opGroupSet(ctx context.Context, u proto.User, a proto.GroupSetA
 	if !u.Admin {
 		return nil, errForbidden
 	}
-	if !proto.ValidName(a.Name) || strings.HasSuffix(a.Name, proto.BotSuffix) {
-		return nil, badRequest("group name must match ^[a-z0-9][a-z0-9_-]{0,31}$ and not end in -bot")
+	// A "me" group from before the name was reserved can still be deleted.
+	if !proto.ValidName(a.Name) || proto.ReservedName(a.Name) && !(a.Name == proto.NameMe && len(a.Members) == 0) {
+		return nil, badRequest(`group name must match ^[a-z0-9][a-z0-9_-]{0,31}$, not end in -bot and not be "me"`)
 	}
 	if len(a.Members) > proto.MaxGroupMembers {
 		return nil, badRequest("a group has at most 50 members")
