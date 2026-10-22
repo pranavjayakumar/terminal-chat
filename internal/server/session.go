@@ -53,6 +53,7 @@ type session struct {
 	e2e     bool     // both sides advertised proto.CapE2E
 	byeKeys []string // Bye.Keys for a failed handshake (cap key_hint)
 	voice   bool     // both sides advertised proto.CapVoice
+	passive bool     // proto.CapPassive: no presence, typing or huddles
 	// Voice datagrams (huddle.go); dg is nil unless voice over QUIC.
 	dg           transport.DatagramConn
 	dgOut        chan dgItem
@@ -96,6 +97,9 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 	w := proto.Welcome{
 		Server: Version, Caps: append([]string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapVoice}, s.inviteCaps()...), ServerID: s.st.serverID, User: user, Time: s.now(),
 	}
+	if sess.passive {
+		w.Caps = append(w.Caps, proto.CapPassive)
+	}
 	if tamperEnabled {
 		s.tamper.welcome(user.ID, &w)
 	}
@@ -126,6 +130,7 @@ func (s *Server) handshake(ctx context.Context, sess *session) (proto.User, stri
 	}
 	sess.e2e = slices.Contains(h.Caps, proto.CapE2E)
 	sess.voice = slices.Contains(h.Caps, proto.CapVoice)
+	sess.passive = slices.Contains(h.Caps, proto.CapPassive)
 	exp, err := sess.conn.Exporter()
 	if err != nil {
 		return proto.User{}, proto.ByeProtocolError, "no TLS exporter"
@@ -269,6 +274,9 @@ func (s *Server) register(sess *session) bool {
 		return false
 	}
 	s.sessions[sess] = struct{}{}
+	if sess.passive { // a background listener isn't the user being here
+		return true
+	}
 	s.online[sess.user.ID]++
 	if s.online[sess.user.ID] == 1 {
 		p := proto.Ephemeral{Kind: proto.EphPresence, User: sess.user.ID, State: proto.PresOnline}
@@ -287,6 +295,9 @@ func (s *Server) unregister(sess *session) {
 	}
 	delete(s.sessions, sess)
 	s.huddleGoneLocked(sess)
+	if sess.passive {
+		return
+	}
 	s.online[sess.user.ID]--
 	if s.online[sess.user.ID] <= 0 {
 		delete(s.online, sess.user.ID)
@@ -577,6 +588,9 @@ func (s *Server) handleEphemeral(sess *session, e proto.Ephemeral) {
 	e.User = sess.user.ID
 	if e.Kind == proto.EphKeyNeed {
 		s.keyNeed(sess, e)
+		return
+	}
+	if sess.passive { // listens only: no typing, and presence is the user's other sessions'
 		return
 	}
 	s.mu.Lock()

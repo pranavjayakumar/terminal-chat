@@ -209,6 +209,7 @@ type Client struct {
 	obChanged chan struct{} // closed and replaced on every outbox change
 
 	running atomic.Bool
+	passive atomic.Bool // SetPassive
 	timing  timing
 
 	githubBase string // VerifyGitHub's base URL; "" = https://github.com (tests)
@@ -327,6 +328,11 @@ func Open(home string) (*Client, error) {
 	}
 	return c, nil
 }
+
+// SetPassive makes the next connections listen-only (proto.CapPassive): the
+// server doesn't count them toward our presence, so `tc background` doesn't
+// keep the user "online". Call it before Run.
+func (c *Client) SetPassive(on bool) { c.passive.Store(on) }
 
 // Close stops Run, waits for it, and closes the cache, trust store and Updates channel.
 func (c *Client) Close() error {
