@@ -1622,22 +1622,30 @@ func (c *Client) commitBundle(ctx context.Context, s *session, sid e2ecrypto.Ser
 		p.Roster = slices.Compact(p.Roster)
 	}
 	var unverified UnverifiedMembersError
-	for _, u := range p.Roster {
-		devs, err := c.trust.Devices(sid, u)
-		if err != nil {
-			return err
-		}
-		n := 0
-		for _, d := range devs {
-			if !d.Revoked {
-				p.Recipients = append(p.Recipients, identity.Recipient{Dev: d.ID, X25519: d.X25519})
-				n++
+	for pass := 0; pass < 2; pass++ {
+		p.Recipients, unverified = nil, UnverifiedMembersError{}
+		for _, u := range p.Roster {
+			devs, err := c.trust.Devices(sid, u)
+			if err != nil {
+				return err
+			}
+			n := 0
+			for _, d := range devs {
+				if !d.Revoked {
+					p.Recipients = append(p.Recipients, identity.Recipient{Dev: d.ID, X25519: d.X25519})
+					n++
+				}
+			}
+			if n == 0 && c.hasUnverifiedDevice(sid, u) {
+				unverified.Users = append(unverified.Users, u)
+				// Names come from the server: never let one carry terminal escapes.
+				unverified.Names = append(unverified.Names, "@"+sanitize.Line(c.User(u).Name))
 			}
 		}
-		if n == 0 && c.hasUnverifiedDevice(sid, u) {
-			unverified.Users = append(unverified.Users, u)
-			// Names come from the server: never let one carry terminal escapes.
-			unverified.Names = append(unverified.Names, "@"+sanitize.Line(c.User(u).Name))
+		// A device.new the read loop stored after our verifyDevices above
+		// isn't in the trust store yet: verify once more before refusing.
+		if len(unverified.Users) == 0 || !c.verifyDevices(sid, s.sshPub, user) {
+			break
 		}
 	}
 	if len(unverified.Users) > 0 {

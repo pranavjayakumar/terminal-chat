@@ -193,10 +193,17 @@ func (c *Client) EncryptChannel(ctx context.Context, ch uint64) error {
 	c.e2eMu.Lock()
 	defer c.e2eMu.Unlock()
 	c.verifyDevices(sid, s.sshPub, c.Me().ID)
-	err = c.commitBundle(ctx, s, sid, ch, nil, func(_ proto.Channel, b identity.Signed) error {
-		_, err := s.call(ctx, proto.OpChanEncrypt, proto.KeyRotateArgs{Chan: ch, Bundle: proto.Signed(b)}, nil)
-		return err
-	})
+	for attempt := 0; ; attempt++ {
+		err = c.commitBundle(ctx, s, sid, ch, nil, func(_ proto.Channel, b identity.Signed) error {
+			_, err := s.call(ctx, proto.OpChanEncrypt, proto.KeyRotateArgs{Chan: ch, Bundle: proto.Signed(b)}, nil)
+			return err
+		})
+		// stale_epoch: a member's new device (or a revoke) reached the
+		// server after we built the bundle; its event came before the RES.
+		if attempt > 0 || !isStale(err) {
+			break
+		}
+	}
 	if err == nil {
 		_ = c.trust.MarkChannelE2E(sid, ch) // our choice: sticky from now on
 	}

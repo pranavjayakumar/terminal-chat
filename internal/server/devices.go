@@ -155,8 +155,15 @@ func (s *Server) opDeviceRegister(ctx context.Context, u proto.User, a proto.Dev
 			return nil, err
 		}
 		ev, err := appendEvent(ctx, tx, proto.KDeviceNew, 0, u.ID, 0, now, a)
+		if err != nil {
+			return nil, err
+		}
+		// created_seq lets key.rotate tell a race from a client error (§13.3).
+		if _, err := tx.ExecContext(ctx, `UPDATE devices SET created_seq = ? WHERE dev = ?`, ev.Seq, c.Dev[:]); err != nil {
+			return nil, err
+		}
 		res.Seq = ev.Seq
-		return []proto.Event{ev}, err
+		return []proto.Event{ev}, nil
 	})
 	return res, err
 }

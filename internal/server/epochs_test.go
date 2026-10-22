@@ -885,11 +885,46 @@ func TestKeyRotateMissingBoxAllowed(t *testing.T) {
 	bob.registerDevice(ts)   // b1
 	// carol has no device: nothing to box.
 	roster := []uint64{alice.user.ID, bob.user.ID, carol.user.ID}
-	// bob has a device but no box.
-	alice.fail(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: bundle(t, a1, sid, ch.ID, 1, nil, roster, a1)}, proto.ErrBadRequest)
+	// bob has a device but no box. At epoch 1 there is no head the rotator
+	// must have seen bob's device by: it may be racing its device.new.
+	alice.fail(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: bundle(t, a1, sid, ch.ID, 1, nil, roster, a1)}, proto.ErrStaleEpoch)
 	b2, _ := bob.registerDevice(ts)
 	// One box per user is enough: a2 and b1 get K via key.share.
-	alice.ok(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: bundle(t, a1, sid, ch.ID, 1, nil, roster, a1, b2)}, nil)
+	e1 := bundle(t, a1, sid, ch.ID, 1, nil, roster, a1, b2)
+	alice.ok(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: e1}, nil)
+
+	// carol's first device registers after epoch 1: a bundle built before
+	// its device.new reached the rotator is a race (#127), and the retry
+	// that boxes it succeeds.
+	c1, _ := carol.registerDevice(ts)
+	alice.fail(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: bundle(t, a1, sid, ch.ID, 2, &e1, roster, a1, b2)}, proto.ErrStaleEpoch)
+	// bob's devices predate epoch 1: leaving him out is the rotator's error.
+	alice.fail(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: bundle(t, a1, sid, ch.ID, 2, &e1, roster, a1, c1)}, proto.ErrBadRequest)
+	// Even when carol is left out too: bob's case can't be a race.
+	alice.fail(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: bundle(t, a1, sid, ch.ID, 2, &e1, roster, a1)}, proto.ErrBadRequest)
+	alice.ok(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: bundle(t, a1, sid, ch.ID, 2, &e1, roster, a1, b2, c1)}, nil)
+}
+
+// A device stored before devices.created_seq existed (NULL) counts as
+// old: leaving its user out is never a race.
+func TestKeyRotateMissingBoxLegacyDevice(t *testing.T) {
+	ts := startServer(t, "tcp")
+	fastClock(ts)
+	alice := ts.registerCaps(t, "alice", true, e2eCaps)
+	bob := ts.registerCaps(t, "bob", false, e2eCaps)
+	alice.syncFresh()
+	bob.syncFresh()
+	sid := ts.sid()
+	ch := alice.createE2E("sec")
+	alice.ok(proto.OpChanAdd, proto.ChanAddArgs{Chan: ch.ID, User: bob.user.ID}, nil)
+	a1, _ := alice.registerDevice(ts)
+	b1, _ := bob.registerDevice(ts)
+	if _, err := ts.st.db.Exec(`UPDATE devices SET created_seq = NULL WHERE dev = ?`, b1.ID[:]); err != nil {
+		t.Fatal(err)
+	}
+	roster := []uint64{alice.user.ID, bob.user.ID}
+	alice.fail(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: bundle(t, a1, sid, ch.ID, 1, nil, roster, a1)}, proto.ErrBadRequest)
+	alice.ok(proto.OpKeyRotate, proto.KeyRotateArgs{Chan: ch.ID, Bundle: bundle(t, a1, sid, ch.ID, 1, nil, roster, a1, b1)}, nil)
 }
 
 // Databases from before epochs.seq / devices.revoked_seq get them from events.
