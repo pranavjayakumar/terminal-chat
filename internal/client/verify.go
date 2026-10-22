@@ -466,6 +466,9 @@ func (c *Client) requeueKeyChange() {
 }
 
 // PendingKeys lists the fingerprints of user's pending key changes, sorted.
+// Never my own: a key the server says is mine must not be trusted on a
+// prompt the server can trigger, since its devices would get every channel
+// key (#94 review); that needs an endorsement signed by a key I hold.
 func (c *Client) PendingKeys(user uint64) []string {
 	var out []string
 	for _, k := range c.KeyChanges() {

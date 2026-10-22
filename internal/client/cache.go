@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS msgs (
 	sts INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS msgs_chan ON msgs (chan, thread, id);
 CREATE INDEX IF NOT EXISTS msgs_thread ON msgs (thread, id);
+-- Waiting messages (reopenMsgs, the redraw after device changes).
+CREATE INDEX IF NOT EXISTS msgs_sec ON msgs (sec, chan);
 -- Encrypted reactions (encops.go): the server's (msg, user, tag, enc) and
 -- our verdict: st 0 not judged yet, 1 verified (emoji is the real one), 2 invalid.
 CREATE TABLE IF NOT EXISTS rencs (

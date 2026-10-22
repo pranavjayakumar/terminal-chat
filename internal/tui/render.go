@@ -57,6 +57,27 @@ func deletedText(m client.Message) string {
 	return "removed (not by author)"
 }
 
+// waitingText is what a message we can't open yet shows: why, and what to
+// do when waiting won't help (#94).
+func (m *Model) waitingText(x client.Message) string {
+	switch x.Wait {
+	case client.WaitKeyChange:
+		if x.Author == m.me.ID {
+			// No command: trusting a key the server says is mine would
+			// hand its devices every channel key (#94 review).
+			return "🔒 sent under an SSH key of yours this device doesn't trust"
+		}
+		// The command first, so a narrow pane still shows it.
+		n := m.atName(x.Author)
+		return "🔒 /accept-key " + n + " to read: " + n + "'s key changed"
+	case client.WaitDevice:
+		return "🔒 waiting for the sender's device"
+	case client.WaitRoot:
+		return "🔒 waiting for the thread's first message"
+	}
+	return "🔒 waiting for key"
+}
+
 // truncate cuts s (which may contain styling) to at most w cells, ending in
 // "…" when something was cut.
 func truncate(s string, w int) string {
@@ -420,12 +441,13 @@ type renderKey struct {
 	reacts  string
 	width   int
 	header  bool
-	sec     client.Sec // a waiting message changes when it decrypts
+	sec     client.Sec        // a waiting message changes when it decrypts
+	wait    client.WaitReason // ...or when why it waits changes
 }
 
 func keyFor(m client.Message, w int, header bool) renderKey {
 	k := renderKey{id: m.ID, local: m.Local, edited: m.Edited, deleted: m.Deleted, pending: m.Pending,
-		failed: m.Failed, replies: m.Replies, pinned: m.Pinned, width: w, header: header, sec: m.Sec}
+		failed: m.Failed, replies: m.Replies, pinned: m.Pinned, width: w, header: header, sec: m.Sec, wait: m.Wait}
 	if len(m.Reactions) > 0 {
 		keys := make([]string, 0, len(m.Reactions))
 		for e, us := range m.Reactions {
