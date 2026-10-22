@@ -513,13 +513,22 @@ func (m *Model) notifySummary() []string {
 		}
 		return " (" + h + ")"
 	}
-	return append(rows,
+	rows = append(rows,
 		"default: "+string(def)+hint("/notify global LEVEL"),
 		"content: "+content+hint("/notify content full|name|none"),
 		"quiet hours: "+quiet+hint("/notify quiet 22:00-08:00|off"),
 		"do not disturb: "+dnd+hint("/dnd"),
 		"via: "+m.backendName()+hint("/notify test"),
 		"sounds: "+sounds+hint("/sounds"))
+	if m.opt.Background != nil {
+		// The one place tc mentions it: popups while this window is closed.
+		if m.opt.Background() {
+			rows = append(rows, "when tc is closed: on"+hint("tc background off"))
+		} else {
+			rows = append(rows, "when tc is closed: off · run tc background on")
+		}
+	}
+	return rows
 }
 
 // showList opens the read-only list overlay.

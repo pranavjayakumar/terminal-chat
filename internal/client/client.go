@@ -103,6 +103,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -333,6 +334,14 @@ func Open(home string) (*Client, error) {
 // server doesn't count them toward our presence, so `tc background` doesn't
 // keep the user "online". Call it before Run.
 func (c *Client) SetPassive(on bool) { c.passive.Store(on) }
+
+// PassiveOK reports whether the server honored SetPassive on the current
+// connection (false while offline, or on servers without cap passive).
+func (c *Client) PassiveOK() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sess != nil && slices.Contains(c.sess.welcome.Caps, proto.CapPassive)
+}
 
 // Close stops Run, waits for it, and closes the cache, trust store and Updates channel.
 func (c *Client) Close() error {

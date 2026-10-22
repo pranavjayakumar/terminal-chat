@@ -19,6 +19,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/skailama/tc/internal/alert"
+	"github.com/skailama/tc/internal/background"
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/notify"
@@ -114,7 +116,11 @@ func Run(ctx context.Context, c *client.Client, version string) error {
 	env := notify.OSEnv()
 	o := Options{Out: os.Stdout, Notifier: notify.New(env, os.Stdout), AwayAfter: awayAfter(os.Getenv("TC_AWAY_MIN")), Version: version, ExtCopy: defaultExtCopy,
 		Tmux: os.Getenv("TMUX") != "", SSH: os.Getenv("SSH_TTY") != "" || os.Getenv("SSH_CONNECTION") != "",
-		NotifyEnv: NotifyEnv{Sound: os.Getenv("TC_SOUND"), Content: os.Getenv("TC_NOTIFY_CONTENT"), Quiet: os.Getenv("TC_QUIET")}}
+		NotifyEnv: alert.OSEnv()}
+	o.Background = func() bool {
+		m, err := background.Local(c.Home())
+		return err == nil && m.Installed()
+	}
 	o.UIPrefs = filepath.Join(c.Home(), "ui.json")
 	o.UpdateCheck = func() string {
 		return release.Check(ctx, c.Home(), version, release.NewSource(), time.Now())
@@ -151,6 +157,9 @@ type Options struct {
 	Notifier Notifier
 	// NotifyEnv overrides stored notification settings (from the env).
 	NotifyEnv NotifyEnv
+	// Background reports whether tc background (notifications while tc is
+	// closed) is on; /notify mentions it. nil: don't mention it.
+	Background func() bool
 	// Herdr is set when running inside herdr: unread badge, /share-pane.
 	Herdr Herdr
 	// AwayAfter sets presence to away after this long without a key; 0: never.

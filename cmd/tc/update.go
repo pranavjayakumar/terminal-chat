@@ -37,7 +37,7 @@ func cmdUpdate(args []string) error {
 	defer cancelT()
 	src := release.NewSource()
 	src.Voice = voice.Available()
-	req := updateReq{check: *check, toVoice: *toVoice && !voice.Available(), runs: runsHere}
+	req := updateReq{check: *check, toVoice: *toVoice && !voice.Available(), runs: runsHere, restart: restartBackground}
 	return runUpdate(ctx, os.Stdout, src, exe, version, runtime.GOOS, runtime.GOARCH, req)
 }
 
@@ -50,6 +50,9 @@ type updateReq struct {
 	// runs runs a downloaded binary's `tc version` on this system and
 	// returns its output; nil skips the check.
 	runs func(ctx context.Context, dir string, bin []byte) (string, error)
+	// restart restarts tc background (if installed) once the new binary is
+	// in place and says what it did; nil: nothing to restart.
+	restart func(ctx context.Context) string
 }
 
 func runUpdate(ctx context.Context, out io.Writer, src *release.Source, exe, current, goos, goarch string, req updateReq) error {
@@ -132,6 +135,11 @@ func runUpdate(ctx context.Context, out io.Writer, src *release.Source, exe, cur
 		return err
 	}
 	fmt.Fprintf(out, "Updated %s: %s → %s%s. Restart tc to use it.\n", exe, current, latest, flavor)
+	if req.restart != nil {
+		if msg := req.restart(ctx); msg != "" {
+			fmt.Fprintln(out, msg)
+		}
+	}
 	return nil
 }
 
