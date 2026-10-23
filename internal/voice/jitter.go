@@ -10,11 +10,18 @@ const FrameDur = 20 * time.Millisecond
 
 // Jitter buffer bounds, in frames (docs/VOICE.md "Jitter buffer").
 const (
-	ringSize      = 16 // 320 ms: anything further ahead resyncs
-	minTarget     = 2  // 40 ms
-	maxTarget     = 10 // 200 ms
-	initialTarget = 3  // 60 ms
-	maxMissing    = 5  // then the stream goes quiet and restarts
+	ringSize  = 16 // 320 ms: anything further ahead resyncs
+	minTarget = 3  // 60 ms: device periods (10 ms, VPIO's 10.7 ms) on both ends jitter frames by ±10 ms
+	maxTarget = 10 // 200 ms
+	// initialTarget leaves room for the first spurt, before any jitter
+	// has been measured.
+	initialTarget = 4
+	maxMissing    = 5 // then the stream goes quiet and restarts
+	// maxExcess: frames buffered beyond the target before the oldest are
+	// dropped. A stall followed by a burst (Wi-Fi, and always on the TCP
+	// fallback, which delivers late rather than never) would otherwise add
+	// its length to the delay for the rest of the spurt.
+	maxExcess = 4 // 80 ms
 )
 
 // OutKind says what the decoder should do for one 20 ms slot.
@@ -46,6 +53,9 @@ type jitter struct {
 	// below it is stale, even between talk spurts.
 	played     uint32
 	playedSome bool
+
+	// Outcomes since the stream started (the engine's loss estimate).
+	frames, lost, fec, trimmed uint64
 
 	// RFC 3550 interarrival jitter estimate, in ms.
 	jit       float64
@@ -134,8 +144,12 @@ func (j *jitter) scan() (n int, lowest uint32, end bool) {
 func (j *jitter) pop() (OutKind, []byte) {
 	if !j.started {
 		n, lowest, end := j.scan()
-		// Adapt only at talk-spurt starts so playout never stretches mid-sentence.
-		j.target = min(maxTarget, max(minTarget, int(math.Ceil((3*j.jit+20)/20))))
+		// Adapt only at talk-spurt starts so playout never stretches
+		// mid-sentence, and shrink one frame per spurt at most: a delay that
+		// a late frame just grew was too short, and dropping straight back
+		// would conceal (and stretch) again at the next spurt's start.
+		want := int(math.Ceil((3*j.jit + 20) / 20))
+		j.target = min(maxTarget, max(minTarget, want, j.target-1))
 		// A whole spurt shorter than the target plays at once.
 		if n == 0 || n < j.target && !end {
 			return OutSilence, nil
@@ -146,6 +160,7 @@ func (j *jitter) pop() (OutKind, []byte) {
 		j.hold--
 		return OutConceal, nil
 	}
+	j.trim()
 	s := j.at(j.next)
 	seq := j.next
 	j.next++
@@ -154,6 +169,7 @@ func (j *jitter) pop() (OutKind, []byte) {
 		data, end := s.data, s.end
 		*s = slot{}
 		j.missing = 0
+		j.frames++
 		if end {
 			j.reset()
 		}
@@ -164,8 +180,38 @@ func (j *jitter) pop() (OutKind, []byte) {
 		j.reset()
 		return OutSilence, nil
 	}
+	j.lost++
 	if n := j.at(j.next); n.ok && n.seq == j.next {
+		j.fec++
 		return OutFEC, n.data
 	}
 	return OutConceal, nil
+}
+
+// trim drops the oldest buffered frames while more than target+maxExcess
+// are waiting: playing them would only be late.
+func (j *jitter) trim() {
+	var high uint32
+	found := false
+	for _, s := range j.ring {
+		if s.ok && int32(s.seq-j.next) >= 0 && (!found || s.seq > high) {
+			high, found = s.seq, true
+		}
+	}
+	if !found {
+		return
+	}
+	depth := int64(high) - int64(j.next) + 1
+	if depth <= int64(j.target+maxExcess) {
+		return
+	}
+	keep := uint32(j.target)
+	for seq := j.next; seq != high-keep+1; seq++ {
+		if s := j.at(seq); s.ok && s.seq == seq {
+			*s = slot{}
+			j.trimmed++
+		}
+	}
+	j.next = high - keep + 1
+	j.played = j.next - 1
 }
