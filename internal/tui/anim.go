@@ -139,14 +139,14 @@ func (m *Model) fastWanted() bool {
 	return m.running(f.slideAt, dSlide) || m.running(f.sbAt, dSlide) || m.running(f.paneAt, dPane) ||
 		m.running(f.dialogAt, dDialog) || m.running(f.themeAt, dTheme) || m.running(f.bootAt, dBoot) ||
 		m.running(f.compAt, dToast) || m.running(m.emo.at, dToast) || m.running(m.emo.shutAt, dToast) ||
-		m.toastMoving() || m.introZooming()
+		m.toastMoving() || m.introShown()
 }
 
 // slowWanted reports whether something loops on screen: typing dots, a
 // talking meter, the loading spinner.
 func (m *Model) slowWanted() bool {
-	if m.fx.off || m.introShown() && m.fx.zoomAt.IsZero() {
-		return false // the intro's desktop covers anything that loops
+	if m.fx.off {
+		return false
 	}
 	if m.booting() {
 		return true
@@ -174,11 +174,7 @@ func (m *Model) frameTick() tea.Cmd {
 		d = slowFrame
 	default:
 		m.prune()
-		d = m.toastWake()
-		if w := m.introWake(); w > 0 && (d == 0 || w < d) {
-			d = w
-		}
-		if d == 0 {
+		if d = m.toastWake(); d == 0 {
 			return nil
 		}
 	}

@@ -91,6 +91,9 @@ type theme struct {
 	light                        bool
 	// dialog, when set, recolors dialogs: QBasic's gray boxes on blue.
 	dialog *theme
+	// hot, when set, colors hotkey letters (the menu bar) where the accent
+	// doesn't pop: macintosh's accent is black.
+	hot rgb
 }
 
 // nick is the muted name color for a user id: stable across runs.
@@ -212,6 +215,7 @@ func buildThemes() map[string]*theme {
 	for _, s := range specs {
 		out[s.name] = s.build()
 	}
+	out["macintosh"].hot = out["macintosh"].info
 	out["qbasic"].dialog = spec{name: "qbasic", desc: "dialogs", light: true,
 		bg: "#0000a8", panel: "#aaaaaa", element: "#c4c4c4", line: "#555555", fg: "#000000", dim: "#2a2a2a", faint: "#484848",
 		accent: "#0000a8", accentFg: "#ffffff", accentBg: "#c8c8e8", info: "#0000a8", ok: "#005c00", err: "#a00000", warn: "#5c4400",

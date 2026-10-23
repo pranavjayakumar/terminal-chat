@@ -23,6 +23,7 @@ func motionModel(t *testing.T, w, h int, prefs string) (*Model, *fakeClient, *cl
 	m := New(context.Background(), f, Options{Out: &syncBuf{}, Notifier: &fakeNotifier{}, styles: testStyles(true), motion: true, UIPrefs: prefs})
 	clk := newClock(m)
 	m.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	m.skipIntro() // these tests are about what follows it (intro: retro_test.go)
 	return m, f, clk
 }
 
@@ -447,12 +448,12 @@ func TestMouseClicks(t *testing.T) {
 // channels; a start with a cache never shows it.
 func TestLoadingScreen(t *testing.T) {
 	m, f, all := freshModel(t)
-	if !m.booting() || !strings.Contains(ansi.Strip(m.View()), "terminal chat") {
+	if !m.booting() || !strings.Contains(ansi.Strip(m.View()), "connecting…") {
 		t.Fatalf("no loading screen on a fresh start:\n%s", ansi.Strip(m.View()))
 	}
 	f.chans = all
 	m.Update(updateMsg(client.Update{Channels: true}))
-	if m.booting() || strings.Contains(ansi.Strip(m.View()), "terminal chat") {
+	if m.booting() || strings.Contains(ansi.Strip(m.View()), "connecting…") {
 		t.Fatal("loading screen stayed")
 	}
 	cached := newTestModel(t, 100, 30)

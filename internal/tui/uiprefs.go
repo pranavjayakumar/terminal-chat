@@ -128,12 +128,12 @@ func (m *Model) savePrefs() {
 // setTheme switches the theme, cross-fading from the old one.
 func (m *Model) setTheme(name string) {
 	th, ok := themes[name]
-	if !ok || th == m.st.th {
+	if !ok || name == m.st.th.name {
 		return
 	}
 	m.fx.themeFrom(m)
 	m.fx.skinSwap = false
-	m.applyStyles(newStyles(m.st.color, m.st.prof, th))
+	m.applyStyles(m.themeStyles(th))
 	m.ui.Theme = name // kept even for the default: it says the user chose
 	m.savePrefs()
 	m.setInfo("◐ theme · " + name)

@@ -506,6 +506,7 @@ func (m *Model) drawIdleInput(c *canvas, g geo) {
 	h := 3
 	y := g.statusY - (g.statusY - g.inY - g.inH) - h
 	m.box(c, g.CX, y, g.CW, h, th.line, th.bg)
+	m.shade(c, rect{g.CX, y, g.CX + g.CW, y + h})
 	c.put(g.CX+2, y, " "+m.chanTitle(m.active)+" ", fgc(th.faint), "")
 	c.put(g.CX+2, y+1, truncate("Esc closes the thread", g.CW-4), fgc(th.faint), "thread:close")
 }
@@ -540,6 +541,7 @@ func (m *Model) drawInput(c *canvas, g geo) {
 	}
 	col := mix(th.bg, th.accent, 0.75)
 	m.box(c, x, y, w, h, col, th.panel)
+	m.shade(c, rect{x, y, x + w, y + h})
 	title := m.chanTitle(m.active)
 	if m.thread.open() {
 		title = "reply"

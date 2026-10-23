@@ -22,17 +22,23 @@ type skin struct {
 	shadow    bool   // floating boxes cast a shadow
 	desktop   string // the gutter pattern; "" leaves gutters blank
 	menuBar   bool   // row 0 holds a menu bar
-	intro     bool   // the zoom intro plays while tc connects (intro.go)
+	intro     string // how it opens after connecting: introZoom or introFade (intro.go)
 	theme     string // suggested on selection to someone still on the default theme
+	inputPad  int    // blank rows under the input's text, inside its box
+	// defined pulls a theme's surfaces apart (colors) so frames, bars and
+	// shadows read on every theme, near-black ones included.
+	defined bool
+	cache   map[*theme]*theme
 }
 
 // boxRunes are a frame's corners and edges.
 type boxRunes struct{ tl, tr, bl, br, h, v string }
 
 var skins = []*skin{
-	{id: "modern", label: "Modern", box: boxRunes{"╭", "╮", "╰", "╯", "─", "│"}},
+	{id: "modern", label: "Modern", box: boxRunes{"╭", "╮", "╰", "╯", "─", "│"}, intro: introFade},
 	{id: "retro", label: "Retro", box: boxRunes{"╔", "╗", "╚", "╝", "═", "║"},
-		framed: true, shadow: true, desktop: "░", menuBar: true, intro: true, theme: "turbo"},
+		framed: true, shadow: true, desktop: "░", menuBar: true, intro: introZoom, theme: "turbo", inputPad: 1,
+		defined: true},
 }
 
 // skinNamed is the skin with id, or the default.
@@ -46,6 +52,77 @@ func skinNamed(id string) *skin {
 }
 
 func (m *Model) skin() *skin { return skinNamed(m.ui.Skin) }
+
+// Minimum contrasts a defined skin keeps between surfaces: a panel or
+// window against the background, a bar or selection, a frame against its
+// panel. Turbo already meets them, so it stays exactly the mockup's.
+const (
+	apartPanel = 1.1
+	apartBar   = 1.5
+	apartFrame = 3.0
+	// a background so dark that a shadow can't be darker gets lifted
+	// toward its line color until the shadow shows
+	apartShadow = 1.25
+)
+
+// colors is t as this skin draws it. A defined skin moves panel, element
+// and line toward fg just far enough to keep the minimum contrasts; every
+// other token stays. The result is made once per theme.
+func (s *skin) colors(t *theme) *theme {
+	if !s.defined {
+		return t
+	}
+	if c, ok := s.cache[t]; ok {
+		return c
+	}
+	c := *t
+	for k := 0.0; !t.light && k <= 1; k += 0.05 {
+		if c.bg = mix(t.bg, t.line, k); contrast(c.bg, t.shadowOf(c.bg, false)) >= apartShadow {
+			break
+		}
+	}
+	c.panel = apart(t.panel, c.bg, t.fg, apartPanel)
+	c.element = apart(t.element, c.bg, t.fg, apartBar)
+	c.line = apart(t.line, c.panel, t.fg, apartFrame)
+	// quiet text keeps reading on the brighter surfaces
+	c.dim = apart(t.dim, c.element, t.fg, 4.5)
+	c.faint = apart(t.faint, c.element, t.fg, 2.6)
+	if s.cache == nil {
+		s.cache = map[*theme]*theme{}
+	}
+	s.cache[t] = &c
+	return &c
+}
+
+// apart moves c toward to until it stands at least min off from.
+func apart(c, from, to rgb, min float64) rgb {
+	for k := 0.0; k <= 1; k += 0.05 {
+		if x := mix(c, to, k); contrast(x, from) >= min {
+			return x
+		}
+	}
+	return to
+}
+
+// themeStyles builds styles for theme t as the current skin draws it.
+func (m *Model) themeStyles(t *theme) *styles {
+	return newStyles(m.st.color, m.st.prof, m.skin().colors(t))
+}
+
+// barColors are the menu bar's: background, text, hotkey letters, quiet
+// text. A theme with dialog colors (qbasic) uses them, like DOS menus; a
+// theme's hot color, when set, makes the hotkeys pop where the accent
+// can't (macintosh's is black).
+func (t *theme) barColors() (bg, fg, key, dim rgb) {
+	if d := t.dialog; d != nil {
+		return d.panel, d.fg, d.accent, d.dim
+	}
+	key = t.accent
+	if t.hot != 0 {
+		key = t.hot
+	}
+	return t.element, t.fg, key, t.dim
+}
 
 // setSkin switches the chrome, cross-fading the colors and swapping the
 // glyphs halfway. The theme stays, unless the user never picked one and
@@ -61,10 +138,10 @@ func (m *Model) setSkin(id string) {
 	if s == skins[0] {
 		m.ui.Skin = ""
 	}
-	if t, ok := themes[s.theme]; ok && m.ui.Theme == "" && t != m.st.th {
-		m.applyStyles(newStyles(m.st.color, m.st.prof, t))
+	if _, ok := themes[s.theme]; ok && m.ui.Theme == "" {
 		m.ui.Theme = s.theme
 	}
+	m.applyStyles(m.themeStyles(themeNamed(m.ui.themeName())))
 	m.savePrefs()
 	m.layoutInput()
 	m.clampScroll(&m.main)
@@ -75,9 +152,9 @@ func (m *Model) setSkin(id string) {
 // shadowOf is a cell color in a shadow: toward black on a dark theme,
 // toward the theme's ink on a light one, where black would read as a hole.
 func (t *theme) shadowOf(c rgb, text bool) rgb {
-	k := 0.7
+	k := 0.75
 	if text {
-		k = 0.55
+		k = 0.6
 	}
 	if t.light {
 		return mix(c, t.fg, k*0.45)
@@ -85,8 +162,26 @@ func (t *theme) shadowOf(c rgb, text bool) rgb {
 	return mix(c, 0x000000, k)
 }
 
-// patternColor is the desktop pattern's color: quiet on any theme.
-func (t *theme) patternColor() rgb { return mix(t.bg, t.faint, 0.4) }
+// patternContrast is how far the desktop pattern stands off what it is
+// drawn on: about the Borland mockup's, visible yet quieter than faint text.
+// A ░ covers a quarter of its cell, so less reads as a flat lighter fill.
+const patternContrast = 2.0
+
+// patternOn is the desktop pattern's color on bg: the theme's line color
+// 45% of the way from bg (the mockup's), pushed further, toward fg if line
+// sits too close to bg, until it shows.
+func (t *theme) patternOn(bg rgb) rgb {
+	to := t.line
+	if contrast(to, bg) < patternContrast {
+		to = t.fg
+	}
+	for k := 0.45; k < 1; k += 0.05 {
+		if c := mix(bg, to, k); contrast(c, bg) >= patternContrast {
+			return c
+		}
+	}
+	return to
+}
 
 // shade darkens the cells a floating box at r casts its shadow on: two
 // columns on the right and one row below, Turbo Vision style. It stays
@@ -96,7 +191,11 @@ func (m *Model) shade(c *canvas, r rect) {
 		return
 	}
 	th := m.st.th
+	pat := m.skin().desktop
 	dark := func(cl *cell) {
+		if cl.s == pat && pat != "" {
+			cl.s = " " // a shadow is solid, like the mockup's
+		}
 		cl.bg, cl.fg = th.shadowOf(cl.bg, false), th.shadowOf(cl.fg, true)
 	}
 	c.each(r.x1, r.y0+1, 2, r.y1-r.y0, dark)
@@ -105,23 +204,31 @@ func (m *Model) shade(c *canvas, r rect) {
 
 // drawDesktop fills the empty cells of the gutters beside the message
 // column (and around the thread pane) with the skin's pattern, never
-// behind text and never where a click lands.
+// behind text and never where a click lands. Its color follows each
+// cell's own background, so a tinted gutter still shows it.
 func (m *Model) drawDesktop(c *canvas, g geo) {
 	pat := m.skin().desktop
 	if pat == "" || g.thrFull || (m.mode == modeViewer && m.view.wide) {
 		return
 	}
 	th := m.st.th
-	col := th.patternColor()
-	if !m.st.color {
-		col = th.faint
+	cols := map[rgb]rgb{} // a frame has a few backgrounds; each is worked out once
+	col := func(bg rgb) rgb {
+		if !m.st.color {
+			return th.faint
+		}
+		if c, ok := cols[bg]; ok {
+			return c
+		}
+		cols[bg] = th.patternOn(bg)
+		return cols[bg]
 	}
 	fill := func(x0, x1 int) {
 		for y := g.T0; y < g.statusY; y++ {
 			for x := max(x0, 0); x < min(x1, c.w); x++ {
 				cl := c.at(x, y)
-				if cl.s == " " && cl.act == 0 && cl.bg == th.bg {
-					cl.s, cl.fg, cl.attr = pat, col, 0
+				if cl.s == " " && cl.w == 1 && cl.act == 0 {
+					cl.s, cl.fg, cl.attr = pat, col(cl.bg), 0
 				}
 			}
 		}
@@ -149,60 +256,63 @@ func menuKey(key string) string {
 	return ""
 }
 
-// menuRight is the menu bar's right side (clock and who is online) and
-// its column; "" when the bar is too narrow to keep it.
-func (m *Model) menuRight() (string, int) {
-	right := m.now().Format("15:04") + "  ◉ " + m.onlineLabel()
-	rx := m.w - 2 - strWidth(right)
-	if rx < 30 {
-		return "", m.w
-	}
-	return right, rx
-}
-
-// drawMenuBar draws row 0 when the skin has a menu bar: the menus on the
-// left, the clock and who is online on the right. When room runs out the
-// middle entries go first; ≡ and Help stay.
+// drawMenuBar draws row 0 when the skin has a menu bar, laid out as the
+// mockup: " ≡ " from column 1, the menus one space apart, the clock and
+// who is online ending 5 columns from the right. When room runs out the
+// middle menus go first; ≡ and Help stay.
 func (m *Model) drawMenuBar(c *canvas, g geo) {
 	if !g.bar {
 		return
 	}
 	th := m.st.th
-	c.fill(0, 0, m.w, 1, th.element, "")
+	barBg, barFg, barKey, barDim := th.barColors()
+	c.fill(0, 0, m.w, 1, barBg, "")
 	right, rx := m.menuRight()
 	if right != "" {
-		c.put(rx, 0, right, fgc(th.dim).on(th.element), "")
+		c.put(rx, 0, right, fgc(barDim).on(barBg), "")
 	}
-	width := func(it menuItem) int { return strWidth(it.key) + strWidth(it.rest) + 3 }
+	width := func(i int, it menuItem) int {
+		if i == 0 {
+			return 3 // " ≡ "
+		}
+		return strWidth(it.key) + strWidth(it.rest)
+	}
 	items := append([]menuItem(nil), menuItems...)
 	total := 1
-	for _, it := range items {
-		total += width(it)
+	for i, it := range items {
+		total += width(i, it) + 1
 	}
 	for len(items) > 2 && total > rx-1 {
-		total -= width(items[len(items)-2])
+		total -= width(1, items[len(items)-2]) + 1
 		items = append(items[:len(items)-2], items[len(items)-1])
 	}
 	x := 1
-	for _, it := range items {
-		if x+width(it)-1 > rx-1 {
+	for i, it := range items {
+		if x+width(i, it) > rx-1 {
 			break
 		}
-		bg, key, rest := th.element, fgb(th.accent), fgc(th.fg)
+		bg, key, rest := barBg, fgb(barKey), fgc(barFg)
 		if m.hover == it.act {
-			bg, key, rest = th.accent, fgb(th.accentFg), fgc(th.accentFg)
+			bg, key, rest = th.accent, fgb(th.accentFg).with(aMonoRev), fgc(th.accentFg).with(aMonoRev)
 		}
-		on := func(s cstyle) cstyle {
-			if m.hover == it.act {
-				s = s.with(aMonoRev)
-			}
-			return s.on(bg)
+		if i == 0 {
+			x = c.put(x, 0, " "+it.key+" ", key.on(bg), it.act) + 1
+			continue
 		}
-		e := c.put(x, 0, " ", on(rest), it.act)
-		e = c.put(e, 0, it.key, on(key), it.act)
-		e = c.put(e, 0, it.rest, on(rest), it.act)
-		x = c.put(e, 0, " ", on(rest), it.act) + 1
+		e := c.put(x, 0, it.key, key.on(bg), it.act)
+		x = c.put(e, 0, it.rest, rest.on(bg), it.act) + 1
 	}
+}
+
+// menuRight is the menu bar's right side (clock and who is online) and
+// its column; "" when the bar is too narrow to keep it.
+func (m *Model) menuRight() (string, int) {
+	right := m.now().Format("15:04") + "  ◉ " + m.onlineLabel()
+	rx := m.w - 5 - strWidth(right)
+	if rx < 30 {
+		return "", m.w
+	}
+	return right, rx
 }
 
 // onlineLabel is "N online", or the connection state while not online.

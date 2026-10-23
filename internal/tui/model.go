@@ -227,7 +227,7 @@ const (
 // New builds the model and loads the cache.
 func New(ctx context.Context, c Backend, o Options) *Model {
 	ui := loadUIPrefs(o.UIPrefs)
-	th := themeNamed(ui.themeName())
+	th := skinNamed(ui.Skin).colors(themeNamed(ui.themeName()))
 	st := o.styles
 	switch {
 	case st == nil && o.Out != nil:

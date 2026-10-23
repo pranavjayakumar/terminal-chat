@@ -139,7 +139,7 @@ func (m *Model) setCtls() []setCtl {
 	case "appearance":
 		cur := 0
 		for i, id := range themeOrder {
-			if themes[id] == m.st.th {
+			if id == m.st.th.name {
 				cur = i
 			}
 		}
@@ -167,8 +167,8 @@ func (m *Model) setCtls() []setCtl {
 			{label: "Animations", sub: "fades, pops, slides · off = instant", toggle: true, cur: boolInt(!m.fx.off),
 				pick: func(i int) tea.Cmd { m.setMotion(i == 1); return nil }},
 		}
-		if m.skin().intro {
-			ctls = append(ctls, setCtl{label: "Startup", sub: "the skin's intro while tc connects", opts: []string{"Animated", "Instant"}, cur: boolInt(m.ui.Startup == startInstant),
+		if m.skin().intro != "" {
+			ctls = append(ctls, setCtl{label: "Startup", sub: "the short intro while tc connects", opts: []string{"Animated", "Instant"}, cur: boolInt(m.ui.Startup == startInstant),
 				pick: func(i int) tea.Cmd { m.setStartup(i == 1); return nil }})
 		}
 		return ctls
@@ -563,7 +563,7 @@ func (m *Model) drawThemeCards(c *canvas, x, y, w, room, row int) int {
 	for k, id := range themeOrder {
 		t := themes[id]
 		a := "set:" + strconv.Itoa(row) + ":" + strconv.Itoa(k)
-		cur := t == th
+		cur := t.name == th.name
 		mark := "  "
 		if cur {
 			mark = "✓ "

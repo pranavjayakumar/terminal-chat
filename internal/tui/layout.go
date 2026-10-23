@@ -151,16 +151,15 @@ func (m *Model) geo() geo {
 		g.inX, g.inW = g.RX+2, g.TW-4
 	}
 	g.boxed = m.h >= 10 && g.inW >= 6
-	g.inH = m.inputRows(g.inW-4) + 2
+	g.inH = m.inputRows(g.inW-4) + 2 + m.skin().inputPad
 	if !g.boxed {
 		g.inH = m.inputRows(g.inW)
 	}
 	g.inY = g.statusY - gap - g.inH
 	g.noteY = g.inY - 1
-	g.top = g.T0
-	if g.roomy {
-		g.top++
-	}
+	// A roomy layout leaves row 0 blank, so a menu bar takes it without
+	// moving anything; a tight one moves down a row.
+	g.top = max(g.T0, boolInt(g.roomy))
 	y := g.top + 1
 	if g.roomy {
 		y++
@@ -241,7 +240,7 @@ func (m *Model) dims() dims {
 		return dims{}
 	}
 	d := dims{side: g.SB > 0, mainW: g.CW, inputW: max(g.inW-4, 1), msgW: g.CW, split: g.split, thrFull: g.thrFull,
-		inputH: g.inH - 2, bodyH: g.msgBot - g.msgTop, banner: g.banner >= 0}
+		inputH: g.inH - 2 - m.skin().inputPad, bodyH: g.msgBot - g.msgTop, banner: g.banner >= 0}
 	if !g.boxed {
 		d.inputW, d.inputH = max(g.inW, 1), g.inH
 	}

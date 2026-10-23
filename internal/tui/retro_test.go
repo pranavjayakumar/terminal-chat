@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
@@ -208,8 +209,14 @@ func TestRetroChrome(t *testing.T) {
 	if !strings.Contains(rv, "╔") || !strings.Contains(rv, "╝") {
 		t.Fatal("no double-line input box")
 	}
-	if g, h := ret.geo(), mod.geo(); g.top != h.top+1 || g.T0 != 1 || g.statusY != h.statusY {
+	// The menu bar takes the blank row 0 of a roomy layout, as in the
+	// mockup; a tight one moves down a row.
+	if g, h := ret.geo(), mod.geo(); g.top != h.top || g.T0 != 1 || g.statusY != h.statusY {
 		t.Fatalf("retro top %d (T0 %d), modern %d", g.top, g.T0, h.top)
+	}
+	tm, _ := retroModel(t, 80, 24)
+	if g := tm.geo(); g.top != 1 || g.T0 != 1 {
+		t.Fatalf("tight retro top %d", g.top)
 	}
 	// The desktop pattern sits in the gutters only, never on a target.
 	c := ret.lastCanvas
@@ -421,7 +428,7 @@ func TestDialogTheme(t *testing.T) {
 			}
 		}
 	}
-	if m.st.th != themes["qbasic"] || m.lastCanvas.th != m.st.th {
+	if m.st.th.name != "qbasic" || m.st.th.dialog == nil || m.st.th.panel == m.st.th.dialog.panel || m.lastCanvas.th != m.st.th {
 		t.Fatal("the dialog styles outlived the dialog")
 	}
 }
@@ -448,27 +455,22 @@ func tick(m *Model, clk *clock, d time.Duration) {
 	m.Update(frameMsg{gen: m.fx.gen})
 }
 
-func desktopOnly(m *Model) bool {
-	m.View()
-	for _, cl := range m.lastCanvas.cells {
-		if cl.s != "░" {
-			return false
-		}
-	}
-	return true
+// holding: the intro shows its logo and "connecting…", and nothing of
+// the UI.
+func holding(t *testing.T, m *Model) bool {
+	t.Helper()
+	v := checkView(t, m, "intro")
+	return strings.Contains(v, "▀█▀") && strings.Contains(v, "connect") && !strings.Contains(v, "general")
 }
 
 func TestIntro(t *testing.T) {
-	// A cached start: the desktop holds the minimum, then the zoom opens.
+	// A cached start: the dialog holds the minimum, then the zoom opens.
 	m, _, clk := introModel(t, true, "")
-	if !m.introShown() || !desktopOnly(m) {
-		t.Fatal("no desktop at start")
-	}
-	if w := m.introWake(); w != dIntroHold {
-		t.Fatalf("wake in %v, want %v", w, dIntroHold)
+	if !m.introShown() || !holding(t, m) || !strings.Contains(checkView(t, m, "x"), "╔") {
+		t.Fatal("no connecting dialog at start")
 	}
 	tick(m, clk, dIntroHold-time.Millisecond)
-	if !desktopOnly(m) {
+	if !holding(t, m) || m.introZooming() {
 		t.Fatal("the zoom started before the minimum")
 	}
 	tick(m, clk, time.Millisecond)
@@ -476,15 +478,15 @@ func TestIntro(t *testing.T) {
 		t.Fatal("no zoom after the minimum")
 	}
 	tick(m, clk, fastFrame)
-	if desktopOnly(m) {
-		t.Fatal("the rectangle didn't open")
+	if holding(t, m) {
+		t.Fatal("the frame didn't open")
 	}
 	for i := 0; i < 10; i++ {
 		v := checkView(t, m, "zoom")
-		if i < 3 && !strings.Contains(v, "═") {
+		if i < 8 && !strings.Contains(v, "╔") {
 			t.Fatal("no growing frame")
 		}
-		tick(m, clk, dIntroZoom/10)
+		tick(m, clk, dIntroOpen/10)
 	}
 	tick(m, clk, time.Millisecond)
 	if m.introShown() || m.fastWanted() {
@@ -493,10 +495,29 @@ func TestIntro(t *testing.T) {
 	if v := checkView(t, m, "after the intro"); strings.Count(v, "░") > 2000 || !strings.Contains(v, "general") {
 		t.Fatal("the UI didn't come back")
 	}
+	if dIntroHold+dIntroOpen > 1500*time.Millisecond || dIntroMax+dIntroOpen > 2*time.Second {
+		t.Fatal("the intro makes startup slow")
+	}
+
+	// Modern: the same quick logo screen, fading into the chat.
+	mm, _, mclk := motionModel(t, 120, 40, "")
+	mm.fx.intro, mm.fx.introAt, mm.fx.zoomAt = true, mclk.t, time.Time{}
+	if !holding(t, mm) || strings.Contains(checkView(t, mm, "x"), "╔") {
+		t.Fatal("no modern logo screen")
+	}
+	tick(mm, mclk, dIntroHold)
+	tick(mm, mclk, dIntroOpen*3/4)
+	if v := checkView(t, mm, "fade"); !strings.Contains(v, "general") {
+		t.Fatal("the chat didn't fade in")
+	}
+	tick(mm, mclk, dIntroOpen)
+	if mm.introShown() {
+		t.Fatal("the modern intro didn't end")
+	}
 
 	// A fresh start waits for the connection, not past it.
 	m, f, clk := introModel(t, false, "")
-	tick(m, clk, dIntroHold*2)
+	tick(m, clk, dIntroMax-time.Millisecond)
 	if m.introZooming() {
 		t.Fatal("zoomed before the connection")
 	}
@@ -529,9 +550,12 @@ func TestIntro(t *testing.T) {
 	if m.introShown() {
 		t.Fatal("Animations off played the intro")
 	}
-	mm, _, _ := motionModel(t, 120, 40, "")
-	if mm.introShown() {
-		t.Fatal("the modern skin played the intro")
+	ip := filepath.Join(t.TempDir(), "ui.json")
+	os.WriteFile(ip, []byte(`{"startup":"instant"}`), 0o600)
+	im := New(context.Background(), newFake(), Options{Out: &syncBuf{}, Notifier: &fakeNotifier{}, styles: testStyles(true), motion: true, UIPrefs: ip})
+	im.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	if im.introShown() {
+		t.Fatal("Instant played the modern intro")
 	}
 }
 
@@ -824,21 +848,21 @@ func retroSteps(t *testing.T, m *Model, f *fakeClient, clk *clock) {
 	step("keys")
 }
 
-// A frame needed sooner replaces a long pending wake: the intro's 2.5 s
-// hold never delays the zoom once the connection is up.
+// A frame needed sooner replaces a long pending wake: a settled toast's
+// fade-out wake never delays an arrival's animation.
 func TestSoonerFrameReplacesWake(t *testing.T) {
-	m, f, clk := introModel(t, false, "")
-	if !m.fx.running || m.fx.wakeAt.Sub(clk.t) != dIntroMax {
-		t.Fatalf("hold wake at %v", m.fx.wakeAt.Sub(clk.t))
+	m, f, clk := motionModel(t, 120, 40, "")
+	m.setInfo("copied")
+	tick(m, clk, dToast*2) // faded in; now only its fade-out is ahead
+	if !m.fx.running || m.fx.wakeAt.Sub(clk.t) < time.Second {
+		t.Fatalf("toast wake in %v", m.fx.wakeAt.Sub(clk.t))
 	}
-	clk.add(time.Second)
-	f.status.State = client.Online
-	m.Update(updateMsg(client.Update{Status: true}))
-	if !m.introZooming() || m.fx.wakeAt.Sub(clk.t) > fastFrame {
-		t.Fatalf("zoom frame waits %v", m.fx.wakeAt.Sub(clk.t))
+	f.msgs[10] = append(f.msgs[10], client.Message{Message: proto.Message{ID: 900, Chan: 10, Author: 2, Body: "new", Time: clk.t.UnixMilli()}})
+	m.Update(updateMsg(client.Update{Msgs: map[uint64]bool{10: true}}))
+	if m.fx.wakeAt.Sub(clk.t) > fastFrame {
+		t.Fatalf("the arrival waits %v", m.fx.wakeAt.Sub(clk.t))
 	}
-	gen := m.fx.gen
-	m.Update(frameMsg{gen: gen - 1}) // the replaced wake fires: ignored
+	m.Update(frameMsg{gen: m.fx.gen - 1}) // the replaced wake fires: ignored
 	if !m.fx.running {
 		t.Fatal("a stale frame cancelled the pending one")
 	}
@@ -935,7 +959,7 @@ func TestThreadKeysKeepText(t *testing.T) {
 // The menu bar keeps ≡ and Help when narrow, its letters work with ⌥, and
 // a hidden clock never wakes the screen.
 func TestMenuBarNarrowAndKeys(t *testing.T) {
-	m, _ := retroModel(t, 44, 20)
+	m, _ := retroModel(t, 34, 20)
 	first := strings.Split(checkView(t, m, "narrow"), "\n")[0]
 	if !strings.Contains(first, "≡") || !strings.Contains(first, "Help") || strings.Contains(first, "Theme") {
 		t.Fatalf("narrow menu bar: %q", first)
@@ -962,5 +986,47 @@ func TestMenuBarNarrowAndKeys(t *testing.T) {
 	r, _ := retroModel(t, 120, 14)
 	if r.geo().bar {
 		t.Fatal("menu bar on a 14-row terminal")
+	}
+}
+
+// The Retro desktop shows in the gutters on every theme, light and dark:
+// every empty gutter cell holds the pattern, visible against its own
+// background, and distinct from it on 256-color terminals too.
+func TestDesktopVisibleOnEveryTheme(t *testing.T) {
+	for _, name := range themeOrder {
+		p := filepath.Join(t.TempDir(), "ui.json")
+		os.WriteFile(p, []byte(`{"skin":"retro","theme":"`+name+`"}`), 0o600)
+		f := newFake()
+		f.users = f.users[:2] // alice and bob
+		m := New(context.Background(), f, Options{Out: &syncBuf{}, Notifier: &fakeNotifier{}, styles: testStyles(true), UIPrefs: p})
+		m.Update(tea.WindowSizeMsg{Width: 160, Height: 48})
+		m.View()
+		g, c := m.geo(), m.lastCanvas
+		e := newEncoder(termenv.ANSI256, true)
+		e.pinSurfaces(m.st.th)
+		n := 0
+		for y := g.T0; y < g.statusY; y++ {
+			for _, span := range [][2]int{{g.L, g.CX - 1}, {g.CX + g.CW + 2, g.RX}} {
+				for x := span[0]; x < span[1]; x++ {
+					cl := c.at(x, y)
+					if cl.act != 0 {
+						continue
+					}
+					if cl.s != "░" {
+						t.Fatalf("%s: gutter cell %d,%d is %q", name, x, y, cl.s)
+					}
+					if cr := contrast(cl.fg, cl.bg); cr < patternContrast-0.05 {
+						t.Fatalf("%s: pattern at %d,%d reads at %.2f", name, x, y, cr)
+					}
+					if e.seq(cl.fg, false)[5:] == e.seq(cl.bg, true)[5:] {
+						t.Fatalf("%s: pattern and background are one 256 color", name)
+					}
+					n++
+				}
+			}
+		}
+		if n < 1000 {
+			t.Fatalf("%s: only %d pattern cells", name, n)
+		}
 	}
 }

@@ -110,7 +110,7 @@ func (m *Model) palSettings() []palItem {
 	for _, id := range themeOrder {
 		t := themes[id]
 		it := palItem{group: "Theme", label: id, desc: t.desc, icon: "■", iconFg: t.accent, iconBg: t.bg, run: "theme:" + id, tabs: "as"}
-		if t == m.st.th {
+		if t.name == m.st.th.name {
 			it.meta = "✓ current"
 		}
 		out = append(out, it)
