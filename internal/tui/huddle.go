@@ -94,6 +94,7 @@ type huddleUI struct {
 	warnNote  string // the sticky in-huddle warning shown, if any
 	aec       string
 	note      string
+	tcp       bool // voice rides the TCP fallback (§14.4)
 	// aecHinted: the headphones hint was shown (once per run).
 	aecHinted bool
 	// followUp is shown when the notice of generation followGen expires
@@ -138,6 +139,8 @@ func (m *Model) refreshHuddle() {
 		h.talking = hb.Talking()
 		h.aec = hb.VoiceAEC()
 		h.note = hb.VoiceNote()
+		st, _ := huddleStats(hb)
+		h.tcp = st.TCP
 		if w != nil && !errors.Is(w, h.warned) {
 			h.warned = w
 			h.warnNote = w.Error()
@@ -265,6 +268,9 @@ func (m *Model) huddleCommand(c command) (tea.Cmd, bool, error) {
 			return nil, true, errors.New("usage: /huddle [stats]")
 		}
 		if !in {
+			if !client.VoiceAvailable() {
+				return nil, true, errors.New("no voice: tc update --voice")
+			}
 			return nil, true, errors.New("not in a huddle (/huddle to join)")
 		}
 		st, ok := huddleStats(hb)
@@ -285,14 +291,14 @@ func (m *Model) huddleCommand(c command) (tea.Cmd, bool, error) {
 		m.refreshHuddle()
 		// What was asked (echo control) first, then the device note.
 		s := aecLine(m.hud.aec)
+		if m.hud.tcp { // first: narrow panes cut the end
+			s = tcpNote + " · " + s
+		}
 		if m.hud.note != "" {
 			s += " · " + m.hud.note
 		}
 		if m.hud.warnNote != "" {
 			s += " · " + m.hud.warnNote // the report replaces it on screen
-		}
-		if st, ok := huddleStats(hb); ok && st.TCP {
-			s += " · " + tcpNote
 		}
 		m.setNotice(s+" · /leave-huddle to leave", false, false, errTTL)
 		return nil, true, nil
@@ -427,11 +433,6 @@ func (m *Model) huddleMsg(msg tea.Msg) (tea.Cmd, bool) {
 		if msg.prev != 0 {
 			parts = append(parts, "left "+m.chanTitle(msg.prev))
 		}
-		if hb, ok := m.huddleBackend(); ok {
-			if st, ok := huddleStats(hb); ok && st.TCP {
-				parts = append(parts, tcpNote)
-			}
-		}
 		parts = append(parts, talkHelp)
 		ttl := time.Duration(0)
 		if len(parts) > 1 {
@@ -469,6 +470,9 @@ func (m *Model) huddleHead(compact bool) (head, roster string) {
 		b.WriteString("🔒")
 	}
 	b.WriteString(m.chanTitle(h.cur))
+	if h.tcp { // for the whole call: notices expire
+		b.WriteString(" tcp")
+	}
 	if compact {
 		fmt.Fprintf(&b, " (%d)", len(h.roster))
 		return b.String(), ""
@@ -553,9 +557,13 @@ func huddleStats(hb HuddleBackend) (client.HuddleStats, bool) {
 }
 
 // statsLine is /huddle stats: numbers to report from a real call, the
-// ones that explain bad audio first (narrow panes truncate notices).
+// transport and the ones that explain bad audio first (narrow panes
+// truncate notices).
 func statsLine(st client.HuddleStats) string {
-	parts := []string{fmt.Sprintf("loss %.1f%%", st.LossPct)}
+	parts := []string{"udp", fmt.Sprintf("loss %.1f%%", st.LossPct)}
+	if st.TCP {
+		parts[0] = "tcp"
+	}
 	if st.BufferMs > 0 {
 		parts = append(parts, fmt.Sprintf("buf %dms", st.BufferMs))
 	}
@@ -566,12 +574,7 @@ func statsLine(st client.HuddleStats) string {
 		parts = append(parts, fmt.Sprintf("fec %d%%", st.FEC))
 	}
 	if st.Kbps > 0 {
-		parts = append(parts, fmt.Sprintf("%.0fk", st.Kbps))
-	}
-	if st.TCP {
-		parts = append(parts, "tcp")
-	} else {
-		parts = append(parts, "udp")
+		parts = append(parts, fmt.Sprintf("%.0f kb/s", st.Kbps))
 	}
 	return strings.Join(parts, " · ")
 }

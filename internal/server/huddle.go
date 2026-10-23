@@ -520,9 +520,9 @@ const (
 	voiceQueueLen = 8 // 160 ms of one talker
 	voiceMaxAge   = 150 * time.Millisecond
 	voiceStall    = 100 * time.Millisecond
-	// voiceStuck: a write blocked this long means the peer stopped reading.
-	// Voice bytes don't count toward maxQueueBytes, so without this a
-	// huddle-only session could hold a writer forever.
+	// voiceStuck: a voice write blocked this long means the peer stopped
+	// reading. Voice bytes don't count toward maxQueueBytes, so without this
+	// a huddle-only session could hold a writer forever (checkVoiceStuck).
 	voiceStuck    = 10 * time.Second
 	voiceBackedUp = 64 << 10 // queued chat bytes
 )
@@ -532,17 +532,27 @@ type voiceOut struct {
 	at time.Time
 }
 
+// checkVoiceStuck closes sess as a slow consumer once a voice write has
+// been blocked for voiceStuck. Only voice: it is written only when the
+// socket's backlog is small (writeVoice), so a ≤512-byte frame blocked that
+// long means the peer stopped reading, whereas a big chat frame on a slow
+// but working link may legitimately take longer.
+func (sess *session) checkVoiceStuck(now time.Time) {
+	if w := sess.writingVoice.Load(); w == 0 || now.UnixNano()-w <= int64(voiceStuck) {
+		return
+	}
+	sess.mu.Lock()
+	if !sess.closed {
+		sess.slowLocked()
+	}
+	sess.mu.Unlock()
+}
+
 // pushVoice queues a relayed frame for sess's writer; false = dropped.
 func (sess *session) pushVoice(it dgItem) bool {
 	now := time.Now()
 	if w := sess.writing.Load(); w != 0 && now.UnixNano()-w > int64(voiceStall) {
-		if now.UnixNano()-w > int64(voiceStuck) {
-			sess.mu.Lock()
-			if !sess.closed {
-				sess.slowLocked()
-			}
-			sess.mu.Unlock()
-		}
+		sess.checkVoiceStuck(now)
 		return false
 	}
 	sess.mu.Lock()
@@ -587,8 +597,11 @@ func (sess *session) writeVoice(vq []voiceOut) bool {
 			hs.dropped.Add(1)
 			continue
 		}
-		sess.writing.Store(time.Now().UnixNano())
+		now := time.Now().UnixNano()
+		sess.writing.Store(now)
+		sess.writingVoice.Store(now)
 		err := sess.codec.WriteRaw(proto.TVoice, v.it.b)
+		sess.writingVoice.Store(0)
 		sess.writing.Store(0)
 		if err != nil {
 			return false

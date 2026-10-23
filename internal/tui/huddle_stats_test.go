@@ -28,20 +28,24 @@ func TestHuddleStatsAndTCP(t *testing.T) {
 		sf := &statsFake{huddleFake: h, st: client.HuddleStats{TCP: true, Kbps: 31.6, LossPct: 0.4, FEC: 0, BufferMs: 60, Late: 3}}
 		m.c = sf
 		runInput(t, m, "/huddle stats")
-		if !m.noticeErr || !strings.Contains(m.notice, "not in a huddle") {
+		wantErr := "not in a huddle"
+		if !client.VoiceAvailable() {
+			wantErr = "no voice"
+		}
+		if !m.noticeErr || !strings.Contains(m.notice, wantErr) {
 			t.Fatalf("stats outside a huddle: %q", m.notice)
 		}
 		runInput(t, m, "/huddle")
 		runInput(t, m, "/huddle")
-		if !strings.HasPrefix(m.notice, "echo cancellation on (system) · voice via tcp") {
+		if !strings.HasPrefix(m.notice, "voice via tcp · echo cancellation on (system)") {
 			t.Fatalf("/huddle in a TCP huddle: %q", m.notice)
 		}
 		runInput(t, m, "/huddle stats")
-		want := "loss 0.4% · buf 60ms · 3 late · 32k · tcp"
+		want := "tcp · loss 0.4% · buf 60ms · 3 late · 32 kb/s"
 		if m.noticeErr || m.notice != want {
 			t.Fatalf("stats %q", m.notice)
 		}
-		if v := checkView(t, m, "stats"); !strings.Contains(v, "loss 0.4%") {
+		if v := checkView(t, m, "stats"); !strings.Contains(v, "loss 0.4%") || !strings.Contains(v, "tcp") {
 			t.Fatalf("loss not visible at %d columns:\n%s", w, v)
 		}
 		v := checkView(t, m, "stats notice")
@@ -52,7 +56,7 @@ func TestHuddleStatsAndTCP(t *testing.T) {
 		}
 		sf.st = client.HuddleStats{FEC: -1}
 		runInput(t, m, "/huddle stats")
-		if m.notice != "loss 0.0% · udp" {
+		if m.notice != "udp · loss 0.0%" {
 			t.Fatalf("fresh UDP stats %q", m.notice)
 		}
 		runInput(t, m, "/huddle stat")

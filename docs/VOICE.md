@@ -49,7 +49,7 @@ since. Wire format: PROTOCOL.md §14 (caps `voice1`, `voice_tcp`).
   IPsec VPNs, some guest Wi-Fi) the connection falls back to TLS over TCP; voice then rides the
   frame stream as VOICE frames carrying the identical datagram bytes (same E2E encryption: the
   stream is only a carrier). The server relays between transports, so QUIC and TCP participants
-  hear each other. The join notice and `/huddle` say `voice via tcp`.
+  hear each other. The huddle bar shows `tcp` for the whole call and `/huddle` says `voice via tcp`.
   - A reliable stream turns loss into head-of-line stalls (a lost packet freezes every
     following frame for an RTO) and never drops late audio, so latency is bounded by dropping
     on purpose, at every hop: the client sends a frame only if the stream is free (never behind
@@ -205,9 +205,9 @@ exactly like public-channel text. The TUI marks encrypted huddles with the lock 
   is off. Esc on an empty input closes an open mic.
 - Not talking = muted. `/leave-huddle` leaves.
 - `/huddle stats` (in a huddle) shows numbers to report from a real call, e.g.
-  `loss 0.4% · buf 60ms · 3 late · fec 0% · 27k · udp`: recent loss on what we hear, the jitter
-  buffer delay, frames dropped for coming too late, the loss our FEC protects against (UDP
-  only), our Opus bitrate while talking, and the transport.
+  `udp · loss 0.4% · buf 60ms · 3 late · fec 0% · 27 kb/s`: the transport, recent loss on what we
+  hear, the jitter buffer delay, frames dropped for coming too late, the loss our FEC protects
+  against (UDP only), and our Opus bitrate while talking.
 - A huddle that ends without `/leave-huddle` says why, once: `🎧 #chan ended: connection lost`
   (or `you were dropped`: membership, revoke, the server's liveness check; or `encryption
   changed`), plus `· /huddle to rejoin` only when that would rejoin it (online, viewing that

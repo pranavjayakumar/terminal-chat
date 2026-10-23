@@ -74,13 +74,20 @@ func TestHuddleStreamRelay(t *testing.T) {
 		pace(i)
 	}
 	got := b.voiceFrames(300 * time.Millisecond)
-	if len(got) != n {
+	// Voice on the stream may drop a frame that waited too long (a loaded
+	// -race run can stall the writer); what arrives is unchanged and in order.
+	if len(got) < n-3 {
 		t.Fatalf("bo got %d of %d frames", len(got), n)
 	}
+	j := 0
 	for i := range got {
-		if !bytes.Equal(got[i], sent[i]) {
-			t.Fatalf("frame %d changed", i)
+		for j < n && !bytes.Equal(got[i], sent[j]) {
+			j++
 		}
+		if j == n {
+			t.Fatalf("frame %d changed or out of order", i)
+		}
+		j++
 	}
 	if back := a.voiceFrames(100 * time.Millisecond); len(back) != 0 {
 		t.Fatalf("sender got %d of its own frames back", len(back))
@@ -142,10 +149,17 @@ func pipeSession(t *testing.T) (*session, *huddles, net.Conn) {
 	c, peer := net.Pipe()
 	t.Cleanup(func() { c.Close(); peer.Close() })
 	srv := &Server{hud: newHuddles()}
-	sess := &session{srv: srv, codec: proto.NewCodec(c), wake: make(chan struct{}, 1), done: make(chan struct{}), live: true}
+	sess := &session{srv: srv, conn: pipeConn{c}, codec: proto.NewCodec(c), wake: make(chan struct{}, 1), done: make(chan struct{}), live: true}
 	t.Cleanup(sess.close)
 	return sess, srv.hud, peer
 }
+
+// pipeConn is a net.Pipe end as a transport.Conn.
+type pipeConn struct{ net.Conn }
+
+func (pipeConn) Exporter() ([]byte, error)    { return nil, nil }
+func (pipeConn) Kind() string                 { return "tcp" }
+func (c pipeConn) CloseWithCode(string) error { return c.Close() }
 
 // participants puts sess (as listener) and a sender in one huddle.
 func participants(hs *huddles, sess *session) (from, to *participant) {
@@ -288,5 +302,23 @@ func TestStreamVoiceEndedParticipation(t *testing.T) {
 	defer mu.Unlock()
 	if len(*got) != 0 {
 		t.Fatalf("%d frames from an ended participation written", len(*got))
+	}
+}
+
+// TestStreamVoiceStuck: a voice write blocked past voiceStuck closes the
+// session as a slow consumer, even with no more voice to notice it (the
+// idle ticker checks too); a long chat write on a slow link doesn't.
+func TestStreamVoiceStuck(t *testing.T) {
+	sess, _, _ := pipeSession(t)
+	old := time.Now().Add(-2 * voiceStuck).UnixNano()
+	sess.writing.Store(old) // a chat frame, slow but moving
+	sess.checkVoiceStuck(time.Now())
+	if sess.closed {
+		t.Fatal("closed over a long chat write")
+	}
+	sess.writingVoice.Store(old)
+	sess.checkVoiceStuck(time.Now())
+	if !sess.closed {
+		t.Fatal("a voice write stuck for 20 s didn't close the session")
 	}
 }

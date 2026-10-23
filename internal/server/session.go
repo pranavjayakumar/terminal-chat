@@ -65,7 +65,8 @@ type session struct {
 	dgOut        chan dgItem
 	vq           []voiceOut // under mu
 	writing      atomic.Int64
-	dgBucket     bucket // only the datagram reader goroutine touches it
+	writingVoice atomic.Int64 // same, for a voice frame (checkVoiceStuck)
+	dgBucket     bucket       // only the datagram reader goroutine touches it
 	lastTyping   map[uint64]time.Time
 	lastKeyNeed  map[uint64]time.Time // under srv.mu
 	lastPresence time.Time
@@ -491,6 +492,9 @@ func (sess *session) readLoop(ctx context.Context) {
 					sess.conn.CloseWithCode("idle")
 					return
 				}
+				// A stuck voice write is caught here too when no more
+				// voice arrives to notice it (pushVoice).
+				sess.checkVoiceStuck(time.Now())
 			}
 		}
 	}()
