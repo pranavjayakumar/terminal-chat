@@ -12,7 +12,9 @@
 #
 # After joining on a terminal it asks whether to turn on tc background
 # (notifications while tc is closed); TC_BACKGROUND=1 says yes without
-# asking, TC_BACKGROUND=0 no.
+# asking, TC_BACKGROUND=0 no. On a desktop terminal (not over SSH) it then
+# offers tc's icon font while it isn't installed; TC_ICONS=1 installs it
+# without asking, TC_ICONS=0 never asks.
 #
 # Environment: TC_VERSION (e.g. v0.2.0), TC_INSTALL_DIR, TC_RELEASE_BASE
 # (default https://github.com/pranavjayakumar/terminal-chat/releases; must be
@@ -223,6 +225,39 @@ offer_background() {
 		say "couldn't turn on notifications while tc is closed; try again later with: tc background on"
 }
 
+# offer_icons runs after a successful install: on a desktop terminal ($1 =
+# tty), not over SSH and without the font yet, it asks whether to install
+# tc's icon font (tc fonts install). TC_ICONS=1 installs it without asking,
+# TC_ICONS=0 never asks; without a terminal it is skipped silently.
+offer_icons() {
+	case "${TC_ICONS:-}" in
+	0) return 0 ;;
+	1) ;;
+	*)
+		[ "${1:-}" = tty ] || return 0
+		[ -z "${SSH_TTY:-}" ] && [ -z "${SSH_CONNECTION:-}" ] || return 0
+		[ "$os" = darwin ] || [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ] || return 0
+		# exit 1: not installed; 0 installed; anything else is a tc from
+		# before tc fonts (TC_VERSION pinned to an old release)
+		rc=0
+		"$dir/tc" fonts status --quiet </dev/null >/dev/null 2>&1 || rc=$?
+		[ "$rc" = 1 ] || return 0
+		printf 'tc-install: Install tc icons (a small font for sharper icons)? [Y/n] ' >&2
+		ans=""
+		read -r ans </dev/tty || ans=n
+		case "$ans" in
+		"" | [Yy] | [Yy][Ee][Ss]) ;;
+		*)
+			say "no icons; add them any time with: tc fonts install"
+			return 0
+			;;
+		esac
+		;;
+	esac
+	"$dir/tc" fonts install </dev/null >&2 ||
+		say "couldn't install the icons; try again later with: tc fonts install"
+}
+
 main() {
 	need curl
 	need tar
@@ -326,15 +361,23 @@ main() {
 		if [ -t 1 ] && (: </dev/tty) 2>/dev/null; then
 			TC_INVITE=$invite "$dir/tc" join </dev/tty
 			offer_background tty
+			offer_icons tty
 		else
 			TC_INVITE=$invite "$dir/tc" join </dev/null
 			offer_background
+			offer_icons
 		fi
 		# join's tips say "tc", which in this shell isn't ours yet.
 		if [ "$found" != "$dir/tc" ]; then
 			say "start chatting now with: $sdir/tc (plain tc works once your PATH is set, see above)"
 		fi
 	else
+		# before the next step, so that stays the last line
+		if [ -t 1 ] && (: </dev/tty) 2>/dev/null; then
+			offer_icons tty
+		else
+			offer_icons
+		fi
 		say "next: $sdir/tc join 'tc://…' with the invite your admin sent"
 	fi
 }

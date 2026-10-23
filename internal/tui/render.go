@@ -144,6 +144,7 @@ const (
 	fCode
 	fURL
 	fMention
+	fChannel // #name
 )
 
 type span struct {
@@ -205,6 +206,11 @@ func parseInto(out *[]span, s string, f flag, me string) {
 			emit(span{s[i:end], f | fURL})
 			i = end
 			continue
+		case c == '#' && !prevWord && (i == 0 || s[i-1] != '/') && channelAt(s[i+1:]) > 0:
+			end := i + 1 + channelAt(s[i+1:])
+			emit(span{s[i:end], f | fChannel})
+			i = end
+			continue
 		case c == '@' && !prevWord && me != "":
 			if n := len(me) + 1; len(s) >= i+n && strings.EqualFold(s[i+1:i+n], me) &&
 				(i+n == len(s) || !(isWordByte(s[i+n]) || s[i+n] == '-')) {
@@ -217,6 +223,30 @@ func parseInto(out *[]span, s string, f flag, me string) {
 		i++
 	}
 	emit(span{})
+}
+
+// channelAt is the length of a channel name at the start of s, by the
+// server's rule (lowercase letters, digits, - and _, starting with a
+// letter or digit, at most 32), or 0. A run of digits (#1234) is an issue,
+// not a channel, and a name must end at a word boundary.
+func channelAt(s string) int {
+	n, digits := 0, true
+	for n < len(s) && n < 33 {
+		b := s[n]
+		ok := b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || n > 0 && (b == '-' || b == '_')
+		if !ok {
+			break
+		}
+		digits = digits && b >= '0' && b <= '9'
+		n++
+	}
+	for n > 0 && (s[n-1] == '-' || s[n-1] == '_') {
+		n--
+	}
+	if n == 0 || n > 32 || digits || n < len(s) && (isWordByte(s[n]) || s[n] >= 0x80) {
+		return 0
+	}
+	return n
 }
 
 func hasURLPrefix(s string) bool {

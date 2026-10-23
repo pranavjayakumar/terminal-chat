@@ -125,6 +125,8 @@ func Run(ctx context.Context, c *client.Client, version string) error {
 		return m.Installed(), true
 	}
 	o.UIPrefs = filepath.Join(c.Home(), "ui.json")
+	o.Font = osFont
+	o.Touches = underlineStyles(os.Getenv)
 	o.UpdateCheck = func() string {
 		return release.Check(ctx, c.Home(), version, release.NewSource(), time.Now())
 	}
@@ -182,6 +184,13 @@ type Options struct {
 	// UIPrefs is the look-and-feel file (theme, density, sidebar,
 	// animations); "": kept in memory only.
 	UIPrefs string
+
+	// Font checks for and installs the tc Symbols icon font; zero: never
+	// installed (tests).
+	Font FontHooks
+	// Touches: the terminal draws curly and dotted underlines in a color
+	// (SGR 4:3, 4:4, 58), detected conservatively in Run.
+	Touches bool
 
 	styles *styles // nil: from Out and NO_COLOR
 	motion bool    // tests: run animations (off when styles is set)

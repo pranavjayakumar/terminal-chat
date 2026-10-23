@@ -113,7 +113,11 @@ func TestHugeDiffRenders(t *testing.T) {
 func TestLanguageLabel(t *testing.T) {
 	head := func(bw int, text string) string {
 		_, _, rows := codeRows(true, text, bw)
-		return strings.TrimSpace(strings.TrimPrefix(rows[0], "│"))
+		s := strings.TrimSpace(strings.TrimPrefix(rows[0], "│"))
+		for _, ic := range []string{iconIn(packUnicode, icCode), iconIn(packUnicode, icFile)} {
+			s = strings.TrimSpace(strings.TrimPrefix(s, ic)) // the label's icon
+		}
+		return s
 	}
 	if got := head(30, "```go\nfunc main() {}\nsecond\n```"); !strings.HasPrefix(got, "go") || !strings.HasSuffix(got, "copy") {
 		t.Errorf("label: %q", got)

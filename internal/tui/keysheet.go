@@ -18,7 +18,7 @@ var keyGroups = []keyGroup{
 	{"Navigate", [][2]string{
 		{"⌥K", "command palette"}, {"⌥↑ ⌥↓", "previous / next channel"}, {"⌃P ⌃N", "previous / next channel"},
 		{"⌥⇧↑ ⌥⇧↓", "previous / next unread"}, {"⌥A", "activity"}, {"⌃B F2", "sidebar size"},
-		{"PgUp PgDn", "scroll history"}, {"End", "jump to newest"}, {"esc", "back out of anything"},
+		{"⌥[ ⌥]", "thread pane width"}, {"PgUp PgDn", "scroll history"}, {"End", "jump to newest"}, {"esc", "back out of anything"},
 	}},
 	{"Messages", [][2]string{
 		{"↑", "select (empty input)"}, {"r", "reply in thread"}, {"+", "react (emoji picker)"}, {"e", "edit yours"},

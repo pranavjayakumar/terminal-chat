@@ -38,6 +38,8 @@ const (
 	kConfirmYes = "y"
 	kTalk       = "ctrl+t" // only inside a voice huddle (huddle.go)
 	kSettings   = "ctrl+," // only where the terminal reports it (kitty keys); /settings works everywhere
+	kThrWider   = "alt+["  // the thread pane's edge moves left
+	kThrNarrow  = "alt+]"
 )
 
 // minSidebarCols is the narrowest terminal the sidebar can be forced into.
@@ -56,8 +58,16 @@ func keyName(k tea.KeyMsg) string {
 	if k.Type == tea.KeyRunes && (len(k.Runes) != 1 || k.Paste) {
 		return ""
 	}
-	if k.Type == tea.KeyRunes && !k.Alt && k.Runes[0] == '˚' {
-		return kSwitcher // macOS Option-K when Option types characters
+	if k.Type == tea.KeyRunes && !k.Alt {
+		// macOS Option keys when Option types characters
+		switch k.Runes[0] {
+		case '˚':
+			return kSwitcher
+		case '“':
+			return kThrWider
+		case '‘':
+			return kThrNarrow
+		}
 	}
 	return k.String()
 }

@@ -160,16 +160,21 @@ type Model struct {
 	noticeDim  bool   // the notice is a quiet hint
 	newRelease string // newer release tag, shown in the sidebar title
 
-	ui         uiPrefs    // look and feel, TC_HOME/ui.json (uiprefs.go)
-	fx         fxState    // animations (anim.go)
-	blocks     blockCache // drawn messages (msgview.go)
-	pal        palState   // command palette (palette.go)
-	set        setState   // settings dialog (settings.go)
-	boot       bool       // first run: the loading screen shows (boot.go)
-	noticeAt   time.Time  // when the notice appeared (its toast fades from it)
-	hover      string     // the action under the mouse pointer
-	drag       bool       // the sidebar edge is being dragged
+	ui         uiPrefs           // look and feel, TC_HOME/ui.json (uiprefs.go)
+	pack       string            // the icon pack in use, Auto resolved (icons.go)
+	fontHave   bool              // the icon font was installed when tc started
+	chanIDs    map[string]uint64 // channel names for #links (icons.go)
+	dst        *styles           // dialogs' styles when the theme recolors them (qbasic)
+	fx         fxState           // animations (anim.go)
+	blocks     blockCache        // drawn messages (msgview.go)
+	pal        palState          // command palette (palette.go)
+	set        setState          // settings dialog (settings.go)
+	boot       bool              // first run: the loading screen shows (boot.go)
+	noticeAt   time.Time         // when the notice appeared (its toast fades from it)
+	hover      string            // the action under the mouse pointer
+	drag       dragKind          // an edge being dragged (mouse.go)
 	dragX      int
+	clockRun   bool    // the menu bar clock's minute tick is scheduled
 	lastCanvas *canvas // the last frame, for clicks and the theme cross-fade
 	spare      *canvas // the frame before it, reused for the next
 	lastFrame  string
@@ -225,7 +230,7 @@ const (
 // New builds the model and loads the cache.
 func New(ctx context.Context, c Backend, o Options) *Model {
 	ui := loadUIPrefs(o.UIPrefs)
-	th := themeNamed(ui.themeName())
+	th := skinNamed(ui.Skin).colors(themeNamed(ui.themeName()))
 	st := o.styles
 	switch {
 	case st == nil && o.Out != nil:
@@ -247,8 +252,12 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 	m.fx.init()
 	// Tests (o.styles set) run without motion unless they ask for it.
 	m.fx.off = ui.NoMotion || (o.styles != nil && !o.motion)
+	m.fx.intro = m.introWanted()
 	m.r = renderer{st: st, name: func(id uint64) string { return m.users[id].Name },
 		bot: func(id uint64) bool { return m.users[id].Bot }}
+	if st.th.dialog != nil {
+		m.dst = newStyles(st.color, st.prof, st.th.dialog)
+	}
 	m.input = newInput(st)
 	m.line = newLine(st)
 	m.loadDrafts()
@@ -260,6 +269,9 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 	m.syncDraft()
 	m.applyCursorMode()
 	m.boot = len(m.chans) == 0 && m.status.State != client.Online
+	m.checkFont()
+	m.resolvePack()
+	m.iconsHint()
 	if ui.loadFailed {
 		m.setErr("", errors.New("ui.json can't be read: default look in use; a settings change rewrites it"))
 	}
@@ -295,7 +307,7 @@ func (m *Model) defaultChannelExcept(skip uint64) uint64 {
 
 // Init starts listening for client updates.
 func (m *Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.waitUpdate(), textarea.Blink, m.awayTick(), m.updateCheckCmd()}
+	cmds := []tea.Cmd{m.waitUpdate(), textarea.Blink, m.awayTick(), m.updateCheckCmd(), m.refreshFontCmd()}
 	if m.active != 0 && len(m.main.msgs) < 30 {
 		cmds = append(cmds, m.fetchHistory(m.active))
 	}
@@ -373,6 +385,7 @@ func (m *Model) reloadChans() {
 		before[v.ID] = v
 	}
 	m.chans = m.c.Channels()
+	m.noteChanNames()
 	for _, v := range m.chans {
 		if b, ok := before[v.ID]; ok && v.Mention && v.Unread > b.Unread && !m.fx.off {
 			m.fx.pulse[v.ID] = m.now() // the mention badge pulses
@@ -889,6 +902,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = tea.Batch(cmd, t)
 	}
 	m.endBoot()
+	m.startIntro()
+	m.stepIntro()
 	if shown := m.compShown(); shown != m.fx.compShown {
 		m.fx.compShown = shown
 		if shown {
@@ -896,6 +911,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if t := m.frameTick(); t != nil {
+		cmd = tea.Batch(cmd, t)
+	}
+	if t := m.clockTick(); t != nil {
 		cmd = tea.Batch(cmd, t)
 	}
 	return m, cmd
@@ -919,6 +937,12 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fx.running = false
 		}
 		m.sampleMeters()
+		return m, nil
+	case clockMsg:
+		m.clockRun = false
+		return m, nil
+	case iconFontInstalledMsg:
+		m.iconFontInstalled(msg)
 		return m, nil
 	case noticeExpireMsg:
 		if msg.gen == m.noticeGen {
@@ -993,6 +1017,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.BlurMsg:
 		m.focused = false
 		m.hover = "" // the pointer left for another pane
+		if m.drag != dragNone {
+			m.endDrag(m.dragX, false)
+		}
 		return m, nil
 	case updateMsg:
 		if msg.Prefs || msg.Reset {
@@ -1180,6 +1207,7 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 const blinkFor = 5 * time.Second
 
 func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
+	m.skipIntro() // a key ends the intro and still does its job
 	if m.blinkIdle && !m.fx.off {
 		m.blinkIdle = false
 		return tea.Batch(m.input.Cursor.BlinkCmd(), m.handleKey0(k))
@@ -1218,6 +1246,9 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 		if cmd, ok := m.talkKey(); ok {
 			return cmd
 		}
+	}
+	if m.threadKey(k, key) {
+		return nil
 	}
 
 	switch m.mode {
@@ -1315,6 +1346,8 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 	case key == kHelpAlt:
 		m.openHelp()
 		return nil
+	case menuKey(key) != "" && m.menuBarShown():
+		return m.menuAction(menuKey(key))
 	case key == kCtrlEnd || (key == kEnd && empty):
 		p := m.focus()
 		p.scroll = 0

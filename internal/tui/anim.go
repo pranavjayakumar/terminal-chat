@@ -49,8 +49,9 @@ type reactFx struct {
 }
 
 type fxState struct {
-	off     bool // Settings › Animations off: everything is instant
-	running bool // a frame tick is scheduled
+	off     bool      // Settings › Animations off: everything is instant
+	running bool      // a frame tick is scheduled
+	wakeAt  time.Time // when it fires
 	gen     int
 
 	arrive map[mkey]time.Time
@@ -76,8 +77,13 @@ type fxState struct {
 
 	themePrev *canvas
 	themeAt   time.Time
+	skinSwap  bool // the fade crosses skins: old glyphs until halfway
 
 	bootAt time.Time // the loading screen started fading out
+
+	intro   bool      // the Retro intro is pending or playing (intro.go)
+	introAt time.Time // the desktop appeared
+	zoomAt  time.Time // the rectangle started to grow
 }
 
 type frameMsg struct{ gen int }
@@ -133,7 +139,7 @@ func (m *Model) fastWanted() bool {
 	return m.running(f.slideAt, dSlide) || m.running(f.sbAt, dSlide) || m.running(f.paneAt, dPane) ||
 		m.running(f.dialogAt, dDialog) || m.running(f.themeAt, dTheme) || m.running(f.bootAt, dBoot) ||
 		m.running(f.compAt, dToast) || m.running(m.emo.at, dToast) || m.running(m.emo.shutAt, dToast) ||
-		m.toastMoving()
+		m.toastMoving() || m.introMoving()
 }
 
 // slowWanted reports whether something loops on screen: typing dots, a
@@ -156,11 +162,10 @@ func (m *Model) slowWanted() bool {
 	return m.hud.in // the huddle bar's timer and our mic meter
 }
 
-// frameTick schedules the next frame when one is needed and none is.
+// frameTick schedules the next frame when one is needed and none is due
+// as soon: a long wake (a toast's fade, the intro's hold) gives way to a
+// sooner frame, and the frame it replaces is ignored by its old gen.
 func (m *Model) frameTick() tea.Cmd {
-	if m.fx.running {
-		return nil
-	}
 	d := time.Duration(0)
 	switch {
 	case m.fastWanted():
@@ -169,11 +174,19 @@ func (m *Model) frameTick() tea.Cmd {
 		d = slowFrame
 	default:
 		m.prune()
-		if d = m.toastWake(); d == 0 {
+		d = m.toastWake()
+		if w := m.introWake(); w > 0 && (d == 0 || w < d) {
+			d = w
+		}
+		if d == 0 {
 			return nil
 		}
 	}
-	m.fx.running = true
+	at := m.now().Add(d)
+	if m.fx.running && !at.Before(m.fx.wakeAt) {
+		return nil
+	}
+	m.fx.running, m.fx.wakeAt = true, at
 	m.fx.gen++
 	gen := m.fx.gen
 	return tea.Tick(d, func(time.Time) tea.Msg { return frameMsg{gen} })

@@ -7,7 +7,11 @@ const (
 	sbWNormal    = 24
 	sbWWide      = 32
 	sbWIcons     = 7
-	threadW      = 44
+	threadW      = 44 // the thread pane's default width
+	minThreadW   = 32
+	maxThreadW   = 400
+	threadStep   = 4  // ⌥[ / ⌥] resize step
+	besideThread = 48 // the message column never gets narrower beside it
 	maxColumn    = 86
 	sbHideBelow  = 60 // columns: no sidebar at all
 	sbIconsBelow = 90 // columns: the sidebar shrinks to icons
@@ -20,7 +24,10 @@ type geo struct {
 	sb             string
 	L              int // first content column
 	RX             int // thread pane's first column (W when none)
-	tpW            int
+	tpW            int // its drawn width, mid-slide included
+	TW             int // its full width
+	T0             int // first row under the Retro menu bar (0 without one)
+	bar            bool
 	split, thrFull bool
 
 	CX, CW int // the message column
@@ -85,13 +92,24 @@ func (m *Model) geo() geo {
 	if m.w <= 0 || m.h <= 0 {
 		return g
 	}
+	g.bar = m.menuBarShown()
+	if g.bar {
+		g.T0 = 1
+	}
 	g.sb = m.sbMode()
 	g.SB = m.sbW()
 	if g.SB > 0 {
 		g.L = g.SB + 1
 	}
 	g.RX = m.w
+	// The column's width follows the final sidebar and thread pane sizes,
+	// so their slides move the column instead of re-wrapping every message.
+	tl := 0
+	if w := sbWidth(g.sb); w > 0 {
+		tl = w + 1
+	}
 	region := m.w - g.L
+	g.TW = m.threadWidth(m.w - tl)
 	if m.thread.open() || m.running(m.fx.paneAt, dPane) {
 		if region >= threadW+50 {
 			g.split = true
@@ -99,21 +117,15 @@ func (m *Model) geo() geo {
 			if !m.thread.open() {
 				k = 1 - k
 			}
-			g.tpW = int(math.Round(threadW * k))
+			g.tpW = int(math.Round(float64(g.TW) * k))
 			g.RX = m.w - g.tpW
 		} else if m.thread.open() {
 			g.thrFull = true
 		}
 	}
-	// The column's width follows the final sidebar and thread pane sizes,
-	// so their slides move the column instead of re-wrapping every message.
-	tl := 0
-	if w := sbWidth(g.sb); w > 0 {
-		tl = w + 1
-	}
 	finalRX := m.w
 	if g.split && m.thread.open() {
-		finalRX = m.w - threadW
+		finalRX = m.w - g.TW
 	}
 	g.CW = columnWidth(finalRX - tl)
 	g.CX = min(g.L+(g.RX-g.L-g.CW)/2, g.RX-g.CW)
@@ -121,8 +133,8 @@ func (m *Model) geo() geo {
 		// Mid-slide the column glides from where it sat without the pane
 		// to where it sits beside it, never jumping the other way first.
 		at := func(rx int) int { return g.L + (rx-g.L-columnWidth(rx-tl))/2 }
-		k := float64(g.tpW) / threadW
-		g.CX = int(math.Round(float64(at(m.w)) + float64(at(m.w-threadW)-at(m.w))*k))
+		k := float64(g.tpW) / float64(g.TW)
+		g.CX = int(math.Round(float64(at(m.w)) + float64(at(m.w-g.TW)-at(m.w))*k))
 		g.CX = max(g.CX, g.L) // overlap with the pane is clipped (frame.go)
 	}
 	g.CX = max(g.CX, 0)
@@ -136,18 +148,18 @@ func (m *Model) geo() geo {
 	g.inX, g.inW = g.CX, g.CW
 	if g.split && m.thread.open() {
 		// final width, sliding in with the pane (the screen edge clips it)
-		g.inX, g.inW = g.RX+2, threadW-4
+		g.inX, g.inW = g.RX+2, g.TW-4
 	}
 	g.boxed = m.h >= 10 && g.inW >= 6
-	g.inH = m.inputRows(g.inW-4) + 2
+	g.inH = m.inputRows(g.inW-4) + 2 + m.skin().inputPad
 	if !g.boxed {
 		g.inH = m.inputRows(g.inW)
 	}
 	g.inY = g.statusY - gap - g.inH
 	g.noteY = g.inY - 1
-	if g.roomy {
-		g.top = 1
-	}
+	// A roomy layout leaves row 0 blank, so a menu bar takes it without
+	// moving anything; a tight one moves down a row.
+	g.top = max(g.T0, boolInt(g.roomy))
 	y := g.top + 1
 	if g.roomy {
 		y++
@@ -169,6 +181,21 @@ func (m *Model) geo() geo {
 		g.noteY, g.msgTop, g.msgBot = -1, 0, 0
 	}
 	return g
+}
+
+// threadWidth is the thread pane's width beside a region of w columns:
+// the saved width, at least minThreadW, leaving the column besideThread.
+func (m *Model) threadWidth(w int) int {
+	tw := threadW
+	if m.ui.ThreadW > 0 {
+		tw = m.ui.ThreadW
+	}
+	return max(min(tw, w-besideThread), minThreadW)
+}
+
+// menuBarShown: the Retro skin's menu bar takes row 0.
+func (m *Model) menuBarShown() bool {
+	return m.skin().menuBar && m.h >= 16 && m.w >= 20 && !(m.mode == modeViewer && m.view.wide)
 }
 
 // columnWidth is the message column's width in a region of w columns.
@@ -213,13 +240,13 @@ func (m *Model) dims() dims {
 		return dims{}
 	}
 	d := dims{side: g.SB > 0, mainW: g.CW, inputW: max(g.inW-4, 1), msgW: g.CW, split: g.split, thrFull: g.thrFull,
-		inputH: g.inH - 2, bodyH: g.msgBot - g.msgTop, banner: g.banner >= 0}
+		inputH: g.inH - 2 - m.skin().inputPad, bodyH: g.msgBot - g.msgTop, banner: g.banner >= 0}
 	if !g.boxed {
 		d.inputW, d.inputH = max(g.inW, 1), g.inH
 	}
 	switch {
 	case g.split:
-		d.thrW = max(threadW-4, 1)
+		d.thrW = max(g.TW-4, 1)
 	case g.thrFull:
 		d.thrW = g.CW
 	}

@@ -41,6 +41,8 @@ const usage = `tc — terminal team chat
                              (admin) shut an account out for good, e.g. after a stolen SSH key
   tc server [--listen :7443] [--public host:port] [--data dir] [--member-invites=false]
   tc server invite [--uses N] [--ttl 72h] [--admin] [--key github:user] [--raw]
+  tc fonts install|status|test|remove
+                             tc's icon font, for sharper icons (Settings › Icons picks them)
   tc update [--check] [--voice]
                              install the latest release (or just check; --voice: the voice build)
   tc version
@@ -59,6 +61,8 @@ func main() {
 		err = cmdServer(args)
 	case "update":
 		err = cmdUpdate(args)
+	case "fonts":
+		err = cmdFonts(args, os.Stdout)
 	case "version", "--version", "-v":
 		if voice.Available() {
 			fmt.Println("tc", version, "(voice)")
@@ -69,6 +73,10 @@ func main() {
 		fmt.Print(usage)
 	default:
 		err = runClient(cmd, args)
+	}
+	var code exitCode
+	if errors.As(err, &code) {
+		os.Exit(int(code))
 	}
 	if errors.Is(err, errUsage) {
 		fmt.Fprint(os.Stderr, usage)

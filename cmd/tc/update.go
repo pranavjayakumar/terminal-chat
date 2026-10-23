@@ -37,7 +37,7 @@ func cmdUpdate(args []string) error {
 	defer cancelT()
 	src := release.NewSource()
 	src.Voice = voice.Available()
-	req := updateReq{check: *check, toVoice: *toVoice && !voice.Available(), runs: runsHere, restart: restartBackground}
+	req := updateReq{check: *check, toVoice: *toVoice && !voice.Available(), runs: runsHere, restart: restartBackground, fonts: refreshFonts}
 	return runUpdate(ctx, os.Stdout, src, exe, version, runtime.GOOS, runtime.GOARCH, req)
 }
 
@@ -53,6 +53,9 @@ type updateReq struct {
 	// restart restarts tc background (if installed) once the new binary is
 	// in place and says what it did; nil: nothing to restart.
 	restart func(ctx context.Context) string
+	// fonts refreshes an installed icon font the binary at exe carries a
+	// newer build of, and says so; nil: leave fonts alone.
+	fonts func(ctx context.Context, exe string) string
 }
 
 func runUpdate(ctx context.Context, out io.Writer, src *release.Source, exe, current, goos, goarch string, req updateReq) error {
@@ -96,6 +99,7 @@ func runUpdate(ctx context.Context, out io.Writer, src *release.Source, exe, cur
 		src.Voice = true
 	} else if !newer && release.IsRelease(current) {
 		fmt.Fprintf(out, "tc %s is up to date.\n", current)
+		req.sayFonts(ctx, out, exe)
 		return nil
 	}
 	if !release.Supported(goos, goarch) {
@@ -140,7 +144,18 @@ func runUpdate(ctx context.Context, out io.Writer, src *release.Source, exe, cur
 			fmt.Fprintln(out, msg)
 		}
 	}
+	req.sayFonts(ctx, out, exe)
 	return nil
+}
+
+// sayFonts refreshes the icon font if that's needed, in one line at most.
+func (req updateReq) sayFonts(ctx context.Context, out io.Writer, exe string) {
+	if req.fonts == nil {
+		return
+	}
+	if msg := req.fonts(ctx, exe); msg != "" {
+		fmt.Fprintln(out, msg)
+	}
 }
 
 // runsHere runs `tc version` from bin and returns its output. bin goes in a

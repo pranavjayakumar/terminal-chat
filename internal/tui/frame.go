@@ -35,6 +35,7 @@ func (m *Model) frame() *canvas {
 	if g.split {
 		m.drawThreadPane(c, g)
 	}
+	m.drawDesktop(c, g)
 	if g.split && !m.thread.open() {
 		// The pane is sliding out: what follows stays left of it.
 		old := c.setClip(rect{0, 0, g.RX, m.h})
@@ -51,6 +52,7 @@ func (m *Model) frame() *canvas {
 		m.drawSidebar(c, g)
 	}
 	m.drawStatusBar(c, g)
+	m.drawMenuBar(c, g)
 	m.drawOverlay(c, g)
 	m.drawToast(c, g)
 	m.hoverPass(c)
@@ -59,10 +61,16 @@ func (m *Model) frame() *canvas {
 	if m.booting() || m.running(m.fx.bootAt, dBoot) {
 		m.drawBoot(c)
 	}
+	m.drawIntro(c)
 	if p := m.fx.themePrev; p != nil && m.running(m.fx.themeAt, dTheme) && p.w == c.w && p.h == c.h {
 		k := ease(m.progress(m.fx.themeAt, dTheme))
+		old := m.fx.skinSwap && k < 0.5 // a skin change keeps the old chrome until halfway
 		for i := range c.cells {
+			if old {
+				c.cells[i].s, c.cells[i].w, c.cells[i].attr = p.cells[i].s, p.cells[i].w, p.cells[i].attr
+			}
 			c.cells[i].fg = mix(p.cells[i].fg, c.cells[i].fg, k)
+			c.cells[i].ul = mix(p.cells[i].ul, c.cells[i].ul, k)
 			c.cells[i].bg = mix(p.cells[i].bg, c.cells[i].bg, k)
 		}
 	}
@@ -144,9 +152,9 @@ func (m *Model) drawHeader(c *canvas, g geo) {
 	if m.active != 0 && g.CW >= 50 {
 		v, _ := m.chanView(m.active)
 		if n := m.membersOf(v); n > 0 {
-			right = append(right, struct{ t, act string }{"◉ " + strconv.Itoa(n), "cmd:/members"})
+			right = append(right, struct{ t, act string }{m.icon(icPerson) + " " + strconv.Itoa(n), "cmd:/members"})
 		}
-		right = append(right, struct{ t, act string }{"⌕", "palette:"})
+		right = append(right, struct{ t, act string }{m.icon(icSearch), "palette:"})
 	}
 	rw := 0
 	for _, r := range right {
@@ -310,6 +318,7 @@ func (m *Model) blitRow(c *canvas, r prow, o int, p *pane, key string, x, y, w i
 		}
 		if fade < 1 {
 			dst.fg = mix(th.bg, dst.fg, fade)
+			dst.ul = mix(th.bg, dst.ul, fade)
 		}
 		if pop < 1 {
 			if isBar(dst.s) {
@@ -454,7 +463,7 @@ func (m *Model) drawToolbar(c *canvas, p *pane, key string, o, x, y, w int) {
 	if x0.Author == m.me.ID && p.root == 0 && m.ui.Split {
 		tx = x + 1 // ours is on the right: the toolbar goes left
 	}
-	for _, b := range [][2]string{{"☺", "react"}, {"↩", "reply"}, {"⧉", "copy"}, {"⋯", "more"}} {
+	for _, b := range [][2]string{{m.icon(icReact), "react"}, {m.icon(icReply), "reply"}, {m.icon(icCopy), "copy"}, {m.icon(icMore), "more"}} {
 		a := "tb:" + idx + ":" + b[1]
 		tx = c.put(tx, y, " "+b[0]+" ", fgc(th.dim).on(th.element), a)
 	}
@@ -469,16 +478,17 @@ func (m *Model) drawThreadPane(c *canvas, g geo) {
 	if g.tpW <= 0 {
 		return
 	}
-	c.fill(g.RX, 0, g.tpW, g.statusY, th.panel, "")
-	old := c.setClip(rect{g.RX, 0, m.w, g.statusY})
+	c.fill(g.RX, g.T0, g.tpW, g.statusY-g.T0, th.panel, "")
+	old := c.setClip(rect{g.RX, g.T0, m.w, g.statusY})
 	defer c.setClip(old)
 	tx := g.RX + 2
 	c.put(tx, g.top, "Thread", fgb(th.fg), "")
 	if m.thread.open() {
-		c.put(tx+7, g.top, truncate(m.chanTitle(m.thread.ch), threadW-14), fgc(th.faint), "")
+		c.put(tx+7, g.top, truncate(m.chanTitle(m.thread.ch), g.TW-14), fgc(th.faint), "")
 	}
-	c.put(g.RX+threadW-3, g.top, "✕", fgc(th.dim), "thread:close") // slides in with the pane
-	pw := threadW - 4
+	c.put(g.RX+g.TW-3, g.top, "✕", fgc(th.dim), "thread:close") // slides in with the pane
+	m.drawThreadGrip(c, g)
+	pw := g.TW - 4
 	top := g.top + 2
 	h := m.paneHeight(&m.thread)
 	if m.thread.open() && h > 0 {
@@ -498,22 +508,24 @@ func (m *Model) drawIdleInput(c *canvas, g geo) {
 	h := 3
 	y := g.statusY - (g.statusY - g.inY - g.inH) - h
 	m.box(c, g.CX, y, g.CW, h, th.line, th.bg)
+	m.shade(c, rect{g.CX, y, g.CX + g.CW, y + h})
 	c.put(g.CX+2, y, " "+m.chanTitle(m.active)+" ", fgc(th.faint), "")
 	c.put(g.CX+2, y+1, truncate("Esc closes the thread", g.CW-4), fgc(th.faint), "thread:close")
 }
 
-// box draws a rounded frame.
+// box draws a frame in the skin's style: rounded, or double-lined.
 func (m *Model) box(c *canvas, x, y, w, h int, col, bg rgb) {
 	if w < 2 || h < 2 {
 		return
 	}
+	b := m.skin().box
 	c.fill(x+1, y+1, w-2, h-2, bg, "")
-	c.put(x, y, "╭"+strings.Repeat("─", w-2)+"╮", fgc(col), "")
+	c.put(x, y, b.tl+strings.Repeat(b.h, w-2)+b.tr, fgc(col), "")
 	for j := y + 1; j < y+h-1; j++ {
-		c.put(x, j, "│", fgc(col), "")
-		c.put(x+w-1, j, "│", fgc(col), "")
+		c.put(x, j, b.v, fgc(col), "")
+		c.put(x+w-1, j, b.v, fgc(col), "")
 	}
-	c.put(x, y+h-1, "╰"+strings.Repeat("─", w-2)+"╯", fgc(col), "")
+	c.put(x, y+h-1, b.bl+strings.Repeat(b.h, w-2)+b.br, fgc(col), "")
 }
 
 func (m *Model) drawInput(c *canvas, g geo) {
@@ -531,6 +543,7 @@ func (m *Model) drawInput(c *canvas, g geo) {
 	}
 	col := mix(th.bg, th.accent, 0.75)
 	m.box(c, x, y, w, h, col, th.panel)
+	m.shade(c, rect{x, y, x + w, y + h})
 	title := m.chanTitle(m.active)
 	if m.thread.open() {
 		title = "reply"
@@ -543,7 +556,7 @@ func (m *Model) drawInput(c *canvas, g geo) {
 		if v, ok := m.chanView(m.active); ok && !m.thread.open() && w >= 40 {
 			kind, kc := " public ", th.faint
 			if _, enc := m.e2e[m.active]; enc {
-				kind, kc = " ◆ e2e ", th.info
+				kind, kc = " "+m.icon(icE2E)+" e2e ", th.info
 			} else if v.Kind != proto.ChanPublic {
 				kind = " private "
 			}
@@ -603,7 +616,7 @@ func (m *Model) drawStatusBar(c *canvas, g geo) {
 	}
 	parts := []part{{"F1 keys", th.faint, "keys"}}
 	if _, enc := m.e2e[m.active]; enc {
-		parts = append(parts, part{"◆ e2e", th.info, ""})
+		parts = append(parts, part{m.icon(icE2E) + " e2e", th.info, ""})
 	}
 	parts = append(parts, part{"● " + conn, cc, ""}, part{"◐ " + th.name, th.dim, "palette:settings"})
 	if m.newRelease != "" {
@@ -618,7 +631,7 @@ func (m *Model) drawStatusBar(c *canvas, g geo) {
 		}
 		return x+2+w <= m.w
 	}
-	for _, drop := range []string{"◐", "↑", "◆", "F1 keys"} {
+	for _, drop := range []string{"◐", "↑", m.icon(icE2E) + " e2e", "F1 keys"} {
 		if fits() {
 			break
 		}

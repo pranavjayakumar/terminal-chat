@@ -282,7 +282,16 @@ func (m *Model) drawText(g *grower, x client.Message, bw int, at func(int) int, 
 				y := g.row()
 				xx := at(w)
 				for _, sp := range l {
-					xx = g.c.put(xx, y, sp.text, m.spanStyle(sp.f, textFg), "")
+					f, act := sp.f, ""
+					if f&fChannel != 0 {
+						// only a channel that exists is a link; it opens on a click
+						if id := m.chanNamed(sp.text[1:]); id != 0 {
+							act = "chanlink|" + strconv.FormatUint(id, 10)
+						} else {
+							f &^= fChannel
+						}
+					}
+					xx = g.c.put(xx, y, sp.text, m.spanStyle(f, textFg), act)
 				}
 				lastY, lastEnd, lastCode = y, xx, false
 			}
@@ -306,6 +315,14 @@ func (m *Model) spanStyle(f flag, base rgb) cstyle {
 	switch {
 	case f&fMention != 0:
 		st = fgb(th.accent)
+		if m.touches() {
+			st = st.under(aCurly, th.accent)
+		}
+	case f&fChannel != 0:
+		st = fgc(th.info)
+		if m.touches() {
+			st = st.under(aDotted, th.info)
+		}
 	case f&fURL != 0:
 		st = fgc(th.info).with(aUnderline)
 	case f&fCode != 0:
@@ -351,7 +368,15 @@ func (m *Model) drawCode(g *grower, sg seg, bw int, at func(int) int, pending bo
 	}
 	y := g.row()
 	g.c.fill(x0, y, w, 1, th.element, "")
-	e := g.c.put(x0+1, y, truncate(name, max(w-8, 1)), fgc(th.dim), "")
+	ic := m.icon(icCode)
+	if sg.diff {
+		ic = m.icon(icFile)
+	}
+	e := x0 + 1
+	if w >= 16 {
+		e = g.c.put(e, y, ic, fgc(th.faint), "") + 1
+	}
+	e = g.c.put(e, y, truncate(name, max(x0+w-8-e, 1)), fgc(th.dim), "")
 	if sg.diff && w >= 24 {
 		e = g.c.put(e+2, y, "+"+strconv.Itoa(adds), fgc(th.add), "")
 		g.c.put(e+1, y, "−"+strconv.Itoa(dels), fgc(th.del), "")
@@ -420,14 +445,14 @@ func (m *Model) drawFooter(g *grower, x client.Message, cw, bw int, mine bool) {
 		parts = append(parts, part{" " + sanitize.Line(k) + " " + strconv.Itoa(len(us)) + " ", st, "react|" + k, true})
 	}
 	if len(parts) > 0 && x.ID != 0 && !x.Deleted {
-		parts = append(parts, part{" ☺+ ", fgc(th.dim).on(th.element), "addreact|", true})
+		parts = append(parts, part{" " + m.icon(icReact) + "+ ", fgc(th.dim).on(th.element), "addreact|", true})
 	}
 	var tail []part
 	if x.Replies > 0 {
-		tail = append(tail, part{fmt.Sprintf("↳ %d %s", x.Replies, plural(x.Replies, "reply", "replies")), fgc(th.info), "thread|", false})
+		tail = append(tail, part{fmt.Sprintf("%s %d %s", m.icon(icThread), x.Replies, plural(x.Replies, "reply", "replies")), fgc(th.info), "thread|", false})
 	}
 	if x.Pinned {
-		tail = append(tail, part{"📌", fgc(th.dim), "", false})
+		tail = append(tail, part{m.icon(icPin), fgc(th.dim), "", false})
 	}
 	if x.TimeDrift() {
 		tail = append(tail, part{driftMark, fgc(th.warn), "", false})
@@ -582,12 +607,9 @@ func (m *Model) paneLines(p *pane, w int) ([]prow, []int) {
 	for i, x := range p.msgs {
 		sep := i == 0 || !sameDay(p.msgs[i-1].Time, x.Time)
 		header := sep || !grouped(p.msgs[i-1], x)
-		switch {
-		case i > 0 && (sep || header) && !m.ui.Compact:
-			rows = append(rows, prow{})
-			owner = append(owner, -1)
-		case i > 0 && !sep && endsWithCode(p.msgs[i-1]):
-			// a follow-up never sits flush under a code or diff panel
+		// Cozy: exactly one blank row between groups and around a
+		// divider, none inside a group. Compact: none at all.
+		if i > 0 && (sep || header) && !m.ui.Compact {
 			rows = append(rows, prow{})
 			owner = append(owner, -1)
 		}
@@ -625,27 +647,3 @@ func (m *Model) paneLines(p *pane, w int) ([]prow, []int) {
 }
 
 func (m *Model) today() int { return m.now().YearDay() }
-
-// endsWithCode reports whether x's text ends with a fenced block, so its
-// block's last rows are a code panel.
-func endsWithCode(x client.Message) bool {
-	if x.Deleted || x.Edited != 0 || !strings.Contains(x.Body, "```") {
-		return false
-	}
-	segs := splitFences(strings.Split(sanitize.Text(x.Body), "\n"))
-	for i := len(segs) - 1; i >= 0; i-- {
-		if len(segs[i].lines) == 0 {
-			continue
-		}
-		if !segs[i].code {
-			for _, l := range segs[i].lines {
-				if strings.TrimSpace(l) != "" {
-					return false
-				}
-			}
-			continue
-		}
-		return true
-	}
-	return false
-}

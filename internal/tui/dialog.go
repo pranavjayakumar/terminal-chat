@@ -40,6 +40,7 @@ func (m *Model) dialog(c *canvas, dw, dh int, title string) rect {
 	op := ease(m.progress(m.fx.dialogAt, dDialog))
 	c.each(0, 0, c.w, c.h, func(cl *cell) {
 		cl.fg = mix(cl.fg, th.bg, 0.6*op)
+		cl.ul = mix(cl.ul, th.bg, 0.6*op)
 		cl.bg = mix(cl.bg, 0x000000, 0.35*op)
 		cl.act, cl.hover = c.act("close"), false
 		if !m.st.color {
@@ -52,6 +53,11 @@ func (m *Model) dialog(c *canvas, dw, dh int, title string) rect {
 		r.y1++
 	}
 	c.fill(r.x0, r.y0, r.x1-r.x0, r.y1-r.y0, mix(th.bg, th.panel, op), "noop")
+	if m.skin().framed {
+		m.box(c, r.x0, r.y0, r.x1-r.x0, r.y1-r.y0, mix(th.panel, th.line, op), mix(th.bg, th.panel, op))
+		c.tag(r.x0, r.y0, r.x1-r.x0, r.y1-r.y0, "noop", false, true)
+		m.shade(c, r)
+	}
 	if title != "" && r.y1-r.y0 > 2 {
 		c.put(r.x0+3, r.y0+1, truncate(title, r.x1-r.x0-10), fgb(mix(th.panel, th.fg, op)), "noop")
 		if r.x1-r.x0 >= 12 {
@@ -64,6 +70,16 @@ func (m *Model) dialog(c *canvas, dw, dh int, title string) rect {
 func (m *Model) drawOverlay(c *canvas, g geo) {
 	if !m.overlayShown() {
 		return
+	}
+	if d := m.dst; d != nil {
+		// The theme recolors its dialogs: draw them with its dialog styles.
+		st, th := m.st, c.th
+		m.st, c.th = d, d.th
+		styleLine(&m.line, d)
+		defer func() {
+			m.st, c.th = st, th
+			styleLine(&m.line, st)
+		}()
 	}
 	switch m.mode {
 	case modeSwitcher:
@@ -79,6 +95,7 @@ func (m *Model) drawOverlay(c *canvas, g geo) {
 	r := m.dialog(c, 110, m.h-2, "")
 	w, h := r.x1-r.x0-4, r.y1-r.y0-2
 	if w < 10 || m.w < 50 {
+		r = m.inside(r)
 		w, h = r.x1-r.x0, r.y1-r.y0
 		m.drawLines(c, r.x0, r.y0, w, h, m.overlayLines(w, h))
 		return
@@ -90,6 +107,7 @@ func (m *Model) drawOverlay(c *canvas, g geo) {
 func (m *Model) overlaySize() (int, int) {
 	r := m.dialogBox(110, m.h-2)
 	if r.x1-r.x0-4 < 10 || m.w < 50 {
+		r = m.inside(r)
 		return r.x1 - r.x0, r.y1 - r.y0
 	}
 	return r.x1 - r.x0 - 4, r.y1 - r.y0 - 2
@@ -117,6 +135,14 @@ func (m *Model) overlayLines(w, h int) []string {
 		return m.sharePreviewLines(w, h)
 	}
 	return nil
+}
+
+// inside is the part of a dialog panel its frame leaves free.
+func (m *Model) inside(r rect) rect {
+	if !m.skin().framed || r.x1-r.x0 < 3 || r.y1-r.y0 < 3 {
+		return r
+	}
+	return rect{r.x0 + 1, r.y0 + 1, r.x1 - 1, r.y1 - 1}
 }
 
 // keycap draws " k " as a key.

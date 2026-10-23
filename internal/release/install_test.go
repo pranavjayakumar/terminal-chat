@@ -117,6 +117,7 @@ func runInstall(t *testing.T, srv *releasetest.Server, o installOpts) installRun
 	cmd.Env = append([]string{
 		"HOME=" + home, "PATH=" + path, "SHELL=/bin/zsh",
 		"TC_RELEASE_BASE=" + base, "TC_STUB_LOG=" + r.log,
+		"TC_ICONS=0", // the icons offer has its own tests (install_icons_test.go)
 	}, o.env...)
 	if o.installDir != "" {
 		cmd.Env = append(cmd.Env, "TC_INSTALL_DIR="+o.installDir)

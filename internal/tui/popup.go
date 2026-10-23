@@ -78,6 +78,9 @@ func (m *Model) drawPopup(c *canvas, g geo) {
 		r.y1++
 	}
 	m.floatGutter(c, g, r)
+	if framed {
+		m.shade(c, r)
+	}
 	old := c.setClip(rect{r.x0, max(r.y0, 0), r.x1, r.y1})
 	defer c.setClip(old)
 	w := r.x1 - r.x0
