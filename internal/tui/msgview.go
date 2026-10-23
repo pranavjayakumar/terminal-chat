@@ -582,12 +582,9 @@ func (m *Model) paneLines(p *pane, w int) ([]prow, []int) {
 	for i, x := range p.msgs {
 		sep := i == 0 || !sameDay(p.msgs[i-1].Time, x.Time)
 		header := sep || !grouped(p.msgs[i-1], x)
-		switch {
-		case i > 0 && (sep || header) && !m.ui.Compact:
-			rows = append(rows, prow{})
-			owner = append(owner, -1)
-		case i > 0 && !sep && endsWithCode(p.msgs[i-1]):
-			// a follow-up never sits flush under a code or diff panel
+		// Cozy: exactly one blank row between groups and around a
+		// divider, none inside a group. Compact: none at all.
+		if i > 0 && (sep || header) && !m.ui.Compact {
 			rows = append(rows, prow{})
 			owner = append(owner, -1)
 		}
@@ -625,27 +622,3 @@ func (m *Model) paneLines(p *pane, w int) ([]prow, []int) {
 }
 
 func (m *Model) today() int { return m.now().YearDay() }
-
-// endsWithCode reports whether x's text ends with a fenced block, so its
-// block's last rows are a code panel.
-func endsWithCode(x client.Message) bool {
-	if x.Deleted || x.Edited != 0 || !strings.Contains(x.Body, "```") {
-		return false
-	}
-	segs := splitFences(strings.Split(sanitize.Text(x.Body), "\n"))
-	for i := len(segs) - 1; i >= 0; i-- {
-		if len(segs[i].lines) == 0 {
-			continue
-		}
-		if !segs[i].code {
-			for _, l := range segs[i].lines {
-				if strings.TrimSpace(l) != "" {
-					return false
-				}
-			}
-			continue
-		}
-		return true
-	}
-	return false
-}
