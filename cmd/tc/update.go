@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/skailama/tc/internal/release"
 	"github.com/skailama/tc/internal/sanitize"
@@ -111,7 +112,7 @@ func runUpdate(ctx context.Context, out io.Writer, src *release.Source, exe, cur
 	fmt.Fprintf(out, "Downloading tc %s%s for %s/%s…\n", latest, flavor, goos, goarch)
 	bin, err := src.Fetch(ctx, latest, goos, goarch)
 	if errors.Is(err, release.ErrUnknownSigner) {
-		return fmt.Errorf("%w\n%s", err, unknownSignerHint(src.Voice))
+		return fmt.Errorf("%w\n%s", err, unknownSignerHint(src.Voice, filepath.Dir(exe)))
 	}
 	if err != nil {
 		return err
@@ -198,10 +199,18 @@ func writable(exe string) error {
 // build doesn't know: older builds trust only the keys they shipped with, so
 // a release signed by a key added later fails here. The installer verifies
 // the same signature against the current keys; nothing here skips the check.
-func unknownSignerHint(voice bool) string {
-	sh := "sh"
+func unknownSignerHint(voice bool, dir string) string {
+	env := ""
 	if voice {
-		sh = "TC_VOICE=1 sh"
+		env = "TC_VOICE=1 "
 	}
-	return "This tc may predate the key that signed the release. Reinstall with the installer, which checks the signature against the current release keys:\n  curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/install.sh | " + sh
+	// install.sh installs to ~/.local/bin; a tc elsewhere would be left
+	// first on PATH, still old, so name its directory.
+	home, _ := os.UserHomeDir()
+	if home == "" || dir != filepath.Join(home, ".local", "bin") {
+		if strings.IndexFunc(dir, func(r rune) bool { return !unicode.IsPrint(r) }) < 0 { // shown on a terminal
+			env = "TC_INSTALL_DIR=" + shellQuote(dir) + " " + env
+		}
+	}
+	return "This tc may predate the key that signed the release. Reinstall with the installer, which checks the signature against the current release keys:\n  curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/install.sh | " + env + "sh"
 }

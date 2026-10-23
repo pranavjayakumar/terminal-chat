@@ -202,9 +202,10 @@ func TestUpdateUnknownSignerHint(t *testing.T) {
 			t.Fatalf("voice=%v: err = %v", voice, err)
 		}
 		msg := err.Error()
-		want := "curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/install.sh | sh"
+		// exe isn't in ~/.local/bin, so the hint names its directory.
+		want := "curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/install.sh | TC_INSTALL_DIR=" + shellQuote(filepath.Dir(exe)) + " sh"
 		if voice {
-			want = "curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/install.sh | TC_VOICE=1 sh"
+			want = strings.Replace(want, " sh", " TC_VOICE=1 sh", 1)
 		}
 		for _, s := range []string{"signed by an unknown key SHA256:", "not installing", "checks the signature", want} {
 			if !strings.Contains(msg, s) {
@@ -217,5 +218,21 @@ func TestUpdateUnknownSignerHint(t *testing.T) {
 		if b, _ := os.ReadFile(exe); string(b) != "OLD" {
 			t.Fatalf("binary replaced: %q", b)
 		}
+	}
+}
+
+func TestUnknownSignerHintDir(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip(err)
+	}
+	if h := unknownSignerHint(false, filepath.Join(home, ".local", "bin")); !strings.HasSuffix(h, "install.sh | sh") {
+		t.Errorf("default dir: %q", h)
+	}
+	if h := unknownSignerHint(true, "/opt/my tools"); !strings.HasSuffix(h, "install.sh | TC_INSTALL_DIR='/opt/my tools' TC_VOICE=1 sh") {
+		t.Errorf("other dir: %q", h)
+	}
+	if h := unknownSignerHint(false, "/tmp/x\x1b[2Jy"); strings.Contains(h, "TC_INSTALL_DIR") || strings.Contains(h, "\x1b") {
+		t.Errorf("control characters: %q", h)
 	}
 }
