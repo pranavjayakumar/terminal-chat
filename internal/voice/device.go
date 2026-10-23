@@ -112,6 +112,10 @@ func startDuplex(ctx *malgo.AllocatedContext, devs devices, cb func(out, in []in
 	cfg.Capture.Format, cfg.Capture.Channels = malgo.FormatS16, 1
 	cfg.Playback.Format, cfg.Playback.Channels = malgo.FormatS16, 1
 	cfg.SampleRate = SampleRate
+	// A device not at 48 kHz (44.1 kHz is common on Linux) goes through
+	// miniaudio's linear resampler; its steepest low-pass (order 8, the
+	// maximum; the default is 4) keeps imaging and aliasing out of the voice.
+	cfg.Resampling.Linear.LpfOrder = 8
 	cfg.PeriodSizeInMilliseconds = 10
 	data := func(out, in []byte, frames uint32) {
 		n := int(frames)

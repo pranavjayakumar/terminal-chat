@@ -10,7 +10,8 @@ type Duplex interface{ Close() error }
 type Platform struct {
 	Codec Codec
 	// Open starts the device; cb gets each period's microphone samples
-	// and fills the speaker buffer (same length, mono int16).
+	// and fills the speaker buffer (mono int16; the mic side may be shorter
+	// when the input delivered fewer samples this period).
 	Open func(cb func(out, in []int16)) (Duplex, error)
 	// AEC is the user's echo-control preference (TC_VOICE_AEC). Open
 	// honours its system part; the engine its gate part.
