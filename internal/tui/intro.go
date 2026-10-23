@@ -21,6 +21,7 @@ const (
 	dIntroHold = 700 * time.Millisecond
 	dIntroMax  = 1200 * time.Millisecond
 	dIntroOpen = 500 * time.Millisecond
+	dLogoIn    = 300 * time.Millisecond // the Modern logo's fade in
 )
 
 const (
@@ -82,6 +83,31 @@ func (m *Model) skipIntro() bool {
 	return true
 }
 
+// introMoving: something in the intro moves now (the logo fading in, the
+// opening), so frames tick fast; a still hold only waits (introWake).
+func (m *Model) introMoving() bool {
+	if !m.introShown() {
+		return false
+	}
+	if !m.fx.zoomAt.IsZero() {
+		return true
+	}
+	return m.skin().intro == introFade && m.now().Sub(m.fx.introAt) < dLogoIn
+}
+
+// introWake is how long a still hold waits before the intro may open:
+// until the minimum when ready, else until the maximum; 0 otherwise.
+func (m *Model) introWake() time.Duration {
+	if !m.introShown() || !m.fx.zoomAt.IsZero() || m.introMoving() {
+		return 0
+	}
+	at := dIntroHold
+	if !m.introReady() {
+		at = dIntroMax
+	}
+	return max(m.fx.introAt.Add(at).Sub(m.now()), time.Millisecond)
+}
+
 // introZooming: the rectangle is growing (frames tick fast).
 func (m *Model) introZooming() bool {
 	return m.introShown() && !m.fx.zoomAt.IsZero()
@@ -99,14 +125,15 @@ func (m *Model) drawIntro(c *canvas) {
 	if !m.introShown() {
 		return
 	}
-	k := 0.0
+	p := 0.0 // share of the opening done
 	if !m.fx.zoomAt.IsZero() {
-		k = ease(float64(m.now().Sub(m.fx.zoomAt)) / float64(dIntroOpen))
+		p = min(float64(m.now().Sub(m.fx.zoomAt))/float64(dIntroOpen), 1)
 	}
 	if m.skin().intro == introFade {
-		m.drawFadeIntro(c, k)
+		m.drawFadeIntro(c, p)
 		return
 	}
+	k := ease(p)
 	th := m.st.th
 	sk := m.skin()
 	box := introBox(c.w, c.h)
@@ -162,27 +189,37 @@ func (m *Model) drawIntro(c *canvas) {
 	}
 }
 
-// drawFadeIntro is the Modern intro: the logo screen, fading into the
-// chat once it opens.
-func (m *Model) drawFadeIntro(c *canvas, k float64) {
+// drawFadeIntro is the Modern intro, by elapsed share p of the opening:
+// the logo eases in (cubic) while it holds, then fades out and the chat
+// fades in, each half smoothstepped so the speed never jumps where they
+// meet.
+func (m *Model) drawFadeIntro(c *canvas, p float64) {
 	th := m.st.th
-	if k <= 0 {
+	in := ease(float64(m.now().Sub(m.fx.introAt)) / float64(dLogoIn))
+	const out = 0.4 // share of the opening the logo takes to fade out
+	if p < out {
+		alpha := in * (1 - smoothstep(p/out))
 		c.fill(0, 0, c.w, c.h, th.bg, "")
 		m.drawLogo(c, rect{0, 0, c.w, c.h}, th.bg)
+		for i := range c.cells {
+			c.cells[i].fg = mix(th.bg, c.cells[i].fg, alpha)
+			c.cells[i].ul = 0
+			c.cells[i].act = 0
+		}
 		return
 	}
-	logo := &canvas{w: c.w, h: c.h, cells: make([]cell, len(c.cells)), th: th, clip: rect{0, 0, c.w, c.h}}
-	logo.fill(0, 0, c.w, c.h, th.bg, "")
-	m.drawLogo(logo, rect{0, 0, c.w, c.h}, th.bg)
+	q := smoothstep((p - out) / (1 - out))
 	for i := range c.cells {
-		if k < 0.5 { // the logo fades out, then the chat fades in
-			c.cells[i] = logo.cells[i]
-			c.cells[i].fg = mix(c.cells[i].fg, th.bg, k*2)
-			continue
-		}
-		c.cells[i].fg = mix(th.bg, c.cells[i].fg, (k-0.5)*2)
-		c.cells[i].bg = mix(th.bg, c.cells[i].bg, (k-0.5)*2)
+		c.cells[i].fg = mix(th.bg, c.cells[i].fg, q)
+		c.cells[i].ul = mix(th.bg, c.cells[i].ul, q)
+		c.cells[i].bg = mix(th.bg, c.cells[i].bg, q)
 	}
+}
+
+// smoothstep eases x (0..1) in and out.
+func smoothstep(x float64) float64 {
+	x = min(max(x, 0), 1)
+	return x * x * (3 - 2*x)
 }
 
 // logoRows is the tc wordmark.
