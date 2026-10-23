@@ -111,13 +111,17 @@ func checkView(t *testing.T, m *Model, step string) string {
 	return plain
 }
 
-func TestViewFitsAllSizes(t *testing.T) {
-	steps := []string{
+// fitSteps walks most of the UI: typing, F1, the palette, select mode,
+// the emoji picker, sidebar sizes, channel moves.
+var fitSteps = []string{
 		"", "h", "i", "alt+enter", "x", "ctrl+j", "y", "ctrl+j", "z", "ctrl+j", "w", "ctrl+j", "v", "ctrl+j", "u", "ctrl+j", "t",
 		"enter", "?", "esc", "ctrl+k", "b", "e", "down", "esc", "pgup", "pgup", "pgup", "pgdown",
 		"up", "up", "up", "up", "+", "esc", "esc", "ctrl+b", "ctrl+b", "alt+down", "alt+up", "ctrl+n", "ctrl+p",
 		"alt+shift+down", "ctrl+c", "a",
-	}
+}
+
+func TestViewFitsAllSizes(t *testing.T) {
+	steps := fitSteps
 	for _, sz := range [][2]int{{40, 12}, {80, 24}, {200, 60}, {69, 20}, {100, 30}, {20, 6}} {
 		m := newTestModel(t, sz[0], sz[1])
 		for _, s := range steps {

@@ -99,6 +99,16 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
 
 ## Keys
 
+**Key labels.** On macOS hints use the key symbols (`⌥K`, `⌃P`, `⌥⇧↑`, `⏎`, `⇥`); everywhere else
+they are words (`Alt+K`, `Ctrl+P`, `Alt+Shift+↑`, `Enter`, `Tab`; a pair like `⌥↑ ⌥↓` becomes
+`Alt+↑/↓`, while `⌃C ⌃C` stays `Ctrl+C Ctrl+C`). `TC_KEYS=mac|pc` overrides the OS (e.g. ssh from a
+Mac into Linux). The layout above shows the Mac form; with words the input box's bottom edge reads
+`Alt+K commands · Alt+Enter newline · Enter send`, drops `newline` when that doesn't fit (under 53
+columns of input box; `⌥⏎ newline` under 39 on a Mac), and drops the rest when even
+`Alt+K commands · Enter send` doesn't. The sidebar's `⌥K` beside "Jump to…" is hidden in a sidebar
+too narrow for it, and the palette's `⇥ next tab` when it would touch the tabs. Every binding works
+with Alt; no key is ⌘-only.
+
 | Key | Action |
 |---|---|
 | `Enter` | send (completes instead while the completion popup is open, unless the `@`/`#` word already equals the highlighted item) |

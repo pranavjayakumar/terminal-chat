@@ -140,7 +140,7 @@ func (m *Model) setCtls() []setCtl {
 				pick: func(i int) tea.Cmd { m.setTheme(themeOrder[i]); return nil }},
 			{label: "Density", opts: []string{"Cozy", "Compact"}, cur: boolInt(m.ui.Compact),
 				pick: func(i int) tea.Cmd { m.setCompact(i == 1); return nil }},
-			{label: "Sidebar", sub: "or click its edge, or ⌃B", opts: []string{"Icons", "Normal", "Wide"}, cur: sb,
+			{label: "Sidebar", sub: m.kn.of("or click its edge, or ⌃B"), opts: []string{"Icons", "Normal", "Wide"}, cur: sb,
 				pick: func(i int) tea.Cmd { m.setSidebar([]string{sbIcons, sbNormal, sbWide}[i]); return nil }},
 			{label: "Messages", sub: "split puts yours on the right", opts: []string{"Left", "Split"}, cur: boolInt(m.ui.Split),
 				pick: func(i int) tea.Cmd { m.setSplit(i == 1); return nil }},
@@ -326,7 +326,7 @@ func (m *Model) drawSettings(c *canvas) {
 		}
 	} else {
 		// narrow: the page name with ⇥ to move
-		c.put(r.x0+2, top, setPages[m.set.page].label+"  ⇥", fgb(th.accent), "")
+		c.put(r.x0+2, top, setPages[m.set.page].label+"  "+m.kn.of("⇥"), fgb(th.accent), "")
 		top += 2
 	}
 	cx := r.x0 + navW + 5

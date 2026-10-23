@@ -204,7 +204,8 @@ sounds are invisible and silent. herdr also hides popups for the tab you're look
 machine (terminal OSC notifications); in tmux add `set -g allow-passthrough on`.
 
 `TC_NOTIFY=auto|herdr|os|terminal|bell|off` picks the notification backend; `TC_AWAY_MIN=15` sets
-auto-away (0 disables). Details in [docs/TUI.md](docs/TUI.md).
+auto-away (0 disables). Key hints use Mac symbols (`⌥K`) on macOS and words (`Alt+K`) elsewhere;
+`TC_KEYS=mac|pc` overrides that. Details in [docs/TUI.md](docs/TUI.md).
 
 ## Webhooks
 

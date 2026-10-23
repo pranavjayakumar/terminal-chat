@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -116,7 +117,7 @@ func Run(ctx context.Context, c *client.Client, version string) error {
 	env := notify.OSEnv()
 	o := Options{Out: os.Stdout, Notifier: notify.New(env, os.Stdout), AwayAfter: awayAfter(os.Getenv("TC_AWAY_MIN")), Version: version, ExtCopy: defaultExtCopy,
 		Tmux: os.Getenv("TMUX") != "", SSH: os.Getenv("SSH_TTY") != "" || os.Getenv("SSH_CONNECTION") != "",
-		NotifyEnv: alert.OSEnv()}
+		NotifyEnv: alert.OSEnv(), PCKeys: keyNamesFor(os.Getenv("TC_KEYS"), runtime.GOOS).pc}
 	o.Background = func() (bool, bool) {
 		m, err := background.Local(c.Home())
 		if err != nil {
@@ -156,6 +157,9 @@ type Options struct {
 	// Tmux wraps OSC 52 for tmux passthrough; SSH skips ExtCopy (it would
 	// reach the remote clipboard). Both are set from the environment in Run.
 	Tmux, SSH bool
+	// PCKeys spells key hints as words (Alt+K, Enter) instead of the Mac
+	// symbols (⌥K, ⏎). Run sets it from TC_KEYS and the OS.
+	PCKeys bool
 	// Notifier gets mentions and DMs the user isn't looking at; nil: none.
 	Notifier Notifier
 	// NotifyEnv overrides stored notification settings (from the env).

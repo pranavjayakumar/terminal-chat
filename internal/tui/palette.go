@@ -45,18 +45,18 @@ func (m *Model) palCommands() []palItem {
 	out := []palItem{
 		{group: "Commands", label: "Settings", meta: "/settings", icon: "⚙", run: "app:settings", tabs: "ams"},
 		{group: "Commands", label: "Keyboard shortcuts", meta: "F1", icon: "⌨", run: "app:keys", tabs: "ams"},
-		{group: "Commands", label: "Toggle sidebar size", meta: "⌃B", icon: "◧", run: "app:sidebar", tabs: "am"},
+		{group: "Commands", label: "Toggle sidebar size", meta: m.kn.of("⌃B"), icon: "◧", run: "app:sidebar", tabs: "am"},
 		{group: "Commands", label: "Change theme…", icon: "◐", run: "app:themes", tabs: "am"},
-		{group: "Messages", label: "Activity", desc: "mentions, replies, reactions, DMs", meta: "⌥A", icon: "@", run: "/activity", tabs: "m"},
+		{group: "Messages", label: "Activity", desc: "mentions, replies, reactions, DMs", meta: m.kn.of("⌥A"), icon: "@", run: "/activity", tabs: "m"},
 		{group: "Messages", label: "Search", meta: "/search", icon: "⌕", run: "/search ", tabs: "m"},
-		{group: "Messages", label: "Insert emoji", desc: "picker; + reacts in select mode, :name completes", meta: "⌥E", icon: "☺", run: "app:emoji", tabs: "m"},
+		{group: "Messages", label: "Insert emoji", desc: "picker; + reacts in select mode, :name completes", meta: m.kn.of("⌥E"), icon: "☺", run: "app:emoji", tabs: "m"},
 		{group: "Messages", label: "Pinned messages", meta: "/pins", icon: "¶", run: "/pins", tabs: "m"},
 		{group: "Messages", label: "Remind me", meta: "/remind", icon: "⏰", run: "/remind ", tabs: "m"},
 		{group: "You", label: "Set away", meta: "/away", icon: "◑", run: "/away", tabs: "m"},
 		{group: "You", label: "Back from away", meta: "/back", icon: "●", run: "/back", tabs: "m"},
 		{group: "You", label: "Do not disturb", meta: "/dnd", icon: "☾", run: "/dnd 2h", desc: "for 2 hours", tabs: "m"},
 		{group: "You", label: "Notifications", meta: "/notify", icon: "⚑", run: "app:settings:notifications", tabs: "ms"},
-		{group: "You", label: "Quit", meta: "⌃C ⌃C", icon: "✕", run: "/quit", tabs: "m"},
+		{group: "You", label: "Quit", meta: m.kn.of("⌃C ⌃C"), icon: "✕", run: "/quit", tabs: "m"},
 	}
 	if m.thread.open() {
 		out = append(out, palItem{group: "Commands", label: "Close thread", meta: "esc", icon: "↳", run: "app:closethread", tabs: "am"})
@@ -394,8 +394,8 @@ func (m *Model) drawPalette(c *canvas) {
 		}
 		x = c.pill(x, y, lab, st.on(bg), "paltab:"+strconv.Itoa(i)) + 1
 	}
-	if w >= 76 {
-		c.put(x0+w-14, y, "⇥ next tab", fgc(th.faint), "")
+	if hint := m.kn.of("⇥ next tab"); w >= 76 && x+2 <= x0+w-4-strWidth(hint) {
+		c.put(x0+w-4-strWidth(hint), y, hint, fgc(th.faint), "")
 	}
 	y += 2
 	foot := y0 + h - 2
@@ -448,6 +448,7 @@ func (m *Model) drawPalette(c *canvas) {
 	if foot > y0+4 {
 		kx := x0 + in + 1
 		for _, k := range [][2]string{{"↑↓", "move"}, {"⏎", "open"}, {"⇥", "tab"}, {"esc", "close"}} {
+			k[0] = m.kn.of(k[0])
 			if kx+strWidth(k[0])+strWidth(k[1])+4 > x0+w {
 				break
 			}

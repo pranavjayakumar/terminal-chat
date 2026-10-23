@@ -69,6 +69,7 @@ type Model struct {
 	st     *styles
 	r      renderer
 	opt    Options
+	kn     keyNames // how key hints are spelled (keynames.go)
 
 	w, h      int
 	me        proto.User
@@ -236,7 +237,7 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 		st = newStyles(st.color, st.prof, th)
 	}
 	m := &Model{ui: ui,
-		c: c, ctx: ctx, st: st, opt: o,
+		c: c, ctx: ctx, st: st, opt: o, kn: keyNames{pc: o.PCKeys},
 		limits: map[uint64]int{}, histBusy: map[uint64]bool{}, histDone: map[uint64]bool{},
 		focused: true, now: time.Now,
 		main: pane{sel: -1}, thread: pane{sel: -1},
