@@ -694,7 +694,7 @@ func (m *Model) pickSearch(c *canvas, x, y, w int, k float64, pbg rgb, act strin
 	if w < 4 {
 		return
 	}
-	c.put(x+1, y, "⌕", fgc(mix(bg, th.dim, k)).on(bg), "")
+	c.put(x+1, y, m.icon(icSearch), fgc(mix(bg, th.dim, k)).on(bg), "")
 	tx, room := x+3, w-4
 	q := m.emo.query
 	if q == "" {

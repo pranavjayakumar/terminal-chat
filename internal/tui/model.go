@@ -160,16 +160,19 @@ type Model struct {
 	noticeDim  bool   // the notice is a quiet hint
 	newRelease string // newer release tag, shown in the sidebar title
 
-	ui         uiPrefs    // look and feel, TC_HOME/ui.json (uiprefs.go)
-	dst        *styles    // dialogs' styles when the theme recolors them (qbasic)
-	fx         fxState    // animations (anim.go)
-	blocks     blockCache // drawn messages (msgview.go)
-	pal        palState   // command palette (palette.go)
-	set        setState   // settings dialog (settings.go)
-	boot       bool       // first run: the loading screen shows (boot.go)
-	noticeAt   time.Time  // when the notice appeared (its toast fades from it)
-	hover      string     // the action under the mouse pointer
-	drag       dragKind   // an edge being dragged (mouse.go)
+	ui         uiPrefs           // look and feel, TC_HOME/ui.json (uiprefs.go)
+	pack       string            // the icon pack in use, Auto resolved (icons.go)
+	fontHave   bool              // the icon font was installed when tc started
+	chanIDs    map[string]uint64 // channel names for #links (icons.go)
+	dst        *styles           // dialogs' styles when the theme recolors them (qbasic)
+	fx         fxState           // animations (anim.go)
+	blocks     blockCache        // drawn messages (msgview.go)
+	pal        palState          // command palette (palette.go)
+	set        setState          // settings dialog (settings.go)
+	boot       bool              // first run: the loading screen shows (boot.go)
+	noticeAt   time.Time         // when the notice appeared (its toast fades from it)
+	hover      string            // the action under the mouse pointer
+	drag       dragKind          // an edge being dragged (mouse.go)
 	dragX      int
 	clockRun   bool    // the menu bar clock's minute tick is scheduled
 	lastCanvas *canvas // the last frame, for clicks and the theme cross-fade
@@ -266,6 +269,9 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 	m.syncDraft()
 	m.applyCursorMode()
 	m.boot = len(m.chans) == 0 && m.status.State != client.Online
+	m.checkFont()
+	m.resolvePack()
+	m.iconsHint()
 	if ui.loadFailed {
 		m.setErr("", errors.New("ui.json can't be read: default look in use; a settings change rewrites it"))
 	}
@@ -301,7 +307,7 @@ func (m *Model) defaultChannelExcept(skip uint64) uint64 {
 
 // Init starts listening for client updates.
 func (m *Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.waitUpdate(), textarea.Blink, m.awayTick(), m.updateCheckCmd()}
+	cmds := []tea.Cmd{m.waitUpdate(), textarea.Blink, m.awayTick(), m.updateCheckCmd(), m.refreshFontCmd()}
 	if m.active != 0 && len(m.main.msgs) < 30 {
 		cmds = append(cmds, m.fetchHistory(m.active))
 	}
@@ -379,6 +385,7 @@ func (m *Model) reloadChans() {
 		before[v.ID] = v
 	}
 	m.chans = m.c.Channels()
+	m.noteChanNames()
 	for _, v := range m.chans {
 		if b, ok := before[v.ID]; ok && v.Mention && v.Unread > b.Unread && !m.fx.off {
 			m.fx.pulse[v.ID] = m.now() // the mention badge pulses
@@ -933,6 +940,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case clockMsg:
 		m.clockRun = false
+		return m, nil
+	case iconFontInstalledMsg:
+		m.iconFontInstalled(msg)
 		return m, nil
 	case noticeExpireMsg:
 		if msg.gen == m.noticeGen {

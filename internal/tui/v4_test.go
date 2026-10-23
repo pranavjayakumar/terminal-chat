@@ -252,7 +252,7 @@ func TestSettingsDialog(t *testing.T) {
 	if m.st.th.name != "sky" {
 		t.Fatalf("right on themes: %q", m.st.th.name)
 	}
-	press(m, "down", "down", "right") // past Skin; density → compact
+	press(m, "down", "down", "down", "down", "right") // past Skin, Icons, Underlines; density → compact
 	if !m.ui.Compact {
 		t.Fatal("density")
 	}
@@ -294,15 +294,15 @@ func TestSettingsDialog(t *testing.T) {
 	}
 	// Clicking a control works like the keys.
 	m.openSettings("appearance")
-	click(t, m, "set:2:1")
+	click(t, m, "set:4:1")
 	if !m.ui.Compact {
 		t.Fatal("click compact")
 	}
-	click(t, m, "set:2:0")
+	click(t, m, "set:4:0")
 	if m.ui.Compact {
 		t.Fatal("click cozy")
 	}
-	click(t, m, "set:5:1")
+	click(t, m, "set:7:1")
 	if !strings.Contains(m.notice, "later") {
 		t.Fatalf("greyed style: %q", m.notice)
 	}
@@ -532,7 +532,7 @@ func TestSettingsFocusVisible(t *testing.T) {
 	for _, sz := range [][2]int{{80, 24}, {100, 30}, {40, 50}, {160, 48}} {
 		m := newTestModel(t, sz[0], sz[1])
 		m.openSettings("appearance")
-		for i, want := range []string{"Theme", "Skin", "Density", "Sidebar", "Messages", "Show people as", "Animations"} {
+		for i, want := range []string{"Theme", "Skin", "Icons", "Underlines", "Density", "Sidebar", "Messages", "Show people as", "Animations"} {
 			ok := false
 			for _, l := range strings.Split(checkView(t, m, want), "\n") {
 				ok = ok || strings.Contains(l, "›") && strings.Contains(l, want)

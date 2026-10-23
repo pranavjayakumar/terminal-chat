@@ -102,7 +102,7 @@ func checkView(t *testing.T, m *Model, step string) string {
 			t.Fatalf("%dx%d after %s: input box not visible\n%s", m.w, m.h, step, plain)
 		}
 	}
-	if m.mode == modeEmoji && m.w >= 30 && m.h >= 12 && !strings.Contains(plain, "⌕") {
+	if m.mode == modeEmoji && m.w >= 30 && m.h >= 12 && !strings.Contains(plain, m.icon(icSearch)) {
 		t.Fatalf("%dx%d after %s: emoji picker not visible\n%s", m.w, m.h, step, plain)
 	}
 	if strings.ContainsAny(plain, "\x1b\a‮") {

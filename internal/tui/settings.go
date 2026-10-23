@@ -33,6 +33,7 @@ type setCtl struct {
 	pick       func(i int) tea.Cmd
 	themes     bool // the theme card grid
 	button     string
+	preview    bool // a row of icons in the pack in use (Icons)
 }
 
 func (m *Model) openSettings(page string) {
@@ -158,6 +159,16 @@ func (m *Model) setCtls() []setCtl {
 				pick: func(i int) tea.Cmd { m.setTheme(themeOrder[i]); return nil }},
 			{label: "Skin", sub: "the chrome; retro: double lines, shadows, a menu bar", opts: skinOpts, cur: skinCur,
 				pick: func(i int) tea.Cmd { m.setSkin(skins[i].id); return nil }},
+			m.iconsCtl(),
+		}
+		if m.opt.Font.Install != nil && !m.fontInstalled() && !m.opt.SSH {
+			ctls = append(ctls, setCtl{label: "tc icons", sub: "a small font for sharper icons", button: "Install tc icons",
+				pick: func(int) tea.Cmd { return m.installIconFont() }})
+		}
+		ctls = append(ctls, []setCtl{
+			{label: "Underlines", sub: "wavy under @you, dotted under #channels", opts: []string{"Auto", "On", "Off"},
+				cur:  map[string]int{"": 0, "on": 1, "off": 2}[m.ui.Touches],
+				pick: func(i int) tea.Cmd { m.setTouches([]string{"", "on", "off"}[i]); return nil }},
 			{label: "Density", opts: []string{"Cozy", "Compact"}, cur: boolInt(m.ui.Compact),
 				pick: func(i int) tea.Cmd { m.setCompact(i == 1); return nil }},
 			{label: "Sidebar", sub: "or click its edge, or ⌃B", opts: []string{"Icons", "Normal", "Wide"}, cur: sb,
@@ -168,7 +179,7 @@ func (m *Model) setCtls() []setCtl {
 				pick: func(int) tea.Cmd { return nil }},
 			{label: "Animations", sub: "fades, pops, slides · off = instant", toggle: true, cur: boolInt(!m.fx.off),
 				pick: func(i int) tea.Cmd { m.setMotion(i == 1); return nil }},
-		}
+		}...)
 		if m.skin().intro != "" {
 			ctls = append(ctls, setCtl{label: "Startup", sub: "the short intro while tc connects", opts: []string{"Animated", "Instant"}, cur: boolInt(m.ui.Startup == startInstant),
 				pick: func(i int) tea.Cmd { m.setStartup(i == 1); return nil }})
@@ -462,6 +473,8 @@ func ctlHeight(ctl setCtl, cw, room int) int {
 		return rows*6 + 2
 	case ctl.toggle:
 		return 2
+	case ctl.preview:
+		return 4
 	}
 	return 3
 }
@@ -551,6 +564,10 @@ func (m *Model) drawCtls(c *canvas, cx, y, cw, bottom int) {
 					break
 				}
 				x = c.pill(x, y, " "+o+" ", st, "set:"+strconv.Itoa(row)+":"+strconv.Itoa(i)) + 1
+			}
+			if ctl.preview {
+				y++
+				m.drawIconPreview(c, cx, y, cw)
 			}
 			y += 2
 		}

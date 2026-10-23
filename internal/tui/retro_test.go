@@ -1074,6 +1074,8 @@ func TestPrefsSavesKeepSkin(t *testing.T) {
 	keeps("animations")
 	m.setStartup(true)
 	keeps("startup")
+	m.setIcons(packDOS)
+	keeps("icons")
 	run(m, m.openThread(103))
 	m.layoutInput()
 	m.Update(altKey('['))

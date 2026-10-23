@@ -70,6 +70,7 @@ func (m *Model) frame() *canvas {
 				c.cells[i].s, c.cells[i].w, c.cells[i].attr = p.cells[i].s, p.cells[i].w, p.cells[i].attr
 			}
 			c.cells[i].fg = mix(p.cells[i].fg, c.cells[i].fg, k)
+			c.cells[i].ul = mix(p.cells[i].ul, c.cells[i].ul, k)
 			c.cells[i].bg = mix(p.cells[i].bg, c.cells[i].bg, k)
 		}
 	}
@@ -151,9 +152,9 @@ func (m *Model) drawHeader(c *canvas, g geo) {
 	if m.active != 0 && g.CW >= 50 {
 		v, _ := m.chanView(m.active)
 		if n := m.membersOf(v); n > 0 {
-			right = append(right, struct{ t, act string }{"◉ " + strconv.Itoa(n), "cmd:/members"})
+			right = append(right, struct{ t, act string }{m.icon(icPerson) + " " + strconv.Itoa(n), "cmd:/members"})
 		}
-		right = append(right, struct{ t, act string }{"⌕", "palette:"})
+		right = append(right, struct{ t, act string }{m.icon(icSearch), "palette:"})
 	}
 	rw := 0
 	for _, r := range right {
@@ -317,6 +318,7 @@ func (m *Model) blitRow(c *canvas, r prow, o int, p *pane, key string, x, y, w i
 		}
 		if fade < 1 {
 			dst.fg = mix(th.bg, dst.fg, fade)
+			dst.ul = mix(th.bg, dst.ul, fade)
 		}
 		if pop < 1 {
 			if isBar(dst.s) {
@@ -461,7 +463,7 @@ func (m *Model) drawToolbar(c *canvas, p *pane, key string, o, x, y, w int) {
 	if x0.Author == m.me.ID && p.root == 0 && m.ui.Split {
 		tx = x + 1 // ours is on the right: the toolbar goes left
 	}
-	for _, b := range [][2]string{{"☺", "react"}, {"↩", "reply"}, {"⧉", "copy"}, {"⋯", "more"}} {
+	for _, b := range [][2]string{{m.icon(icReact), "react"}, {m.icon(icReply), "reply"}, {m.icon(icCopy), "copy"}, {m.icon(icMore), "more"}} {
 		a := "tb:" + idx + ":" + b[1]
 		tx = c.put(tx, y, " "+b[0]+" ", fgc(th.dim).on(th.element), a)
 	}
@@ -554,7 +556,7 @@ func (m *Model) drawInput(c *canvas, g geo) {
 		if v, ok := m.chanView(m.active); ok && !m.thread.open() && w >= 40 {
 			kind, kc := " public ", th.faint
 			if _, enc := m.e2e[m.active]; enc {
-				kind, kc = " ◆ e2e ", th.info
+				kind, kc = " "+m.icon(icE2E)+" e2e ", th.info
 			} else if v.Kind != proto.ChanPublic {
 				kind = " private "
 			}
@@ -614,7 +616,7 @@ func (m *Model) drawStatusBar(c *canvas, g geo) {
 	}
 	parts := []part{{"F1 keys", th.faint, "keys"}}
 	if _, enc := m.e2e[m.active]; enc {
-		parts = append(parts, part{"◆ e2e", th.info, ""})
+		parts = append(parts, part{m.icon(icE2E) + " e2e", th.info, ""})
 	}
 	parts = append(parts, part{"● " + conn, cc, ""}, part{"◐ " + th.name, th.dim, "palette:settings"})
 	if m.newRelease != "" {
@@ -629,7 +631,7 @@ func (m *Model) drawStatusBar(c *canvas, g geo) {
 		}
 		return x+2+w <= m.w
 	}
-	for _, drop := range []string{"◐", "↑", "◆", "F1 keys"} {
+	for _, drop := range []string{"◐", "↑", m.icon(icE2E) + " e2e", "F1 keys"} {
 		if fits() {
 			break
 		}

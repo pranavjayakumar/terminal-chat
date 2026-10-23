@@ -40,6 +40,7 @@ func (m *Model) dialog(c *canvas, dw, dh int, title string) rect {
 	op := ease(m.progress(m.fx.dialogAt, dDialog))
 	c.each(0, 0, c.w, c.h, func(cl *cell) {
 		cl.fg = mix(cl.fg, th.bg, 0.6*op)
+		cl.ul = mix(cl.ul, th.bg, 0.6*op)
 		cl.bg = mix(cl.bg, 0x000000, 0.35*op)
 		cl.act, cl.hover = c.act("close"), false
 		if !m.st.color {

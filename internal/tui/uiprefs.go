@@ -18,14 +18,18 @@ const (
 // uiPrefs are this device's look-and-feel settings, kept in TC_HOME/ui.json.
 // Only the UI reads or writes the file; the server never sees it.
 type uiPrefs struct {
-	Theme    string `json:"theme,omitempty"`    // "" until the user picks one
-	Skin     string `json:"skin,omitempty"`     // "" is the first skin (skin.go)
-	Startup  string `json:"startup,omitempty"`  // "instant" skips the intro
-	ThreadW  int    `json:"thread_w,omitempty"` // the thread pane's width; 0 is the default
-	Compact  bool   `json:"compact,omitempty"`
-	Sidebar  string `json:"sidebar,omitempty"`
-	Split    bool   `json:"split,omitempty"` // messages: ours on the right
-	NoMotion bool   `json:"no_motion,omitempty"`
+	Theme   string `json:"theme,omitempty"`   // "" until the user picks one
+	Skin    string `json:"skin,omitempty"`    // "" is the first skin (skin.go)
+	Startup string `json:"startup,omitempty"` // "instant" skips the intro
+	Icons   string `json:"icons,omitempty"`   // the icon pack; "" is Auto (icons.go)
+	// IconsHint: the one-time "New: tc icons" toast has shown.
+	IconsHint bool   `json:"icons_hint,omitempty"`
+	Touches   string `json:"touches,omitempty"`  // styled underlines: "" auto, "on", "off"
+	ThreadW   int    `json:"thread_w,omitempty"` // the thread pane's width; 0 is the default
+	Compact   bool   `json:"compact,omitempty"`
+	Sidebar   string `json:"sidebar,omitempty"`
+	Split     bool   `json:"split,omitempty"` // messages: ours on the right
+	NoMotion  bool   `json:"no_motion,omitempty"`
 	// Emoji is the frequently used list, most used first; nil until the
 	// first pick, so a fresh install shows freqSeed.
 	Emoji      []emojiUse `json:"emoji,omitempty"`
@@ -52,6 +56,14 @@ func loadUIPrefs(path string) uiPrefs {
 	}
 	if p.Startup != startInstant {
 		p.Startup = ""
+	}
+	switch p.Icons {
+	case packSymbols, packUnicode, packDOS:
+	default:
+		p.Icons = ""
+	}
+	if p.Touches != "on" && p.Touches != "off" {
+		p.Touches = ""
 	}
 	if p.ThreadW < minThreadW || p.ThreadW > maxThreadW {
 		p.ThreadW = 0

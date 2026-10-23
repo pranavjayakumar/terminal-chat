@@ -125,7 +125,7 @@ func (m *Model) headerLine(w int) string {
 		if sum != "" {
 			sum += " · "
 		}
-		sum += "♪" + strconv.Itoa(n)
+		sum += m.icon(icHuddle) + strconv.Itoa(n)
 	}
 	if sum == "" {
 		return left
@@ -169,7 +169,7 @@ func (m *Model) headerLeft(w int) string {
 		}
 	}
 	if n := len(v.Pins); n > 0 {
-		b.WriteString(m.st.dim.Render(" 📌 " + strconv.Itoa(n)))
+		b.WriteString(m.st.dim.Render(" " + m.icon(icPin) + " " + strconv.Itoa(n)))
 	}
 	if mm := m.muteMark(m.active); mm != "" {
 		b.WriteString(m.st.dim.Render(mm))

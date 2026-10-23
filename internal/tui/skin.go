@@ -174,6 +174,7 @@ func (m *Model) setSkin(id string) {
 		m.ui.Theme = s.theme
 	}
 	m.applyStyles(m.themeStyles(themeNamed(m.ui.themeName())))
+	m.resolvePack()
 	m.savePrefs()
 	m.layoutInput()
 	m.clampScroll(&m.main)
@@ -328,7 +329,7 @@ func (m *Model) drawMenuBar(c *canvas, g geo) {
 			bg, key, rest = th.accent, fgb(th.accentFg).with(aMonoRev), fgc(th.accentFg).with(aMonoRev)
 		}
 		if i == 0 {
-			x = c.put(x, 0, " "+it.key+" ", key.on(bg), it.act) + 1
+			x = c.put(x, 0, " "+m.icon(icTC)+" ", key.on(bg), it.act) + 1
 			continue
 		}
 		e := c.put(x, 0, it.key, key.on(bg), it.act)
@@ -339,7 +340,7 @@ func (m *Model) drawMenuBar(c *canvas, g geo) {
 // menuRight is the menu bar's right side (clock and who is online) and
 // its column; "" when the bar is too narrow to keep it.
 func (m *Model) menuRight() (string, int) {
-	right := m.now().Format("15:04") + "  ◉ " + m.onlineLabel()
+	right := m.now().Format("15:04") + "  " + m.icon(icPerson) + " " + m.onlineLabel()
 	rx := m.w - 5 - strWidth(right)
 	if rx < 30 {
 		return "", m.w

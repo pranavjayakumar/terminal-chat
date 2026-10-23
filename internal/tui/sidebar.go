@@ -55,22 +55,22 @@ func (m *Model) sideEntry(v client.ChannelView) sideItem {
 		others := m.dmOthers(v)
 		switch {
 		case len(others) == 0:
-			it.icon = "▪" // my notes
+			it.icon = m.icon(icNotes)
 		case len(others) == 1:
 			it.icon = "○"
 			switch m.presence[others[0]].State {
 			case proto.PresOnline:
-				it.icon, it.iconFg = "●", th.ok
+				it.icon, it.iconFg = m.icon(icOnline), th.ok
 			case proto.PresAway:
-				it.icon, it.iconFg, it.extra = "◐", th.warn, "away"
+				it.icon, it.iconFg, it.extra = m.icon(icAway), th.warn, "away"
 			}
 		default:
 			it.icon = "◇"
 		}
 	} else {
-		it.icon = "#"
+		it.icon = m.icon(icChannel)
 		if _, enc := m.e2e[v.ID]; enc || v.E2E {
-			it.icon, it.iconFg = "◆", th.info
+			it.icon, it.iconFg = m.icon(icPrivate), th.info
 		}
 		it.label = sanitize.Line(v.Name)
 	}
@@ -125,9 +125,9 @@ func (m *Model) drawSidebar(c *canvas, g geo) {
 	c.fill(1, y, sb-2, 1, th.element, "palette:")
 	c.tag(1, y, sb-2, 1, "palette:", true, true)
 	if mini {
-		c.put(sb/2-1, y, "⌕", fgc(th.dim), "palette:")
+		c.put(sb/2-1, y, m.icon(icSearch), fgc(th.dim), "palette:")
 	} else {
-		c.put(2, y, "⌕ Jump to…", fgc(th.dim), "palette:")
+		c.put(2, y, m.icon(icSearch)+" Jump to…", fgc(th.dim), "palette:")
 		c.put(sb-4, y, "⌥K", fgc(th.faint), "palette:")
 	}
 	y += step
@@ -149,7 +149,7 @@ func (m *Model) drawSidebar(c *canvas, g geo) {
 		y++
 	}
 	if meY > y {
-		c.put(2, meY, "●", fgc(m.presenceColor(m.me.ID)), "")
+		c.put(2, meY, m.icon(icOnline), fgc(m.presenceColor(m.me.ID)), "")
 		if !mini {
 			e := c.put(4, meY, truncate(sanitize.Line(m.me.Name), sb-14), fgb(th.fg), "status")
 			state := m.presence[m.me.ID].State
@@ -157,7 +157,7 @@ func (m *Model) drawSidebar(c *canvas, g geo) {
 				state = "offline"
 			}
 			c.put(e+1, meY, truncate(state, max(sb-4-e-2, 0)), fgc(th.faint), "status")
-			c.put(sb-3, meY, "⚙", fgc(th.dim), "settings:")
+			c.put(sb-3, meY, m.icon(icSettings), fgc(th.dim), "settings:")
 			c.tag(sb-3, meY, 1, 1, "settings:", true, true)
 		}
 	}

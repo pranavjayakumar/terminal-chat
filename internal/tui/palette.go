@@ -46,26 +46,26 @@ type palState struct {
 
 func (m *Model) palCommands() []palItem {
 	out := []palItem{
-		{group: "Commands", label: "Settings", meta: "/settings", icon: "⚙", run: "app:settings", tabs: "ams"},
+		{group: "Commands", label: "Settings", meta: "/settings", icon: m.icon(icSettings), run: "app:settings", tabs: "ams"},
 		{group: "Commands", label: "Keyboard shortcuts", meta: "F1", icon: "⌨", run: "app:keys", tabs: "ams"},
 		{group: "Commands", label: "Toggle sidebar size", meta: "⌃B", icon: "◧", run: "app:sidebar", tabs: "am"},
 		{group: "Commands", label: "Change theme…", icon: "◐", run: "app:themes", tabs: "am"},
 		{group: "Messages", label: "Activity", desc: "mentions, replies, reactions, DMs", meta: "⌥A", icon: "@", run: "/activity", tabs: "m"},
-		{group: "Messages", label: "Search", meta: "/search", icon: "⌕", run: "/search ", tabs: "m"},
-		{group: "Messages", label: "Insert emoji", desc: "picker; + reacts in select mode, :name completes", meta: "⌥E", icon: "☺", run: "app:emoji", tabs: "m"},
-		{group: "Messages", label: "Pinned messages", meta: "/pins", icon: "¶", run: "/pins", tabs: "m"},
+		{group: "Messages", label: "Search", meta: "/search", icon: m.icon(icSearch), run: "/search ", tabs: "m"},
+		{group: "Messages", label: "Insert emoji", desc: "picker; + reacts in select mode, :name completes", meta: "⌥E", icon: m.icon(icReact), run: "app:emoji", tabs: "m"},
+		{group: "Messages", label: "Pinned messages", meta: "/pins", icon: m.icon(icPin), run: "/pins", tabs: "m"},
 		{group: "Messages", label: "Remind me", meta: "/remind", icon: "⏰", run: "/remind ", tabs: "m"},
 		{group: "You", label: "Set away", meta: "/away", icon: "◑", run: "/away", tabs: "m"},
-		{group: "You", label: "Back from away", meta: "/back", icon: "●", run: "/back", tabs: "m"},
+		{group: "You", label: "Back from away", meta: "/back", icon: m.icon(icOnline), run: "/back", tabs: "m"},
 		{group: "You", label: "Do not disturb", meta: "/dnd", icon: "☾", run: "/dnd 2h", desc: "for 2 hours", tabs: "m"},
 		{group: "You", label: "Notifications", meta: "/notify", icon: "⚑", run: "app:settings:notifications", tabs: "ms"},
 		{group: "You", label: "Quit", meta: "⌃C ⌃C", icon: "✕", run: "/quit", tabs: "m"},
 	}
 	if m.thread.open() {
-		out = append(out, palItem{group: "Commands", label: "Close thread", meta: "esc", icon: "↳", run: "app:closethread", tabs: "am"})
+		out = append(out, palItem{group: "Commands", label: "Close thread", meta: "esc", icon: m.icon(icThread), run: "app:closethread", tabs: "am"})
 	}
 	if m.active != 0 {
-		hud := palItem{group: "Commands", label: "Join huddle here", meta: "/huddle", icon: "♪", iconTone: 'i', run: "/huddle", tabs: "am"}
+		hud := palItem{group: "Commands", label: "Join huddle here", meta: "/huddle", icon: m.icon(icHuddle), iconTone: 'i', run: "/huddle", tabs: "am"}
 		if m.hud.in {
 			hud.label, hud.meta, hud.run = "Leave huddle", "/leave-huddle", "/leave-huddle"
 		}
@@ -87,7 +87,7 @@ func (m *Model) palSettings() []palItem {
 		{group: "Settings", label: "Appearance", desc: "theme, density, sidebar", icon: "◐", run: "app:settings:appearance", tabs: "s"},
 		{group: "Settings", label: "Notifications", desc: "mentions, sounds, quiet hours", icon: "⚑", run: "app:settings:notifications", tabs: "s"},
 		{group: "Settings", label: "Keyboard shortcuts", meta: "F1", icon: "⌨", run: "app:keys", tabs: "s"},
-		{group: "Settings", label: "Account & devices", desc: "you, your devices", icon: "◆", run: "app:settings:account", tabs: "s"},
+		{group: "Settings", label: "Account & devices", desc: "you, your devices", icon: m.icon(icE2E), run: "app:settings:account", tabs: "s"},
 		{group: "Settings", label: "About", desc: "version, updates", icon: "ⓘ", run: "app:settings:about", tabs: "s"},
 	}
 	anim := "Animations: on"
@@ -125,14 +125,14 @@ func (m *Model) palItems() []palItem {
 		it := palItem{sw: &s, label: strings.TrimSpace(s.label[2:]), tabs: "a"}
 		switch {
 		case strings.HasPrefix(s.label, "# "):
-			it.group, it.icon, it.tabs = "Channels", "#", "ac"
+			it.group, it.icon, it.tabs = "Channels", m.icon(icChannel), "ac"
 			if v, ok := m.chanView(s.ch); ok {
 				if _, enc := m.e2e[v.ID]; enc || v.E2E {
-					it.icon, it.iconTone, it.desc = "◆", 'i', "encrypted"
+					it.icon, it.iconTone, it.desc = m.icon(icPrivate), 'i', "encrypted"
 				}
 			}
 		default:
-			it.group, it.icon, it.tabs = "People", "●", "ap"
+			it.group, it.icon, it.tabs = "People", m.icon(icOnline), "ap"
 			it.iconTone = 'f'
 			if s.user != 0 {
 				it.pres, it.nick = s.user, s.user
@@ -392,7 +392,7 @@ func (m *Model) drawPalette(c *canvas) {
 	}
 	// search field
 	c.fill(x0+in, y, iw, 1, th.element, "")
-	c.put(x0+in+1, y, "⌕", fgc(th.faint), "")
+	c.put(x0+in+1, y, m.icon(icSearch), fgc(th.faint), "")
 	c.putANSI(x0+in+3, y, dropBidi(m.line.View()), iw-4, fgc(th.fg).on(th.element), "")
 	y += 2
 	// tabs

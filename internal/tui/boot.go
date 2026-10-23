@@ -43,6 +43,7 @@ func (m *Model) drawBoot(c *canvas) {
 				c.cells[i] = chat.cells[i]
 				q := 1 - p*2
 				c.cells[i].fg = mix(th.bg, c.cells[i].fg, q)
+				c.cells[i].ul = mix(th.bg, c.cells[i].ul, q)
 				c.cells[i].bg = mix(th.bg, c.cells[i].bg, q)
 			} else {
 				q := (p - 0.5) * 2
