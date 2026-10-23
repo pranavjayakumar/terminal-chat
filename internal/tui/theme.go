@@ -33,6 +33,36 @@ func mix(a, b rgb, p float64) rgb {
 	return rgb(ch(ar, br)<<16 | ch(ag, bg)<<8 | ch(ab, bb))
 }
 
+// chroma is how far c is from gray, 0–255.
+func (c rgb) chroma() float64 {
+	r, g, b := c.parts()
+	return max(r, g, b) - min(r, g, b)
+}
+
+// hsl is the color of hue h (degrees), saturation s and lightness l (0–1).
+func hsl(h, s, l float64) rgb {
+	c := (1 - math.Abs(2*l-1)) * s
+	x := c * (1 - math.Abs(math.Mod(h/60, 2)-1))
+	var r, g, b float64
+	switch {
+	case h < 60:
+		r, g = c, x
+	case h < 120:
+		r, g = x, c
+	case h < 180:
+		g, b = c, x
+	case h < 240:
+		g, b = x, c
+	case h < 300:
+		r, b = x, c
+	default:
+		r, b = c, x
+	}
+	m := l - c/2
+	ch := func(v float64) uint32 { return uint32(math.Round((v + m) * 255)) }
+	return rgb(ch(r)<<16 | ch(g)<<8 | ch(b))
+}
+
 // luminance is the WCAG relative luminance.
 func (c rgb) luminance() float64 {
 	lin := func(v float64) float64 {
@@ -94,6 +124,9 @@ type theme struct {
 	// hot, when set, colors hotkey letters (the menu bar) where the accent
 	// doesn't pop: macintosh's accent is black.
 	hot rgb
+	// plainGround keeps the theme's own background in a skin that would
+	// tint a neutral one (graphite stays charcoal).
+	plainGround bool
 }
 
 // nick is the muted name color for a user id: stable across runs.
@@ -216,6 +249,7 @@ func buildThemes() map[string]*theme {
 		out[s.name] = s.build()
 	}
 	out["macintosh"].hot = out["macintosh"].info
+	out["graphite"].plainGround = true
 	out["qbasic"].dialog = spec{name: "qbasic", desc: "dialogs", light: true,
 		bg: "#0000a8", panel: "#aaaaaa", element: "#c4c4c4", line: "#555555", fg: "#000000", dim: "#2a2a2a", faint: "#484848",
 		accent: "#0000a8", accentFg: "#ffffff", accentBg: "#c8c8e8", info: "#0000a8", ok: "#005c00", err: "#a00000", warn: "#5c4400",

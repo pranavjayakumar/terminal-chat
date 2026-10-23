@@ -75,7 +75,16 @@ func (s *skin) colors(t *theme) *theme {
 	if c, ok := s.cache[t]; ok {
 		return c
 	}
-	c := *t
+	orig, c := t, *t
+	if t.groundable() {
+		// a neutral near-black background becomes a deep ground in the
+		// accent's hue, like turbo's blue: sky navy, rose wine, ember brown
+		h := t.accent.hue()
+		c.bg, c.panel = shadeOf(h, 0.6, 0.018), shadeOf(h, 0.6, 0.012)
+		c.element, c.line = shadeOf(h, 0.5, 0.06), shadeOf(h, 0.5, 0.28)
+		base := c
+		t = &base // the steps below work from the ground
+	}
 	for k := 0.0; !t.light && k <= 1; k += 0.05 {
 		if c.bg = mix(t.bg, t.line, k); contrast(c.bg, t.shadowOf(c.bg, false)) >= apartShadow {
 			break
@@ -84,14 +93,37 @@ func (s *skin) colors(t *theme) *theme {
 	c.panel = apart(t.panel, c.bg, t.fg, apartPanel)
 	c.element = apart(t.element, c.bg, t.fg, apartBar)
 	c.line = apart(t.line, c.panel, t.fg, apartFrame)
-	// quiet text keeps reading on the brighter surfaces
-	c.dim = apart(t.dim, c.element, t.fg, 4.5)
-	c.faint = apart(t.faint, c.element, t.fg, 2.6)
+	// text keeps reading on every surface
+	for _, s := range []rgb{c.bg, c.panel, c.element} {
+		c.dim = apart(c.dim, s, t.fg, 4.5)
+		c.faint = apart(c.faint, s, t.fg, 2.6)
+	}
+	for i := range c.nicks {
+		c.nicks[i] = apart(c.nicks[i], c.bg, t.fg, 3)
+	}
 	if s.cache == nil {
 		s.cache = map[*theme]*theme{}
 	}
-	s.cache[t] = &c
+	s.cache[orig] = &c
 	return &c
+}
+
+// shadeOf is the color of hue h and saturation s whose luminance is lum,
+// so grounds of every hue sit equally deep (green looks brighter than blue
+// at the same HSL lightness).
+func shadeOf(h, s, lum float64) rgb {
+	for l := 0.02; l < 1; l += 0.005 {
+		if c := hsl(h, s, l); c.luminance() >= lum {
+			return c
+		}
+	}
+	return hsl(h, s, 1)
+}
+
+// groundable: a dark theme on a neutral near-black (gray within 12 of
+// 255), so a skin may give it a colored ground.
+func (t *theme) groundable() bool {
+	return !t.light && !t.plainGround && t.bg.chroma() < 12 && t.bg.luminance() < 0.02
 }
 
 // apart moves c toward to until it stands at least min off from.
