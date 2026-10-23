@@ -122,11 +122,30 @@ func (c *Codec) WriteRaw(t FrameType, payload []byte) error {
 	if len(payload)+1 > MaxFrame {
 		return ErrFrameTooLarge
 	}
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	return c.writeLocked(t, payload)
+}
+
+// TryWriteRaw writes like WriteRaw unless another write holds the stream
+// (a frame going out, or a write blocked on a full socket): then it
+// returns false at once without writing. Voice on the TCP fallback uses
+// it, so it never waits behind (or delays) chat.
+func (c *Codec) TryWriteRaw(t FrameType, payload []byte) (bool, error) {
+	if len(payload)+1 > MaxFrame {
+		return false, ErrFrameTooLarge
+	}
+	if !c.wmu.TryLock() {
+		return false, nil
+	}
+	defer c.wmu.Unlock()
+	return true, c.writeLocked(t, payload)
+}
+
+func (c *Codec) writeLocked(t FrameType, payload []byte) error {
 	var hdr [5]byte
 	binary.BigEndian.PutUint32(hdr[:4], uint32(len(payload)+1))
 	hdr[4] = byte(t)
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
 	if _, err := c.w.Write(hdr[:]); err != nil {
 		return err
 	}

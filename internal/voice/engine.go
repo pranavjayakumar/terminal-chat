@@ -416,6 +416,8 @@ func (e *Engine) Playout() []int16 {
 	defer e.mu.Unlock()
 	clear(e.mix)
 	for _, s := range e.streams {
+		// A stretch (hold) after a late frame conceals a slot that wasn't lost.
+		stretch := s.jit.started && s.jit.hold > 0
 		kind, data := s.jit.pop()
 		var n int
 		var err error
@@ -434,7 +436,9 @@ func (e *Engine) Playout() []int16 {
 			e.heard = true
 		case OutConceal:
 			n, err = s.dec.Conceal(e.pcm)
-			e.lossEW += (1 - e.lossEW) / lossWindow
+			if !stretch {
+				e.lossEW += (1 - e.lossEW) / lossWindow
+			}
 			e.heard = true
 		}
 		if err != nil {

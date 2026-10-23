@@ -253,15 +253,6 @@ func TestHuddleEncryptedDM(t *testing.T) {
 	}
 }
 
-func TestHuddleOverTCPRefused(t *testing.T) {
-	us := huddlers(t, "tcp", "ana")
-	us[0].SetVoicePlatform((&fakeAudio{}).platform)
-	err := us[0].JoinHuddle(context.Background(), us[0].channel("general"))
-	if !errors.Is(err, client.ErrNoUDP) {
-		t.Fatalf("join over TCP: %v", err)
-	}
-}
-
 func TestHuddleNoVoiceBuild(t *testing.T) {
 	if voice.Available() {
 		t.Skip("voice build")
