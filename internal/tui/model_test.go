@@ -114,10 +114,10 @@ func checkView(t *testing.T, m *Model, step string) string {
 // fitSteps walks most of the UI: typing, F1, the palette, select mode,
 // the emoji picker, sidebar sizes, channel moves.
 var fitSteps = []string{
-		"", "h", "i", "alt+enter", "x", "ctrl+j", "y", "ctrl+j", "z", "ctrl+j", "w", "ctrl+j", "v", "ctrl+j", "u", "ctrl+j", "t",
-		"enter", "?", "esc", "ctrl+k", "b", "e", "down", "esc", "pgup", "pgup", "pgup", "pgdown",
-		"up", "up", "up", "up", "+", "esc", "esc", "ctrl+b", "ctrl+b", "alt+down", "alt+up", "ctrl+n", "ctrl+p",
-		"alt+shift+down", "ctrl+c", "a",
+	"", "h", "i", "alt+enter", "x", "ctrl+j", "y", "ctrl+j", "z", "ctrl+j", "w", "ctrl+j", "v", "ctrl+j", "u", "ctrl+j", "t",
+	"enter", "?", "esc", "ctrl+k", "b", "e", "down", "esc", "pgup", "pgup", "pgup", "pgdown",
+	"up", "up", "up", "up", "+", "esc", "esc", "ctrl+b", "ctrl+b", "alt+down", "alt+up", "ctrl+n", "ctrl+p",
+	"alt+shift+down", "ctrl+c", "a",
 }
 
 func TestViewFitsAllSizes(t *testing.T) {
