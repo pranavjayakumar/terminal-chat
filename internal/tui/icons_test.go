@@ -104,6 +104,7 @@ func fakeFont(installed *bool) FontHooks {
 // Auto: tc Symbols when the font is here and we aren't over SSH or in a
 // CJK locale; else Unicode, or DOS in the Retro skin. A choice wins.
 func TestIconPackAuto(t *testing.T) {
+	t.Setenv("LC_ALL", "en_US.UTF-8")
 	t.Setenv("LANG", "en_US.UTF-8")
 	yes, no := true, false
 	for _, c := range []struct {
@@ -126,6 +127,8 @@ func TestIconPackAuto(t *testing.T) {
 			t.Errorf("%s font=%v ssh=%v: %s, want %s", c.prefs, *c.font, c.ssh, m.pack, c.want)
 		}
 	}
+	t.Setenv("LC_ALL", "")
+	t.Setenv("LC_CTYPE", "")
 	t.Setenv("LANG", "ja_JP.UTF-8")
 	if m := iconModel(t, "", fakeFont(&yes), false); m.pack != packUnicode {
 		t.Fatalf("CJK locale: %s", m.pack)
