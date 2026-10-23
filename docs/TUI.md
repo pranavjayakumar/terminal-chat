@@ -115,9 +115,38 @@ Every start (both skins) opens with a short intro while tc connects: the tc logo
 `connecting…` (the connection error, if any, in its place). It holds at least 0.7 s and until the cache or
 the connection is ready, 1.2 s at most, then opens in 0.5 s: Retro shows the logo in a shadowed double-line
 dialog on its desktop and zooms a frame from the dialog to the whole screen with the UI inside; Modern shows
-it on a plain screen and fades into the chat. A key or a click ends it (the key still types). Settings ›
+it on a plain screen: the logo eases in (cubic, 0.3 s), and the opening fades it out and the chat in, each
+half smoothstepped so nothing jumps. Frames tick at ~30 fps only while something moves; a still hold just
+waits for its deadline. A key or a click ends it (the key still types). Settings ›
 Appearance › Startup: `Animated` · `Instant` (`"startup": "instant"`); Animations off is instant too. On a
 first run with no cache, the same logo screen stays until the first channels arrive.
+
+### Icons
+
+Every icon the UI draws for a role (channel, private, person, huddle, mic, muted, agent, e2e, search, pin,
+settings, react, reply, copy, more, thread, file, image, code, bell, away, online, notes, talking, and the
+tc mark) comes from one table, `internal/tui/icons.go`, in three packs:
+
+- **tc Symbols**: tc's own 25-icon font (`internal/iconfont`, generated from `assets/iconfont/icons.txt` by
+  `scripts/iconfont.py`), at U+E400–U+E419: Private Use, in the gap Nerd Fonts leave between Weather (to
+  U+E3E3) and Seti-UI (from U+E5FA), so Nerd Font users still get these. Each glyph is one column, like
+  every Private Use character in our width function.
+- **Unicode** and **DOS**: plain characters every terminal has.
+- Settings › Appearance › Icons: `Auto` · `tc Symbols` · `Unicode` · `DOS`, with a live preview row
+  (`"icons"` in `ui.json`). Auto is tc Symbols when the font is installed on this machine, we aren't over
+  SSH and the locale isn't CJK (ambiguous characters drawn wide); otherwise Unicode, or DOS with the Retro
+  skin. The font is looked for once at start (drawing never touches the disk), and an installed font older
+  than this build is refreshed then, quietly. When the font is missing (and not over SSH, where the row says
+  to install it on your own computer), an **Install tc icons** button installs it; the icons switch at the
+  next start, since a running terminal often can't draw a font installed after it started. Someone without
+  the font sees "New: tc icons · Settings › Icons" once (`"icons_hint"`). Away is `◐` (DOS `◑`), so it
+  never looks like an offline `○` without color.
+- Touches: on terminals known to draw them (WezTerm, kitty, Ghostty, iTerm2; never inside tmux, screen or
+  herdr), `@you` mentions get a wavy accent underline and `#channel` links a dotted info one (SGR 4:3 / 4:4
+  with SGR 58). A `#name` is a link only when it names a channel that exists (the server's name rule; never
+  `#1234`, a hex color or a URL fragment); it is drawn in the info color and opens the channel on a click. Settings › Appearance › Underlines: `Auto` · `On` · `Off` (`"touches"`); never under
+  NO_COLOR. Code blocks show a code icon, diffs a file icon; whoever talks in a huddle gets a pulsing
+  talking icon.
 
 ## Rendering rules
 
