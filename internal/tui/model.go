@@ -69,6 +69,7 @@ type Model struct {
 	st     *styles
 	r      renderer
 	opt    Options
+	kn     keyNames // how key hints are spelled (keynames.go)
 
 	w, h      int
 	me        proto.User
@@ -219,7 +220,7 @@ const (
 	infoTTL    = 4 * time.Second
 	errTTL     = 8 * time.Second
 	escWindow  = 2 * time.Second
-	ctrlCHint  = "press Ctrl-C again to quit"
+	ctrlCHint  = "press ⌃C again to quit" // Mac form: shown through m.kn.of
 )
 
 // New builds the model and loads the cache.
@@ -236,7 +237,7 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 		st = newStyles(st.color, st.prof, th)
 	}
 	m := &Model{ui: ui,
-		c: c, ctx: ctx, st: st, opt: o,
+		c: c, ctx: ctx, st: st, opt: o, kn: keyNames{pc: o.PCKeys},
 		limits: map[uint64]int{}, histBusy: map[uint64]bool{}, histDone: map[uint64]bool{},
 		focused: true, now: time.Now,
 		main: pane{sel: -1}, thread: pane{sel: -1},
@@ -805,7 +806,7 @@ func (m *Model) setNotice(s string, isErr, sticky bool, ttl time.Duration) {
 	m.notice, m.noticeErr, m.noticeSticky, m.noticeTTL = sanitize.Line(s), isErr, sticky, ttl
 	m.noticeCh = 0
 	m.noticeAt = m.now()
-	if s != ctrlCHint {
+	if s != m.kn.of(ctrlCHint) {
 		m.ctrlC = time.Time{} // the hint is gone: a Ctrl-C now must not quit
 	}
 	m.noticeDim = false
@@ -1202,7 +1203,7 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 			return tea.Quit
 		}
 		m.ctrlC = m.now()
-		m.setInfo(ctrlCHint)
+		m.setInfo(m.kn.of(ctrlCHint))
 		return nil
 	}
 	if !m.ctrlC.IsZero() {

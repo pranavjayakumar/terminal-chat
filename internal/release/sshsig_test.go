@@ -31,22 +31,23 @@ func TestVerifySignature(t *testing.T) {
 	tampered[0] = 'c'
 	flipped := bytes.Replace(sig, []byte("\n"), []byte("\nA"), 2) // shifts the base64 body
 	for name, c := range map[string]struct {
-		signers   string
-		msg, sig  []byte
-		wantNoKey bool
+		signers     string
+		msg, sig    []byte
+		wantNoKey   bool
+		wantUnknown bool // well-formed, by a key not in the signers
 	}{
-		"tampered checksums":   {signers, tampered, sig, false},
-		"other message's sig":  {signers, sums, releasetest.Sign(t, key, release.SigNamespace, tampered), false},
-		"corrupt signature":    {signers, sums, flipped, false},
-		"truncated signature":  {signers, sums, sig[:len(sig)/2], false},
-		"not armored":          {signers, sums, []byte("hello"), false},
-		"wrong namespace":      {signers, sums, releasetest.Sign(t, key, "git", sums), false},
-		"unknown key":          {signers, sums, releasetest.Sign(t, other, release.SigNamespace, sums), false},
-		"empty signers":        {"", sums, sig, false},
-		"placeholder signers":  {release.Placeholder, sums, sig, true},
-		"other principal":      {strings.Replace(signers, "tc-release ", "someone ", 1), sums, sig, false},
-		"namespace not listed": {strings.Replace(signers, `namespaces="tc-release"`, `namespaces="git"`, 1), sums, sig, false},
-		"cert-authority line":  {strings.Replace(signers, `namespaces="tc-release"`, `cert-authority,namespaces="tc-release"`, 1), sums, sig, false},
+		"tampered checksums":   {signers, tampered, sig, false, false},
+		"other message's sig":  {signers, sums, releasetest.Sign(t, key, release.SigNamespace, tampered), false, false},
+		"corrupt signature":    {signers, sums, flipped, false, false},
+		"truncated signature":  {signers, sums, sig[:len(sig)/2], false, false},
+		"not armored":          {signers, sums, []byte("hello"), false, false},
+		"wrong namespace":      {signers, sums, releasetest.Sign(t, key, "git", sums), false, false},
+		"unknown key":          {signers, sums, releasetest.Sign(t, other, release.SigNamespace, sums), false, true},
+		"empty signers":        {"", sums, sig, false, false},
+		"placeholder signers":  {release.Placeholder, sums, sig, true, false},
+		"other principal":      {strings.Replace(signers, "tc-release ", "someone ", 1), sums, sig, false, false},
+		"namespace not listed": {strings.Replace(signers, `namespaces="tc-release"`, `namespaces="git"`, 1), sums, sig, false, false},
+		"cert-authority line":  {strings.Replace(signers, `namespaces="tc-release"`, `cert-authority,namespaces="tc-release"`, 1), sums, sig, false, false},
 	} {
 		err := release.VerifySignature(c.signers, c.msg, c.sig)
 		if err == nil {
@@ -55,6 +56,11 @@ func TestVerifySignature(t *testing.T) {
 		}
 		if c.wantNoKey != errors.Is(err, release.ErrNoSigningKey) {
 			t.Errorf("%s: err %v", name, err)
+		}
+		// Only an untrusted key reads as "unknown key" (tc update then
+		// points at the installer); tampering by a trusted key never does.
+		if c.wantUnknown != errors.Is(err, release.ErrUnknownSigner) {
+			t.Errorf("%s: ErrUnknownSigner mismatch: %v", name, err)
 		}
 	}
 

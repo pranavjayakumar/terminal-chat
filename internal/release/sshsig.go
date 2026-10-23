@@ -26,6 +26,11 @@ const (
 // ErrSignature means checksums.txt isn't signed by an allowed release key.
 var ErrSignature = errors.New("release signature check failed")
 
+// ErrUnknownSigner is a well-formed signature by a key this build doesn't
+// trust. It comes wrapped in ErrSignature; tc update uses it to point an old
+// build, which can't know keys added later, at the installer.
+var ErrUnknownSigner = errors.New("signed by an unknown key")
+
 // ErrNoSigningKey means this build has no release key embedded.
 var ErrNoSigningKey = errors.New("this tc build has no release signing key embedded, so it can't verify updates; reinstall tc from an official release")
 
@@ -142,7 +147,7 @@ func VerifySignature(allowedSigners string, message, armored []byte) error {
 		return err
 	}
 	if err := verifySSHSIG(signers, SigNamespace, message, armored); err != nil {
-		return fmt.Errorf("%w: %v", ErrSignature, err)
+		return fmt.Errorf("%w: %w", ErrSignature, err)
 	}
 	return nil
 }
@@ -197,7 +202,7 @@ func verifySSHSIG(signers []signer, namespace string, message, armored []byte) e
 		}
 	}
 	if !trusted {
-		return fmt.Errorf("signed by an unknown key %s", ssh.FingerprintSHA256(pub))
+		return fmt.Errorf("%w %s", ErrUnknownSigner, ssh.FingerprintSHA256(pub))
 	}
 	var sig ssh.Signature
 	if err := ssh.Unmarshal(sigBlob, &sig); err != nil {

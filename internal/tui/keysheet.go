@@ -16,8 +16,8 @@ type keyGroup struct {
 
 var keyGroups = []keyGroup{
 	{"Navigate", [][2]string{
-		{"⌥K", "command palette"}, {"⌥↑ ⌥↓", "previous / next channel"}, {"⌃P ⌃N", "previous / next channel"},
-		{"⌥⇧↑ ⌥⇧↓", "previous / next unread"}, {"⌥A", "activity"}, {"⌃B F2", "sidebar size"},
+		{"⌥K", "command palette"}, {"⌥↑ ⌥↓", "channel: prev / next"}, {"⌃P ⌃N", "channel: prev / next"},
+		{"⌥⇧↑ ⌥⇧↓", "unread: prev / next"}, {"⌥A", "activity"}, {"⌃B F2", "sidebar size"},
 		{"PgUp PgDn", "scroll history"}, {"End", "jump to newest"}, {"esc", "back out of anything"},
 	}},
 	{"Messages", [][2]string{
@@ -25,7 +25,7 @@ var keyGroups = []keyGroup{
 		{"d", "delete yours"}, {"y", "copy"}, {"p", "pin / unpin"}, {"v", "view full"}, {"r d", "failed: retry, discard"},
 	}},
 	{"Write", [][2]string{
-		{"⏎", "send"}, {"⌥⏎ ⌃J", "new line"}, {"@", "mention someone"}, {"#", "link a channel"},
+		{"⏎", "send"}, {"⌥⏎", "new line"}, {"⌃J", "new line"}, {"@", "mention someone"}, {"#", "link a channel"},
 		{"/", "commands"}, {"⌥E", "emoji picker"}, {":fi", "emoji by name"}, {"⇥", "complete"}, {"⌃U", "clear draft"}, {"esc esc", "clear draft"},
 	}},
 	{"Huddle", [][2]string{
@@ -44,7 +44,7 @@ type sheetCell struct {
 	kind int // 0 title, 1 key, 2 description, 3 command, 4 command description
 }
 
-func keySheetRows(w int) [][]sheetCell {
+func keySheetRows(w int, kn keyNames) [][]sheetCell {
 	cols := 1
 	switch {
 	case w >= 108:
@@ -70,13 +70,15 @@ func keySheetRows(w int) [][]sheetCell {
 		}
 		*rows = append(*rows, []sheetCell{{x, g.title, 0}}, nil)
 		gdx := 12 // one description column per group, past its widest keycap
-		for _, k := range g.keys {
-			gdx = max(gdx, strWidth(k[0])+3)
+		keys := make([]string, len(g.keys))
+		for i, k := range g.keys {
+			keys[i] = kn.of(k[0])
+			gdx = max(gdx, strWidth(keys[i])+3)
 		}
 		gdx = min(gdx, max(colW/2, 12)) // a narrow column: an over-wide key pushes only its own row
-		for _, k := range g.keys {
-			dx := max(gdx, strWidth(k[0])+3)
-			*rows = append(*rows, []sheetCell{{x, k[0], 1}, {x + dx, truncate(k[1], max(colW-dx-2, 4)), 2}})
+		for i, k := range g.keys {
+			dx := max(gdx, strWidth(keys[i])+3)
+			*rows = append(*rows, []sheetCell{{x, keys[i], 1}, {x + dx, truncate(k[1], max(colW-dx-2, 4)), 2}})
 		}
 	}
 	n := 0
@@ -94,7 +96,7 @@ func keySheetRows(w int) [][]sheetCell {
 		if c.helpHidden || c.name == "" && c.help == "" {
 			continue
 		}
-		k := c.helpKey()
+		k := kn.of(c.helpKey())
 		dx := min(28, w/3)
 		if w < 60 {
 			// narrow: the key on its own row, the description under it
@@ -124,7 +126,7 @@ func (m *Model) keySheetSize() (int, int) {
 // helpMaxScroll is the sheet's last scroll position.
 func (m *Model) helpMaxScroll() int {
 	w, h := m.keySheetSize()
-	return max(len(keySheetRows(w))-h, 0)
+	return max(len(keySheetRows(w, m.kn))-h, 0)
 }
 
 func (m *Model) drawKeys(c *canvas) {
@@ -137,7 +139,7 @@ func (m *Model) drawKeys(c *canvas) {
 			break
 		}
 	}
-	rows := keySheetRows(w)
+	rows := keySheetRows(w, m.kn)
 	scroll := min(max(m.helpScroll, 0), max(len(rows)-h, 0))
 	x0, y0 := r.x0+3, r.y0+3
 	old := c.setClip(rect{x0, y0, x0 + w, y0 + h})
