@@ -148,7 +148,7 @@ func (s *Server) broadcastHuddlesLocked(c changed) {
 }
 
 func (s *Server) opHuddleJoin(ctx context.Context, sess *session, a proto.HuddleJoinArgs) (any, error) {
-	if sess.dg == nil {
+	if sess.dg == nil && !sess.streamVoice {
 		return nil, proto.Errf(proto.ErrBadRequest, "voice needs UDP")
 	}
 	u := sess.user.ID
@@ -381,9 +381,11 @@ func (s *Server) sendHuddles(sess *session) {
 // ---- datagram relay ----
 
 // startDatagrams runs the session's datagram reader and writer until ctx
-// ends or the session closes.
+// ends or the session closes. dg nil: voice rides the frame stream
+// (§14.4): readLoop relays VOICE frames and the writer sends them.
 func (sess *session) startDatagrams(ctx context.Context, dg transport.DatagramConn) {
 	sess.dg = dg
+	sess.streamVoice = dg == nil
 	sess.dgOut = make(chan dgItem, dgQueueLen)
 	hs := sess.srv.hud
 	go func() {
@@ -399,7 +401,13 @@ func (sess *session) startDatagrams(ctx context.Context, dg transport.DatagramCo
 				hs.mu.RLock()
 				live := hs.bySess[sess] == it.to && hs.bySess[it.from.sess] == it.from
 				hs.mu.RUnlock()
-				if live {
+				switch {
+				case !live:
+				case dg == nil:
+					if !sess.pushVoice(it) {
+						hs.dropped.Add(1)
+					}
+				default:
 					// Errors are a closing connection or a datagram that no
 					// longer fits the path MTU; voice just loses that frame.
 					_ = dg.SendDatagram(it.b)
@@ -409,6 +417,9 @@ func (sess *session) startDatagrams(ctx context.Context, dg transport.DatagramCo
 			}
 		}
 	}()
+	if dg == nil {
+		return
+	}
 	go func() {
 		for {
 			b, err := dg.ReceiveDatagram(ctx)
@@ -495,5 +506,114 @@ func takeBucket(b *bucket, now time.Time, burst, perSec float64) bool {
 		return false
 	}
 	b.tokens--
+	return true
+}
+
+// ---- voice on the frame stream (§14.4) ----
+
+// A reliable stream can't drop late audio, so it is bounded here instead:
+// at most voiceQueueLen frames wait (the oldest go first), none waits
+// longer than voiceMaxAge, and none is queued while chat output is backed
+// up or a write has been stuck for voiceStall (the socket is full). Chat
+// is written before any queued voice.
+const (
+	voiceQueueLen = 8 // 160 ms of one talker
+	voiceMaxAge   = 150 * time.Millisecond
+	voiceStall    = 100 * time.Millisecond
+	// voiceStuck: a write blocked this long, the socket not draining, means
+	// the peer stopped reading. Voice bytes don't count toward
+	// maxQueueBytes, so without this a huddle-only session could hold a
+	// writer forever (checkVoiceStuck).
+	voiceStuck    = 10 * time.Second
+	voiceBackedUp = 64 << 10 // queued chat bytes
+)
+
+type voiceOut struct {
+	it dgItem
+	at time.Time
+}
+
+// checkVoiceStuck (readLoop's ticker, every 5 s) closes a stream-voice
+// session as a slow consumer once a write has been blocked for voiceStuck
+// with the socket not draining between two checks: the peer stopped
+// reading. Any frame counts (the write that blocks is usually chat or a
+// PING: voice is skipped while the socket is backlogged), but a big frame
+// on a slow link that is still moving is left alone. Where the OS can't
+// report the backlog, the time alone decides.
+func (sess *session) checkVoiceStuck(now time.Time) {
+	if w := sess.writing.Load(); w == 0 || now.UnixNano()-w <= int64(voiceStuck) {
+		sess.lastUnsent = -1
+		return
+	}
+	unsent := sess.unsent
+	if unsent == nil {
+		unsent = func() (int, bool) { return transport.Unsent(sess.conn) }
+	}
+	if n, ok := unsent(); ok && (n == 0 || n != sess.lastUnsent) {
+		sess.lastUnsent = n // moving (or a first look): check again next tick
+		return
+	}
+	sess.mu.Lock()
+	if !sess.closed {
+		sess.slowLocked()
+	}
+	sess.mu.Unlock()
+}
+
+// pushVoice queues a relayed frame for sess's writer; false = dropped.
+func (sess *session) pushVoice(it dgItem) bool {
+	now := time.Now()
+	if w := sess.writing.Load(); w != 0 && now.UnixNano()-w > int64(voiceStall) {
+		return false
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if sess.closed || !sess.live || sess.queued >= voiceBackedUp {
+		return false
+	}
+	if len(sess.vq) >= voiceQueueLen {
+		sess.vq = slices.Delete(sess.vq, 0, 1) // keep the newest audio
+		sess.srv.hud.dropped.Add(1)
+	}
+	sess.vq = append(sess.vq, voiceOut{it, now})
+	sess.signal()
+	return true
+}
+
+// writeVoice writes the voice frames the writer took, skipping late ones
+// and ones whose participation (either end) has ended since they were
+// queued (§14.1). False on a write error.
+func (sess *session) writeVoice(vq []voiceOut) bool {
+	hs := sess.srv.hud
+	for i, v := range vq {
+		sess.mu.Lock()
+		if len(sess.queue) > 0 {
+			// Chat came in: it goes first; the rest of this voice waits
+			// (and ages) in the queue again, newest kept.
+			sess.vq = append(vq[i:len(vq):len(vq)], sess.vq...)
+			if n := len(sess.vq) - voiceQueueLen; n > 0 {
+				sess.vq = sess.vq[n:]
+				hs.dropped.Add(uint64(n))
+			}
+			sess.mu.Unlock()
+			return true
+		}
+		sess.mu.Unlock()
+		hs.mu.RLock()
+		live := hs.bySess[sess] == v.it.to && hs.bySess[v.it.from.sess] == v.it.from
+		hs.mu.RUnlock()
+		// The kernel's own backlog can't be dropped once written: skip
+		// voice while it is deep (macOS ignores TCP_NOTSENT_LOWAT for writes).
+		if !live || time.Since(v.at) > voiceMaxAge || transport.Backlogged(sess.conn) {
+			hs.dropped.Add(1)
+			continue
+		}
+		sess.writing.Store(time.Now().UnixNano())
+		err := sess.codec.WriteRaw(proto.TVoice, v.it.b)
+		sess.writing.Store(0)
+		if err != nil {
+			return false
+		}
+	}
 	return true
 }

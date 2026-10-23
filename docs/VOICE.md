@@ -1,6 +1,7 @@
 # Voice huddles design (M5)
 
-Status: **shipped in v0.4.0**. Wire format: PROTOCOL.md §14 (cap `voice1`).
+Status: **shipped in v0.4.0**; voice over the TCP fallback and the codec/quality changes below
+since. Wire format: PROTOCOL.md §14 (caps `voice1`, `voice_tcp`).
 
 ## Goals / non-goals
 
@@ -14,8 +15,8 @@ Status: **shipped in v0.4.0**. Wire format: PROTOCOL.md §14 (cap `voice1`).
 - The default `tc` stays a static `CGO_ENABLED=0` binary. Audio needs C (libopus, an audio
   device layer), so it lives behind the build tag `voice`; everything else (server relay,
   protocol, huddle state, TUI indicator) is pure Go and always built.
-- Non-goals for v1: video, screen share, recording, server-side mixing, voice over the
-  TCP fallback, PSTN, more than 16 people in one huddle, per-sender signatures on frames.
+- Non-goals for v1: video, screen share, recording, server-side mixing, PSTN, more than 16
+  people in one huddle, per-sender signatures on frames.
 
 ## Huddle model
 
@@ -44,12 +45,26 @@ Status: **shipped in v0.4.0**. Wire format: PROTOCOL.md §14 (cap `voice1`).
 
 - **QUIC datagrams (RFC 9221)** on the same QUIC connection as the frame stream. Both sides set
   `EnableDatagrams`; it's a transport parameter, so old peers simply don't get datagrams.
-- **TCP fallback: no voice in v1.** A reliable stream turns loss into head-of-line stalls (a
-  dropped packet freezes every following frame for an RTO), which is worse than silence, and it
-  would share the 8 MiB session queue with chat. `huddle.join` on a TCP session fails with
-  `bad_request` "voice needs UDP"; the TUI says "huddle needs UDP — your network blocks it".
-  TCP sessions still see huddle rosters, so you know a huddle is happening. Frame type 0x40
-  stays reserved for a possible framed fallback later.
+- **TCP fallback (cap `voice_tcp`, PROTOCOL.md §14.4).** Where UDP is blocked (corporate
+  IPsec VPNs, some guest Wi-Fi) the connection falls back to TLS over TCP; voice then rides the
+  frame stream as VOICE frames carrying the identical datagram bytes (same E2E encryption: the
+  stream is only a carrier). The server relays between transports, so QUIC and TCP participants
+  hear each other. The huddle bar shows `tcp` for the whole call and `/huddle` says `voice via tcp`.
+  - A reliable stream turns loss into head-of-line stalls (a lost packet freezes every
+    following frame for an RTO) and never drops late audio, so latency is bounded by dropping
+    on purpose, at every hop: the client sends a frame only if the stream is free (never behind
+    chat or a stuck write) and drops frames older than 60 ms; the server keeps at most 8 frames
+    per TCP listener, ≤ 150 ms old, writes chat before them, and queues none while that
+    session's output is backed up; `TCP_NOTSENT_LOWAT` (8 KiB) keeps the kernel from buffering
+    seconds of it on Linux, and both ends skip voice while the socket already holds a backlog
+    (`TCP_INFO` on Linux, `SO_NWRITE` on macOS); and the receiver's jitter buffer drops frames queued beyond its
+    target + 80 ms. After a stall, the backlog is skipped, not played late.
+  - Measured (`TestHuddleTCPSlowLink`: 22 KB/s of voice into a 12 KB/s link for 8 s): chat
+    sent mid-call arrives in ~40 ms; voice latency stays at 0.2–0.24 s. Without the drops,
+    chat took 1.4 s and voice latency grew to 3.5 s by the end.
+  - FEC is off on TCP (nothing is lost, only late).
+  - An old server (no `voice_tcp`): `/huddle` on TCP fails as before, "huddle needs UDP, and
+    this connection fell back to TCP".
 - Datagrams carry no stream ids or acks. Loss is concealed by Opus (FEC + PLC), never
   retransmitted.
 - quic-go's `SendDatagram` blocks when its 32-entry send queue is full (congestion). The server
@@ -60,25 +75,40 @@ Status: **shipped in v0.4.0**. Wire format: PROTOCOL.md §14 (cap `voice1`).
 ## Codec
 
 - Opus, 48 kHz mono, 20 ms frames (960 samples), `OPUS_APPLICATION_VOIP`.
-- 24 kbit/s VBR (≈ 60 B/frame), in-band FEC on with expected loss 10 %, complexity 5 (cheap on
-  laptops). DTX off: push-to-talk already gates silence, and DTX's skipped frames would look like
-  loss to the jitter buffer.
+- 32 kbit/s VBR (≈ 65–80 B/frame on speech), complexity 9, in-band FEC on. DTX off: push-to-talk already
+  gates silence, and DTX's skipped frames would look like loss to the jitter buffer.
+- **FEC follows measured loss.** Each client measures the loss on the streams it hears (an
+  average over ~2 s of missing playout slots) and sets `OPUS_SET_PACKET_LOSS_PERC` to it every
+  second (0 under 1 %, capped at 25 %); the paths in and out share the server and access links,
+  so it is a fair estimate without a feedback channel. Until anything is heard it assumes 5 %.
+  A clean link spends no bits on redundancy; on TCP it is always 0.
+- Why (v0.4.0 → now): with 24 kbit/s and FEC sized for 10 % loss, Opus coded only **wideband
+  (8 kHz audio bandwidth)** and used ~16.5 kbit/s; at 32 kbit/s it codes fullband.
+  `TestOpusQuality` (synthetic speech-like signal) logs: log-spectral distance 31.9 → 6.0 dB
+  clean and 32.0 → 8.0 dB at 10 % loss, segmental SNR 9.3 → 9.8 dB; encode ≈ 0.2 ms per 20 ms
+  frame at complexity 9 (10 measured no better).
 - Push-to-talk default: nothing is captured or sent while the key isn't held.
 - The datagram limit (512 B, §14.3) leaves room for 120 ms-worth or a 128 kbit/s frame; v1 only
   ever sends 20 ms frames.
 
 ## Jitter buffer (per remote `src`)
 
-- Frames are ordered by `seq`. Playout starts after a target delay (initial 60 ms), adapted
-  between 40 and 200 ms from the observed inter-arrival jitter (RFC 3550 estimator, target ≈
-  3 × jitter + 20 ms, re-evaluated at talk-spurt starts). Mid-spurt, a frame that arrives just
-  behind the playout point grows the delay by one frame (one concealed slot) instead of being
-  lost every time.
+- Frames are ordered by `seq`. Playout starts after a target delay (initial 80 ms), adapted
+  between 60 and 200 ms from the observed inter-arrival jitter (RFC 3550 estimator, target ≈
+  3 × jitter + 20 ms, re-evaluated at talk-spurt starts, shrinking at most one frame per spurt).
+  Mid-spurt, a frame that arrives just behind the playout point grows the delay by one frame
+  (one concealed slot) instead of being lost every time. The 60 ms floor (was 40) and the slow
+  shrink stop a cycle where each spurt restarted too short, concealed and stretched again:
+  device periods (10 ms, VPIO's ~10.7 ms) alone jitter frames by ±10 ms on each end.
+- Frames buffered beyond target + 80 ms are dropped, oldest first (counted as late): a stall
+  followed by a burst (Wi-Fi, and always on TCP) doesn't add its length to the delay.
 - Missing frame at playout: if `seq+1` is buffered, decode its FEC data; else Opus PLC; after 5
   consecutive missing frames the stream goes silent and the buffer resets.
 - Late frames (behind the playout point) are dropped. A flag bit marks the last frame of a
   talk spurt so the buffer can drain cleanly on push-to-talk release.
-- Remote streams are mixed (summed with clipping) **on the client** into the playback device.
+- Remote streams are mixed **on the client** into the playback device: summed, then a limiter
+  (instant gain reduction to keep the peak under −0.2 dBFS, ~0.5 s release ramped within each
+  frame) instead of hard clipping when talkers sum past full scale (`TestMixNoClipping`).
 
 ## Server: SFU relay
 
@@ -153,6 +183,8 @@ exactly like public-channel text. The TUI marks encrypted huddles with the lock 
 | per-session send rate | token bucket burst 100, refill 60/s (50/s nominal); excess dropped |
 | `huddle.join` | counts as a write op for rate limits (§9); `huddle.leave` is exempt |
 | per-receiver relay queue | 64 datagrams; full → drop newest |
+| per-receiver VOICE frame queue (TCP) | 8 frames, ≤ 150 ms old; chat first; none while ≥ 64 KiB of output waits or a write is stuck 100 ms |
+| client send queue | 16 frames ≤ 200 ms old (QUIC); 4 frames ≤ 60 ms old (TCP) |
 
 ## UX (TUI + herdr)
 
@@ -172,6 +204,10 @@ exactly like public-channel text. The TUI marks encrypted huddles with the lock 
 - `/talk` and `/mute` open and close the mic where ctrl+t never arrives (Zellij) or key-repeat
   is off. Esc on an empty input closes an open mic.
 - Not talking = muted. `/leave-huddle` leaves.
+- `/huddle stats` (in a huddle) shows numbers to report from a real call, e.g.
+  `udp · loss 0.4% · buf 60ms · 3 late · fec 0% · 27 kb/s`: the transport, recent loss on what we
+  hear, the jitter buffer delay, frames dropped for coming too late, the loss our FEC protects
+  against (UDP only), and our Opus bitrate while talking.
 - A huddle that ends without `/leave-huddle` says why, once: `🎧 #chan ended: connection lost`
   (or `you were dropped`: membership, revoke, the server's liveness check; or `encryption
   changed`), plus `· /huddle to rejoin` only when that would rejoin it (online, viewing that
@@ -195,7 +231,7 @@ shows which):
 
 | Mode | When | What |
 |---|---|---|
-| `system` | macOS (the voice-processing unit starts); Linux with an echo-cancel source **and** sink loaded | The OS cancels echo. On macOS: `kAudioUnitSubType_VoiceProcessingIO` (Apple's AEC + AGC + noise suppression), via a small cgo shim (`vpio_darwin.c`) because miniaudio only opens the plain HAL unit. Other apps' audio is ducked as little as macOS 14+ allows. |
+| `system` | macOS (the voice-processing unit starts); Linux with an echo-cancel source **and** sink loaded | The OS cancels echo. On macOS: `kAudioUnitSubType_VoiceProcessingIO` (Apple's AEC + noise suppression; its AGC is turned off because it pumps the level and dulls the voice, `TC_VOICE_AGC=on` keeps it), via a small cgo shim (`vpio_darwin.c`) because miniaudio only opens the plain HAL unit. The unit runs our 48 kHz int16 mono format on both sides, so tc adds no resampling. Other apps' audio is ducked as little as macOS 14+ allows. |
 | `gate` | no platform canceller (most Linux setups), or forced | Half-duplex gate in the engine: while remote audio plays (above ≈ −42 dBFS and 6 dB above the far end's learned noise floor, or above ≈ −26 dBFS regardless) and for 200 ms after, an **open** mic is muted (2.5 ms attack, 20 ms release ramps). A ctrl+t press is gateable until a key-repeat proves it held; a held key is never gated: you are deliberately talking (barge-in = hold ctrl+t). |
 | `off` | `TC_VOICE_AEC=off`, or `system` asked for and unavailable | Nothing. |
 
@@ -243,6 +279,11 @@ per run.
   and, on macOS, the voice-processing unit (which only opens the default devices), so the gate
   applies.
 - Platform echo cancellation lives entirely on the client; the protocol is unchanged.
+- The VPIO shim passes only the microphone samples that arrived each period. It used to pad a
+  short read with zeros, which cut gaps into the voice (crackle) whenever input and output
+  periods differ (a Bluetooth headset mic, a resampled device).
+- Devices not at 48 kHz go through miniaudio's linear resampler with its steepest low-pass
+  (order 8; the default is 4).
 
 ## Audio I/O library
 

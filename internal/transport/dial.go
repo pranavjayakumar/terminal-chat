@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"time"
 
@@ -103,7 +104,7 @@ func DialQUIC(ctx context.Context, addr, pin string) (Conn, error) {
 
 // DialTCP connects over TLS-over-TCP.
 func DialTCP(ctx context.Context, addr, pin string) (Conn, error) {
-	d := tls.Dialer{Config: clientTLS(pin)}
+	d := tls.Dialer{Config: clientTLS(pin), NetDialer: &net.Dialer{Control: limitUnsent}}
 	nc, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("tcp dial %s: %w", addr, err)
