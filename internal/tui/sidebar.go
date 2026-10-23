@@ -100,8 +100,8 @@ func (m *Model) drawSidebar(c *canvas, g geo) {
 	th := m.st.th
 	sb := g.SB
 	mini := sb < 14
-	c.fill(0, 0, sb, g.statusY, th.panel, "")
-	old := c.setClip(rect{0, 0, sb, g.statusY})
+	c.fill(0, g.T0, sb, g.statusY-g.T0, th.panel, "")
+	old := c.setClip(rect{0, g.T0, sb, g.statusY})
 	y := g.top
 	c.put(2, y, "tc", fgb(th.accent), "")
 	if !mini {
@@ -164,8 +164,9 @@ func (m *Model) drawSidebar(c *canvas, g geo) {
 	c.setClip(old)
 	// the draggable edge
 	hot := m.hover == "sbresize"
-	for j := 0; j < g.statusY; j++ {
-		mid := j >= g.statusY/2-2 && j <= g.statusY/2+2
+	midY := (g.T0 + g.statusY) / 2
+	for j := g.T0; j < g.statusY; j++ {
+		mid := j >= midY-2 && j <= midY+2
 		glyph, col := "│", th.line
 		switch {
 		case hot && mid:
@@ -261,7 +262,7 @@ func (m *Model) drawTips(c *canvas, g geo) {
 		return
 	}
 	th := m.st.th
-	for y := 0; y < g.statusY; y++ {
+	for y := g.T0; y < g.statusY; y++ {
 		if c.actionAt(1, y) != m.hover {
 			continue
 		}

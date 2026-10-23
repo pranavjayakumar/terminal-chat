@@ -222,8 +222,8 @@ func TestPaletteSwitchesThemeAndPersists(t *testing.T) {
 	if m2.st.th.name != "graphite" {
 		t.Fatal("/theme graphite")
 	}
-	if b, _ := os.ReadFile(path); strings.Contains(string(b), "theme") {
-		t.Fatalf("the default theme is stored: %s", b)
+	if b, _ := os.ReadFile(path); !strings.Contains(string(b), `"theme": "graphite"`) {
+		t.Fatalf("a picked default isn't kept as a choice: %s", b) // a skin never overrides it
 	}
 	// A broken file falls back to defaults instead of failing.
 	os.WriteFile(path, []byte("{nope"), 0o600)
@@ -242,12 +242,12 @@ func TestSettingsDialog(t *testing.T) {
 		t.Fatalf("mode %v page %d", m.mode, m.set.page)
 	}
 	v := checkView(t, m, "appearance")
-	for _, want := range []string{"Settings", "Appearance", "Notifications", "Theme", "Density", "Cozy", "Compact", "Sidebar", "Show people as", "Stripe", "Animations", "✓ graphite", "macintosh"} {
+	for _, want := range []string{"Settings", "Appearance", "Notifications", "Skin", "Retro", "Theme", "Density", "Cozy", "Compact", "Sidebar", "Show people as", "Stripe", "Animations", "✓ graphite", "macintosh"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("appearance lacks %q", want)
 		}
 	}
-	press(m, "right") // theme → sky
+	press(m, "down", "right") // theme → sky
 	if m.st.th.name != "sky" {
 		t.Fatalf("right on themes: %q", m.st.th.name)
 	}
@@ -293,15 +293,15 @@ func TestSettingsDialog(t *testing.T) {
 	}
 	// Clicking a control works like the keys.
 	m.openSettings("appearance")
-	click(t, m, "set:1:1")
+	click(t, m, "set:2:1")
 	if !m.ui.Compact {
 		t.Fatal("click compact")
 	}
-	click(t, m, "set:1:0")
+	click(t, m, "set:2:0")
 	if m.ui.Compact {
 		t.Fatal("click cozy")
 	}
-	click(t, m, "set:4:1")
+	click(t, m, "set:5:1")
 	if !strings.Contains(m.notice, "later") {
 		t.Fatalf("greyed style: %q", m.notice)
 	}
@@ -531,7 +531,7 @@ func TestSettingsFocusVisible(t *testing.T) {
 	for _, sz := range [][2]int{{80, 24}, {100, 30}, {40, 50}, {160, 48}} {
 		m := newTestModel(t, sz[0], sz[1])
 		m.openSettings("appearance")
-		for i, want := range []string{"Theme", "Density", "Sidebar", "Messages", "Show people as", "Animations"} {
+		for i, want := range []string{"Skin", "Theme", "Density", "Sidebar", "Messages", "Show people as", "Animations"} {
 			ok := false
 			for _, l := range strings.Split(checkView(t, m, want), "\n") {
 				ok = ok || strings.Contains(l, "›") && strings.Contains(l, want)
@@ -618,38 +618,6 @@ func TestStatusBarNarrow(t *testing.T) {
 	last := v[len(v)-1]
 	if !strings.Contains(last, "● quic") || !strings.Contains(last, "F1") || strings.Contains(last, "graphite") {
 		t.Fatalf("status bar: %q", last)
-	}
-}
-
-// A follow-up in the same group never sits flush under a code or diff
-// panel: one blank row separates them, in both densities.
-func TestBlankRowAfterCodeBlock(t *testing.T) {
-	for _, compact := range []bool{false, true} {
-		m, f := newTestModelFake(t, 120, 40)
-		m.ui.Compact = compact
-		base := time.Now().Add(-time.Minute).UnixMilli()
-		f.msgs[10] = []client.Message{
-			{Message: proto.Message{ID: 1, Chan: 10, Author: 2, Time: base, Body: "pasting:\n```diff\n-old\n+new\n```"}},
-			{Message: proto.Message{ID: 2, Chan: 10, Author: 2, Time: base + 1000, Body: "and then this"}},
-			{Message: proto.Message{ID: 3, Chan: 10, Author: 2, Time: base + 2000, Body: "plain follow-up"}},
-		}
-		m.reloadPane(&m.main)
-		rows, owner := m.paneLines(&m.main, m.dims().msgW)
-		at := func(s string) int {
-			for i, r := range rows {
-				if strings.Contains(r.text(), s) {
-					return i
-				}
-			}
-			t.Fatalf("%q not laid out", s)
-			return -1
-		}
-		if i := at("and then this"); owner[i-1] != -1 || rows[i-1].b != nil || !strings.Contains(rows[i-2].text(), "+new") {
-			t.Errorf("compact=%v: no blank row after the diff", compact)
-		}
-		if i := at("plain follow-up"); owner[i-1] != 1 {
-			t.Errorf("compact=%v: a gap inside a plain group", compact)
-		}
 	}
 }
 

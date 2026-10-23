@@ -18,7 +18,10 @@ const (
 // uiPrefs are this device's look-and-feel settings, kept in TC_HOME/ui.json.
 // Only the UI reads or writes the file; the server never sees it.
 type uiPrefs struct {
-	Theme    string `json:"theme,omitempty"`
+	Theme    string `json:"theme,omitempty"`    // "" until the user picks one
+	Skin     string `json:"skin,omitempty"`     // "" is the first skin (skin.go)
+	Startup  string `json:"startup,omitempty"`  // "instant" skips the intro
+	ThreadW  int    `json:"thread_w,omitempty"` // the thread pane's width; 0 is the default
 	Compact  bool   `json:"compact,omitempty"`
 	Sidebar  string `json:"sidebar,omitempty"`
 	Split    bool   `json:"split,omitempty"` // messages: ours on the right
@@ -43,6 +46,15 @@ func loadUIPrefs(path string) uiPrefs {
 	}
 	if _, ok := themes[p.Theme]; !ok {
 		p.Theme = ""
+	}
+	if skinNamed(p.Skin).id != p.Skin {
+		p.Skin = ""
+	}
+	if p.Startup != startInstant {
+		p.Startup = ""
+	}
+	if p.ThreadW < minThreadW || p.ThreadW > maxThreadW {
+		p.ThreadW = 0
 	}
 	seen := map[string]bool{}
 	p.Emoji = slices.DeleteFunc(p.Emoji, func(u emojiUse) bool {
@@ -89,6 +101,9 @@ func (p uiPrefs) save() error {
 	return werr
 }
 
+// startInstant is the Startup setting that skips the intro.
+const startInstant = "instant"
+
 func (p uiPrefs) themeName() string {
 	if p.Theme == "" {
 		return defaultTheme
@@ -117,11 +132,9 @@ func (m *Model) setTheme(name string) {
 		return
 	}
 	m.fx.themeFrom(m)
+	m.fx.skinSwap = false
 	m.applyStyles(newStyles(m.st.color, m.st.prof, th))
-	m.ui.Theme = name
-	if name == defaultTheme {
-		m.ui.Theme = ""
-	}
+	m.ui.Theme = name // kept even for the default: it says the user chose
 	m.savePrefs()
 	m.setInfo("◐ theme · " + name)
 }
@@ -129,6 +142,10 @@ func (m *Model) setTheme(name string) {
 // applyStyles puts st everywhere a copy of the old styles lives.
 func (m *Model) applyStyles(st *styles) {
 	m.st = st
+	m.dst = nil
+	if st.th.dialog != nil {
+		m.dst = newStyles(st.color, st.prof, st.th.dialog)
+	}
 	m.r.st = st
 	m.blocks.reset()
 	m.main.ver++

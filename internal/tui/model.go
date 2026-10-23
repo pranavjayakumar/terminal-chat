@@ -161,6 +161,7 @@ type Model struct {
 	newRelease string // newer release tag, shown in the sidebar title
 
 	ui         uiPrefs    // look and feel, TC_HOME/ui.json (uiprefs.go)
+	dst        *styles    // dialogs' styles when the theme recolors them (qbasic)
 	fx         fxState    // animations (anim.go)
 	blocks     blockCache // drawn messages (msgview.go)
 	pal        palState   // command palette (palette.go)
@@ -168,8 +169,9 @@ type Model struct {
 	boot       bool       // first run: the loading screen shows (boot.go)
 	noticeAt   time.Time  // when the notice appeared (its toast fades from it)
 	hover      string     // the action under the mouse pointer
-	drag       bool       // the sidebar edge is being dragged
+	drag       dragKind   // an edge being dragged (mouse.go)
 	dragX      int
+	clockRun   bool    // the menu bar clock's minute tick is scheduled
 	lastCanvas *canvas // the last frame, for clicks and the theme cross-fade
 	spare      *canvas // the frame before it, reused for the next
 	lastFrame  string
@@ -247,8 +249,12 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 	m.fx.init()
 	// Tests (o.styles set) run without motion unless they ask for it.
 	m.fx.off = ui.NoMotion || (o.styles != nil && !o.motion)
+	m.fx.intro = m.introWanted()
 	m.r = renderer{st: st, name: func(id uint64) string { return m.users[id].Name },
 		bot: func(id uint64) bool { return m.users[id].Bot }}
+	if st.th.dialog != nil {
+		m.dst = newStyles(st.color, st.prof, st.th.dialog)
+	}
 	m.input = newInput(st)
 	m.line = newLine(st)
 	m.loadDrafts()
@@ -889,6 +895,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = tea.Batch(cmd, t)
 	}
 	m.endBoot()
+	m.startIntro()
+	m.stepIntro()
 	if shown := m.compShown(); shown != m.fx.compShown {
 		m.fx.compShown = shown
 		if shown {
@@ -896,6 +904,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if t := m.frameTick(); t != nil {
+		cmd = tea.Batch(cmd, t)
+	}
+	if t := m.clockTick(); t != nil {
 		cmd = tea.Batch(cmd, t)
 	}
 	return m, cmd
@@ -919,6 +930,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fx.running = false
 		}
 		m.sampleMeters()
+		return m, nil
+	case clockMsg:
+		m.clockRun = false
 		return m, nil
 	case noticeExpireMsg:
 		if msg.gen == m.noticeGen {
@@ -993,6 +1007,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.BlurMsg:
 		m.focused = false
 		m.hover = "" // the pointer left for another pane
+		if m.drag != dragNone {
+			m.endDrag(m.dragX, false)
+		}
 		return m, nil
 	case updateMsg:
 		if msg.Prefs || msg.Reset {
@@ -1180,6 +1197,7 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 const blinkFor = 5 * time.Second
 
 func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
+	m.skipIntro() // a key ends the intro and still does its job
 	if m.blinkIdle && !m.fx.off {
 		m.blinkIdle = false
 		return tea.Batch(m.input.Cursor.BlinkCmd(), m.handleKey0(k))
@@ -1218,6 +1236,9 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 		if cmd, ok := m.talkKey(); ok {
 			return cmd
 		}
+	}
+	if m.threadKey(k, key) {
+		return nil
 	}
 
 	switch m.mode {
@@ -1315,6 +1336,8 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 	case key == kHelpAlt:
 		m.openHelp()
 		return nil
+	case menuKey(key) != "" && m.menuBarShown():
+		return m.menuAction(menuKey(key))
 	case key == kCtrlEnd || (key == kEnd && empty):
 		p := m.focus()
 		p.scroll = 0

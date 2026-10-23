@@ -25,12 +25,16 @@ type palItem struct {
 	icon   string
 	iconFg rgb
 	iconBg rgb // a swatch: drawn on its own background, selected or not
-	fg     rgb
-	sw     *switchItem
-	run    string // "/cmd args" to run, "/cmd " to type, or an app action
-	tabs   string // which tabs list it: letters a c p m s
-	score  int
-	order  int
+	// Colors that follow the theme are resolved when drawn, so a dialog
+	// recolored by its theme (qbasic) gets its own: info/faint icons, a
+	// person's name color, their presence dot.
+	iconTone   byte // 'i' info, 'f' faint
+	nick, pres uint64
+	sw         *switchItem
+	run        string // "/cmd args" to run, "/cmd " to type, or an app action
+	tabs       string // which tabs list it: letters a c p m s
+	score      int
+	order      int
 }
 
 type palState struct {
@@ -41,7 +45,6 @@ type palState struct {
 }
 
 func (m *Model) palCommands() []palItem {
-	th := m.st.th
 	out := []palItem{
 		{group: "Commands", label: "Settings", meta: "/settings", icon: "⚙", run: "app:settings", tabs: "ams"},
 		{group: "Commands", label: "Keyboard shortcuts", meta: "F1", icon: "⌨", run: "app:keys", tabs: "ams"},
@@ -62,7 +65,7 @@ func (m *Model) palCommands() []palItem {
 		out = append(out, palItem{group: "Commands", label: "Close thread", meta: "esc", icon: "↳", run: "app:closethread", tabs: "am"})
 	}
 	if m.active != 0 {
-		hud := palItem{group: "Commands", label: "Join huddle here", meta: "/huddle", icon: "♪", iconFg: th.info, run: "/huddle", tabs: "am"}
+		hud := palItem{group: "Commands", label: "Join huddle here", meta: "/huddle", icon: "♪", iconTone: 'i', run: "/huddle", tabs: "am"}
 		if m.hud.in {
 			hud.label, hud.meta, hud.run = "Leave huddle", "/leave-huddle", "/leave-huddle"
 		}
@@ -97,6 +100,13 @@ func (m *Model) palSettings() []palItem {
 		layout = "Messages: split"
 	}
 	out = append(out, palItem{group: "Settings", label: layout, desc: "everyone on the left, or yours on the right", icon: "≡", run: "app:split", tabs: "s"})
+	for _, s := range skins {
+		it := palItem{group: "Skin", label: s.label, desc: "the chrome; any theme fits", icon: "▣", run: "app:skin:" + s.id, tabs: "as"}
+		if s == m.skin() {
+			it.meta = "✓ current"
+		}
+		out = append(out, it)
+	}
 	for _, id := range themeOrder {
 		t := themes[id]
 		it := palItem{group: "Theme", label: id, desc: t.desc, icon: "■", iconFg: t.accent, iconBg: t.bg, run: "theme:" + id, tabs: "as"}
@@ -109,25 +119,23 @@ func (m *Model) palSettings() []palItem {
 }
 
 func (m *Model) palItems() []palItem {
-	th := m.st.th
 	var out []palItem
 	for _, s := range m.switchItems() {
 		s := s
-		it := palItem{sw: &s, label: strings.TrimSpace(s.label[2:]), fg: th.fg, tabs: "a"}
+		it := palItem{sw: &s, label: strings.TrimSpace(s.label[2:]), tabs: "a"}
 		switch {
 		case strings.HasPrefix(s.label, "# "):
 			it.group, it.icon, it.tabs = "Channels", "#", "ac"
 			if v, ok := m.chanView(s.ch); ok {
 				if _, enc := m.e2e[v.ID]; enc || v.E2E {
-					it.icon, it.iconFg, it.desc = "◆", th.info, "encrypted"
+					it.icon, it.iconTone, it.desc = "◆", 'i', "encrypted"
 				}
 			}
 		default:
 			it.group, it.icon, it.tabs = "People", "●", "ap"
-			it.iconFg = th.faint
+			it.iconTone = 'f'
 			if s.user != 0 {
-				it.iconFg = m.presenceColor(s.user)
-				it.fg = th.nick(s.user)
+				it.pres, it.nick = s.user, s.user
 			} else {
 				it.icon = "◇"
 			}
@@ -307,6 +315,13 @@ func (m *Model) palRun(it palItem) tea.Cmd {
 			}
 		}
 		return nil
+	case strings.HasPrefix(run, "app:skin:"):
+		m.setSkin(strings.TrimPrefix(run, "app:skin:"))
+		m.pal.items = m.palItems()
+		sel := m.pal.sel
+		m.filterPalette()
+		m.pal.sel = min(sel, max(len(m.pal.shown)-1, 0))
+		return nil
 	case run == "app:split":
 		m.setSplit(!m.ui.Split)
 		m.pal.items = m.palItems()
@@ -368,7 +383,7 @@ func (m *Model) drawPalette(c *canvas) {
 	w, h := r.x1-r.x0, r.y1-r.y0
 	in := 2
 	if w < 40 {
-		in = 0
+		in = m.inside(r).x0 - r.x0 // clear of the frame, if any
 	}
 	iw := w - 2*in
 	y := y0 + 3
@@ -399,7 +414,7 @@ func (m *Model) drawPalette(c *canvas) {
 	}
 	y += 2
 	foot := y0 + h - 2
-	if h < 12 {
+	if h < 12 && !m.skin().framed {
 		foot = y0 + h - 1
 	}
 	rows := foot - 1 - y
@@ -481,7 +496,14 @@ func (m *Model) palRow(c *canvas, x, y, w, i int) {
 	e := x + 1
 	if it.icon != "" {
 		ic := it.iconFg
-		if ic == 0 {
+		switch {
+		case it.pres != 0:
+			ic = m.presenceColor(it.pres)
+		case it.iconTone == 'i':
+			ic = th.info
+		case it.iconTone == 'f':
+			ic = th.faint
+		case ic == 0:
 			ic = th.dim
 		}
 		st := pick(ic)
@@ -491,9 +513,9 @@ func (m *Model) palRow(c *canvas, x, y, w, i int) {
 		c.put(e, y, it.icon, st, act)
 		e += 3
 	}
-	fg := it.fg
-	if fg == 0 {
-		fg = th.fg
+	fg := th.fg
+	if it.nick != 0 {
+		fg = th.nick(it.nick)
 	}
 	metaW := strWidth(it.meta)
 	room := w - (e - x) - metaW - 3

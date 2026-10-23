@@ -66,6 +66,15 @@ func (m *Model) setSplit(on bool) {
 	m.thread.ver++
 }
 
+// setStartup picks whether the Retro skin opens with its intro.
+func (m *Model) setStartup(instant bool) {
+	m.ui.Startup = ""
+	if instant {
+		m.ui.Startup = startInstant
+	}
+	m.savePrefs()
+}
+
 func (m *Model) setCompact(on bool) {
 	m.ui.Compact = on
 	m.savePrefs()
@@ -134,8 +143,17 @@ func (m *Model) setCtls() []setCtl {
 				cur = i
 			}
 		}
+		skinOpts, skinCur := make([]string, len(skins)), 0
+		for i, s := range skins {
+			skinOpts[i] = s.label
+			if s == m.skin() {
+				skinCur = i
+			}
+		}
 		sb := map[string]int{sbIcons: 0, sbNormal: 1, sbWide: 2}[m.ui.sidebarMode()]
-		return []setCtl{
+		ctls := []setCtl{
+			{label: "Skin", sub: "the chrome; retro: double lines, shadows, a menu bar", opts: skinOpts, cur: skinCur,
+				pick: func(i int) tea.Cmd { m.setSkin(skins[i].id); return nil }},
 			{label: "Theme", sub: "←/→ or click to switch", themes: true, cur: cur, opts: themeOrder,
 				pick: func(i int) tea.Cmd { m.setTheme(themeOrder[i]); return nil }},
 			{label: "Density", opts: []string{"Cozy", "Compact"}, cur: boolInt(m.ui.Compact),
@@ -149,6 +167,11 @@ func (m *Model) setCtls() []setCtl {
 			{label: "Animations", sub: "fades, pops, slides · off = instant", toggle: true, cur: boolInt(!m.fx.off),
 				pick: func(i int) tea.Cmd { m.setMotion(i == 1); return nil }},
 		}
+		if m.skin().intro {
+			ctls = append(ctls, setCtl{label: "Startup", sub: "the skin's intro while tc connects", opts: []string{"Animated", "Instant"}, cur: boolInt(m.ui.Startup == startInstant),
+				pick: func(i int) tea.Cmd { m.setStartup(i == 1); return nil }})
+		}
+		return ctls
 	case "notifications":
 		p := m.al.Prefs
 		lvl := map[client.NotifyLevel]int{client.LevelAll: 0, client.LevelMentions: 1, client.LevelOff: 2}[p.Default]
@@ -331,7 +354,7 @@ func (m *Model) drawSettings(c *canvas) {
 	}
 	cx := r.x0 + navW + 5
 	if navW == 0 {
-		cx = r.x0 + 2
+		cx = m.inside(r).x0 + 2
 	}
 	cw := r.x1 - cx - 2
 	old := c.setClip(rect{cx - 2, top, cx + cw, r.y1 - 1}) // from the › focus mark
@@ -417,20 +440,20 @@ func (m *Model) drawSettings(c *canvas) {
 
 // themeRows is how many rows of cards the grid has at width w, and whether
 // they are the one-line compact kind.
-func themeGrid(w, room int) (cols, rows int, compact bool) {
+func themeGrid(n, w, room int) (cols, rows int, compact bool) {
 	cols = 5
 	for cols > 1 && cols*16 > w {
 		cols--
 	}
-	rows = (len(themeOrder) + cols - 1) / cols
-	return cols, rows, room < rows*6+14
+	rows = (n + cols - 1) / cols
+	return cols, rows, room < rows*6+26 // the cards and every other control fit
 }
 
 // ctlHeight is how many rows drawCtls gives a control.
 func ctlHeight(ctl setCtl, cw, room int) int {
 	switch {
 	case ctl.themes:
-		_, rows, compact := themeGrid(cw, room)
+		_, rows, compact := themeGrid(len(ctl.opts), cw, room)
 		if compact {
 			return rows*2 + 2
 		}
@@ -536,7 +559,7 @@ func (m *Model) drawCtls(c *canvas, cx, y, cw, bottom int) {
 // after it.
 func (m *Model) drawThemeCards(c *canvas, x, y, w, room, row int) int {
 	th := m.st.th
-	cols, rows, compact := themeGrid(w, room)
+	cols, rows, compact := themeGrid(len(themeOrder), w, room)
 	for k, id := range themeOrder {
 		t := themes[id]
 		a := "set:" + strconv.Itoa(row) + ":" + strconv.Itoa(k)

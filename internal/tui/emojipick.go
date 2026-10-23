@@ -555,6 +555,9 @@ func (m *Model) drawPicker(c *canvas, g geo) {
 		r.y1++
 	}
 	m.floatGutter(c, g, r)
+	if b.framed {
+		m.shade(c, r)
+	}
 	old := c.setClip(r)
 	defer c.setClip(old)
 	act := func(a string) string {
