@@ -70,37 +70,50 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
   `join`. Meters are a braille line (one dot per sample, two per cell): yours rolls over 10 samples, others'
   over 4, on the animation tick while you are in the huddle. Voice reports who is talking, not how loud,
   so a meter moves while that person talks and lies on the floor otherwise.
-- Loading screen (logo, steps, progress) only on a first run with no local cache; a start with a cache
-  draws the chat at once. The Retro skin opens with its zoom intro instead (see Skins).
+- Startup: a short logo intro while tc connects (see Skins › Intro).
 
 ## Skins
 
 A skin is the chrome; a theme is the colors. They are independent: every skin works with every theme. A skin
-holds no colors of its own; its shadow, desktop pattern and menu bar take the theme's tokens, so they suit
-light and dark themes alike. Settings › Appearance › Skin (or the palette's Settings tab, group Skin):
+holds no colors of its own; everything it draws takes the theme's tokens (`internal/tui/skin.go`), so a new
+theme gets it for free. Settings › Appearance › Skin (or the palette's Settings tab, group Skin):
 
 - **Modern** (default): rounded boxes, flat panels, everything above.
-- **Retro** (Borland Turbo Vision): double-line boxes `╔═╗║╚╝` for the input, the thread reply box, popups,
-  the emoji picker and dialogs (palette, settings, keys sheet, the rest; content stays inside the frame); a
-  drop shadow 2 columns right and 1 row below each floating box (popups, picker, dialogs), darkening what is
-  under it toward black on dark themes and toward the theme's ink on light ones, never off screen; a quiet
-  `░` desktop in the empty gutters beside the message column and around the thread pane (never behind
-  text, never on a click target); and a menu bar on row 0 (terminals of 16+ rows):
-  `≡  Chat  View  Huddle  Theme  ? Help` with the first letter in the accent, the clock and `◉ N online` on
-  the right. ≡ opens the palette, Chat (`⌥C`) its Channels tab, View (`⌥V`) its Settings tab, Huddle (`⌥H`)
-  joins or leaves the open channel's huddle, Theme (`⌥T`) the palette's themes, Help the keys sheet; each
-  lights up under the pointer. When room runs out the middle entries go first; ≡ and Help stay. Everything
-  else moves down one row. The clock wakes the screen once a minute (only while it shows); nothing else
-  redraws while idle.
+- **Retro** (Borland Turbo Vision, matching the mockup's `Look_borland`):
+  - double-line boxes `╔═╗║╚╝` for the input (one padding row under its text), the thread reply box, popups,
+    the emoji picker and dialogs (content stays inside the frame);
+  - a drop shadow 2 columns right and 1 row below every framed box: toward black on dark themes, a soft
+    toward-ink gray on light ones; it covers the desktop pattern, like the mockup's;
+  - a `░` desktop in the empty, non-clickable gutters beside the message column and around the thread pane,
+    the theme's line color 45% of the way from each cell's background (the mockup's), pushed further where
+    needed so it always stands at least 2:1 off what it sits on;
+  - a menu bar on row 0 (terminals of 16+ rows): ` ≡  Chat View Huddle Theme ? Help`, hotkey letters in a
+    popping color, the clock and `◉ N online` ending 5 columns from the right. ≡ opens the palette, Chat
+    (`⌥C`) its Channels tab, View (`⌥V`) its Settings tab, Huddle (`⌥H`) joins or leaves the open channel's
+    huddle, Theme (`⌥T`) the palette's themes, Help the keys sheet; each lights up under the pointer. When
+    room runs out the middle menus go first. It takes the blank row 0 of a roomy layout, so nothing moves;
+    a tight layout (under 30 rows) moves down a row. The clock wakes the screen once a minute while it
+    shows; nothing else redraws while idle.
+  - Surfaces are pulled apart from the theme's own tokens so frames, bars and shadows read on every theme:
+    panels at least 1.1:1 off the background, bars and selections 1.5:1, frames 3:1 off their panel, quiet
+    text kept readable on them, and a near-black background lifted toward its line color just until a
+    shadow shows (1.25:1). Turbo already meets all of these, so it is exactly the mockup's.
+  - Per-theme overrides live in the theme table: qbasic's gray dialog colors also color the menu bar (DOS
+    menus); macintosh's hotkeys use its info blue, as its accent is black.
 - Choosing Retro switches to the **turbo** theme only if no theme was ever picked; a picked theme (even
   graphite) stays. `ui.json` keeps `"skin"` and `"theme"`. A skin switch cross-fades the colors and swaps
   the chrome halfway.
-- Adding a skin is one entry in `skins` (`internal/tui/skin.go`): box glyphs, frame, shadow, pattern, menu
-  bar, intro.
-- **Intro** (skins with one: Retro): a full `░` desktop, then an accent frame in the skin's glyphs opens from the center with
-  the UI inside. The desktop holds at least 250 ms and until the cache or the connection is ready (2.5 s
-  at most); the zoom then takes 450 ms. A key or a click ends it (the key still types). Settings ›
-  Appearance › Startup: `Animated` · `Instant` (`"startup": "instant"`); Animations off is instant too.
+- Adding a skin is one entry in `skins`: box glyphs, frame, shadow, pattern, menu bar, input padding, intro.
+
+### Intro
+
+Every start (both skins) opens with a short intro while tc connects: the tc logo in the theme's accent over
+`connecting…` (the connection error, if any, in its place). It holds at least 0.7 s and until the cache or
+the connection is ready, 1.2 s at most, then opens in 0.5 s: Retro shows the logo in a shadowed double-line
+dialog on its desktop and zooms a frame from the dialog to the whole screen with the UI inside; Modern shows
+it on a plain screen and fades into the chat. A key or a click ends it (the key still types). Settings ›
+Appearance › Startup: `Animated` · `Instant` (`"startup": "instant"`); Animations off is instant too. On a
+first run with no cache, the same logo screen stays until the first channels arrive.
 
 ## Rendering rules
 
