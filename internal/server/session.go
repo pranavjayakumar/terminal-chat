@@ -60,13 +60,16 @@ type session struct {
 	// over QUIC; streamVoice: no datagrams, so voice rides the frame stream
 	// (§14.4), queued in vq behind chat. writing is when the writer
 	// started its current write (UnixNano, 0 = idle).
-	dg           transport.DatagramConn
-	streamVoice  bool
-	dgOut        chan dgItem
-	vq           []voiceOut // under mu
-	writing      atomic.Int64
-	writingVoice atomic.Int64 // same, for a voice frame (checkVoiceStuck)
-	dgBucket     bucket       // only the datagram reader goroutine touches it
+	dg          transport.DatagramConn
+	streamVoice bool
+	dgOut       chan dgItem
+	vq          []voiceOut // under mu
+	writing     atomic.Int64
+	// checkVoiceStuck's state (readLoop's ticker only); unsent is
+	// transport.Unsent unless a test replaces it.
+	lastUnsent   int
+	unsent       func() (int, bool)
+	dgBucket     bucket // only the datagram reader goroutine touches it
 	lastTyping   map[uint64]time.Time
 	lastKeyNeed  map[uint64]time.Time // under srv.mu
 	lastPresence time.Time
@@ -492,9 +495,9 @@ func (sess *session) readLoop(ctx context.Context) {
 					sess.conn.CloseWithCode("idle")
 					return
 				}
-				// A stuck voice write is caught here too when no more
-				// voice arrives to notice it (pushVoice).
-				sess.checkVoiceStuck(time.Now())
+				if sess.streamVoice {
+					sess.checkVoiceStuck(time.Now())
+				}
 			}
 		}
 	}()

@@ -9,20 +9,26 @@ import "net"
 // only arrive late. Always false for QUIC (voice uses datagrams there) and
 // where the OS can't tell.
 func Backlogged(c Conn) bool {
+	n, known := Unsent(c)
+	return known && n > backlogLimit
+}
+
+// Unsent is how many bytes c's socket holds that the network hasn't taken
+// (Linux: not yet sent; macOS: not yet acknowledged), and whether the OS
+// could tell (never for QUIC).
+func Unsent(c Conn) (n int, known bool) {
 	t, ok := c.(*tcpConn)
 	if !ok {
-		return false
+		return 0, false
 	}
 	tc, ok := t.NetConn().(*net.TCPConn)
 	if !ok {
-		return false
+		return 0, false
 	}
 	rc, err := tc.SyscallConn()
 	if err != nil {
-		return false
+		return 0, false
 	}
-	var n int
-	var known bool
 	_ = rc.Control(func(fd uintptr) { n, known = unsentBytes(fd) })
-	return known && n > backlogLimit
+	return n, known
 }

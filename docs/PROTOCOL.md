@@ -1501,9 +1501,9 @@ VOICE (0x40) payload = one datagram, byte for byte as in §14.3 (≤ 512 bytes)
     contract: tc sets `TCP_NOTSENT_LOWAT` = 8 KiB on TCP sockets, both ends, so a slow link
     backs up into this queue rather than the kernel's, and both ends skip a voice frame while the
     socket already holds more than a few KiB unsent: `TCP_INFO` notsent bytes on Linux, `SO_NWRITE`
-    on macOS, which ignores the low-water mark for writes.) A session whose VOICE write has been
-    blocked for 10 s is closed as `slow_consumer` (checked as voice arrives and every 5 s): voice
-    isn't counted in the 8 MiB cap (§9). These 8 frames are a second stage after the 64-datagram
+    on macOS, which ignores the low-water mark for writes.) A stream-voice session whose write (of
+    any frame) has been blocked for 10 s, the socket not draining between two 5 s checks, is
+    closed as `slow_consumer`: voice isn't counted in the 8 MiB cap (§9). These 8 frames are a second stage after the 64-datagram
     relay queue of §14.3, which applies to stream receivers too.
   - Client: a VOICE frame that would wait for the stream (another write in progress) is
     dropped; at most 4 frames wait for the sender, none longer than 60 ms. Clients ignore

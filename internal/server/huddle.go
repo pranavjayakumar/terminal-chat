@@ -520,9 +520,10 @@ const (
 	voiceQueueLen = 8 // 160 ms of one talker
 	voiceMaxAge   = 150 * time.Millisecond
 	voiceStall    = 100 * time.Millisecond
-	// voiceStuck: a voice write blocked this long means the peer stopped
-	// reading. Voice bytes don't count toward maxQueueBytes, so without this
-	// a huddle-only session could hold a writer forever (checkVoiceStuck).
+	// voiceStuck: a write blocked this long, the socket not draining, means
+	// the peer stopped reading. Voice bytes don't count toward
+	// maxQueueBytes, so without this a huddle-only session could hold a
+	// writer forever (checkVoiceStuck).
 	voiceStuck    = 10 * time.Second
 	voiceBackedUp = 64 << 10 // queued chat bytes
 )
@@ -532,13 +533,24 @@ type voiceOut struct {
 	at time.Time
 }
 
-// checkVoiceStuck closes sess as a slow consumer once a voice write has
-// been blocked for voiceStuck. Only voice: it is written only when the
-// socket's backlog is small (writeVoice), so a ≤512-byte frame blocked that
-// long means the peer stopped reading, whereas a big chat frame on a slow
-// but working link may legitimately take longer.
+// checkVoiceStuck (readLoop's ticker, every 5 s) closes a stream-voice
+// session as a slow consumer once a write has been blocked for voiceStuck
+// with the socket not draining between two checks: the peer stopped
+// reading. Any frame counts (the write that blocks is usually chat or a
+// PING: voice is skipped while the socket is backlogged), but a big frame
+// on a slow link that is still moving is left alone. Where the OS can't
+// report the backlog, the time alone decides.
 func (sess *session) checkVoiceStuck(now time.Time) {
-	if w := sess.writingVoice.Load(); w == 0 || now.UnixNano()-w <= int64(voiceStuck) {
+	if w := sess.writing.Load(); w == 0 || now.UnixNano()-w <= int64(voiceStuck) {
+		sess.lastUnsent = -1
+		return
+	}
+	unsent := sess.unsent
+	if unsent == nil {
+		unsent = func() (int, bool) { return transport.Unsent(sess.conn) }
+	}
+	if n, ok := unsent(); ok && (n == 0 || n != sess.lastUnsent) {
+		sess.lastUnsent = n // moving (or a first look): check again next tick
 		return
 	}
 	sess.mu.Lock()
@@ -552,7 +564,6 @@ func (sess *session) checkVoiceStuck(now time.Time) {
 func (sess *session) pushVoice(it dgItem) bool {
 	now := time.Now()
 	if w := sess.writing.Load(); w != 0 && now.UnixNano()-w > int64(voiceStall) {
-		sess.checkVoiceStuck(now)
 		return false
 	}
 	sess.mu.Lock()
@@ -597,11 +608,8 @@ func (sess *session) writeVoice(vq []voiceOut) bool {
 			hs.dropped.Add(1)
 			continue
 		}
-		now := time.Now().UnixNano()
-		sess.writing.Store(now)
-		sess.writingVoice.Store(now)
+		sess.writing.Store(time.Now().UnixNano())
 		err := sess.codec.WriteRaw(proto.TVoice, v.it.b)
-		sess.writingVoice.Store(0)
 		sess.writing.Store(0)
 		if err != nil {
 			return false

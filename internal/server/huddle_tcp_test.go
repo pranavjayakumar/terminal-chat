@@ -305,20 +305,23 @@ func TestStreamVoiceEndedParticipation(t *testing.T) {
 	}
 }
 
-// TestStreamVoiceStuck: a voice write blocked past voiceStuck closes the
-// session as a slow consumer, even with no more voice to notice it (the
-// idle ticker checks too); a long chat write on a slow link doesn't.
+// TestStreamVoiceStuck: a write blocked past voiceStuck with the socket not
+// draining closes the session as a slow consumer; a long write on a slow
+// link that is still moving doesn't.
 func TestStreamVoiceStuck(t *testing.T) {
 	sess, _, _ := pipeSession(t)
-	old := time.Now().Add(-2 * voiceStuck).UnixNano()
-	sess.writing.Store(old) // a chat frame, slow but moving
-	sess.checkVoiceStuck(time.Now())
-	if sess.closed {
-		t.Fatal("closed over a long chat write")
+	unsent := 300 << 10
+	sess.unsent = func() (int, bool) { return unsent, true }
+	sess.writing.Store(time.Now().Add(-2 * voiceStuck).UnixNano())
+	for range 3 { // a big frame, slow but moving
+		unsent -= 20 << 10
+		sess.checkVoiceStuck(time.Now())
 	}
-	sess.writingVoice.Store(old)
-	sess.checkVoiceStuck(time.Now())
+	if sess.closed {
+		t.Fatal("closed over a long write that is draining")
+	}
+	sess.checkVoiceStuck(time.Now()) // nothing moved since the last tick
 	if !sess.closed {
-		t.Fatal("a voice write stuck for 20 s didn't close the session")
+		t.Fatal("a write stuck for 20 s, socket not draining, didn't close the session")
 	}
 }
