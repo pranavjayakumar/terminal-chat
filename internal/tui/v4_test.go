@@ -248,11 +248,11 @@ func TestSettingsDialog(t *testing.T) {
 			t.Errorf("appearance lacks %q", want)
 		}
 	}
-	press(m, "down", "right") // theme → sky
+	press(m, "right") // theme → sky
 	if m.st.th.name != "sky" {
 		t.Fatalf("right on themes: %q", m.st.th.name)
 	}
-	press(m, "down", "right") // density → compact
+	press(m, "down", "down", "right") // past Skin; density → compact
 	if !m.ui.Compact {
 		t.Fatal("density")
 	}
@@ -532,7 +532,7 @@ func TestSettingsFocusVisible(t *testing.T) {
 	for _, sz := range [][2]int{{80, 24}, {100, 30}, {40, 50}, {160, 48}} {
 		m := newTestModel(t, sz[0], sz[1])
 		m.openSettings("appearance")
-		for i, want := range []string{"Skin", "Theme", "Density", "Sidebar", "Messages", "Show people as", "Animations"} {
+		for i, want := range []string{"Theme", "Skin", "Density", "Sidebar", "Messages", "Show people as", "Animations"} {
 			ok := false
 			for _, l := range strings.Split(checkView(t, m, want), "\n") {
 				ok = ok || strings.Contains(l, "›") && strings.Contains(l, want)

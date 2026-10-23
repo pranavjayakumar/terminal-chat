@@ -152,10 +152,12 @@ func (m *Model) setCtls() []setCtl {
 		}
 		sb := map[string]int{sbIcons: 0, sbNormal: 1, sbWide: 2}[m.ui.sidebarMode()]
 		ctls := []setCtl{
-			{label: "Skin", sub: "the chrome; retro: double lines, shadows, a menu bar", opts: skinOpts, cur: skinCur,
-				pick: func(i int) tea.Cmd { m.setSkin(skins[i].id); return nil }},
+			// Theme comes first: Settings opens focused on it, so ←/→ try
+			// themes and never switch the skin by surprise.
 			{label: "Theme", sub: "←/→ or click to switch", themes: true, cur: cur, opts: themeOrder,
 				pick: func(i int) tea.Cmd { m.setTheme(themeOrder[i]); return nil }},
+			{label: "Skin", sub: "the chrome; retro: double lines, shadows, a menu bar", opts: skinOpts, cur: skinCur,
+				pick: func(i int) tea.Cmd { m.setSkin(skins[i].id); return nil }},
 			{label: "Density", opts: []string{"Cozy", "Compact"}, cur: boolInt(m.ui.Compact),
 				pick: func(i int) tea.Cmd { m.setCompact(i == 1); return nil }},
 			{label: "Sidebar", sub: "or click its edge, or ⌃B", opts: []string{"Icons", "Normal", "Wide"}, cur: sb,

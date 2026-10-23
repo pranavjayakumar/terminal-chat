@@ -1030,3 +1030,70 @@ func TestDesktopVisibleOnEveryTheme(t *testing.T) {
 		}
 	}
 }
+
+// Every way prefs get saved keeps the skin: the Retro skin never turns
+// itself off (the owner's ui.json lost "skin" after he changed themes).
+func TestPrefsSavesKeepSkin(t *testing.T) {
+	path := retroPrefs(t, `,"theme":"night"`)
+	m := New(context.Background(), newFake(), Options{Out: &syncBuf{}, Notifier: &fakeNotifier{}, styles: testStyles(true), UIPrefs: path})
+	m.Update(tea.WindowSizeMsg{Width: 160, Height: 48})
+	keeps := func(step string) {
+		t.Helper()
+		b, _ := os.ReadFile(path)
+		if !strings.Contains(string(b), `"skin": "retro"`) {
+			t.Fatalf("%s dropped the skin: %s", step, b)
+		}
+		if m.skin().id != "retro" {
+			t.Fatalf("%s switched the skin to %s", step, m.skin().id)
+		}
+	}
+	runInput(t, m, "/theme rose")
+	keeps("/theme")
+	m.openPalette("settings")
+	for i, it := range m.pal.shown {
+		if it.run == "theme:mint" {
+			m.pal.sel = i
+			m.palRun(it)
+		}
+	}
+	keeps("palette theme")
+	press(m, "esc")
+	runInput(t, m, "/settings")
+	click(t, m, "set:0:3") // a theme card
+	keeps("settings theme card")
+	press(m, "esc")
+	m.setSidebar(sbWide)
+	keeps("sidebar")
+	press(m, "f2")
+	keeps("sidebar key")
+	m.setCompact(true)
+	keeps("density")
+	m.setSplit(true)
+	keeps("messages")
+	m.setMotion(false)
+	keeps("animations")
+	m.setStartup(true)
+	keeps("startup")
+	run(m, m.openThread(103))
+	m.layoutInput()
+	m.Update(altKey('['))
+	keeps("thread width")
+	again := New(context.Background(), newFake(), Options{Out: &syncBuf{}, Notifier: &fakeNotifier{}, styles: testStyles(true), UIPrefs: path})
+	if again.skin().id != "retro" || again.st.th.name != themeOrder[3] {
+		t.Fatalf("restart: %s %s", again.skin().id, again.st.th.name)
+	}
+}
+
+// Settings opens on Theme: the arrow keys try themes, never the skin.
+func TestSettingsArrowsKeepSkin(t *testing.T) {
+	m, _ := retroModel(t, 120, 40)
+	runInput(t, m, "/settings")
+	before := m.st.th.name
+	press(m, "right", "right", "left")
+	if m.skin().id != "retro" {
+		t.Fatal("arrow keys in Settings switched the skin")
+	}
+	if m.st.th.name == before {
+		t.Fatal("arrow keys in Settings didn't try themes")
+	}
+}
