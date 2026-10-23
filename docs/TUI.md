@@ -29,8 +29,11 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
   cycle normal → wide → icons; clicking its right edge does the same, dragging it picks a size. Below 90
   columns it shrinks to icons, below 60 it is hidden; there `Ctrl-B` cycles icons → normal → hidden (40–59:
   icons ↔ hidden) for the session without changing the saved size. The size is kept in `TC_HOME/ui.json`.
-- Message column: centered, at most 86 columns. Threads open in a 44-column pane on the right (sliding in)
-  when there is room, full width otherwise; the input moves into the pane while it is open.
+- Message column: centered, at most 86 columns. Threads open in a pane on the right (sliding in)
+  when there is room, full width otherwise; the input moves into the pane while it is open. The pane is 44
+  columns by default; drag its left edge (the grip lights up on hover, like the sidebar's) or press `⌥[` /
+  `⌥]` to move the edge 4 columns left / right. It stays at least 32 wide and leaves the message column at
+  least 48; the width is kept in `ui.json` (`"thread_w"`). Below 94 free columns the thread is full width.
 - Status bar (bottom row): ` tc ` pill, the channel, then `F1 keys`, `◆ e2e` in encrypted channels, the
   connection (`● quic`/`● tcp`; the state when not online) and `◐ theme` (click: themes). No server name.
 - Header: channel name + topic (one line, truncated); `◉ N` members and `⌕` (palette) on the right. Status
@@ -40,8 +43,9 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
   Appearance › Messages: Split (or the palette's Settings tab) puts mine on the right against an accent
   bar instead (`"split"` in `ui.json`). Each theme has eight name colors of clearly different hues.
   Identity is the name only. Consecutive messages from the same author within 5 min omit
-  the name row. Day dividers (`──── Today ────`). Cozy density leaves a blank row between groups; compact
-  doesn't. A message draws at most 120 rows (code blocks 40) in the log; `v` shows all of it.
+  the name row. Day dividers (`──── Today ────`). Cozy density leaves exactly one blank row between groups
+  (a new author, or more than 5 min apart) and one above and below a day divider or the thread's `N replies`
+  divider, never two; none inside a group, code blocks and diffs included. Compact leaves none. A message draws at most 120 rows (code blocks 40) in the log; `v` shows all of it.
 - Pending (outbox) messages render dim; failed ones show `! failed — r to retry, d to discard`.
 - Edited: dim ` (edited)`. Deleted: dim italic `message deleted` (encrypted channels: `deleted (unverified)` until judged). In encrypted channels `(edited)` shows
   only for an edit the author signed, reactions only when signed by the reactor, and a delete the author
@@ -53,7 +57,8 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
   (`you, bob and 3 others reacted with :tada:`; five names at most).
 - Thread roots show `↳ N replies`; threads open in a right pane (or full width below 100 cols).
 - An empty channel shows a dim `no messages yet — say hi · F1 help · ⌥K channels & people` (shorter when the message pane is under 64 or 26 columns; in my notes `your notes — only you see them; /remind lands here`) once a history fetch said it is empty.
-- Typing line above the input (`bob is typing •··`); nothing when nobody is typing. Errors, rings and
+- Typing line right above the input, no blank row between (`bob is typing •··`); its row stays reserved when
+  nobody types, so the log never jumps. Errors, rings and
   lasting hints share that row; passing notices ("copied", "pinned") show as a toast pill there instead
   (fades in and out, click dismisses; on the right of the row while someone types or a ring shows, shortened
   if need be; in a narrow pane it covers the typing line while it lasts, and only a ring or our huddle sends
@@ -66,7 +71,36 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
   over 4, on the animation tick while you are in the huddle. Voice reports who is talking, not how loud,
   so a meter moves while that person talks and lies on the floor otherwise.
 - Loading screen (logo, steps, progress) only on a first run with no local cache; a start with a cache
-  draws the chat at once.
+  draws the chat at once. The Retro skin opens with its zoom intro instead (see Skins).
+
+## Skins
+
+A skin is the chrome; a theme is the colors. They are independent: every skin works with every theme. A skin
+holds no colors of its own; its shadow, desktop pattern and menu bar take the theme's tokens, so they suit
+light and dark themes alike. Settings › Appearance › Skin (or the palette's Settings tab, group Skin):
+
+- **Modern** (default): rounded boxes, flat panels, everything above.
+- **Retro** (Borland Turbo Vision): double-line boxes `╔═╗║╚╝` for the input, the thread reply box, popups,
+  the emoji picker and dialogs (palette, settings, keys sheet, the rest; content stays inside the frame); a
+  drop shadow 2 columns right and 1 row below each floating box (popups, picker, dialogs), darkening what is
+  under it toward black on dark themes and toward the theme's ink on light ones, never off screen; a quiet
+  `░` desktop in the empty gutters beside the message column and around the thread pane (never behind
+  text, never on a click target); and a menu bar on row 0 (terminals of 16+ rows):
+  `≡  Chat  View  Huddle  Theme  ? Help` with the first letter in the accent, the clock and `◉ N online` on
+  the right. ≡ opens the palette, Chat (`⌥C`) its Channels tab, View (`⌥V`) its Settings tab, Huddle (`⌥H`)
+  joins or leaves the open channel's huddle, Theme (`⌥T`) the palette's themes, Help the keys sheet; each
+  lights up under the pointer. When room runs out the middle entries go first; ≡ and Help stay. Everything
+  else moves down one row. The clock wakes the screen once a minute (only while it shows); nothing else
+  redraws while idle.
+- Choosing Retro switches to the **turbo** theme only if no theme was ever picked; a picked theme (even
+  graphite) stays. `ui.json` keeps `"skin"` and `"theme"`. A skin switch cross-fades the colors and swaps
+  the chrome halfway.
+- Adding a skin is one entry in `skins` (`internal/tui/skin.go`): box glyphs, frame, shadow, pattern, menu
+  bar, intro.
+- **Intro** (skins with one: Retro): a full `░` desktop, then an accent frame in the skin's glyphs opens from the center with
+  the UI inside. The desktop holds at least 250 ms and until the cache or the connection is ready (2.5 s
+  at most); the zoom then takes 450 ms. A key or a click ends it (the key still types). Settings ›
+  Appearance › Startup: `Animated` · `Instant` (`"startup": "instant"`); Animations off is instant too.
 
 ## Rendering rules
 
@@ -75,8 +109,8 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
   truncation with `…`), inline `` `code` ``, `**bold**`, `_italic_`, URLs underlined. No headings, no tables.
 - `@me` mentions in the accent; a message that mentions me gets an accent bar and a faint accent tint, one
   that only contains a highlight word a warn-colored bar.
-- Themes: ten built in (graphite default, sky, mint, rose, lilac, ember, phosphor, and the light paper,
-  teletype, macintosh), picked in Settings, the palette or `/theme name`, kept in `TC_HOME/ui.json`. Name
+- Themes: fifteen built in, for any skin (graphite default, sky, mint, rose, lilac, ember, phosphor, the light paper,
+  teletype, macintosh, and the DOS-era turbo, norton, qbasic (gray dialogs), night and the light paper-retro), picked in Settings, the palette or `/theme name`, kept in `TC_HOME/ui.json`. Name
   colors are a stable hash of the user id into the theme's four muted name colors. Truecolor, degraded to
   256/16 colors by the terminal's profile; `NO_COLOR` drops colors (quiet text becomes faint, selections reverse).
 - Fenced blocks: the header row shows the info string (```` ```go ````; `code` without one) and `copy`. A
@@ -94,7 +128,7 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
   background and mark selections in reverse. A selected message's bar becomes `▌`; a mention's bar is `┃`
   and a highlight word's `┇`, so they read without color too.
 - Mouse: click channels, messages (select), reactions, `☺+`, `↳ replies`, the hover toolbar (`☺ ↩ ⧉ ⋯`), emoji picker cells and tabs, huddle
-  join/leave, palette rows and tabs, settings controls, toasts, the theme in the status bar; the wheel
+  join/leave, palette rows and tabs, settings controls, toasts, the theme in the status bar, the Retro menu bar; drag the sidebar or thread pane edge to size it; the wheel
   scrolls the pane under the pointer. A pointer move that changes nothing reuses the last frame.
 
 ## Keys
@@ -116,7 +150,8 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
 | `Ctrl-C` twice (the second while `press Ctrl-C again to quit` shows, 4 s), or `/quit` | quit |
 | `F1` or `/help` | keyboard sheet: Navigate, Messages, Write, Huddle, App, then every command (`?` is just text, so messages can start with it) |
 | `Ctrl-B`, `F2` | sidebar size: normal → wide → icons |
-| `/settings` (or `Ctrl-,` where the terminal reports it) | Settings: Appearance (theme, density, sidebar, animations), Notifications (runs `/notify`, `/sounds`, `/dnd`), Keys, Account & devices, About; `↑/↓` move, `←/→` change, `Enter` toggles, `Tab` next page |
+| `⌥[` / `⌥]` (thread pane open) | its edge 4 columns left (wider) / right (narrower), saved; macOS Option-as-text sends `“` `‘`, which count only on an empty input |
+| `/settings` (or `Ctrl-,` where the terminal reports it) | Settings: Appearance (skin, theme, density, sidebar, messages, animations, startup), Notifications (runs `/notify`, `/sounds`, `/dnd`), Keys, Account & devices, About; `↑/↓` move, `←/→` change, `Enter` toggles, `Tab` next page |
 
 ## Slash commands
 
