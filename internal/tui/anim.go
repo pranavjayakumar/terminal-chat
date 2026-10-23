@@ -138,7 +138,7 @@ func (m *Model) fastWanted() bool {
 	}
 	return m.running(f.slideAt, dSlide) || m.running(f.sbAt, dSlide) || m.running(f.paneAt, dPane) ||
 		m.running(f.dialogAt, dDialog) || m.running(f.themeAt, dTheme) || m.running(f.bootAt, dBoot) ||
-		m.running(f.compAt, dToast) || m.running(m.emo.at, dToast) || m.running(m.emo.shutAt, dToast) ||
+		m.running(f.compAt, dToast) || m.running(m.emo.at, dToast) || m.running(m.emo.shutAt, dToast) || m.running(m.mm.at, dToast) ||
 		m.toastMoving() || m.introMoving()
 }
 

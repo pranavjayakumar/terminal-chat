@@ -21,7 +21,7 @@ var keyGroups = []keyGroup{
 		{"⌥[ ⌥]", "thread pane width"}, {"PgUp PgDn", "scroll history"}, {"End", "jump to newest"}, {"esc", "back out of anything"},
 	}},
 	{"Messages", [][2]string{
-		{"↑", "select (empty input)"}, {"r", "reply in thread"}, {"+", "react (emoji picker)"}, {"e", "edit yours"},
+		{"↑", "select (empty input)"}, {"m ⏎", "message menu"}, {"r", "reply in thread"}, {"+", "react (emoji picker)"}, {"e", "edit yours"},
 		{"d", "delete yours"}, {"y", "copy"}, {"p", "pin / unpin"}, {"v", "view full"}, {"r d", "failed: retry, discard"},
 	}},
 	{"Write", [][2]string{

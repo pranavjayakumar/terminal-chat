@@ -28,7 +28,7 @@ const File = "tc-symbols.ttf"
 // U+E5FA) sets, so a Nerd Font user still gets these icons.
 const (
 	First rune = 0xE400
-	Last  rune = 0xE419
+	Last  rune = 0xE41B
 )
 
 // State is whether the font is installed and current.

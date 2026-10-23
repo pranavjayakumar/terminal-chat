@@ -45,6 +45,8 @@ const (
 	icOnline
 	icNotes
 	icTalking
+	icEdit
+	icDelete
 	nIcons
 )
 
@@ -80,6 +82,8 @@ var iconTable = [nIcons]struct {
 	icOnline:   {"online", 0xE417, "●", "☻"},
 	icNotes:    {"notes", 0xE418, "▪", "■"},
 	icTalking:  {"talking", 0xE419, "▄", "▬"},
+	icEdit:     {"edit", 0xE41A, "✎", "»"},
+	icDelete:   {"delete", 0xE41B, "✕", "x"},
 }
 
 // Icon packs, as Settings › Appearance › Icons names them; "" is Auto.
