@@ -110,6 +110,9 @@ func runUpdate(ctx context.Context, out io.Writer, src *release.Source, exe, cur
 	}
 	fmt.Fprintf(out, "Downloading tc %s%s for %s/%s…\n", latest, flavor, goos, goarch)
 	bin, err := src.Fetch(ctx, latest, goos, goarch)
+	if errors.Is(err, release.ErrUnknownSigner) {
+		return fmt.Errorf("%w\n%s", err, unknownSignerHint(src.Voice))
+	}
 	if err != nil {
 		return err
 	}
@@ -189,4 +192,16 @@ func writable(exe string) error {
 	f.Close()
 	os.Remove(f.Name())
 	return nil
+}
+
+// unknownSignerHint is the way forward when a release is signed by a key this
+// build doesn't know: older builds trust only the keys they shipped with, so
+// a release signed by a key added later fails here. The installer verifies
+// the same signature against the current keys; nothing here skips the check.
+func unknownSignerHint(voice bool) string {
+	sh := "sh"
+	if voice {
+		sh = "TC_VOICE=1 sh"
+	}
+	return "This tc may predate the key that signed the release. Reinstall with the installer, which checks the signature against the current release keys:\n  curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/install.sh | " + sh
 }

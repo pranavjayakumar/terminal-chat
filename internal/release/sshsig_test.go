@@ -56,6 +56,11 @@ func TestVerifySignature(t *testing.T) {
 		if c.wantNoKey != errors.Is(err, release.ErrNoSigningKey) {
 			t.Errorf("%s: err %v", name, err)
 		}
+		// Only an untrusted key reads as "unknown key" (tc update then
+		// points at the installer); tampering by a trusted key never does.
+		if strings.HasPrefix(name, "unknown") != errors.Is(err, release.ErrUnknownSigner) && !strings.Contains(name, "principal") && !strings.Contains(name, "namespace") && !strings.Contains(name, "cert") {
+			t.Errorf("%s: ErrUnknownSigner mismatch: %v", name, err)
+		}
 	}
 
 	// A line without options, a comment and a second key all work.

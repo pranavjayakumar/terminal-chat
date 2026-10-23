@@ -186,3 +186,36 @@ func TestUpdateUntrustedSignatureRefuses(t *testing.T) {
 		t.Fatalf("binary replaced: %q", b)
 	}
 }
+
+// An unknown signing key (an old build meeting a newer key) points at the
+// installer, which re-checks the signature; it never suggests skipping it.
+func TestUpdateUnknownSignerHint(t *testing.T) {
+	for _, voice := range []bool{false, true} {
+		srv := releasetest.New(t, "v0.3.0")
+		srv.Publish(t, "v0.3.0", map[string][]byte{"linux_amd64": []byte("NEW"), "tc-voice_linux_amd64": []byte("NEW")})
+		exe := fakeInstall(t)
+		src := srv.Source()
+		src.Voice = voice
+		src.Signers = releasetest.AllowedSigners(releasetest.NewKey(t).PublicKey())
+		err := runUpdate(context.Background(), &bytes.Buffer{}, src, exe, "v0.2.0", "linux", "amd64", updateReq{})
+		if !errors.Is(err, release.ErrSignature) || !errors.Is(err, release.ErrUnknownSigner) {
+			t.Fatalf("voice=%v: err = %v", voice, err)
+		}
+		msg := err.Error()
+		want := "curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/install.sh | sh"
+		if voice {
+			want = "curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/install.sh | TC_VOICE=1 sh"
+		}
+		for _, s := range []string{"signed by an unknown key SHA256:", "not installing", "checks the signature", want} {
+			if !strings.Contains(msg, s) {
+				t.Errorf("voice=%v: %q missing from:\n%s", voice, s, msg)
+			}
+		}
+		if strings.Contains(strings.ToLower(msg), "skip") || strings.Contains(msg, "--no-verify") {
+			t.Errorf("voice=%v: the hint must not suggest skipping verification:\n%s", voice, msg)
+		}
+		if b, _ := os.ReadFile(exe); string(b) != "OLD" {
+			t.Fatalf("binary replaced: %q", b)
+		}
+	}
+}
