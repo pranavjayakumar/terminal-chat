@@ -76,7 +76,8 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
 
 A skin is the chrome; a theme is the colors. They are independent: every skin works with every theme. A skin
 holds no colors of its own; everything it draws takes the theme's tokens (`internal/tui/skin.go`), so a new
-theme gets it for free. Settings › Appearance › Skin (or the palette's Settings tab, group Skin):
+theme gets it for free. Settings › Appearance › Skin, the row under Theme (Settings opens on Theme, so ←/→ try themes and never
+switch the skin), or the palette's Settings tab, group Skin:
 
 - **Modern** (default): rounded boxes, flat panels, everything above.
 - **Retro** (Borland Turbo Vision, matching the mockup's `Look_borland`):
@@ -98,6 +99,9 @@ theme gets it for free. Settings › Appearance › Skin (or the palette's Setti
     panels at least 1.1:1 off the background, bars and selections 1.5:1, frames 3:1 off their panel, quiet
     text kept readable on them, and a near-black background lifted toward its line color just until a
     shadow shows (1.25:1). Turbo already meets all of these, so it is exactly the mockup's.
+  - A dark theme on a neutral near-black (sky, mint, rose, lilac, ember, phosphor) gets a deep colored
+    ground in its accent's hue, every hue at the same depth as turbo's navy, with panel, bars, frames and
+    the menu bar tinted to match; graphite keeps its charcoal (`plainGround` in the theme table).
   - Per-theme overrides live in the theme table: qbasic's gray dialog colors also color the menu bar (DOS
     menus); macintosh's hotkeys use its info blue, as its accent is black.
 - Choosing Retro switches to the **turbo** theme only if no theme was ever picked; a picked theme (even
