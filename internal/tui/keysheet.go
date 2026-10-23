@@ -16,8 +16,8 @@ type keyGroup struct {
 
 var keyGroups = []keyGroup{
 	{"Navigate", [][2]string{
-		{"⌥K", "command palette"}, {"⌥↑ ⌥↓", "previous / next channel"}, {"⌃P ⌃N", "previous / next channel"},
-		{"⌥⇧↑ ⌥⇧↓", "previous / next unread"}, {"⌥A", "activity"}, {"⌃B F2", "sidebar size"},
+		{"⌥K", "command palette"}, {"⌥↑ ⌥↓", "channel: prev / next"}, {"⌃P ⌃N", "channel: prev / next"},
+		{"⌥⇧↑ ⌥⇧↓", "unread: prev / next"}, {"⌥A", "activity"}, {"⌃B F2", "sidebar size"},
 		{"PgUp PgDn", "scroll history"}, {"End", "jump to newest"}, {"esc", "back out of anything"},
 	}},
 	{"Messages", [][2]string{
@@ -25,7 +25,7 @@ var keyGroups = []keyGroup{
 		{"d", "delete yours"}, {"y", "copy"}, {"p", "pin / unpin"}, {"v", "view full"}, {"r d", "failed: retry, discard"},
 	}},
 	{"Write", [][2]string{
-		{"⏎", "send"}, {"⌥⏎ ⌃J", "new line"}, {"@", "mention someone"}, {"#", "link a channel"},
+		{"⏎", "send"}, {"⌥⏎", "new line"}, {"⌃J", "new line"}, {"@", "mention someone"}, {"#", "link a channel"},
 		{"/", "commands"}, {"⌥E", "emoji picker"}, {":fi", "emoji by name"}, {"⇥", "complete"}, {"⌃U", "clear draft"}, {"esc esc", "clear draft"},
 	}},
 	{"Huddle", [][2]string{
@@ -96,7 +96,7 @@ func keySheetRows(w int, kn keyNames) [][]sheetCell {
 		if c.helpHidden || c.name == "" && c.help == "" {
 			continue
 		}
-		k := c.helpKey()
+		k := kn.of(c.helpKey())
 		dx := min(28, w/3)
 		if w < 60 {
 			// narrow: the key on its own row, the description under it

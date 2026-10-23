@@ -27,7 +27,8 @@ func keyMsg(s string) tea.KeyMsg {
 		"left": {Type: tea.KeyLeft}, "right": {Type: tea.KeyRight},
 		"f1": {Type: tea.KeyF1}, "f2": {Type: tea.KeyF2}, "end": {Type: tea.KeyEnd},
 		"ctrl+end": {Type: tea.KeyCtrlEnd}, "home": {Type: tea.KeyHome}, "ctrl+u": {Type: tea.KeyCtrlU}, "ctrl+a": {Type: tea.KeyCtrlA},
-		"alt+a": {Type: tea.KeyRunes, Runes: []rune{'a'}, Alt: true},
+		"alt+a": {Type: tea.KeyRunes, Runes: []rune{'a'}, Alt: true}, "alt+e": {Type: tea.KeyRunes, Runes: []rune{'e'}, Alt: true},
+		"alt+k": {Type: tea.KeyRunes, Runes: []rune{'k'}, Alt: true},
 	}
 	if k, ok := named[s]; ok {
 		if k.String() != s {
@@ -453,7 +454,7 @@ func TestCtrlCArmExpires(t *testing.T) {
 			t.Fatal("a Ctrl-C after the notice expired quit")
 		}
 	}
-	if !strings.Contains(m.notice, "Ctrl-C again") {
+	if !strings.Contains(m.notice, "⌃C again") {
 		t.Fatalf("notice = %q, want the Ctrl-C hint again", m.notice)
 	}
 	now = now.Add(time.Second)

@@ -806,7 +806,7 @@ func (m *Model) pickHints(c *canvas, r rect, k float64) {
 		verb = "react"
 	}
 	w := r.x1 - r.x0
-	for _, h := range []string{" ←↑↓→ move · ⇥ category · ⏎ " + verb + " · esc ", " ←↑↓→ ⇥ ⏎ esc "} {
+	for _, h := range []string{" ←↑↓→ move · ⇥ category · ⏎ " + verb + " · esc ", " ←↑↓→ move · ⇥ category · esc ", " ←↑↓→ ⇥ ⏎ esc "} {
 		h = m.kn.of(h)
 		if w >= strWidth(h)+4 {
 			c.put(r.x1-2-strWidth(h), r.y1-1, h, fgc(mix(th.bg, th.faint, k)), "")

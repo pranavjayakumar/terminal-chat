@@ -326,7 +326,7 @@ func (m *Model) drawSettings(c *canvas) {
 		}
 	} else {
 		// narrow: the page name with ⇥ to move
-		c.put(r.x0+2, top, setPages[m.set.page].label+"  "+m.kn.of("⇥"), fgb(th.accent), "")
+		c.put(r.x0+2, top, setPages[m.set.page].label+"  ("+m.kn.of("⇥")+" next)", fgb(th.accent), "")
 		top += 2
 	}
 	cx := r.x0 + navW + 5

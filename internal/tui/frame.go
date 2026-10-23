@@ -579,6 +579,10 @@ func (m *Model) drawInput(c *canvas, g geo) {
 		keys = [][3]string{keys[0], keys[2]}
 		kw = width()
 	}
+	if len(keys) == 2 && kw+6 > w { // then send; the palette leads to everything
+		keys = keys[:1]
+		kw = width()
+	}
 	if kw+6 <= w {
 		kx := x + w - 3 - kw
 		c.put(kx-1, y+h-1, " ", fgc(th.fg), "")

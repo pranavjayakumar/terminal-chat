@@ -394,7 +394,7 @@ func (m *Model) drawPalette(c *canvas) {
 		}
 		x = c.pill(x, y, lab, st.on(bg), "paltab:"+strconv.Itoa(i)) + 1
 	}
-	if hint := m.kn.of("⇥ next tab"); w >= 76 && x+2 <= x0+w-4-strWidth(hint) {
+	if hint := m.kn.of("⇥ next tab"); w >= 76 && x+1 <= x0+w-4-strWidth(hint) {
 		c.put(x0+w-4-strWidth(hint), y, hint, fgc(th.faint), "")
 	}
 	y += 2
@@ -447,7 +447,7 @@ func (m *Model) drawPalette(c *canvas) {
 	}
 	if foot > y0+4 {
 		kx := x0 + in + 1
-		for _, k := range [][2]string{{"↑↓", "move"}, {"⏎", "open"}, {"⇥", "tab"}, {"esc", "close"}} {
+		for _, k := range [][2]string{{"↑↓", "move"}, {"⏎", "open"}, {"⇥", "next tab"}, {"esc", "close"}} {
 			k[0] = m.kn.of(k[0])
 			if kx+strWidth(k[0])+strWidth(k[1])+4 > x0+w {
 				break
