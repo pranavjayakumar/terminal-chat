@@ -167,8 +167,8 @@ func agentSetup(args []string, tcHome string, stdin io.Reader, out io.Writer) er
 			fmt.Fprintln(out, "tc background runs it from now on. Say hi in your agent DM.")
 		}
 	} else {
-		fmt.Fprintln(out, "Turn on tc background to keep it running: tc background on")
-		fmt.Fprintln(out, "(or run it in a terminal: tc agent run)")
+		fmt.Fprintln(out, "Turn on tc background on this computer: tc background on")
+		fmt.Fprintln(out, "It runs the agent, and lets it see channels where someone @mentions it while tc is closed.")
 	}
 	return nil
 }

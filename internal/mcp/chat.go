@@ -86,7 +86,7 @@ func Author(c Chat, m proto.Message) string {
 // Readable reports whether a message's text can be trusted to be what its
 // author sent: plaintext channels and verified encrypted messages.
 func Readable(m client.Message) bool {
-	return !m.Deleted && (m.Sec == client.SecPlain || m.Sec == client.SecE2E)
+	return !m.Deleted && m.Sec.Trusted()
 }
 
 // FormatMessages renders messages for the model, one per line:

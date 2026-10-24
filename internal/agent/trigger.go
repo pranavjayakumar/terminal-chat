@@ -35,7 +35,7 @@ func SessionKey(ch, thread uint64) string { return fmt.Sprintf("c%d-t%d", ch, th
 // message that @mentions the handle. A message from another agent counts
 // as its owner's ask.
 func Trigger(m client.Message, kind string, owner uint64, handle string) (Ask, bool) {
-	if m.ID == 0 || m.Deleted || (m.Sec != client.SecPlain && m.Sec != client.SecE2E) {
+	if m.ID == 0 || m.Deleted || !m.Sec.Trusted() {
 		return Ask{}, false
 	}
 	if m.Agent == handle {

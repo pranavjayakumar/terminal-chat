@@ -190,11 +190,12 @@ func (s *Supervisor) turn(ctx context.Context, a Ask, cfg home.Config, mode runn
 			text.Reset() // the reply is the last message; drop narration before tools
 		}
 	})
-	state := proto.AgentDone
+	// Always end on done: it clears the thread's indicator everywhere.
+	status := "done"
 	if err != nil || res.IsError {
-		state = proto.AgentError
+		status = "stuck"
 	}
-	r.live.set(state, "", "")
+	r.live.set(proto.AgentDone, status, "")
 	if err2 := s.ledger.Add(Spend{T: s.Now().UnixMilli(), Asker: a.Asker, Key: a.Key, USD: res.CostUSD, Kind: kind}); err2 != nil {
 		s.Log.Warn("writing ledger", "err", err2)
 	}
