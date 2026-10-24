@@ -133,13 +133,17 @@ tc mark) comes from one table, `internal/tui/icons.go`, in three packs:
   every Private Use character in our width function.
 - **Unicode** and **DOS**: plain characters every terminal has.
 - Settings › Appearance › Icons: `Auto` · `tc Symbols` · `Unicode` · `DOS`, with a live preview row
-  (`"icons"` in `ui.json`). Auto is tc Symbols when the font is installed on this machine, we aren't over
+  (`"icons"` in `ui.json`). Auto is tc Symbols when the font is installed on this machine, the terminal is
+  one known to find a glyph in another installed font (`TERM_PROGRAM` or `TERM`: iTerm2, Terminal.app,
+  Ghostty, WezTerm, kitty) and isn't inside a multiplexer (tmux, screen, herdr, zellij), we aren't over
   SSH and the locale isn't CJK (ambiguous characters drawn wide); otherwise Unicode, or DOS with the Retro
   skin. The font is looked for once at start (drawing never touches the disk), and an installed font older
   than this build is refreshed then, quietly. When the font is missing (and not over SSH, where the row says
   to install it on your own computer), an **Install tc icons** button installs it; the icons switch at the
-  next start, since a running terminal often can't draw a font installed after it started. Someone without
-  the font sees "New: tc icons · Settings › Icons" once (`"icons_hint"`). Away is `◐` (DOS `◑`), so it
+  next start, since a running terminal often can't draw a font installed after it started. Elsewhere (herdr,
+  Zed's or VS Code's terminal) the Private Use glyphs draw as boxes, so Auto stays Unicode; picking tc
+  Symbols by hand is always honored. Someone without the font, in a terminal that could show it, sees
+  "New: tc icons · Settings › Icons" once (`"icons_hint"`). Away is `◐` (DOS `◑`), so it
   never looks like an offline `○` without color.
 - Touches: on terminals known to draw them (WezTerm, kitty, Ghostty, iTerm2; never inside tmux, screen or
   herdr), `@you` mentions get a wavy accent underline and `#channel` links a dotted info one (SGR 4:3 / 4:4
@@ -217,8 +221,9 @@ Unknown command → inline error, input kept.
 While the input is a bare `/command` (no space yet) a popup of up to 6 rows lists the
 matching commands (prefix matches first, then substring; an exact name first) with their argument hint and a
 dim one-line description; more matches scroll (`↑`/`↓` marks at the right). An `@` or `#` word at the cursor
-does the same for people (this channel's members first, then everyone else, then user groups like
-`@oncall`) and channels (joined ones first); a name equal to what was typed always comes first (my own name too, so `as @alice said` sends on Enter). For
+does the same for people (this channel's members first, then everyone else, then agents as `@rocky ▟▙`
+with a dim `Fizan's agent` or `your agent` (a prefix match on a handle still beats a person who only
+contains the letters), then user groups like `@oncall`) and channels (joined ones first); a name equal to what was typed always comes first (my own name too, so `as @alice said` sends on Enter). For
 `@`/`#` a substring match needs two letters and never comes from digits alone, so `fixed in #12` isn't offered `#release-12`. The popup is an
 opaque floating panel on the input's left edge, one blank row above it (that row keeps showing notices and
 typing), at most 72 columns and never wider than the column: a rounded frame with the kind (`Commands`,
@@ -480,7 +485,9 @@ and one status row. Code: `internal/tui/agent.go` (icons, state), `agentlive.go`
   the input. The agent DM is never listed as a channel.
 - **Agent DM** (`ChanAgentDM`): header `<icon> Rocky · your agent · only you see this chat`, with the mode
   on the right (click: the panel), or `✋ waiting in #chan` while an approval waits; the input box says
-  `only you` and `tell Rocky anything…`. The palette lists it as `@ Rocky (your agent)`. The agent speaks
+  `only you` and `tell Rocky anything…`. The palette lists it as `@ Rocky (your agent)`, with its icon.
+  The palette's People group lists every other agent too (`@juno · Bob's agent`): picking one types
+  `@juno ` into the composer; my agent without a DM yet opens it. The agent speaks
   first (the harness); tc only draws it. Without the DM yet, the panel's `d` creates it (`OpenAgentDM`).
 - **Approvals.** The harness posts `✋ @owner approve: <action>? react ✅ / ❌  ·  #code` + detail and waits
   for the owner's ✅ / ❌. tc draws the detail, then `<action>?  1 yes  2 yes, ok today  3 no` (`PRs ok today`
