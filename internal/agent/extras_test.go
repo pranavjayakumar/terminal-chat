@@ -111,7 +111,8 @@ func TestScheduleChecksNamesAndFires(t *testing.T) {
 func TestRemindRules(t *testing.T) {
 	h := newHarness(t, cfgDefault(), withMembers)
 	hold(t, h)
-	ask := h.chat.say(bobID, general, 0, "@rocky remind me at 5pm to ship", 0)
+	h.chat.say(bobID, general, 0, "@rocky remind me at 5pm to ship", 0)
+	ask := Ask{} // a top-level call is answered at top level
 	if res := h.call(mcp.ToolRemind, map[string]string{"person": "carol", "when": "in 1h", "text": "ship"}); !res.Error {
 		t.Fatalf("bob reminded carol: %+v", res)
 	}
@@ -120,7 +121,7 @@ func TestRemindRules(t *testing.T) {
 		t.Fatal(res.Text)
 	}
 	jobs := jobsOf(h)
-	if len(jobs) != 1 || jobs[0].Person != "bob" || jobs[0].Chan != general || jobs[0].Thread != ask.ID || jobs[0].Asker != bobID {
+	if len(jobs) != 1 || jobs[0].Person != "bob" || jobs[0].Chan != general || jobs[0].Thread != ask.Thread || jobs[0].Asker != bobID {
 		t.Fatalf("jobs %+v", jobs)
 	}
 	for i := 0; i < tools.MaxPerAsker-1; i++ {
@@ -255,14 +256,15 @@ func TestAskAgent(t *testing.T) {
 		}
 		return false
 	})
-	if q.ch != general || q.thread != ask.ID {
+	if q.ch != general || q.thread != ask.Thread {
 		t.Fatalf("asked in %+v", q)
 	}
-	// Someone else's words in the thread are not the answer; bob's agent's are.
-	h.chat.say(carolID, general, ask.ID, "no idea", 0)
+	// Someone else's words are not the answer; bob's agent's are, at the
+	// level it was asked.
+	h.chat.say(carolID, general, 0, "no idea", 0)
 	h.chat.mu.Lock()
 	h.chat.nextID++
-	h.chat.msgs = append(h.chat.msgs, client.Message{Message: proto.Message{ID: h.chat.nextID, Chan: general, Thread: ask.ID, Author: bobID, Agent: "bobbot", Body: "friday at 5", Time: time.Now().UnixMilli()}})
+	h.chat.msgs = append(h.chat.msgs, client.Message{Message: proto.Message{ID: h.chat.nextID, Chan: general, Author: bobID, Agent: "bobbot", Body: "friday at 5", Time: time.Now().UnixMilli()}})
 	h.chat.mu.Unlock()
 	select {
 	case r := <-got:
