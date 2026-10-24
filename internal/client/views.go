@@ -180,6 +180,13 @@ func (c *Client) uintMap(q string, args ...any) map[uint64]uint64 {
 }
 
 func (c *Client) displayName(ch proto.Channel, me uint64) string {
+	if ch.Kind == proto.ChanAgentDM {
+		// My agent's handle (it follows renames); "agent" before it is known.
+		if a, ok := c.AgentOf(ch.Creator); ok {
+			return a.Handle
+		}
+		return "agent"
+	}
 	if ch.Kind != proto.ChanDM {
 		return ch.Name
 	}

@@ -132,6 +132,9 @@ func ChanTitle(v client.ChannelView, ok bool) string {
 	if v.Kind == proto.ChanDM {
 		return "@" + sanitize.Line(v.Display)
 	}
+	if v.Kind == proto.ChanAgentDM {
+		return AgentDMTitle(v)
+	}
 	return "#" + sanitize.Line(v.Name)
 }
 
@@ -189,4 +192,9 @@ func cueRank(c notify.Cue) int {
 		return 1
 	}
 	return 0
+}
+
+// AgentDMTitle names my agent DM: "<handle> (your agent)".
+func AgentDMTitle(v client.ChannelView) string {
+	return sanitize.Line(v.Display) + " (your agent)"
 }

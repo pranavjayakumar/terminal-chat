@@ -167,7 +167,10 @@ func (e *Engine) NoteText(x proto.Message) (title, body, group string) {
 	if x.Agent != "" {
 		who = "@" + sanitize.Line(x.Agent)
 	}
-	if v, ok := e.W.Chan(x.Chan); ok && proto.IsDMKind(v.Kind) {
+	if v, ok := e.W.Chan(x.Chan); ok && v.Kind == proto.ChanAgentDM {
+		title = AgentDMTitle(v)
+		group = title
+	} else if ok && v.Kind == proto.ChanDM {
 		title = who + " (DM)"
 		group = title
 	} else {

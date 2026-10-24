@@ -1481,31 +1481,57 @@ driven by a program on the owner's machine. Everything here exists only in sessi
 sides advertise `agent1`. Older clients see no agents: an agent's messages show there as its
 owner's, like any message of the owner's.
 
-### 15.1 Agent sessions
+### 15.1 Agent sessions and keys
 
-`HELLO {…, caps: [… "agent1"], agent: "<handle>"}` logs a registered key in as the user's agent
-with that handle. The server answers `BYE auth_failed` unless `handle` is the user's active
-(non-retired) agent (`protocol_error` without cap `agent1`; an invite never creates an agent
-session), and puts the `Agent` in `WELCOME.agent`. A client that asked for an agent session MUST
-refuse a WELCOME without a matching `agent`: an older server would log it in as the owner.
+An agent logs in with **its own SSH key**. The owner's session registers it with
+`agent.key {pubkey}` (the agent's current key replaces any earlier one; `agent.retire` deletes
+it). Such an **agent key** is never its owner: any HELLO signed by it (with cap `agent1`; else
+`BYE protocol_error`) is a session of the owner's current agent, whatever `HELLO.agent` says;
+`BYE auth_failed` once the agent is retired. A client that didn't ask for an agent session MUST
+refuse a WELCOME carrying `agent`.
+
+For migration, `HELLO {…, agent: "<handle>"}` signed by one of the owner's own keys also opens an
+agent session, but only while the agent has no key of its own. `handle` may be the agent's
+current handle or any it had before (a rename made while the agent was offline); otherwise
+`BYE auth_failed`. In every case `WELCOME.agent` is the `Agent` with its **current** handle; a
+client that asked for an agent session MUST refuse a WELCOME without `agent` (an older server
+would log it in as the owner), and adopts the handle WELCOME names.
+
+**Devices.** The agent registers its own e2e device (§13.2) with a cert signed by its agent key
+and, as `endorse`, an **AgentEndorse** signed by one of the owner's own keys:
+
+```
+AgentEndorse b = {v: 1, server_id: bin16, user: u64, agent_ssh: bin, time: i64}   context "tc-agent-endorse-v1\0"
+```
+
+The server checks it like a KeyEndorse (§13.2) and stores it with the device. Clients pin an
+endorsed agent key as an **agent key** of the user, not as one of the user's keys: devices
+certified by it are the agent's devices, verified without a key-change warning; an agent key
+never endorses keys or signs revokes, an agent's device never signs a device revoke for its
+owner, a key some AgentEndorse names is never a user's first (TOFU) key, and /verify never turns
+an agent key into a verified key of the user. Older clients don't know AgentEndorse and show the
+agent's key as a key change of its owner.
 
 An agent session is the owner (`user` is the owner's id) with these differences:
 - it never counts toward the owner's presence (no `presence` changes; its `typing` and `presence`
   ephemerals are dropped); `agent.presence` (§15.5) says whether it is connected;
 - it has its own rate buckets (same sizes as §9), so a busy agent never slows its owner;
-- it holds none of the owner's admin powers (it can't delete others' messages, …);
+- it holds none of the owner's admin powers;
 - it can't join huddles (no `voice1` rosters reach it);
 - `read` is accepted and ignored (read markers are the owner's);
-- refused with `forbidden`: `react` and `unreact` (the owner's reactions are its approvals, and
-  an agent's would look like the owner's tap), `agent.register`, `agent.retire`, changing
-  `agent.access` (it may read its own list with an empty `agent.access`), `agent.dm`, `invite.*`, `user.disable`, `user.update`, `group.set`, `hook.*`,
+- `edit` and `delete` only of messages an agent sent (`Message.agent` set), never its owner's;
+- refused with `forbidden`: `react`, `unreact`, `pin`, `unpin` (the owner's reactions are its
+  approvals, and an agent's would look like the owner's tap), `remind.*`, `agent.register`,
+  `agent.retire`, `agent.key`, `agent.dm`, changing `agent.access` (it may read its own list with
+  an empty `agent.access`), `invite.*`, `user.disable`, `user.update`, `group.set`, `hook.*`,
   `device.revoke`, `chan.create`, `chan.join`, `chan.leave`, `chan.add`, `chan.remove`,
-  `chan.topic`, `chan.encrypt`, `dm.open`, `huddle.join`.
+  `chan.topic`, `chan.encrypt`, `dm.open`, `huddle.join`;
+- `agent.update` is allowed (it renames itself when its owner asks it to, §15.2);
 - `key.rotate` stays allowed in the channels it may read, so its sends can re-key like any member
   device's (§13.4 "Sending").
 
-The agent device registers its own e2e device (§13.2) under the owner's SSH key, so other members
-seal epochs to it like to any device of the owner.
+Clients reject, as defence in depth, encrypted reactions signed by an agent's device and
+encrypted edits or deletes an agent's device signed for a message that isn't an agent's.
 
 ### 15.2 Ops
 
@@ -1513,9 +1539,10 @@ seal epochs to it like to any device of the owner.
 |---|---|---|---|
 | `agent.register` | `{handle, icon?}` | `{agent: Agent}` | owner sessions; one active agent per user (`conflict`); `handle` a §9 name, not `me` or `*-bot`, unique across user names, group names and every handle any other user's agent ever had, and the handles of retired agents (`conflict`) |
 | `agent.update` | `{handle?, icon?, clear_icon?: bool}` | `{agent: Agent}` | caller's active agent (`not_found`); absent = unchanged, `clear_icon` removes the icon; from the owner's sessions or the agent's own; the handle may change 5 times per 24 h (`rate_limited`) |
-| `agent.retire` | `{}` | `{agent: Agent}` | closes its sessions (BYE `revoked`); the handle stays taken |
+| `agent.retire` | `{}` | `{agent: Agent}` | owner sessions; closes its sessions (BYE `revoked`), deletes its key and empties the access list (a new agent starts from nothing); the handle stays taken |
 | `agents.list` | `{}` | `{agents: [Agent]}` | retired ones included; `online` filled in |
-| `agent.access` | `{add?: [u64], remove?: [u64]}` | `{chans: [u64]}` | the owner's agent access list (§15.4) after the change; `{}` reads it |
+| `agent.access` | `{add?: [u64], remove?: [u64], temp?: [u64]}` | `{chans: [u64], expires?: {u64: i64}}` | owner sessions; the agent access list (§15.4) after the change: `add` grants until removed, `temp` for 7 days (a lasting grant stays lasting), `expires` gives each temporary grant's end; `{}` reads it |
+| `agent.key` | `{pubkey: bin}` | `{}` | owner sessions with an active agent (`not_found`); the agent's own SSH key (§15.1); `conflict` if the key is registered to anyone already; closes agent sessions logged in otherwise |
 | `agent.dm` | `{}` | `{chan: Channel}` | the owner's agent DM, created on the first call (`not_found` without an active agent); encrypted when the caller has `e2e1` |
 
 ```
@@ -1523,8 +1550,9 @@ Agent = {handle, icon?: str, owner: u64, online?: bool, created: i64, retired?: 
 ```
 
 `icon` is one short line (≤ 32 B; an emoji or a tc Symbols glyph). Events: `agent.update` (data
-`Agent`) on register, update and retire, to every `agent1` session; `agent.access` (data
-`{chans}`) to the owner's `agent1` sessions. Both replay through sync. `Snapshot.agents` and
+`Agent`, never with `online`) on register, update and retire, to every `agent1` session;
+`agent.access` (data as the op's result) to the owner's `agent1` sessions. Leaving or being
+removed from a channel ends the agent's grant for it. Both replay through sync. `Snapshot.agents` and
 `UsersRes.agents` (to `agent1` sessions) carry every agent. Agent names share the `@` namespace
 with users and groups: `user.new` and `group.set` refuse a name an agent has or had. A renamed
 agent's old handles stay reserved to its owner (it may take them back), so old messages and
@@ -1535,8 +1563,12 @@ and clients resolve it through the author's agent.
 
 `Message.agent` (omitted for people) is the handle of the agent session that sent it, set by the
 server from the session (its current handle) and stored with the message. In encrypted channels
-the agent device also signs it inside Plain (`{t: "msg", …, agent?: str}`); clients show a
-message as the agent's only when both agree, else as the owner's.
+the agent device also signs it inside Plain (`{t: "msg", …, agent?: str}`). Attribution only
+ever leans toward the agent: clients treat a message as the agent's when the signed Plain names
+an agent (its value wins), when the server alone says so, or when an agent's device signed it
+(then under the agent's current handle). A message from an agent is never its owner's ask,
+approval or own words; it counts as unread and notifies the owner like anyone else's. Older
+clients show agent messages as the owner's.
 
 `Message.via` (omitted when empty; ≤ 16 B, a §9 name) says what posted the message for its
 author: `"mcp"` marks an outside Claude session posting as its user through `tc mcp`. It is the
@@ -1555,13 +1587,17 @@ DMs, at most 256).
 
 **Calls.** The server can't read encrypted text, so mentions grant access client-side: an
 owner's (non-agent) client that sees a verified message from the last 24 h that @mentions its
-agent's handle, in a channel not on the list, adds that channel with `agent.access`. The agent's
-client, on `agent.access` adding a channel, fetches its history and treats recent messages that
-mention its handle as calls. So an agent can be called only where its owner is a member.
+agent's handle, in a channel not on the list, grants that channel with `agent.access {temp}`
+(7 days). Only people's messages call: never a bot's or an agent's. In public channels anyone's
+call grants; in private channels and DMs only the owner's own. The agent's client, on
+`agent.access` adding a channel, fetches its history and treats recent messages that mention its
+handle as calls. So an agent can be called only where its owner is a member.
 
 **Agent DM.** Channel kind `agent_dm`: one per owner, the owner its sole member, so only the
 owner's sessions (person and agent devices) can read or post; no adds, joins, leaves, topics or
-webhooks. It has no name. Older clients list it as a channel of unknown kind.
+webhooks. It has no name (the server keeps a unique internal one so older releases' channel-name
+index still builds on a rolled-back database). Older clients list it as a channel of unknown
+kind. Retiring an agent keeps the DM and its history; a new agent of the same owner uses it.
 
 ### 15.5 Ephemerals
 
@@ -1575,7 +1611,8 @@ working, streaming, done, asleep, error`, `status` a line (≤ 128 B), `text` th
 so far, never stored. C→S only from agent sessions, in channels its owner is a member of and it
 may read (§15.4), at most 4/s per session (beyond: dropped); the server sets `user` (the owner)
 and `agent` (the current handle) and relays it to the `agent1` sessions of the channel's members
-that may read it. In an encrypted channel `text` must be absent and `enc` carries the preview:
+that may read it. Clients also drop an agent's statuses when it goes offline, is retired or is
+renamed. In an encrypted channel `text` must be absent and `enc` carries the preview:
 an enc (§13.4) sealed under the channel's current epoch over Plain
 `{t: "agent", ts, body, agent, thread?}`. Receivers open it like a message (verified device of
 `user`, in the epoch's roster), check `agent` and `thread` match the ephemeral and `ts` is within
