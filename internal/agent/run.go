@@ -167,7 +167,7 @@ func (s *Supervisor) turn(ctx context.Context, a Ask, cfg home.Config, mode runn
 		MaxUSD:         capUSD,
 		MCPConfig:      s.mcpConfig(token, cfg),
 		Settings:       s.paths.Settings,
-		System:         s.systemPrompt(),
+		System:         s.systemPrompt(mode),
 		PermissionTool: mcp.PermissionTool,
 		Env:            s.runEnv(a, token),
 	}
@@ -248,12 +248,14 @@ func (s *Supervisor) mcpConfig(token string, cfg home.Config) string {
 	return string(b)
 }
 
-// systemPrompt is the code, appended to the engine's own prompt. The
-// engine also reads CLAUDE.md from the agent home; passing it here keeps
-// it in force in restricted mode too.
-func (s *Supervisor) systemPrompt() string {
+// systemPrompt names the agent and, in Talk, carries the code: restricted
+// mode doesn't load CLAUDE.md from the working directory (Work does).
+func (s *Supervisor) systemPrompt(mode runner.Mode) string {
 	head := "You are @" + s.handle + ", a personal agent in tc."
 	code, err := os.ReadFile(s.paths.Code)
+	if mode == runner.Work {
+		return head + " Your code is CLAUDE.md in your home; it outranks everything else."
+	}
 	if err != nil {
 		return head + " Your code is CLAUDE.md in your home; it outranks everything else."
 	}

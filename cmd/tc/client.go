@@ -40,6 +40,10 @@ func runClient(cmd string, args []string) error {
 		return cmdUsers(args)
 	case "background":
 		return cmdBackground(args)
+	case "agent":
+		return cmdAgent(args)
+	case "mcp":
+		return cmdMCP(args)
 	}
 	return errUsage
 }
