@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/skailama/tc/internal/sanitize"
 )
 
 // The command palette (Option-K): the quick switcher's fuzzy jump list plus
@@ -51,6 +53,11 @@ func (m *Model) palCommands() []palItem {
 		{group: "Commands", label: "Toggle sidebar size", meta: "⌃B", icon: "◧", run: "app:sidebar", tabs: "am"},
 		{group: "Commands", label: "Change theme…", icon: "◐", run: "app:themes", tabs: "am"},
 		m.agentPalItem(),
+	}
+	if p, _, ok := m.waitingApproval(); ok {
+		out = append(out, palItem{group: "Commands", label: "Approval waiting · " + m.chanTitle(p.ch), desc: sanitize.Line(p.action) + "?", meta: "⌥O", icon: "✋", run: "app:approval", tabs: "am"})
+	}
+	out = append(out, []palItem{
 		{group: "Messages", label: "Activity", desc: "mentions, replies, reactions, DMs", meta: "⌥A", icon: "@", run: "/activity", tabs: "m"},
 		{group: "Messages", label: "Search", meta: "/search", icon: m.icon(icSearch), run: "/search ", tabs: "m"},
 		{group: "Messages", label: "Insert emoji", desc: "picker; + reacts in select mode, :name completes", meta: "⌥E", icon: m.icon(icReact), run: "app:emoji", tabs: "m"},
@@ -61,7 +68,7 @@ func (m *Model) palCommands() []palItem {
 		{group: "You", label: "Do not disturb", meta: "/dnd", icon: "☾", run: "/dnd 2h", desc: "for 2 hours", tabs: "m"},
 		{group: "You", label: "Notifications", meta: "/notify", icon: "⚑", run: "app:settings:notifications", tabs: "ms"},
 		{group: "You", label: "Quit", meta: "⌃C ⌃C", icon: "✕", run: "/quit", tabs: "m"},
-	}
+	}...)
 	if m.thread.open() {
 		out = append(out, palItem{group: "Commands", label: "Close thread", meta: "esc", icon: m.icon(icThread), run: "app:closethread", tabs: "am"})
 	}
@@ -347,6 +354,8 @@ func (m *Model) appAction(run string) tea.Cmd {
 	switch {
 	case run == "app:agent":
 		return m.openAgentPanel()
+	case run == "app:approval":
+		return m.jumpToApproval()
 	case run == "app:settings":
 		m.openSettings("")
 	case strings.HasPrefix(run, "app:settings:"):

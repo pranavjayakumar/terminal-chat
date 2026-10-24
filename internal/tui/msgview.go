@@ -637,6 +637,7 @@ func (m *Model) paneLines(p *pane, w int) ([]prow, []int) {
 			n := p.memoBase
 			p.memoLines, p.memoOwner = m.liveLines(p, live, w, p.memoLines[:n:n], p.memoOwner[:n:n])
 			p.memoLive = sig
+			p.keepView(len(p.memoLines) - n)
 		}
 		return p.memoLines, p.memoOwner
 	}
@@ -691,6 +692,7 @@ func (m *Model) paneLines(p *pane, w int) ([]prow, []int) {
 	}
 	p.memoBase = len(rows)
 	rows, owner = m.liveLines(p, live, w, rows, owner)
+	p.keepView(len(rows) - p.memoBase)
 	if rows == nil {
 		rows, owner = []prow{}, []int{}
 	}

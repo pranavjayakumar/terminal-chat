@@ -169,7 +169,7 @@ func (m *Model) drawApproval(g *grower, x client.Message, card approvalCard, st 
 			xx = g.c.pill(xx, y, label, st, "appr|"+ch[0]) + 1
 		}
 		yy := g.row()
-		g.c.put(2, yy, truncate("only you can answer · keys 1–3", bw), fgc(th.faint), "")
+		g.c.put(2, yy, truncate("only you can answer · select it, then 1–3", bw), fgc(th.faint), "")
 	case apprSaidYes, apprSaidToday:
 		said := owner + " said yes"
 		if st == apprSaidToday {
@@ -214,55 +214,61 @@ func (m *Model) answerApproval(x client.Message, choice string) tea.Cmd {
 	}
 	delete(m.ag.pending, x.ID)
 	id := x.ID
-	return m.call("answer", func(ctx context.Context) error {
+	said := map[string]string{"1": "yes", "2": "yes, ok today", "3": "no"}[choice]
+	return m.callThen("answer", func(ctx context.Context) (tea.Msg, error) {
 		for _, e := range emojis {
 			if err := m.c.React(ctx, id, e); err != nil {
-				return err
+				return nil, err
 			}
 		}
-		return nil
+		return infoMsg("you said " + said + " · " + sanitize.Line(card.action) + "?"), nil
 	})
 }
 
-// pendingCard is the newest card of mine still waiting in p, if it is on
-// screen (the keys 1–3 answer it).
-func (m *Model) pendingCard(p *pane) (client.Message, bool) {
-	if !p.open() || p.scroll > 0 {
-		return client.Message{}, false
-	}
-	st := m.approvalStates(p.msgs)
-	for i := len(p.msgs) - 1; i >= 0 && i >= len(p.msgs)-8; i-- {
-		x := p.msgs[i]
-		if x.Author == m.me.ID && x.FromAgent() && st[x.ID] == apprPending {
-			if _, ok := parseApproval(x); ok {
-				return x, true
-			}
-		}
-	}
-	return client.Message{}, false
+// parseApprovalAction is the action of card x ("" when it isn't one).
+func parseApprovalAction(x client.Message) string {
+	c, _ := parseApproval(x)
+	return c.action
 }
 
-// approvalKey answers the card in view with 1–3 typed into an empty input.
+// approvalKey answers the selected card with 1–3. Only a card selected on
+// purpose takes digits: typing "1pm works" in the composer never answers.
 func (m *Model) approvalKey(key string) (tea.Cmd, bool) {
-	if key != "1" && key != "2" && key != "3" {
+	if (key != "1" && key != "2" && key != "3") || m.mode != modeSelect {
 		return nil, false
 	}
-	if m.mode == modeSelect {
-		if x, ok := m.selected(); ok {
-			if _, card := parseApproval(x); card && x.Author == m.me.ID {
-				return m.answerApproval(x, key), true
-			}
-		}
-		return nil, false
-	}
-	if m.input.Value() != "" || m.editing != 0 {
-		return nil, false
-	}
-	x, ok := m.pendingCard(m.focus())
+	x, ok := m.selected()
 	if !ok {
 		return nil, false
 	}
+	if _, card := parseApproval(x); !card || x.Author != m.me.ID {
+		return nil, false
+	}
 	return m.answerApproval(x, key), true
+}
+
+// jumpToApproval (⌥O, the palette's "Approval waiting" row) opens the
+// newest card waiting for me and selects it, so 1–3 answer it.
+func (m *Model) jumpToApproval() tea.Cmd {
+	p, id, ok := m.waitingApproval()
+	if !ok {
+		m.setInfo("no approval waiting")
+		return nil
+	}
+	cmd := m.openApproval()
+	pn := &m.main
+	if p.thread != 0 {
+		pn = &m.thread
+	}
+	for i, x := range pn.msgs {
+		if x.ID == id {
+			m.mode = modeSelect
+			pn.sel = i
+			m.ensureVisible(pn)
+			m.updatePlaceholder()
+		}
+	}
+	return cmd
 }
 
 // ---- the ping: an approval waits somewhere I'm not looking ----
@@ -290,7 +296,8 @@ func (m *Model) noteApprovals(news []client.Message) tea.Cmd {
 			m.ag.pending = map[uint64]pendingAppr{}
 		}
 		m.ag.pending[x.ID] = pendingAppr{x.Chan, x.Thread, m.now(), card.action}
-		if (x.Chan == m.active && m.focused) || m.opt.Notifier == nil {
+		looking := x.Chan == m.active && m.focused && (x.Thread == 0 || x.Thread == m.thread.root)
+		if looking || m.opt.Notifier == nil {
 			continue
 		}
 		a := m.agentOfMsg(x)

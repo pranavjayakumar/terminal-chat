@@ -261,8 +261,21 @@ func TestApprovalPrompt(t *testing.T) {
 		golden(t, "agent_approval_narrow"+skinTag(sk), nv)
 		m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
 
-		// 2 answers "yes, ok today": ✅ then ♾️ on the card
+		// digits in the composer stay text; selected, 2 answers "yes, ok
+		// today": ✅ then ♾️ on the card
+		typeVia(m, "2pm")
+		if len(f.ag.reacted) != 0 || m.input.Value() != "2pm" {
+			t.Fatalf("composer digits answered: %v %q", f.ag.reacted, m.input.Value())
+		}
+		press(m, "ctrl+u", "up")
+		if ph := m.input.Placeholder; !strings.Contains(ph, "1 yes · 2 PRs ok today · 3 no") && !strings.HasPrefix(ph, "1 2 3 ") {
+			t.Errorf("select footer: %q", m.input.Placeholder)
+		}
 		press(m, "2")
+		if !strings.Contains(m.notice, "you said yes, ok today") {
+			t.Errorf("no feedback: %q", m.notice)
+		}
+		press(m, "esc")
 		if got := strings.Join(f.ag.reacted, ","); got != "401 ✅,401 "+apprToday {
 			t.Fatalf("reacted %q", got)
 		}
@@ -309,7 +322,11 @@ func TestApprovalOthersAndKeys(t *testing.T) {
 		t.Fatalf("click reacted %v", f.ag.reacted)
 	}
 	f.ag.reacted = nil
-	press(m, "up") // select mode on the card
+	press(m, "1") // not selected: just text
+	if len(f.ag.reacted) != 0 {
+		t.Fatal("an unselected card took 1")
+	}
+	press(m, "ctrl+u", "up") // select mode on the card
 	press(m, "1")
 	if strings.Join(f.ag.reacted, ",") != "401 "+apprYes {
 		t.Fatalf("select+1 reacted %v", f.ag.reacted)
@@ -343,6 +360,22 @@ func TestApprovalPing(t *testing.T) {
 	if r := lineWith(t, frameText(t, m, "badge"), "└ ▟▙ Rocky"); !strings.Contains(r, "✋") {
 		t.Errorf("no badge: %q", r)
 	}
+	// the palette has a row for it, ⌥O jumps there and selects the card
+	m.openPalette("all")
+	found := false
+	for _, it := range m.pal.items {
+		found = found || it.run == "app:approval" && strings.Contains(it.label, "Approval waiting · #general")
+	}
+	if !found {
+		t.Error("no palette row")
+	}
+	press(m, "esc")
+	run(m, m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}, Alt: true}))
+	if sel, ok := m.selected(); !ok || sel.ID != 401 || m.mode != modeSelect {
+		t.Fatalf("⌥O selected %v %v", sel.ID, m.mode)
+	}
+	press(m, "esc")
+	run(m, m.openChannel(11))
 	click(t, m, "agent:1")
 	if m.active != 10 || !m.thread.open() || m.thread.root != 400 {
 		t.Fatalf("the badge opened %d/%d", m.active, m.thread.root)
@@ -373,6 +406,15 @@ func TestAgentRunFold(t *testing.T) {
 	v = frameText(t, m, "unfolded")
 	lineWith(t, v, "▾ 3 steps")
 	lineWith(t, v, "· editing poll.go…")
+	// the keyboard folds it too: select the reply, o
+	press(m, "up")
+	if !strings.Contains(m.input.Placeholder, "o steps") {
+		t.Errorf("footer: %q", m.input.Placeholder)
+	}
+	press(m, "o")
+	lineWith(t, frameText(t, m, "folded"), "▸ 3 steps")
+	press(m, "enter")
+	lineWith(t, frameText(t, m, "enter unfolds"), "▾ 3 steps")
 }
 
 // A visitor post (an outside Claude session, tc mcp) shows ⇢ by the name.
@@ -403,4 +445,98 @@ func TestAgentIdentityFollowsRename(t *testing.T) {
 	f.ag.agents = f.ag.agents[1:]
 	run(m, m.applyUpdate(client.Update{Agents: true}))
 	lineWith(t, frameText(t, m, "retired"), "Rocky ⟡")
+}
+
+// Review follow-ups.
+
+// Typing a time into the composer under a waiting card never answers it.
+func TestApprovalComposerDigits(t *testing.T) {
+	f := agentFake()
+	m := agentModel(t, f, 140, 40, "")
+	run(m, m.openThread(400))
+	m.layoutInput()
+	typeVia(m, "1pm works")
+	if len(f.ag.reacted) != 0 || m.input.Value() != "1pm works" {
+		t.Fatalf("input %q reacted %v", m.input.Value(), f.ag.reacted)
+	}
+}
+
+// Scrolled up while a reply streams: the view stays put.
+func TestLiveRowsKeepScrolledView(t *testing.T) {
+	f := agentFake()
+	for i := 0; i < 40; i++ {
+		f.msgs[10] = append([]client.Message{{Message: proto.Message{ID: uint64(100 + i), Chan: 10, Author: 2, Body: "history line " + itoa(int64(i)), Time: agentTime.Add(-2 * time.Hour).UnixMilli()}}}, f.msgs[10]...)
+	}
+	m := agentModel(t, f, 80, 24, "")
+	run(m, m.applyUpdate(client.Update{Msgs: map[uint64]bool{10: true}}))
+	m.main.scroll = 10
+	top := func() string { return strings.Split(frameText(t, m, "scrolled"), "\n")[4] }
+	before := top()
+	for _, st := range []struct{ state, preview string }{{proto.AgentThinking, ""}, {proto.AgentStreaming, "one\ntwo\nthree\nfour"}, {proto.AgentStreaming, "one"}, {"", ""}} {
+		setLive(m, f, 10, 0, 1, st.state, "", st.preview)
+		if got := top(); got != before {
+			t.Fatalf("%s moved the view: %q, was %q", st.state, got, before)
+		}
+	}
+}
+
+// The reply landed but "done" hasn't: the stale preview goes at once.
+func TestLiveRowGoesWhenReplyLands(t *testing.T) {
+	f := agentFake()
+	m := agentModel(t, f, 120, 40, "")
+	setLive(m, f, 10, 0, 1, proto.AgentStreaming, "", "the preview")
+	lineWith(t, frameText(t, m, "streaming"), "the preview")
+	f.msgs[10] = append(f.msgs[10], client.Message{Message: proto.Message{ID: 540, Chan: 10, Author: 1, Agent: "rocky", Body: "the reply", Time: agentTime.Add(time.Second).UnixMilli()}})
+	run(m, m.applyUpdate(client.Update{Msgs: map[uint64]bool{10: true}}))
+	if v := frameText(t, m, "landed"); strings.Contains(v, "the preview") || strings.Contains(v, "Rocky is writing") {
+		t.Fatalf("stale preview with the reply:\n%s", v)
+	}
+}
+
+// No wakes for asleep agents or an unfocused terminal; thinking breathes
+// in 140 ms steps.
+func TestAgentWakeRules(t *testing.T) {
+	f := agentFake()
+	m := agentModel(t, f, 120, 40, "")
+	m.fx.off = false
+	setLive(m, f, 10, 0, 2, proto.AgentAsleep, "", "")
+	if d := m.agentWake(); d != 0 {
+		t.Fatalf("asleep wakes every %v", d)
+	}
+	setLive(m, f, 10, 0, 2, "", "", "")
+	setLive(m, f, 10, 0, 1, proto.AgentThinking, "", "")
+	if d := m.agentWake(); d != agentBreathStep {
+		t.Fatalf("thinking wakes every %v", d)
+	}
+	m.Update(tea.BlurMsg{})
+	if d := m.agentWake(); d != 0 {
+		t.Fatalf("unfocused wakes every %v", d)
+	}
+}
+
+// A card in a thread of the channel I'm in, but not open, still pings.
+func TestApprovalPingInUnopenedThread(t *testing.T) {
+	f := agentFake()
+	m := agentModel(t, f, 120, 40, "")
+	card := f.threads[400][2]
+	run(m, m.applyUpdate(client.Update{New: []client.Message{card}}))
+	if got := notes(m).got(); len(got) != 1 {
+		t.Fatalf("notes %v", got)
+	}
+}
+
+// The keys sheet lists the agent keys.
+func TestKeySheetAgentKeys(t *testing.T) {
+	var all []string
+	for _, r := range keySheetRows(120) {
+		for _, c := range r {
+			all = append(all, c.text)
+		}
+	}
+	s := strings.Join(all, " ")
+	for _, want := range []string{"Agent", "⌥K Agent", "⌥O", "1 2 3", "p d L r"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("keys sheet lacks %q", want)
+		}
+	}
 }

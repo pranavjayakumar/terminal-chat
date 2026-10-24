@@ -136,12 +136,16 @@ func TestAgentPanelKeys(t *testing.T) {
 		t.Fatalf("folders %v", fs)
 	}
 	press(m, "down", "x")
+	if fs := cfg().Access.Folders; len(fs) != 2 || !strings.Contains(frameText(t, m, "confirm folder"), "stop granting /tmp/work?") {
+		t.Fatalf("x removed without asking: %v", fs)
+	}
+	press(m, "y")
 	if fs := cfg().Access.Folders; len(fs) != 1 {
 		t.Fatalf("folders after x %v", fs)
 	}
 	press(m, "esc")
-	// Activity: l opens the full log
-	press(m, "l")
+	// Activity: L opens the full log (l moves the mode, like h)
+	press(m, "L")
 	if m.ag.panel.page != apActivity || !strings.Contains(frameText(t, m, "log"), "carol #general") {
 		t.Fatal("l didn't open the log")
 	}
@@ -293,5 +297,42 @@ func TestAgentEverySkinEveryTheme(t *testing.T) {
 				press(m, "esc")
 			}
 		}
+	}
+}
+
+// A 40×12 terminal still reaches every row of the panel and the setup.
+func TestAgentPanelSmall(t *testing.T) {
+	for _, sk := range []string{"", `,"skin":"retro"`} {
+		m, _ := panelModel(t, 40, 12, sk)
+		for i := 0; i < len(apRows)-1; i++ {
+			press(m, "down")
+		}
+		if r := lineWith(t, frameText(t, m, "last row"), "Personality"); !strings.Contains(r, "›") {
+			t.Errorf("%s: focused last row not in view: %q", sk, r)
+		}
+		f := newFake()
+		m2 := agentModel(t, f, 40, 12, sk)
+		run(m2, m2.openAgentPanel())
+		press(m2, "tab")
+		lineWith(t, frameText(t, m2, "icon"), "Icon")
+		press(m2, "down")
+		lineWith(t, frameText(t, m2, "color"), "Color")
+		press(m2, "down")
+		lineWith(t, frameText(t, m2, "button"), "Set up Rocky")
+		press(m2, "enter")
+		if !f.called("register rocky pebble") {
+			t.Errorf("%s: setup from 40x12: %v", sk, f.calls)
+		}
+	}
+}
+
+// Reads can't change an agent that lives on another computer.
+func TestAgentReadsElsewhere(t *testing.T) {
+	m, f := panelModel(t, 100, 34, "")
+	m.ag.home.here = false
+	m.ag.panel.page, m.ag.panel.row = apReads, 1
+	press(m, "enter")
+	if len(f.ag.access) != 1 || !strings.Contains(m.notice, "home computer") {
+		t.Fatalf("access %v notice %q", f.ag.access, m.notice)
 	}
 }

@@ -155,6 +155,13 @@ func (m *Model) selectFooter() string {
 		return "Esc leaves select mode"
 	}
 	var keys []string
+	if _, ok := parseApproval(sel); ok && sel.Author == m.me.ID && verdict(sel) == apprPending {
+		ch := apprChoices(parseApprovalAction(sel))
+		keys = append(keys, "1 "+ch[0][1], "2 "+strings.TrimPrefix(ch[1][1], "yes, "), "3 "+ch[2][1])
+	}
+	if m.ag.folds[sel.ID] != nil {
+		keys = append(keys, "o steps")
+	}
 	if sel.Failed != "" {
 		keys = []string{"r retry", "d discard", "v view", "y copy"}
 	} else {

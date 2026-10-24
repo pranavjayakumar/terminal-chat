@@ -459,15 +459,18 @@ and one status row. Code: `internal/tui/agent.go` (icons, state), `agentlive.go`
   the field shows as a static glyph. Timings: thinking 280 ms frames with a 1.12 s breath, working
   110 ms, streaming 220 ms (working frames), done flashes twice in the ok color (0.29 s each), asleep
   1.6 s at half strength (kept readable on its background). The frame tick runs only while a glyph on
-  screen moves; an asleep agent in the sidebar is still, and Animations off shows still frames.
+  screen moves (the breath in 140 ms steps), never for an asleep agent or while the terminal is unfocused;
+  Animations off shows still frames.
 - **Live reply.** `Update.AgentStatus` reloads the channel's live statuses (`AgentThreads` +
   `AgentStatus`); each live agent gets a row at the bottom of the channel (top level) or of the open
   thread: `<icon> Rocky is thinking…`, then its status line (`is reading the thread…`), then
   `is writing…  live · not saved` with the preview streaming dim and italic behind a faint `┆` (its last
-  10 rows). Asleep says `is asleep 💤`, an error `is stuck: <why>` in the error color. The row goes when
-  the real message lands (or after done's flash). Narrow panes truncate it from the right.
+  10 rows). Asleep says `is asleep 💤`, an error `is stuck: <why>` in the error color. The row goes as
+  soon as a message from that agent newer than its last status lands (or after done's flash). Narrow panes
+  truncate it from the right. Scrolled up, the view stays put while the rows grow and shrink.
 - **Work runs** (a run with 3+ distinct working steps; never my agent in Talk mode) fold under the reply
-  as `▸ 5 steps · 2m 41s · $0.42` (cost only for my agent, from its audit log); a click unfolds the steps.
+  as `▸ 5 steps · 2m 41s · $0.42` (cost only for my agent, from its audit log); a click, or `o` / ⏎ / space
+  on the selected reply, unfolds the steps.
   What tc saw of the run is kept for this session only.
 - **Sidebar.** Agents sit under their owner's DM row as `└ <icon> Name` (asleep: faint name, half-strength
   glyph, `💤`); mine sits under the "you" row (taking the roomy layout's blank row, or moving "you" up
@@ -482,21 +485,24 @@ and one status row. Code: `internal/tui/agent.go` (icons, state), `agentlive.go`
 - **Approvals.** The harness posts `✋ @owner approve: <action>? react ✅ / ❌  ·  #code` + detail and waits
   for the owner's ✅ / ❌. tc draws the detail, then `<action>?  1 yes  2 yes, ok today  3 no` (`PRs ok today`
   when the action names a PR) and `only you can answer · keys 1–3`; everyone else sees `waiting for Fizan`.
-  Keys 1–3 (empty input, the newest waiting card of mine in the focused pane, scrolled to the bottom; or
-  select mode on a card) or a click answer: 1 reacts ✅, 2 reacts ✅ then ♾️ (the harness reads the ✅ as
-  yes), 3 reacts ❌. Only a verified card from my own agent takes an answer. Answered, it collapses to
+  Keys 1–3 answer only a card selected on purpose (select mode, where the footer reads `1 yes · 2 PRs ok
+  today · 3 no`); digits typed in the composer are always text. `⌥O` (or the palette's `Approval waiting ·
+  #chan` row) opens the newest waiting card and selects it. A click on a choice answers too. 1 reacts ✅,
+  2 reacts ✅ then ♾️ (the harness reads the ✅ as yes), 3 reacts ❌; a toast says what was answered. Only a verified card from my own agent takes an answer. Answered, it collapses to
   `✓ Fizan said yes · <action>?` (`✗ … said no`); a card the harness gave up on (`⌛ no answer on #code`)
   reads `⌛ no answer`. A card that arrives while I look elsewhere notifies me once, as `Rocky needs your
-  ok`: it replaces the mention alert its `@owner` would raise.
+  ok`: it replaces the mention alert its `@owner` would raise. A card in a thread that isn't open counts
+  as elsewhere.
 - **Panel** (`⌥K` › Agent, the glyph in the sidebar, the mode in the DM header): one page, no tabs. State
   (awake / working / paused / asleep, idle time, sleep-after, on this or another computer), Spend today (`█` accent,
   `░` faint, `$3.40 of $20  17%`), Asks today per person, the Mode radio (Talk / Work / Crew: `←/→`, `1–3`
-  or a click), the note line, then Reads, Folders, Limits, Memory, Activity, Personality ("tell me in our
+  or a click; `h`/`l` move it too), the note line, then Reads, Folders, Limits, Memory, Activity, Personality ("tell me in our
   DM": opens the DM). `⏎` opens a row's page: Reads (channels it may read for anyone's asks, toggled on
   the server with `agent.access`, plus "your DMs when you ask"), Folders (`a` adds a full path, `x`
-  removes), Limits (`←/→`: daily cap, per-run cap, asks per person, rollover %, sleep after), Memory
+  removes after `y`), Limits (`←/→`: daily cap, per-run cap, asks per person, rollover %, sleep after), Memory
   (`⏎` reads a note, `f` forgets one, `u` undoes today; both ask `y`), Activity (the audit log, newest
-  first). Keys `p` pause / resume, `d` open DM, `l` logs, `r` re-read, Esc back / close. Settings are the
+  first). Keys `p` pause / resume, `d` open DM, `L` logs, `r` re-read, Esc back / close. A short terminal scrolls
+  the page to keep the focused row in view (`↑`/`↓` marks show more). Settings are the
   agent home's `config.json` (`internal/agent/home`); spend, asks, status and the log come from its
   `state/` files, written by the supervisor; nothing is read while drawing. On a computer that isn't the
   agent's home (`agent.HomeHere`) the panel shows what the server knows and changes nothing.

@@ -27,6 +27,7 @@ type apDraw struct {
 	x, w   int // content column and width
 	y, bot int
 	labelW int
+	focusY int // the focused row's y, -1 none: the view scrolls to it
 }
 
 func (d *apDraw) left() int { return d.bot - d.y }
@@ -49,6 +50,7 @@ func (d *apDraw) row(label string, focused bool, act string) int {
 	if focused {
 		st = fgb(th.accent)
 		d.c.put(d.x-2, d.y, "›", fgc(th.accent), act)
+		d.focusY = d.y
 	}
 	if act != "" {
 		d.c.tag(d.x, d.y, d.w, 1, act, true, true)
@@ -97,23 +99,16 @@ func (m *Model) drawAgentPanel(c *canvas) {
 		c.put(d.x+d.w-strWidth(esc), d.y, esc, fgc(th.faint), "close")
 	}
 	d.y += 2
+	if in.y1-in.y0 < 16 {
+		d.y-- // a short panel: no blank row under the title
+	}
 	switch p.page {
-	case apSetup:
-		m.drawSetup(d)
-	case apMain:
-		m.drawPanelMain(d)
-	case apReads:
-		m.drawReads(d)
-	case apFolders:
-		m.drawFolders(d)
-	case apLimits:
-		m.drawLimits(d)
-	case apMemory:
-		m.drawMemory(d)
 	case apNote:
 		m.drawNote(d)
 	case apActivity:
 		m.drawActivity(d)
+	default:
+		m.drawPanelScrolled(c, d, in)
 	}
 	// the bottom row: an error, a confirm, or the keys
 	y := in.y1 - 2
@@ -122,6 +117,9 @@ func (m *Model) drawAgentPanel(c *canvas) {
 		what := "undo every memory change made today?"
 		if path, ok := strings.CutPrefix(p.confirm, "forget:"); ok {
 			what = "forget " + sanitize.Line(path) + "?"
+		}
+		if f, ok := strings.CutPrefix(p.confirm, "folder:"); ok {
+			what = "stop granting " + tildePath(f) + "?"
 		}
 		c.put(d.x, y, truncate(what+"  y to confirm", d.w), fgb(th.warn), "")
 	case p.err != "":
@@ -147,7 +145,7 @@ func (m *Model) drawPanelKeys(d *apDraw, y int) {
 		if m.ag.home.cfg.Paused {
 			pause = "Resume"
 		}
-		pills = [][2]string{{"p", pause}, {"d", "Open DM"}, {"l", "Logs"}}
+		pills = [][2]string{{"p", pause}, {"d", "Open DM"}, {"L", "Logs"}}
 	case apSetup:
 		hint = "↑↓ move · ←→ pick · ⏎ set up · esc"
 	case apReads:
@@ -284,6 +282,9 @@ func (m *Model) drawPanelMain(d *apDraw) {
 			break
 		}
 		on := cfg.Mode == md.id
+		if on && focus == 0 {
+			d.focusY = d.y + 1 // the radio and the row under it
+		}
 		act := "ap:mode:" + strconv.Itoa(i)
 		if on {
 			c.fill(d.x-1, d.y, d.w+1, 1, th.element, act)
@@ -336,6 +337,61 @@ func (m *Model) drawPanelMain(d *apDraw) {
 			c.put(x, d.y, truncate(v, room), vst, act)
 		}
 		d.y++
+	}
+}
+
+// drawPanelScrolled draws a page offscreen at full length, then shows the
+// part that keeps its focused row in view: a short terminal still reaches
+// every row.
+func (m *Model) drawPanelScrolled(c *canvas, d *apDraw, in rect) {
+	th := m.st.th
+	p := &m.ag.panel
+	avail := d.bot - d.y - 1 // a blank row above the keys
+	if avail < 1 {
+		return
+	}
+	full := max(200, len(p.notes)+len(m.chans)+40)
+	sc := newCanvas(in.x1-in.x0, full, th)
+	sc.fill(0, 0, sc.w, sc.h, th.panel, "")
+	sd := &apDraw{m: m, c: sc, x: d.x - in.x0, w: d.w, y: 0, bot: full, labelW: d.labelW, focusY: -1}
+	switch p.page {
+	case apSetup:
+		m.drawSetup(sd)
+	case apMain:
+		m.drawPanelMain(sd)
+	case apReads:
+		m.drawReads(sd)
+	case apFolders:
+		m.drawFolders(sd)
+	case apLimits:
+		m.drawLimits(sd)
+	case apMemory:
+		m.drawMemory(sd)
+	}
+	end := sd.y
+	off := 0
+	if sd.focusY >= 0 {
+		off = min(max(sd.focusY-avail+2, 0), max(end-avail, 0))
+	}
+	for y := 0; y < avail && off+y < sc.h; y++ {
+		for x := 0; x < sc.w; x++ {
+			src := sc.at(x, off+y)
+			if !c.in(in.x0+x, d.y+y) {
+				continue
+			}
+			dst := c.at(in.x0+x, d.y+y)
+			*dst = *src
+			dst.act = 0
+			if a := sc.acts[src.act]; src.act != 0 && a != "" {
+				dst.act = c.act(a)
+			}
+		}
+	}
+	if off > 0 {
+		c.put(d.x+d.w-1, d.y, "↑", fgc(th.faint), "")
+	}
+	if end-off > avail {
+		c.put(d.x+d.w-1, d.y+avail-1, "↓", fgc(th.faint), "")
 	}
 }
 
@@ -720,6 +776,7 @@ func (m *Model) drawSetup(d *apDraw) {
 	if p.row == 3 {
 		st = fgb(th.accentFg).on(th.accent).with(aMonoRev)
 		c.put(d.x-2, d.y, "›", fgc(th.accent), "")
+		d.focusY = d.y + 2 // and the shell hint under it
 	}
 	c.pill(d.x, d.y, label, st, "ap:setup")
 	d.y += 2

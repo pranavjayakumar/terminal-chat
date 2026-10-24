@@ -353,7 +353,7 @@ func (m *Model) panelMainKey(key string) tea.Cmd {
 		return nil
 	case "d":
 		return m.openAgentDM()
-	case "l":
+	case "L":
 		p.page, p.row, p.scroll = apActivity, 0, 0
 		return nil
 	case "r":
@@ -445,6 +445,10 @@ func (m *Model) readsKey(key string) tea.Cmd {
 // toggleAccess lets my agent read ch for anyone's asks, or stops it.
 func (m *Model) toggleAccess(ch uint64) tea.Cmd {
 	p := &m.ag.panel
+	if !m.ag.home.ok || !m.ag.home.here {
+		m.setInfo("its settings live on its home computer · open tc there")
+		return nil
+	}
 	if p.busy || !p.accessOK {
 		return nil
 	}
@@ -490,11 +494,7 @@ func (m *Model) foldersKey(key string) tea.Cmd {
 		m.line.Focus()
 	case "x", "backspace", "delete":
 		if p.row < len(folders) {
-			f := folders[p.row]
-			m.saveAgentConfig(func(c *home.Config) {
-				c.Access.Folders = slices.DeleteFunc(slices.Clone(c.Access.Folders), func(x string) bool { return x == f })
-			})
-			p.row = max(min(p.row, len(m.ag.home.cfg.Access.Folders)-1), 0)
+			p.confirm = "folder:" + folders[p.row]
 		}
 	}
 	return nil
@@ -588,6 +588,13 @@ func (m *Model) memoryKey(key string) {
 
 // panelConfirm runs a confirmed forget or undo.
 func (m *Model) panelConfirm(c string) {
+	if f, ok := strings.CutPrefix(c, "folder:"); ok {
+		m.saveAgentConfig(func(c *home.Config) {
+			c.Access.Folders = slices.DeleteFunc(slices.Clone(c.Access.Folders), func(x string) bool { return x == f })
+		})
+		m.ag.panel.row = max(min(m.ag.panel.row, len(m.ag.home.cfg.Access.Folders)-1), 0)
+		return
+	}
 	st, err := memory.Open(m.ag.home.dir)
 	if err != nil {
 		m.setErr("memory", err)

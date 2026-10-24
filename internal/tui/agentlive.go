@@ -76,18 +76,14 @@ func (m *Model) liveShown(p *pane) []liveRow {
 	return out
 }
 
-// replied: the agent's message after this run started is in the pane.
+// replied: a message from the agent newer than its last status is in the
+// pane, so the reply it previewed has landed (whatever state the status
+// still says until "done" arrives).
 func (m *Model) replied(p *pane, r liveRow) bool {
-	if r.State != proto.AgentDone && r.State != proto.AgentError {
-		return false
-	}
-	start := r.At
-	if run := m.ag.runs[liveKey{r.Agent.Owner, p.ch, r.thread}]; run != nil {
-		start = run.start
-	}
+	at := r.At.UnixMilli()
 	for i := len(p.msgs) - 1; i >= 0 && i >= len(p.msgs)-5; i-- {
 		x := p.msgs[i]
-		if x.FromAgent() && x.Author == r.Agent.Owner && x.Time >= start.Add(-2*time.Second).UnixMilli() {
+		if x.FromAgent() && x.Author == r.Agent.Owner && x.Time >= at {
 			return true
 		}
 	}

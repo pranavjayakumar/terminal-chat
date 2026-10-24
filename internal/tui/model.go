@@ -58,10 +58,20 @@ type pane struct {
 	memoBlocks              map[blockKey]*canvas // the blocks memoLines uses
 	memoLive                string               // the live agent rows it drew
 	memoBase                int                  // where they start in memoLines
+	memoLiveH               int                  // and how many rows they take
 	liveMarks               map[*canvas]liveMark // their animated glyphs (agentlive.go)
 }
 
 func (p *pane) open() bool { return p.ch != 0 }
+
+// keepView keeps a scrolled-up view still while the live agent rows at the
+// bottom grow or shrink to liveH rows.
+func (p *pane) keepView(liveH int) {
+	if p.scroll > 0 {
+		p.scroll = max(p.scroll+liveH-p.memoLiveH, 0)
+	}
+	p.memoLiveH = liveH
+}
 
 // Model is the Bubble Tea model.
 type Model struct {
@@ -1347,10 +1357,9 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 			return cmd
 		}
 	}
-	if cmd, ok := m.approvalKey(key); ok {
-		return cmd
-	}
 	switch {
+	case key == kApproval:
+		return m.jumpToApproval()
 	case key == kTab && m.tabComplete():
 		return nil
 	case isSwitcher(key):
@@ -1691,6 +1700,11 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 	}
 	if cmd, ok := m.approvalKey(key); ok {
 		return cmd, true
+	}
+	if (key == kEnter || key == " " || key == kSelUnfold) && m.ag.folds[sel.ID] != nil {
+		m.toggleFold(sel.ID)
+		m.ensureVisible(m.focus())
+		return nil, true
 	}
 	mine := m.ownMsg(sel)
 	switch key {

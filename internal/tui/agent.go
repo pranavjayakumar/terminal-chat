@@ -51,6 +51,7 @@ const (
 	agentBreath      = 1120 * time.Millisecond // thinking: 100% → 50% → 100%
 	agentFlash       = 290 * time.Millisecond  // done: two ok-colored flashes
 	agentDoneFx      = 3 * agentFlash          // on, off, on
+	agentBreathStep  = 140 * time.Millisecond  // the breath's frame: 8 steps a breath
 )
 
 const agentBadge = "⟡"
@@ -377,8 +378,8 @@ func (m *Model) liveIn(p *pane) []liveRow {
 
 // agentWake is how soon an agent glyph on screen changes; 0: none moves.
 func (m *Model) agentWake() time.Duration {
-	if m.fx.off {
-		return 0
+	if m.fx.off || !m.focused {
+		return 0 // nobody is watching the glyphs move
 	}
 	d := time.Duration(0)
 	want := func(e time.Duration) {
@@ -389,7 +390,8 @@ func (m *Model) agentWake() time.Duration {
 	consider := func(state string, since time.Time) {
 		switch state {
 		case proto.AgentThinking:
-			want(fastFrame * 2) // the breath is a smooth fade
+			want(agentBreathStep)
+		case proto.AgentAsleep, "":
 		case proto.AgentDone:
 			if m.now().Sub(since) < agentDoneFx {
 				want(agentFlash / 2)
