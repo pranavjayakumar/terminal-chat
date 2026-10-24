@@ -242,7 +242,9 @@ func TestAskAgent(t *testing.T) {
 		t.Fatal("asked itself")
 	}
 	got := make(chan mcp.BridgeRes, 1)
-	go func() { got <- h.call(mcp.ToolAskAgent, map[string]string{"handle": "@bobbot", "question": "when is the release?"}) }()
+	go func() {
+		got <- h.call(mcp.ToolAskAgent, map[string]string{"handle": "@bobbot", "question": "when is the release?"})
+	}()
 	var q posted
 	h.waitFor("the question", func() bool {
 		for _, p := range h.chat.posts() {
