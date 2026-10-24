@@ -60,6 +60,7 @@ func (s *Supervisor) dream(ctx context.Context, cfg home.Config) {
 		Dir:    d.Dir,
 		Prompt: d.Prompt,
 		Mode:   runner.Edit,
+		System: s.identity(Ask{}),
 		MaxUSD: min(cfg.RunCapUSD, cfg.DailyCapUSD-s.ledger.Spent(s.Now())),
 		Env:    []string{"TC_AGENT_DREAM=1"},
 	}, nil)

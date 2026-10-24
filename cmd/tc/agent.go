@@ -322,7 +322,7 @@ func agentRun(ctx context.Context, tcHome string) error {
 	go c.Run(cctx)
 	s := &agent.Supervisor{
 		Dir: dir, Chat: c, Runner: runner.Claude{}, Memory: mem, Work: work.New(dir),
-		TCBin: exe, Version: version, Log: log, Model: os.Getenv("TC_AGENT_MODEL"),
+		TCBin: exe, Server: c.Config().Addr, Version: version, Log: log, Model: os.Getenv("TC_AGENT_MODEL"),
 	}
 	err = s.Run(cctx)
 	if err != nil {

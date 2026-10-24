@@ -365,6 +365,12 @@ func TestSnapshot(t *testing.T) {
 	if cp := s.Snapshot(Params{SessionKey: "thread-10"}); !strings.Contains(cp, "checkpoint words") {
 		t.Error("checkpoint not shown without a handoff")
 	}
+	if o := s.Snapshot(Params{Owner: "Fizan (@fizan)"}); !strings.Contains(o, "Your owner is Fizan (@fizan), and no one else.") {
+		t.Error("snapshot doesn't name the owner")
+	}
+	if strings.Contains(other, "Your owner is") {
+		t.Error("owner line without an owner")
+	}
 }
 
 func TestSnapshotCap(t *testing.T) {

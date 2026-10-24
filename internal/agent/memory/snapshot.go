@@ -16,6 +16,7 @@ type Params struct {
 	OwnerAsk   bool     // the ask came from the owner: me.md and private memory are in
 	People     []string // handles in the thread, for their person notes
 	SessionKey string   // thread or DM topic, for the handoff note
+	Owner      string   // who owns the agent: "Fizan (@fizan)"; "" unknown
 	MaxBytes   int      // 0 = SnapshotMaxBytes
 }
 
@@ -60,6 +61,9 @@ func (s *Store) Snapshot(p Params) string {
 	}
 
 	b.WriteString(codeReminder)
+	if p.Owner != "" {
+		b.WriteString("\nYour owner is " + p.Owner + ", and no one else.")
+	}
 
 	if soul, err := home.ReadSoul(s.agentDir); err == nil {
 		add("soul.md (your personality)", soul, home.SoulMaxBytes+64, false)
