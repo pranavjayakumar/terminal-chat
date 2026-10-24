@@ -19,6 +19,9 @@ const (
 	// Work may run the shell (sandboxed) and edit files in the granted
 	// folders.
 	Work Mode = "work"
+	// Edit may read and edit files in the working directory only: no
+	// shell (the memory dream).
+	Edit Mode = "edit"
 )
 
 // Request is one turn.

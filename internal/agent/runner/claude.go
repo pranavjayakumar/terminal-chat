@@ -29,6 +29,9 @@ type Claude struct {
 // Talk-mode tools: look, don't touch. Writing happens through tc's MCP tools.
 var talkTools = []string{"Read", "Glob", "Grep"}
 
+// Edit-mode tools: files in the working directory, nothing else.
+var editTools = []string{"Read", "Edit", "Write", "Glob", "Grep"}
+
 // Work-mode tools: the shell runs in the OS sandbox from the settings.
 var workTools = []string{"Bash", "Read", "Edit", "Write", "Glob", "Grep", "TodoWrite"}
 
@@ -72,6 +75,8 @@ func (c Claude) Args(req Request) []string {
 		for _, d := range req.AddDirs {
 			a = append(a, "--add-dir", d)
 		}
+	case Edit:
+		a = append(a, "--restricted", "--tools", strings.Join(editTools, ","), "--permission-mode", "acceptEdits")
 	default:
 		a = append(a, "--restricted", "--tools", strings.Join(talkTools, ","))
 	}
