@@ -19,9 +19,31 @@ const (
 	OpAgentDM       = "agent.dm"
 )
 
-// KAgentUpdate carries an Agent that was registered, changed or retired
-// (Retired != 0), to every agent1 session.
-const KAgentUpdate = "agent.update"
+// Agent events. KAgentUpdate carries an Agent that was registered, changed
+// or retired (Retired != 0), to every agent1 session; KAgentAccess carries
+// the owner's new access list (AgentAccessRes) to the owner's agent1
+// sessions.
+const (
+	KAgentUpdate = "agent.update"
+	KAgentAccess = "agent.access"
+)
+
+// IsAgentKind reports whether an event kind exists only for agent1 sessions.
+func IsAgentKind(kind string) bool { return kind == KAgentUpdate || kind == KAgentAccess }
+
+// IsMsgKind reports whether an event kind carries message content: what an
+// agent session sees only in the channels it may read (§15.4).
+func IsMsgKind(kind string) bool {
+	switch kind {
+	case KMsgNew, KMsgEdit, KMsgDelete, KReactAdd, KReactRemove, KPinAdd, KPinRemove:
+		return true
+	}
+	return false
+}
+
+// IsDMKind reports whether a channel kind has a fixed roster (DMs and agent
+// DMs): no joins, adds, removes, leaves or topics.
+func IsDMKind(kind string) bool { return kind == ChanDM || kind == ChanAgentDM }
 
 // Ephemeral kinds (PROTOCOL.md §15.5).
 const (
@@ -57,7 +79,7 @@ func ValidAgentState(s string) bool {
 // (person and agent devices). Sent only to agent1 sessions.
 const ChanAgentDM = "agent_dm"
 
-// Agent limits (PROTOCOL.md §15.7).
+// Agent limits (PROTOCOL.md §15.6).
 const (
 	MaxAgentIcon    = 32       // bytes
 	MaxAgentPreview = 16 << 10 // EphAgent Text, bytes
