@@ -147,6 +147,9 @@ func (f *fakeChat) AgentHandleLocked() string {
 	}
 	return f.handle
 }
+func (f *fakeChat) Agents() []proto.Agent {
+	return []proto.Agent{{Handle: f.AgentHandle(), Owner: ownerID}, {Handle: "bobbot", Owner: bobID}}
+}
 func (f *fakeChat) Updates() <-chan client.Update { return f.updates }
 func (f *fakeChat) Status() client.Status         { return client.Status{State: client.Online} }
 func (f *fakeChat) AgentHandle() string {
@@ -262,6 +265,7 @@ type fakeMemory struct {
 	mu       sync.Mutex
 	facts    []memory.Fact
 	handoffs map[string]string
+	notes    map[string]memory.Note
 	commits  int
 }
 
@@ -272,7 +276,18 @@ func (m *fakeMemory) Remember(f memory.Fact) error {
 	return nil
 }
 func (m *fakeMemory) Recall(q string, private bool) ([]memory.Hit, error) {
-	return []memory.Hit{{Path: "facts/x.md", Line: 1, Text: q}}, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.notes == nil {
+		return []memory.Hit{{Path: "facts/x.md", Line: 1, Text: q}}, nil
+	}
+	var out []memory.Hit
+	for p, n := range m.notes {
+		if strings.Contains(n.Body, q) {
+			out = append(out, memory.Hit{Path: p, Line: 1, Text: n.Body})
+		}
+	}
+	return out, nil
 }
 func (m *fakeMemory) WriteHandoff(key, text string) error {
 	m.mu.Lock()
@@ -287,6 +302,33 @@ func (m *fakeMemory) Commit(string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.commits++
+	return nil
+}
+func (m *fakeMemory) Read(rel string) (memory.Note, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n, ok := m.notes[rel]
+	if !ok {
+		return memory.Note{}, os.ErrNotExist
+	}
+	return n, nil
+}
+func (m *fakeMemory) Write(n memory.Note) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.notes == nil {
+		m.notes = map[string]memory.Note{}
+	}
+	m.notes[n.Path] = n
+	return nil
+}
+func (m *fakeMemory) Forget(rel string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.notes[rel]; !ok {
+		return os.ErrNotExist
+	}
+	delete(m.notes, rel)
 	return nil
 }
 func (m *fakeMemory) PrepareDream() (*memory.Dream, error) {

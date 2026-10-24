@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/skailama/tc/internal/agent/home"
@@ -117,10 +118,18 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		var p struct {
 			Chan   string `json:"chan"`
 			Thread uint64 `json:"thread"`
+			Where  string `json:"where"`
 			Text   string `json:"text"`
 		}
 		if err := mcp.Args(raw, &p); err != nil {
 			return "", err
+		}
+		if p.Where == "thread" {
+			// a thread on the ask: its own thread, or a new one on it
+			p.Chan, p.Thread = strconv.FormatUint(a.Chan, 10), a.Thread
+			if p.Thread == 0 && a.Msg.ID != 0 {
+				p.Thread = a.Msg.ID
+			}
 		}
 		cv, err := s.readable(r, p.Chan)
 		if err != nil {
@@ -133,8 +142,12 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		if p.Thread != 0 && !threadIn(s.Chat, p.Thread, cv.ID) {
 			return "", fmt.Errorf("no thread %d there", p.Thread)
 		}
-		if cv.ID != a.Chan || p.Thread != a.Thread {
-			if !s.askOwner(ctx, r, "post in "+mcp.ChanLabel(cv), text) {
+		// The owner's own ask to post somewhere is the approval; anyone
+		// else's post outside their thread needs the owner's ok.
+		onAsk := cv.ID == a.Chan && (p.Thread == a.Thread || p.Where == "thread")
+		if !a.Owner && !onAsk {
+			where := mcp.ChanLabel(cv)
+			if !s.askOwner(ctx, r, Approval{Kind: KindPost, Target: where, Action: "post in " + where, Preview: text}) {
 				return "your owner said no (or didn't answer): not posted", nil
 			}
 		}
@@ -220,7 +233,7 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		if strings.TrimSpace(p.Action) == "" {
 			return "", errors.New("say what you want to do")
 		}
-		if s.askOwner(ctx, r, p.Action, p.Detail) {
+		if s.askOwner(ctx, r, Approval{Kind: KindAsk, Target: oneLine(p.Action, 200), Action: p.Action, Preview: p.Detail}) {
 			return "yes", nil
 		}
 		return "no", nil
@@ -239,7 +252,7 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		if s.Work == nil {
 			return "", errors.New("repo work isn't set up")
 		}
-		if !a.Owner && !s.askOwner(ctx, r, "open a GitHub issue: "+p.Title, p.Body) {
+		if !a.Owner && !s.askOwner(ctx, r, Approval{Kind: KindIssue, Target: "tc", Action: "open a GitHub issue: " + p.Title, Preview: p.Body}) {
 			return "your owner said no (or didn't answer): no issue opened", nil
 		}
 		url, err := s.Work.OpenIssue(ctx, p.Title, p.Body)
@@ -299,9 +312,7 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		if dir == "" {
 			return "", fmt.Errorf("no worktree for branch %s: start it with work_start", sanitize.Line(p.Branch))
 		}
-		if s.autoPR() {
-			s.activity(a, "approval", "auto (♾️ today): draft PR "+oneLine(p.Title, 200), 0)
-		} else if !s.askOwner(ctx, r, "push "+p.Branch+" and open a draft PR: "+p.Title, p.Body) {
+		if !s.askOwner(ctx, r, Approval{Kind: KindPR, Target: "tc", Action: "open a draft PR on tc: " + p.Title, Preview: p.Body + "\n(branch " + p.Branch + ")"}) {
 			return "your owner said no (or didn't answer): nothing pushed", nil
 		}
 		url, err := s.Work.OpenDraftPR(ctx, dir, p.Branch, p.Title, p.Body)
@@ -310,6 +321,117 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		}
 		s.activity(a, "pr", url, 0)
 		return url, nil
+
+	case mcp.ToolUpdateMemory:
+		var p struct {
+			Note string `json:"note"`
+			Text string `json:"text"`
+		}
+		if err := mcp.Args(raw, &p); err != nil {
+			return "", err
+		}
+		if !a.Owner {
+			return "", errOwnerOnly
+		}
+		if s.Memory == nil {
+			return "", errors.New("memory isn't available")
+		}
+		rel := notePath(p.Note)
+		n, err := s.Memory.Read(rel)
+		if err != nil {
+			n = memory.Note{Path: rel}
+		}
+		n.Body, n.Source, n.Trust = p.Text, s.Chat.User(a.Asker).Name, memory.TrustOwner
+		n.Private = n.Private || a.InDM
+		if err := s.Memory.Write(n); err != nil {
+			return "", err
+		}
+		_ = s.Memory.Commit("memory: " + s.Chat.User(a.Asker).Name + " edited " + rel)
+		s.activity(a, "memory", "wrote "+rel, 0)
+		return "saved " + rel, nil
+
+	case mcp.ToolForget:
+		var p struct {
+			Note string `json:"note"`
+		}
+		if err := mcp.Args(raw, &p); err != nil {
+			return "", err
+		}
+		if !a.Owner {
+			return "", errOwnerOnly
+		}
+		if s.Memory == nil {
+			return "", errors.New("memory isn't available")
+		}
+		rel, err := s.findNote(p.Note)
+		if err != nil {
+			return "", err
+		}
+		if err := s.Memory.Forget(rel); err != nil {
+			return "", err
+		}
+		_ = s.Memory.Commit("memory: " + s.Chat.User(a.Asker).Name + " forgot " + rel)
+		s.activity(a, "memory", "forgot "+rel, 0)
+		return "forgot " + rel + " (undo today in the panel brings it back)", nil
+
+	case mcp.ToolWatch:
+		var p struct {
+			Chan    string `json:"chan"`
+			Thread  uint64 `json:"thread"`
+			Minutes int    `json:"minutes"`
+			About   string `json:"about"`
+		}
+		if err := mcp.Args(raw, &p); err != nil {
+			return "", err
+		}
+		if !a.Owner {
+			return "", errOwnerOnly
+		}
+		if p.Minutes < 1 || p.Minutes > MaxWatchMinutes {
+			return "", fmt.Errorf("minutes: 1 to %d", MaxWatchMinutes)
+		}
+		if strings.TrimSpace(p.About) == "" {
+			return "", errors.New("say what you're watching for")
+		}
+		cv, err := s.readable(r, p.Chan)
+		if err != nil {
+			return "", err
+		}
+		if cv.Kind == proto.ChanAgentDM {
+			return "", errors.New("you already answer everything in your DM")
+		}
+		if p.Thread != 0 && !threadIn(s.Chat, p.Thread, cv.ID) {
+			return "", fmt.Errorf("no thread %d there", p.Thread)
+		}
+		w := s.startWatch(cv, p.Thread, p.Minutes, p.About)
+		return fmt.Sprintf("watching %s for %d min. New messages there come to you as follow-ups; your owner gets a summary at the end. People there: %s",
+			w.Where, p.Minutes, s.People(cv.ID, p.Thread)), nil
+
+	case mcp.ToolUnwatch:
+		var p struct {
+			Chan string `json:"chan"`
+		}
+		if err := mcp.Args(raw, &p); err != nil {
+			return "", err
+		}
+		if !a.Owner {
+			return "", errOwnerOnly
+		}
+		cv, err := mcp.ResolveChan(s.Chat, p.Chan)
+		if err != nil {
+			return "", err
+		}
+		if s.stopWatches(cv.ID, 0, "stopped") == 0 {
+			return "you weren't watching " + mcp.ChanLabel(cv), nil
+		}
+		return "stopped watching " + mcp.ChanLabel(cv) + "; your owner got the summary", nil
+
+	case mcp.ToolLeaveThread:
+		s.disengage(a.Key)
+		s.mu.Lock()
+		s.left[a.Key] = true
+		s.mu.Unlock()
+		return "ok: you've left this thread; an @mention brings you back", nil
 
 	case mcp.ToolSetIdentity:
 		var p struct {
@@ -330,8 +452,8 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		if p.Handle != "" && !proto.ValidAgentHandle(p.Handle) {
 			return "", fmt.Errorf("@%s can't be a handle: lowercase letters, digits and dashes, not a reserved name", sanitize.Line(p.Handle))
 		}
-		if len(p.Icon) > proto.MaxAgentIcon {
-			return "", errors.New("that icon is too long")
+		if p.Icon != "" && !ValidIcon(p.Icon) {
+			return "", errors.New("icon: one of the animated presets (" + IconHelp() + "), optionally with a color like orb:3 (0-7), or a single emoji")
 		}
 		ag, err := s.Chat.UpdateAgent(ctx, p.Handle, p.Icon)
 		if err != nil {
@@ -461,7 +583,7 @@ func (s *Supervisor) approvePrompt(ctx context.Context, r *run, raw json.RawMess
 		what = strings.TrimSuffix(line, "…")
 	}
 	detail := short(string(p.Input), 600)
-	allow := s.askOwner(ctx, r, "let me "+what+" ("+p.Tool+")", "```\n"+detail+"\n```")
+	allow := s.askOwner(ctx, r, Approval{Kind: KindTool, Target: p.Tool, Action: what + " (" + p.Tool + ")", Preview: detail})
 	var out []byte
 	if allow {
 		if len(p.Input) == 0 {
@@ -472,4 +594,45 @@ func (s *Supervisor) approvePrompt(ctx context.Context, r *run, raw json.RawMess
 		out, _ = json.Marshal(map[string]any{"behavior": "deny", "message": "your owner said no (or didn't answer)"})
 	}
 	return string(out), nil
+}
+
+// notePath turns update_memory's note into a memory path: a path as given,
+// a bare name as that person's note.
+func notePath(note string) string {
+	note = strings.TrimSpace(note)
+	if strings.Contains(note, "/") || strings.HasSuffix(note, ".md") {
+		return note
+	}
+	return memory.PersonPath(strings.TrimPrefix(note, "@"))
+}
+
+// findNote resolves forget's note: an existing path, or words that match
+// exactly one note (daily logs are a record and can't be forgotten here).
+func (s *Supervisor) findNote(q string) (string, error) {
+	q = strings.TrimSpace(q)
+	if q == "" {
+		return "", errors.New("which note?")
+	}
+	for _, rel := range []string{q, notePath(q)} {
+		if _, err := s.Memory.Read(rel); err == nil {
+			return rel, nil
+		}
+	}
+	hits, err := s.Memory.Recall(q, true)
+	if err != nil {
+		return "", err
+	}
+	var paths []string
+	for _, h := range hits {
+		if !strings.HasPrefix(h.Path, "daily/") && h.Path != "MEMORY.md" && !slices.Contains(paths, h.Path) {
+			paths = append(paths, h.Path)
+		}
+	}
+	switch len(paths) {
+	case 0:
+		return "", fmt.Errorf("no note matches %q", q)
+	case 1:
+		return paths[0], nil
+	}
+	return "", fmt.Errorf("several notes match: %s; say which", strings.Join(paths, ", "))
 }

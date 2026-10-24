@@ -21,6 +21,25 @@ const (
 // Valid reports whether m is a known mode.
 func (m Mode) Valid() bool { return m == ModeTalk || m == ModeWork || m == ModeCrew }
 
+// Approvals is how often the agent asks its owner before acting.
+type Approvals string
+
+const (
+	// ApproveAlways: every post outside the thread it was asked in, and
+	// every PR, push and issue.
+	ApproveAlways Approvals = "always"
+	// ApproveWorkOnly: posting anywhere it can read never asks; PRs,
+	// pushes, issues and shell writes outside granted folders do.
+	ApproveWorkOnly Approvals = "work_only"
+	// ApproveNever: nothing asks.
+	ApproveNever Approvals = "never"
+)
+
+// Valid reports whether a is a known level.
+func (a Approvals) Valid() bool {
+	return a == ApproveAlways || a == ApproveWorkOnly || a == ApproveNever
+}
+
 // Access is what the owner lets the agent reach beyond its home and the
 // places it is called.
 type Access struct {
@@ -42,18 +61,23 @@ type MCPServer struct {
 
 // Config is config.json in the agent home. The owner edits it from the panel.
 type Config struct {
-	Handle        string               `json:"handle"`
-	Icon          string               `json:"icon"`
-	Mode          Mode                 `json:"mode"`
-	DailyCapUSD   float64              `json:"daily_cap_usd"`
-	RunCapUSD     float64              `json:"run_cap_usd"`
-	AsksPerPerson int                  `json:"asks_per_person"` // per person per day
-	RolloverPct   int                  `json:"rollover_pct"`    // % of the context window
-	IdleMinutes   int                  `json:"idle_minutes"`    // stop Claude after this long idle
-	Access        Access               `json:"access"`
-	MCPServers    map[string]MCPServer `json:"mcp_servers,omitempty"`
-	HomeMachine   string               `json:"home_machine"` // machine id the agent runs on
-	Paused        bool                 `json:"paused"`
+	Handle        string  `json:"handle"`
+	Icon          string  `json:"icon"`
+	Mode          Mode    `json:"mode"`
+	DailyCapUSD   float64 `json:"daily_cap_usd"`
+	RunCapUSD     float64 `json:"run_cap_usd"`
+	AsksPerPerson int     `json:"asks_per_person"` // per person per day
+	RolloverPct   int     `json:"rollover_pct"`    // % of the context window
+	IdleMinutes   int     `json:"idle_minutes"`    // stop Claude after this long idle
+	// EngageMinutes keeps the agent in a thread after it replies: new
+	// messages there reach it without an @mention for this long (0 = off).
+	EngageMinutes int `json:"engage_minutes"`
+	// Approvals is how often it asks first (default work_only).
+	Approvals   Approvals            `json:"approvals"`
+	Access      Access               `json:"access"`
+	MCPServers  map[string]MCPServer `json:"mcp_servers,omitempty"`
+	HomeMachine string               `json:"home_machine"` // machine id the agent runs on
+	Paused      bool                 `json:"paused"`
 }
 
 // DefaultConfig is the config a new agent starts with.
@@ -65,6 +89,8 @@ func DefaultConfig() Config {
 		AsksPerPerson: 15,
 		RolloverPct:   50,
 		IdleMinutes:   60,
+		EngageMinutes: 10,
+		Approvals:     ApproveWorkOnly,
 		Access:        Access{Folders: []string{}, Chans: []uint64{}},
 	}
 }
@@ -84,6 +110,10 @@ func (c Config) Validate() error {
 		return errors.New("asks_per_person must be at least 1")
 	case c.RolloverPct < 10 || c.RolloverPct > 95:
 		return errors.New("rollover_pct must be 10..95")
+	case !c.Approvals.Valid():
+		return fmt.Errorf("approvals %q: want always, work_only or never", c.Approvals)
+	case c.EngageMinutes < 0 || c.EngageMinutes > 24*60:
+		return errors.New("engage_minutes must be 0..1440")
 	case c.IdleMinutes < 1:
 		return errors.New("idle_minutes must be at least 1")
 	}

@@ -323,6 +323,9 @@ func agentRun(ctx context.Context, tcHome string) error {
 	s := &agent.Supervisor{
 		Dir: dir, Chat: c, Runner: runner.Claude{}, Memory: mem, Work: work.New(dir),
 		TCBin: exe, Server: c.Config().Addr, Version: version, Log: log, Model: os.Getenv("TC_AGENT_MODEL"),
+		Refresh: func() error {
+			return home.EnsureWith(dir, home.Options{ExtraDomains: serverHosts(c.Config().Addr)})
+		},
 	}
 	err = s.Run(cctx)
 	if err != nil {
@@ -373,6 +376,16 @@ func agentStatus(out io.Writer, tcHome string, now time.Time) error {
 		fmt.Fprintf(out, "supervisor: %s since %s (pid %d)\n", sanitize.Line(st.State), ago(now, st.Since), st.PID)
 		if st.LastRun > 0 {
 			fmt.Fprintf(out, "last answered: %s\n", ago(now, st.LastRun))
+		}
+	}
+	if running && err == nil {
+		for _, g := range st.Grants {
+			if g.Day == now.Format(time.DateOnly) {
+				fmt.Fprintf(out, "♾️ today: %s (stop: say \"%s\" in your agent DM)\n", sanitize.Line(agent.GrantText(g)), agent.StopAutoPhrase)
+			}
+		}
+		for _, w := range st.Watches {
+			fmt.Fprintf(out, "watching %s until %s: %s\n", sanitize.Line(w.Where), time.UnixMilli(w.Until).Local().Format("15:04"), sanitize.Line(w.About))
 		}
 	}
 	if err == nil && st.Err != "" {

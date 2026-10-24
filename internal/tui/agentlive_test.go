@@ -223,6 +223,26 @@ func TestAgentDM(t *testing.T) {
 
 // ---- approvals ----
 
+func TestApprovalParseNew(t *testing.T) {
+	x := client.Message{Message: proto.Message{Agent: "rocky", Body: "✋ Rocky wants to post in #general  ·  #ab12\n> hey @fahim\n> second\nwhy: alice asked in your DM: \"tell fahim\""}}
+	c, ok := parseApproval(x)
+	if !ok || c.agent != "Rocky" || c.action != "post in #general" || c.code != "#ab12" || len(c.quote) != 2 || c.quote[0] != "hey @fahim" || c.why != `alice asked in your DM: "tell fahim"` {
+		t.Fatalf("%+v %v", c, ok)
+	}
+	if c.title() != "Rocky wants to post in #general" || c.done() != "posted in #general" {
+		t.Fatal(c.title(), c.done())
+	}
+	ch := apprChoices(c.action)
+	if ch[0].label != "post it" || ch[1].label != "post, and don't ask again today for #general" || ch[2].label != "don't" {
+		t.Fatalf("%+v", ch)
+	}
+	for _, b := range []string{"✋ Rocky wants to post", "✋ Rocky wants to x  ·  nocode", "✋ Rocky post in #g  ·  #ab"} {
+		if _, ok := parseApproval(client.Message{Message: proto.Message{Agent: "r", Body: b}}); ok {
+			t.Errorf("%q parsed", b)
+		}
+	}
+}
+
 func TestApprovalParse(t *testing.T) {
 	x := client.Message{Message: proto.Message{Agent: "rocky", Body: "✋ @alice approve: push agent/poll? react ✅ / ❌  ·  #ab12\nthe detail"}}
 	c, ok := parseApproval(x)
@@ -247,8 +267,10 @@ func TestApprovalPrompt(t *testing.T) {
 		run(m, m.openThread(400))
 		m.layoutInput()
 		v := frameText(t, m, "card")
-		row := lineWith(t, v, "open a draft PR?")
-		for _, want := range []string{"1 yes", "2 yes, PRs ok today", "3 no"} {
+		row := lineWith(t, v, "Rocky wants to open a draft PR")
+		lineWith(t, v, "▏ proto poll op + vote event")
+		lineWith(t, v, "why: alice asked in #general")
+		for _, want := range []string{"1 open it", "2 open, and don't ask", "3 don't"} {
 			if !strings.Contains(v, want) {
 				t.Errorf("no %q in %q", want, row)
 			}
@@ -257,7 +279,7 @@ func TestApprovalPrompt(t *testing.T) {
 		golden(t, "agent_approval"+skinTag(sk), v)
 		m.Update(tea.WindowSizeMsg{Width: 44, Height: 30})
 		nv := frameText(t, m, "narrow card")
-		lineWith(t, nv, "3 no")
+		lineWith(t, nv, "3 don't")
 		golden(t, "agent_approval_narrow"+skinTag(sk), nv)
 		m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
 
@@ -268,11 +290,11 @@ func TestApprovalPrompt(t *testing.T) {
 			t.Fatalf("composer digits answered: %v %q", f.ag.reacted, m.input.Value())
 		}
 		press(m, "ctrl+u", "up")
-		if ph := m.input.Placeholder; !strings.Contains(ph, "1 yes · 2 PRs ok today · 3 no") && !strings.HasPrefix(ph, "1 2 3 ") {
+		if ph := m.input.Placeholder; !strings.Contains(ph, "1 open it · 2 ok all today · 3 don't") && !strings.HasPrefix(ph, "1 2 3 ") {
 			t.Errorf("select footer: %q", m.input.Placeholder)
 		}
 		press(m, "2")
-		if !strings.Contains(m.notice, "you said yes, ok today") {
+		if !strings.Contains(m.notice, "you said open, and don't ask again today") {
 			t.Errorf("no feedback: %q", m.notice)
 		}
 		press(m, "esc")
@@ -283,7 +305,7 @@ func TestApprovalPrompt(t *testing.T) {
 		f.threads[400][2].Reactions = map[string][]uint64{apprYes: {1}, apprToday: {1}}
 		run(m, m.applyUpdate(client.Update{Msgs: map[uint64]bool{10: true}}))
 		v = frameText(t, m, "answered")
-		row = lineWith(t, v, "Alice said yes, PRs ok today")
+		row = lineWith(t, v, "you approved for today")
 		if !strings.Contains(row, "✓") || strings.Contains(v, "only you can answer") {
 			t.Errorf("collapsed: %q", row)
 		}
@@ -304,7 +326,7 @@ func TestApprovalOthersAndKeys(t *testing.T) {
 	m.layoutInput()
 	v := frameText(t, m, "bob")
 	lineWith(t, v, "waiting for Alice")
-	if strings.Contains(v, "2 yes") {
+	if strings.Contains(v, "2 open") {
 		t.Fatal("bob sees the choices")
 	}
 	press(m, "1")
@@ -342,7 +364,7 @@ func TestApprovalOthersAndKeys(t *testing.T) {
 	// an expired card says so
 	f.threads[400] = append(f.threads[400], client.Message{Message: proto.Message{ID: 403, Chan: 10, Thread: 400, Author: 1, Agent: "rocky", Body: "⌛ no answer on #k3x9q, so I'm not doing it", Time: agentTime.UnixMilli()}})
 	run(m, m.applyUpdate(client.Update{Msgs: map[uint64]bool{10: true}}))
-	lineWith(t, frameText(t, m, "expired"), "⌛ no answer · open a draft PR?")
+	lineWith(t, frameText(t, m, "expired"), "⌛ no answer · open a draft PR")
 }
 
 // A card that waits while I look elsewhere pings me and badges my agent.

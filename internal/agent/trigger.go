@@ -21,6 +21,11 @@ type Ask struct {
 	Via   string
 	Owner bool // Asker is our owner, asking in person
 	InDM  bool // in our agent DM
+	// FollowUp: no mention, but the agent is engaged in the thread
+	// (engage.go); the run decides whether to answer at all.
+	FollowUp bool
+	// Watch is the owner's watch this follow-up falls under (watch.go).
+	Watch *Watch
 }
 
 // SessionKey names the session of a thread of ch.
@@ -53,10 +58,7 @@ func Trigger(m client.Message, kind string, owner uint64, handle string) (Ask, b
 		a.InDM = true
 		a.Thread = m.Thread
 	case client.Mentioned(m.Body, []string{handle}):
-		a.Thread = m.Thread
-		if a.Thread == 0 {
-			a.Thread = m.ID // answer in a thread on the mention
-		}
+		a.Thread = m.Thread // reply at the level it was asked
 	default:
 		return Ask{}, false
 	}

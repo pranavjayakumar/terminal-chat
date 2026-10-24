@@ -59,7 +59,7 @@ func TestAgentPanel(t *testing.T) {
 		v := frameText(t, m, "panel")
 		for _, want := range []string{"Rocky ⟡ · your agent", "State", "awake", "idle 4m", "on this computer",
 			"Spend today", "$3.40 of $20", "17%", "Asks today", "carol 2", "you 1",
-			"Mode", "Talk", "Work", "Crew", "always ask you first",
+			"Mode", "Talk", "Work", "Crew", "ask you first", "Approvals", "Only for code & PRs",
 			"Reads", "#general + wherever it is called", "Folders", "/src/tc", "Limits", "$20/day · 15 asks/person · roll over at 50%",
 			"Memory", "Activity", "carol #general $0.06", "Personality", "tell me in our DM", "Pause", "Open DM", "Logs"} {
 			if !strings.Contains(v, want) {
@@ -104,8 +104,21 @@ func TestAgentPanelKeys(t *testing.T) {
 	if cfg().Paused {
 		t.Fatal("p didn't resume")
 	}
+	// Approvals: → and ← move the level, saved to the config
+	press(m, "down", "right")
+	if cfg().Approvals != home.ApproveNever || !strings.Contains(frameText(t, m, "never"), "acts without asking") {
+		t.Fatalf("approvals %q", cfg().Approvals)
+	}
+	press(m, "left", "left")
+	if cfg().Approvals != home.ApproveAlways {
+		t.Fatalf("approvals %q", cfg().Approvals)
+	}
+	press(m, "right", "up")
 	// Limits: ⏎ opens it, → raises the daily cap by $5
-	press(m, "down", "down", "down", "down", "enter")
+	for range slices.Index(apRows, "Limits") {
+		press(m, "down")
+	}
+	press(m, "enter")
 	if m.ag.panel.page != apLimits {
 		t.Fatalf("page %q", m.ag.panel.page)
 	}
@@ -172,7 +185,10 @@ func TestAgentPanelMemory(t *testing.T) {
 	m, _ := panelModel(t, 100, 34, "")
 	dir := m.opt.AgentDir
 	_ = dir
-	press(m, "down", "down", "down", "down", "down", "down", "enter")
+	for range slices.Index(apRows, "Memory") {
+		press(m, "down")
+	}
+	press(m, "enter")
 	if m.ag.panel.page != apMemory {
 		t.Fatalf("page %q", m.ag.panel.page)
 	}
@@ -343,7 +359,10 @@ func TestAgentReadsElsewhere(t *testing.T) {
 func TestAgentPanelIcon(t *testing.T) {
 	for _, size := range [][2]int{{100, 34}, {40, 12}} {
 		m, f := panelModel(t, size[0], size[1], "")
-		press(m, "down", "enter")
+		for range slices.Index(apRows, "Icon") {
+			press(m, "down")
+		}
+		press(m, "enter")
 		if m.ag.panel.page != apIcon {
 			t.Fatalf("page %q", m.ag.panel.page)
 		}

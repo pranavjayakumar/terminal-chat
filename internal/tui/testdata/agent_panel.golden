@@ -12,10 +12,10 @@
   Direct   ◉ Talk  answers only, no shell or edits                                                  
   ◐ bob    ○ Work  your asks can run shell and edit in granted folders                              
    └ ◡◡    ○ Crew  anyone's asks can work in granted folders                                        
-           PRs, pushes and anything outside ~/.config/tc/agent always ask you first.                
-                                                                                                    
+           PRs, pushes and anything outside ~/.config/tc/agent ask you first.                       
            ───────────────────────────────────────────────────────────────────────────────          
                                                                                                     
+           Approvals      Only for code & PRs   ←/→ change                                          
            Icon           ▟▙ pebble · color 6   ⏎ change                                            
            Reads          #general + wherever it is called   ⏎ edit                                 
            Folders        /src/tc  (Work and Crew only)   ⏎ edit                                    

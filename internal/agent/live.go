@@ -14,6 +14,9 @@ type live struct {
 	ch, th uint64
 	every  time.Duration
 	quiet  bool // rollover and dream turns show nothing
+	// hold keeps everything back until release: a follow-up run shows
+	// nothing unless it starts a real reply.
+	hold bool
 
 	mu      sync.Mutex
 	state   string
@@ -48,6 +51,9 @@ func (l *live) set(state, status, preview string) {
 		l.preview = preview
 	}
 	l.dirty = true
+	if l.hold {
+		return
+	}
 	final := state == proto.AgentDone || state == proto.AgentError
 	wait := l.every - time.Since(l.last)
 	if final && wait > 0 {
@@ -104,10 +110,29 @@ func (l *live) flushLocked() {
 	_ = l.chat.SendAgentStatus(l.ch, l.th, l.state, short(l.status, proto.MaxStatus-4), preview)
 }
 
+func (l *live) held() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.hold
+}
+
+// release lets a held status out, starting with the latest state.
+func (l *live) release() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.hold {
+		return
+	}
+	l.hold = false
+	l.flushLocked()
+}
+
 func (l *live) close() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.flushLocked()
+	if !l.hold {
+		l.flushLocked()
+	}
 	l.closed = true
 	if l.timer != nil {
 		l.timer.Stop()

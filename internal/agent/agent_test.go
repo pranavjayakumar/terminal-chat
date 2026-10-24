@@ -35,9 +35,9 @@ func TestTrigger(t *testing.T) {
 		{"owner in agent DM", m(ownerID, agentDM, 0, "what's up", "", client.SecE2E), proto.ChanAgentDM, true, true, 0, "", uint64(ownerID)},
 		{"owner in a DM thread", m(ownerID, agentDM, 7, "and?", "", client.SecE2E), proto.ChanAgentDM, true, true, 7, "", uint64(ownerID)},
 		{"our own words in the DM", m(ownerID, agentDM, 0, "hi", "rocky", client.SecE2E), proto.ChanAgentDM, false, false, 0, "", nil},
-		{"mention in a channel", m(bobID, general, 0, "hey @rocky help", "", client.SecPlain), proto.ChanPublic, true, false, 50, "", uint64(bobID)},
+		{"mention in a channel", m(bobID, general, 0, "hey @rocky help", "", client.SecPlain), proto.ChanPublic, true, false, 0, "", uint64(bobID)},
 		{"mention in a thread", m(bobID, general, 40, "@rocky?", "", client.SecPlain), proto.ChanPublic, true, false, 40, "", uint64(bobID)},
-		{"owner mention", m(ownerID, general, 0, "@rocky go", "", client.SecPlain), proto.ChanPublic, true, true, 50, "", uint64(ownerID)},
+		{"owner mention", m(ownerID, general, 0, "@rocky go", "", client.SecPlain), proto.ChanPublic, true, true, 0, "", uint64(ownerID)},
 		{"no mention", m(bobID, general, 0, "rocky is cool", "", client.SecPlain), proto.ChanPublic, false, false, 0, "", nil},
 		{"mention inside a word", m(bobID, general, 0, "mail@rockyroad.com", "", client.SecPlain), proto.ChanPublic, false, false, 0, "", nil},
 		{"another agent calls us", m(bobID, general, 40, "@rocky can you check", "bobbot", client.SecPlain), proto.ChanPublic, true, false, 40, "bobbot", uint64(bobID)},
@@ -48,8 +48,8 @@ func TestTrigger(t *testing.T) {
 			x := m(ownerID, general, 0, "@rocky do it", "", client.SecPlain)
 			x.Via = proto.ViaMCP
 			return x
-		}(), proto.ChanPublic, true, false, 50, "", uint64(ownerID)},
-		{"someone else in a DM", m(bobID, bobDM, 0, "@rocky", "", client.SecE2E), proto.ChanDM, true, false, 50, "", uint64(bobID)},
+		}(), proto.ChanPublic, true, false, 0, "", uint64(ownerID)},
+		{"someone else in a DM", m(bobID, bobDM, 0, "@rocky", "", client.SecE2E), proto.ChanDM, true, false, 0, "", uint64(bobID)},
 	}
 	for _, c := range cases {
 		a, ok := Trigger(c.msg, c.kind, ownerID, "rocky")
@@ -149,7 +149,7 @@ func TestAnswerMention(t *testing.T) {
 	ask := h.chat.say(bobID, general, 0, "hey @rocky is the deploy ok?", 0)
 	h.waitFor("reply", func() bool { return len(h.chat.posts()) == 1 })
 	p := h.chat.posts()[0]
-	if p.ch != general || p.thread != ask.ID || p.body != "the deploy is green" {
+	if p.ch != general || p.thread != 0 || p.body != "the deploy is green" {
 		t.Fatalf("posted %+v", p)
 	}
 	req := h.run.requests()[0]
@@ -160,7 +160,7 @@ func TestAnswerMention(t *testing.T) {
 		t.Fatalf("prompt %q", req.Prompt)
 	}
 	env := strings.Join(req.Env, "\n")
-	for _, want := range []string{memory.EnvSessionKey + "=" + SessionKey(general, ask.ID), memory.EnvOwnerAsk + "=0", memory.EnvAsker + "=bob", memory.EnvPeople + "=bob"} {
+	for _, want := range []string{memory.EnvSessionKey + "=" + SessionKey(general, 0), memory.EnvOwnerAsk + "=0", memory.EnvAsker + "=bob", memory.EnvPeople + "=bob"} {
 		if !strings.Contains(env, want) {
 			t.Errorf("env missing %q: %s", want, env)
 		}
@@ -187,7 +187,7 @@ func TestAnswerMention(t *testing.T) {
 	})
 	var states []string
 	for _, l := range h.chat.lives() {
-		if l.ch != general || l.thread != ask.ID {
+		if l.ch != general || l.thread != 0 {
 			t.Fatalf("status in the wrong place: %+v", l)
 		}
 		states = append(states, l.state)
@@ -201,7 +201,7 @@ func TestAnswerMention(t *testing.T) {
 	var sess Session
 	h.waitFor("session saved", func() bool {
 		var ok bool
-		sess, ok = h.s.sessions.get(SessionKey(general, ask.ID))
+		sess, ok = h.s.sessions.get(SessionKey(general, 0))
 		return ok
 	})
 	if sess.ID != req.Session || sess.Tokens != 5000 || sess.LastMsg != ask.ID {
@@ -209,7 +209,7 @@ func TestAnswerMention(t *testing.T) {
 	}
 
 	// A follow-up in the same thread resumes the session.
-	h.chat.say(bobID, general, ask.ID, "@rocky thanks, and staging?", 0)
+	h.chat.say(bobID, general, 0, "@rocky thanks, and staging?", 0)
 	h.waitFor("second reply", func() bool { return len(h.chat.posts()) == 2 })
 	req2 := h.run.requests()[1]
 	if !req2.Resume || req2.Session != req.Session {
@@ -233,7 +233,7 @@ func TestBotsDontCall(t *testing.T) {
 	h.chat.say(bobID, general, 0, "@rocky hi", 0)
 	h.waitFor("bob's answer", func() bool { return len(h.chat.posts()) == 1 })
 	time.Sleep(30 * time.Millisecond)
-	if n := len(h.run.requests()); n != 1 || strings.Contains(h.run.requests()[0].Prompt, "deploy failed") {
+	if n := len(h.run.requests()); n != 1 || strings.Contains(h.run.requests()[0].Prompt[strings.Index(h.run.requests()[0].Prompt, "The ask:"):], "deploy failed") {
 		t.Fatalf("bot triggered a run (%d runs)", n)
 	}
 }
@@ -321,8 +321,8 @@ func TestRollover(t *testing.T) {
 		}
 		return runner.Result{Session: req.Session, Text: "sure", CostUSD: 0.1, ContextTokens: 110000, ContextWindow: 200000}, nil
 	}
-	ask := h.chat.say(ownerID, general, 0, "@rocky plan /poll", 0)
-	key := SessionKey(general, ask.ID)
+	h.chat.say(ownerID, general, 0, "@rocky plan /poll", 0)
+	key := SessionKey(general, 0)
 	h.waitFor("handoff", func() bool {
 		h.mem.mu.Lock()
 		defer h.mem.mu.Unlock()
@@ -337,7 +337,7 @@ func TestRollover(t *testing.T) {
 		t.Fatalf("rollover posted: %+v", h.chat.posts())
 	}
 	// The next ask starts fresh.
-	h.chat.say(ownerID, general, ask.ID, "@rocky continue", 0)
+	h.chat.say(ownerID, general, 0, "@rocky continue", 0)
 	h.waitFor("third run", func() bool { return len(h.run.requests()) >= 3 })
 	if r := h.run.requests()[2]; r.Resume || r.Session == reqs[0].Session {
 		t.Fatalf("not fresh: %+v", r)
@@ -352,9 +352,9 @@ func TestQueue(t *testing.T) {
 	h := newHarness(t, cfgDefault(), func(s *Supervisor) { s.StaleAfter = time.Hour })
 	// Stale: arrived (from the replay) long after it was sent.
 	h.s.queue.update(func(q *queueState) { q.Since = time.Now().Add(-72 * time.Hour).UnixMilli() })
-	old := h.chat.say(bobID, general, 0, "@rocky you there?", 2*time.Hour)
+	h.chat.say(bobID, general, 0, "@rocky you there?", 2*time.Hour)
 	h.waitFor("apology", func() bool { return len(h.chat.posts()) == 1 })
-	if p := h.chat.posts()[0]; p.thread != old.ID || !strings.Contains(p.body, "asleep") || len(h.run.requests()) != 0 {
+	if p := h.chat.posts()[0]; p.ch != general || p.thread != 0 || !strings.Contains(p.body, "asleep") || len(h.run.requests()) != 0 {
 		t.Fatalf("apology %+v", p)
 	}
 	// From before the agent's first start: not ours.
@@ -446,9 +446,9 @@ func TestConcurrency(t *testing.T) {
 		<-release
 		return runner.Result{Session: req.Session, Text: "done"}, nil
 	}
-	a := h.chat.say(bobID, general, 0, "@rocky one", 0)
-	h.chat.say(bobID, general, a.ID, "@rocky one again", 0) // same thread: waits
-	h.chat.say(carolID, general, 0, "@rocky two", 0)
+	h.chat.say(bobID, general, 0, "@rocky one", 0)
+	h.chat.say(bobID, general, 0, "@rocky one again", 0) // same conversation: waits
+	h.chat.say(carolID, secret, 0, "@rocky two", 0)
 	h.chat.say(ownerID, agentDM, 0, "three", 0)
 	h.waitFor("two runs", func() bool { return len(h.run.requests()) == 2 })
 	time.Sleep(50 * time.Millisecond)
@@ -492,14 +492,14 @@ func TestApprovals(t *testing.T) {
 	var card posted
 	h.waitFor("card", func() bool {
 		for _, p := range h.chat.posts() {
-			if strings.HasPrefix(p.body, "✋ @fizan approve: push branch agent/poll?") {
+			if strings.HasPrefix(p.body, "✋ Rocky wants to push branch agent/poll  ·  #") {
 				card = p
 				return true
 			}
 		}
 		return false
 	})
-	if card.thread != ask.ID || !strings.Contains(card.body, "tests pass") {
+	if card.thread != 0 || card.ch != ask.Chan || !strings.Contains(card.body, "\n> tests pass") || !strings.Contains(card.body, "\nwhy: fizan (your owner)") && !strings.Contains(card.body, "\nwhy: fizan asked in #general") {
 		t.Fatalf("card %+v", card)
 	}
 	cardID := h.cardID(card.body)
@@ -621,7 +621,7 @@ func TestAutoApprovePRsToday(t *testing.T) {
 	var card posted
 	h.waitFor("PR card", func() bool {
 		for _, p := range h.chat.posts() {
-			if strings.Contains(p.body, "open a draft PR: poll") {
+			if strings.Contains(p.body, "open a draft PR on tc: poll") {
 				card = p
 				return true
 			}
@@ -646,25 +646,25 @@ func TestAutoApprovePRsToday(t *testing.T) {
 	var auto, granted bool
 	for _, a := range acts {
 		auto = auto || strings.HasPrefix(a.Detail, "auto (♾️ today)")
-		granted = granted || strings.Contains(a.Detail, "approved for the rest of today")
+		granted = granted || strings.Contains(a.Detail, "draft PRs on tc ok for the rest of today")
 	}
 	if !auto || !granted {
 		t.Fatalf("activity %+v", acts)
 	}
 	// Tomorrow it's gone.
-	h.s.queue.update(func(q *queueState) { q.AutoPR = time.Now().Add(-24 * time.Hour).Format(time.DateOnly) })
-	if h.s.autoPR() {
+	h.s.queue.update(func(q *queueState) { q.Grants[0].Day = time.Now().Add(-24 * time.Hour).Format(time.DateOnly) })
+	if h.s.granted(KindPR, "tc") {
 		t.Fatal("yesterday's ♾️ still counts")
 	}
 	// The owner can stop it today.
-	h.s.queue.update(func(q *queueState) { q.AutoPR = time.Now().Format(time.DateOnly) })
+	h.s.queue.update(func(q *queueState) { q.Grants[0].Day = time.Now().Format(time.DateOnly) })
 	runs := len(h.run.requests())
 	h.chat.say(ownerID, agentDM, 0, "ok Stop auto-approving please", 0)
 	h.waitFor("stop reply", func() bool {
 		ps := h.chat.posts()
-		return strings.Contains(ps[len(ps)-1].body, "need your tap again")
+		return strings.Contains(ps[len(ps)-1].body, "needs your tap again")
 	})
-	if h.s.autoPR() || len(h.run.requests()) != runs {
+	if len(h.s.Grants()) != 0 || len(h.run.requests()) != runs {
 		t.Fatal("auto-approval not stopped, or the engine ran for it")
 	}
 }

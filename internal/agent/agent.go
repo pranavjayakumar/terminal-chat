@@ -40,6 +40,7 @@ type Chat interface {
 	Send(ch uint64, body string, thread uint64) error
 	SendAgentStatus(ch, thread uint64, state, status, preview string) error
 	UpdateAgent(ctx context.Context, handle, icon string) (proto.Agent, error)
+	Agents() []proto.Agent
 }
 
 // Memory is the agent's memory store (memory.Store).
@@ -48,6 +49,9 @@ type Memory interface {
 	Recall(query string, includePrivate bool) ([]memory.Hit, error)
 	WriteHandoff(key, text string) error
 	Commit(msg string) error
+	Read(rel string) (memory.Note, error)
+	Write(n memory.Note) error
+	Forget(rel string) error
 	PrepareDream() (*memory.Dream, error)
 	ApplyDream(d *memory.Dream) error
 	DiscardDream(d *memory.Dream) error
@@ -69,9 +73,13 @@ type Supervisor struct {
 	Memory Memory
 	Work   Work
 	// TCBin is the tc binary the engine starts as its MCP server.
-	TCBin   string
-	Server  string // the tc server's address, for the identity block
-	Model   string // engine model; "" = the runner's default (sonnet)
+	TCBin  string
+	Server string // the tc server's address, for the identity block
+	Model  string // engine model; "" = the runner's default (sonnet)
+	// Refresh rewrites the tc-owned files of the agent home (home.Ensure);
+	// called before a run when the tc binary changed since the last one,
+	// so a running supervisor picks up a tc update's code and skills.
+	Refresh func() error
 	Version string
 	Log     *slog.Logger
 	Now     func() time.Time
@@ -93,11 +101,14 @@ type Supervisor struct {
 
 	mu       sync.Mutex
 	owner    uint64
-	runs     map[string]*run      // bridge token → run
-	threads  map[string][]Ask     // session key → asks waiting their turn
-	busy     map[string]bool      // session key → a run is going
-	pending  map[string]*approval // card code → approval
-	branches map[string]string    // work branch → worktree dir
+	runs     map[string]*run        // bridge token → run
+	threads  map[string][]Ask       // session key → asks waiting their turn
+	busy     map[string]bool        // session key → a run is going
+	pending  map[string]*approval   // card code → approval
+	branches map[string]string      // work branch → worktree dir
+	engaged  map[string]*engagement // session key → listening without a mention
+	left     map[string]bool        // session key → the run called leave_thread
+	watches  map[string]*Watch      // watch key → the owner's watch
 	status   Status
 	lastRun  time.Time
 	online   bool
@@ -105,6 +116,7 @@ type Supervisor struct {
 	wg       sync.WaitGroup
 	actMu    sync.Mutex
 	dreaming bool
+	exeStamp string // TCBin's size and mtime when the home was last refreshed
 }
 
 func (s *Supervisor) defaults() {
@@ -154,6 +166,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	s.sem = make(chan struct{}, s.MaxRuns)
 	s.runs, s.threads, s.busy = map[string]*run{}, map[string][]Ask{}, map[string]bool{}
 	s.pending, s.branches = map[string]*approval{}, map[string]string{}
+	s.engaged, s.left, s.watches = map[string]*engagement{}, map[string]bool{}, map[string]*Watch{}
 	s.owner = s.Chat.Me().ID
 	if s.handleNow() == "" {
 		return errors.New("this tc home isn't an agent's (no agent handle in its config.json)")
@@ -247,6 +260,10 @@ func (s *Supervisor) handleUpdate(ctx context.Context, u client.Update) {
 		cv, _ := s.Chat.Channel(m.Chan)
 		if a, ok := s.trigger(m, cv.Kind); ok {
 			s.accept(ctx, a)
+		} else if a, ok := s.watchAsk(m, cv.Kind); ok {
+			s.accept(ctx, a)
+		} else if a, ok := s.followUp(m, cv.Kind); ok {
+			s.accept(ctx, a)
 		}
 	}
 	for ch := range u.Msgs {
@@ -309,6 +326,9 @@ func (s *Supervisor) accept(ctx context.Context, a Ask) {
 	if s.stopAuto(a) {
 		return
 	}
+	if a.FollowUp && now.Sub(time.UnixMilli(a.Msg.Time)) > s.StaleAfter {
+		return
+	}
 	if now.Sub(time.UnixMilli(a.Msg.Time)) > s.StaleAfter {
 		s.reply(a.Chan, a.Thread, "sorry, I was asleep 💤 ask me again?")
 		s.activity(a, "stale", "asked while asleep", 0)
@@ -357,6 +377,8 @@ func (s *Supervisor) drain(ctx context.Context, key string) {
 
 func (s *Supervisor) housekeeping(ctx context.Context) {
 	s.setState(s.idleState())
+	s.pruneEngaged()
+	s.expireWatches()
 	s.maybeDream(ctx)
 }
 
@@ -407,6 +429,10 @@ func (s *Supervisor) saveStatus() {
 	}
 	st := s.status
 	s.mu.Unlock()
+	st.Watches = s.Watches()
+	if s.queue != nil {
+		st.Grants = s.Grants()
+	}
 	if s.ledger != nil {
 		st.SpentUSD = s.ledger.Spent(s.Now())
 	}
