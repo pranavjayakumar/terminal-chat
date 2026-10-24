@@ -227,6 +227,14 @@ func (s *Server) agentLogin(ctx context.Context, sess *session, u proto.User, ha
 // Message ops are checked against the channels it may read here; send
 // checks inside its transaction.
 func (s *Server) gateAgentOp(ctx context.Context, sess *session, op string, args proto.Raw) error {
+	if op == proto.OpAgentAccess {
+		// It may read its own access list, never change it.
+		a, err := decodeArgs[proto.AgentAccessArgs](args)
+		if err != nil || len(a.Add) > 0 || len(a.Remove) > 0 {
+			return proto.Errf(proto.ErrForbidden, "agents can't do that")
+		}
+		return nil
+	}
 	if agentRefused[op] {
 		return proto.Errf(proto.ErrForbidden, "agents can't do that")
 	}

@@ -691,8 +691,11 @@ func (s *Server) opRead(ctx context.Context, u proto.User, a proto.ReadArgs) (an
 // createChannel inserts a channel whose members all join at the chan.new seq.
 func createChannel(ctx context.Context, tx *sql.Tx, now int64, actor uint64, name, kind, topic string, members []uint64, e2e bool) (proto.Channel, proto.Event, error) {
 	var dmkey any
-	if kind == proto.ChanDM {
+	switch kind {
+	case proto.ChanDM:
 		dmkey = dmKey(members)
+	case proto.ChanAgentDM:
+		dmkey = agentDMKey(actor)
 	}
 	r, err := tx.ExecContext(ctx, `INSERT INTO channels (name, kind, topic, created, dmkey, e2e, creator) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		name, kind, topic, now, dmkey, e2e, actor)
