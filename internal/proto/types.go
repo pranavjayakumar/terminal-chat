@@ -145,6 +145,9 @@ type Hello struct {
 	Client string   `msgpack:"client"`
 	Caps   []string `msgpack:"caps"`
 	Auth   Auth     `msgpack:"auth"`
+	// Agent (cap agent1) logs this session in as the user's agent with
+	// this handle (§15.1).
+	Agent string `msgpack:"agent,omitempty"`
 }
 
 type Welcome struct {
@@ -153,6 +156,8 @@ type Welcome struct {
 	ServerID []byte   `msgpack:"server_id"`
 	User     User     `msgpack:"user"`
 	Time     int64    `msgpack:"time"`
+	// Agent is the agent this session logs in as (HELLO agent, §15.1).
+	Agent *Agent `msgpack:"agent,omitempty"`
 }
 
 type Req struct {
@@ -204,6 +209,13 @@ type Ephemeral struct {
 	Dev   []byte `msgpack:"dev,omitempty"`
 	// Parts is a huddle's roster (§14.2); absent = the huddle ended.
 	Parts []Part `msgpack:"parts,omitempty"`
+	// Thread, Agent, Text and Enc are kind agent's (§15.5): Agent is the
+	// sender's handle (server-set), Text the reply preview, Enc the
+	// preview sealed in an e2e channel.
+	Thread uint64 `msgpack:"thread,omitempty"`
+	Agent  string `msgpack:"agent,omitempty"`
+	Text   string `msgpack:"text,omitempty"`
+	Enc    []byte `msgpack:"enc,omitempty"`
 }
 
 type Snapshot struct {
@@ -220,6 +232,8 @@ type Snapshot struct {
 	Keys []EpochKey `msgpack:"keys,omitempty"`
 	// Groups is every user group (cap groups).
 	Groups []Group `msgpack:"groups,omitempty"`
+	// Agents is every agent, retired ones included (cap agent1).
+	Agents []Agent `msgpack:"agents,omitempty"`
 }
 
 type Ping struct {
@@ -294,6 +308,9 @@ type Message struct {
 	// delete so a device that never saw Enc can check a delete's ref. It is
 	// the server's claim, not proof (§13.4).
 	Mid []byte `msgpack:"mid,omitempty"`
+	// Agent is the handle of the agent that sent it (cap agent1), set by
+	// the server from the session, never by the sender (§15.3).
+	Agent string `msgpack:"agent,omitempty"`
 }
 
 // ReactEnc is one encrypted reaction: user reacted with tag, proven by enc.
@@ -453,6 +470,8 @@ type UsersRes struct {
 	// made the invite the account was created with; 0 = the server host.
 	// Users missing from it have no record (older accounts, bots).
 	InvitedBy map[uint64]uint64 `msgpack:"invited_by,omitempty"`
+	// Agents (cap agent1) is every agent, retired ones included.
+	Agents []Agent `msgpack:"agents,omitempty"`
 }
 
 // InviteCreateArgs: Uses and TTLMs (cap `team_invites`) default to 1 and

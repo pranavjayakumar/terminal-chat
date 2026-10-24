@@ -85,6 +85,8 @@ type plainMsg struct {
 	TS        int64  `msgpack:"ts"`
 	Body      string `msgpack:"body"`
 	ThreadRef []byte `msgpack:"thread_ref,omitempty"`
+	// Agent is the sending agent's handle (§15.3), signed by its device.
+	Agent string `msgpack:"agent,omitempty"`
 }
 
 var zeroRef = make([]byte, e2ecrypto.IDSize)

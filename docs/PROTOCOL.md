@@ -1470,3 +1470,69 @@ off len field
   sliding replay window kept per `src` for the receiver's whole participation (roster changes
   don't reset it). The window advances only on frames that open.
 
+
+## 15. Personal agents (cap `agent1`)
+
+A user may run one **agent**: a device on their own account with its own handle (`@rocky`),
+driven by a program on the owner's machine. Everything here exists only in sessions where both
+sides advertise `agent1`; older peers see plain messages and no agents.
+
+### 15.1 Agent sessions
+
+`HELLO {…, agent: "<handle>"}` logs the key in as the user's agent with that handle. The server
+answers `BYE auth_failed` unless `handle` is the user's active (non-retired) agent, and puts the
+`Agent` in `WELCOME.agent`. A client that asked for an agent session MUST refuse a WELCOME
+without a matching `agent` (an older server would log it in as the owner). Agent sessions never
+count toward presence (§4.3 rules) and have their own rate buckets.
+
+### 15.2 Ops
+
+| op | args | result | notes |
+|---|---|---|---|
+| `agent.register` | `{handle, icon?}` | `{agent: Agent}` | owner sessions; one active agent per user; `handle` a §9 name, not reserved, unique across user names and handles (`conflict`) |
+| `agent.update` | `{handle?, icon?}` | `{agent: Agent}` | caller's active agent; absent = unchanged |
+| `agent.retire` | `{}` | `{agent: Agent}` | closes its sessions; the handle stays taken |
+| `agents.list` | `{}` | `{agents: [Agent]}` | retired ones included |
+| `agent.access` | `{add?: [u64], remove?: [u64]}` | `{chans: [u64]}` | owner sessions; channels the agent may see besides its DM; `{}` reads |
+| `agent.dm` | `{}` | `{chan: Channel}` | owner's agent DM, created on first call (encrypted when `e2e1`) |
+
+`agent.*` ops from an agent session, and from every session of a user's agent: admin ops,
+invites, `user.update`, `device.revoke`, `chan.encrypt`, `key.rotate` and deleting others'
+messages, are refused with `forbidden`. `dm.open` naming an agent is refused.
+
+```
+Agent = {handle, icon?: str, owner: u64, online?: bool, created: i64, retired?: i64}
+```
+
+Event `agent.update` (data `Agent`) on register, update and retire, to every `agent1` session.
+`Snapshot.agents` and `UsersRes.agents` carry every agent.
+
+### 15.3 Messages
+
+`Message.agent` (omitted for people) is the handle of the agent session that sent it, set by the
+server from the session and stored with the message. In encrypted channels the agent device also
+signs `agent` inside Plain (`{t: "msg", …, agent?: str}`); clients show a message as the agent's
+only when both agree, else as the owner's.
+
+### 15.4 Agent DM
+
+Channel kind `agent_dm`: one per user, sole member the owner, read and written only by the
+owner's sessions (person and agent devices). Sent only to `agent1` sessions.
+
+### 15.5 Ephemerals
+
+```
+EPHEMERAL {kind: "agent", chan, thread?: u64, user, agent, state, status?: str, text?: str, enc?: bin}
+EPHEMERAL {kind: "agent.presence", user, state: "online"|"offline"}     S→C only
+```
+
+`agent`: an agent's live status in a thread (`thread` 0 = top level). `state` is one of
+`thinking, working, streaming, done, asleep, error`; `text` the reply streamed so far, never
+stored; in an encrypted channel `text` is absent and `enc` seals it with the channel's epoch key.
+C→S only from agent sessions of members of `chan`, at most 4/s per session; the server sets
+`user` (owner) and `agent` (handle) and fans it out like `typing` to `agent1` sessions.
+`agent.presence` tells `agent1` sessions when a user's agent session connects or goes.
+
+### 15.7 Limits
+
+`icon` ≤ 32 B · `text` ≤ 16 KiB · `enc` ≤ 17 KiB · access list ≤ 256 channels · `status` ≤ 128 B.

@@ -72,6 +72,28 @@
 //	CreateEncryptedChannel(ctx, name, topic) (proto.Channel, error)
 //	RotateKey(ctx, ch) error                          // new epoch key (e2e.go)
 //
+// Personal agents (agent.go, cap agent1; online-only ops need it, else an error):
+//
+//	func LoginAgent(ctx, ownerHome, agentHome, handle string) (proto.Agent, error) // owner's key → agent device home
+//	func (c *Client) IsAgentSession() bool; AgentHandle() string // this client logs in as an agent
+//	RegisterAgent(ctx, handle, icon) (proto.Agent, error)       // owner session; one active agent per user
+//	UpdateAgent(ctx, handle, icon) (proto.Agent, error)         // "" keeps a field
+//	RetireAgent(ctx) error
+//	FetchAgents(ctx) ([]proto.Agent, error)                     // agents.list into the cache
+//	func (c *Client) Agents() []proto.Agent                     // active agents, cached
+//	func (c *Client) AgentOf(user uint64) (proto.Agent, bool)   // user's active agent
+//	func (c *Client) AgentByHandle(h string) (proto.Agent, bool)
+//	func (c *Client) MyAgent() (proto.Agent, bool)
+//	AgentAccess(ctx) ([]uint64, error); SetAgentAccess(ctx, add, remove []uint64) ([]uint64, error)
+//	OpenAgentDM(ctx) (proto.Channel, error)                     // create or return my agent DM
+//	func (c *Client) AgentDM() (ChannelView, bool)              // my agent DM, cached
+//	SendAgentStatus(ch, thread, state, status, preview) error   // agent sessions; ≤ 4/s, sealed in e2e
+//	func (c *Client) AgentStatus(ch, thread uint64) []AgentLive // agents live in that thread (0 = top level)
+//	func (c *Client) AgentThreads(ch uint64) []uint64           // threads of ch with a live agent
+//
+// Message.Agent is the sending agent's handle ("" for people); in e2e
+// channels it is shown only when the signed Plain agent agrees.
+//
 // Messages in e2e channels carry Message.Sec (encrypted and verified, waiting
 // for a key, invalid, legacy or server-inserted plaintext); the cache holds
 // decrypted text and is as sensitive as the conversation (encmsg.go).
@@ -171,6 +193,9 @@ type Config struct {
 	KeyFP  string `json:"key_fp,omitempty"`
 	UserID uint64 `json:"user_id"`
 	Name   string `json:"name"`
+	// Agent is set in an agent's home: this client logs in as the user's
+	// agent with this handle (cap agent1).
+	Agent string `json:"agent,omitempty"`
 }
 
 // Client owns one user's connection and cache. All methods are safe for
@@ -236,6 +261,10 @@ type Client struct {
 	rejects      []string                // why recent encrypted edits/deletes/reactions were ignored (encops.go)
 
 	hud huddleState // voice huddles (huddle.go)
+
+	agentsMu  sync.Mutex
+	agents    map[uint64]proto.Agent             // owner → their agent, retired ones included
+	agentLive map[agentKey]map[uint64]AgentLive // (chan, thread) → owner → live status
 }
 
 // timing holds the protocol's timers; tests shrink them.
@@ -320,6 +349,7 @@ func Open(home string) (*Client, error) {
 		obChanged: make(chan struct{}), timing: defaultTiming,
 		e2eKick: make(chan struct{}, 1), keyNeeds: make(chan proto.Ephemeral, 32),
 		e2eSoft: map[uint64]string{}, needSent: map[uint64]time.Time{}, shared: map[shareKey]time.Time{},
+		agents: map[uint64]proto.Agent{}, agentLive: map[agentKey]map[uint64]AgentLive{},
 		autoTried: map[uint64]time.Time{}, owedTried: map[uint64]time.Time{}, poisonSeen: map[[2]uint64]time.Time{}, reopenBatch: reopenBatch, badCerts: map[[32]byte]struct{}{}, probed: map[uint64]uint32{},
 	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
@@ -436,6 +466,12 @@ type Update struct {
 	// NewOwn lists newly verified devices of ours other than this one
 	// (never on our first verification): "was that you?".
 	NewOwn []DeviceRef
+	// Agents: an agent was registered, changed, retired, or came online
+	// or went offline (agent.go).
+	Agents bool
+	// AgentStatus lists channels whose agent live status changed (see
+	// AgentStatus, AgentThreads).
+	AgentStatus map[uint64]bool
 }
 
 const maxNew = 256
@@ -448,7 +484,7 @@ func (u *Update) msgs(ch uint64) {
 }
 
 func (u Update) empty() bool {
-	return !u.Status && !u.Channels && !u.Users && !u.Presence && !u.Reset && !u.Huddle && !u.Prefs && len(u.HuddleStarted) == 0 &&
+	return !u.Status && !u.Channels && !u.Users && !u.Presence && !u.Reset && !u.Huddle && !u.Prefs && !u.Agents && len(u.HuddleStarted) == 0 && len(u.AgentStatus) == 0 &&
 		len(u.Msgs) == 0 && len(u.Typing) == 0 && len(u.New) == 0 && len(u.Failed) == 0 && len(u.Revoked) == 0 && len(u.NewOwn) == 0
 }
 
@@ -460,6 +496,13 @@ func (u Update) merge(v Update) Update {
 	u.Reset = u.Reset || v.Reset
 	u.Huddle = u.Huddle || v.Huddle
 	u.Prefs = u.Prefs || v.Prefs
+	u.Agents = u.Agents || v.Agents
+	for k := range v.AgentStatus {
+		if u.AgentStatus == nil {
+			u.AgentStatus = map[uint64]bool{}
+		}
+		u.AgentStatus[k] = true
+	}
 	u.HuddleStarted = append(u.HuddleStarted, v.HuddleStarted...)
 	if len(u.HuddleStarted) > maxNew {
 		u.HuddleStarted = append([]HuddleStart(nil), u.HuddleStarted[len(u.HuddleStarted)-maxNew:]...)

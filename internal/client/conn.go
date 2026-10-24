@@ -205,7 +205,7 @@ func (s *session) resolve(r proto.Res) error {
 
 // ---- handshake / login ----
 
-func handshake(conn transport.Conn, codec *proto.Codec, signer ssh.Signer, invite, name string, passive bool, timeout time.Duration) (proto.Welcome, error) {
+func handshake(conn transport.Conn, codec *proto.Codec, signer ssh.Signer, invite, name, agent string, passive bool, timeout time.Duration) (proto.Welcome, error) {
 	// Hardware keys may wait for a touch, hence the long timeout.
 	t := time.AfterFunc(timeout, func() { conn.Close() })
 	defer t.Stop()
@@ -217,8 +217,8 @@ func handshake(conn transport.Conn, codec *proto.Codec, signer ssh.Signer, invit
 	if err != nil {
 		return proto.Welcome{}, err
 	}
-	hello := proto.Hello{Client: clientName, Caps: []string{proto.CapE2E, proto.CapKeyHint, proto.CapVoice},
-		Auth: proto.Auth{Pubkey: signer.PublicKey().Marshal(), Sig: sig, Invite: invite, Name: name}}
+	hello := proto.Hello{Client: clientName, Caps: []string{proto.CapE2E, proto.CapKeyHint, proto.CapVoice, proto.CapAgent},
+		Auth: proto.Auth{Pubkey: signer.PublicKey().Marshal(), Sig: sig, Invite: invite, Name: name}, Agent: agent}
 	if passive {
 		hello.Caps = append(hello.Caps, proto.CapPassive)
 	}
@@ -238,6 +238,10 @@ func handshake(conn transport.Conn, codec *proto.Codec, signer ssh.Signer, invit
 			}
 			if w.User.ID == 0 {
 				return w, errors.New("welcome without user")
+			}
+			if agent != "" && (w.Agent == nil || w.Agent.Handle != agent) {
+				// A server without agent1 would log us in as the owner.
+				return w, errors.New("the server didn't accept this agent session")
 			}
 			codec.SetMaxFrame(proto.MaxFrame)
 			return w, nil
@@ -357,7 +361,7 @@ func loginOnce(ctx context.Context, inv proto.Invite, signer ssh.Signer, token, 
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
-	w, err := handshake(conn, proto.NewCodec(conn), signer, token, name, false, defaultTiming.handshake)
+	w, err := handshake(conn, proto.NewCodec(conn), signer, token, name, "", false, defaultTiming.handshake)
 	if err != nil && ctx.Err() != nil {
 		return proto.Welcome{}, ctx.Err()
 	}
@@ -527,7 +531,7 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
 	codec := proto.NewCodec(conn)
-	w, err := handshake(conn, codec, signer, "", "", c.passive.Load(), c.timing.handshake)
+	w, err := handshake(conn, codec, signer, "", "", c.cfg.Agent, c.passive.Load(), c.timing.handshake)
 	if err != nil {
 		conn.Close()
 		return false, err
