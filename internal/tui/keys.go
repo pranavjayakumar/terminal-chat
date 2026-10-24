@@ -41,6 +41,8 @@ const (
 	kSettings   = "ctrl+," // only where the terminal reports it (kitty keys); /settings works everywhere
 	kThrWider   = "alt+["  // the thread pane's edge moves left
 	kThrNarrow  = "alt+]"
+	kApproval   = "alt+o" // jump to my agent's waiting approval card (approval.go)
+	kSelUnfold  = "o"     // unfold an agent run's steps (agentlive.go)
 )
 
 // minSidebarCols is the narrowest terminal the sidebar can be forced into.

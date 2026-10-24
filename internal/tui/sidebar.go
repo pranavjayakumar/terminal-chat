@@ -10,9 +10,11 @@ import (
 	"github.com/skailama/tc/internal/sanitize"
 )
 
-// sideItem is one sidebar row: a section title (ch 0) or a channel.
+// sideItem is one sidebar row: a section title (ch 0), a channel, or an
+// agent under its owner (agent set).
 type sideItem struct {
 	ch      uint64
+	agent   *proto.Agent
 	section string
 	icon    string
 	iconFg  rgb
@@ -29,8 +31,8 @@ func (m *Model) sideItems() []sideItem {
 	section := func(name string, dm bool) {
 		first := true
 		for _, v := range m.sidebarOrder() {
-			if (v.Kind == proto.ChanDM) != dm {
-				continue
+			if (v.Kind == proto.ChanDM) != dm || v.Kind == proto.ChanAgentDM {
+				continue // my agent's DM sits under me (drawAgentRow)
 			}
 			if first {
 				if len(out) > 0 {
@@ -40,6 +42,11 @@ func (m *Model) sideItems() []sideItem {
 				first = false
 			}
 			out = append(out, m.sideEntry(v))
+			if others := m.dmOthers(v); dm && len(others) == 1 {
+				if a, ok := m.ag.byOwner[others[0]]; ok {
+					out = append(out, sideItem{agent: &a})
+				}
+			}
 		}
 	}
 	section("Channels", false)
@@ -141,12 +148,28 @@ func (m *Model) drawSidebar(c *canvas, g geo) {
 			active = i
 		}
 	}
+	mine, haveMine := m.myAgent()
+	agentY := -1
+	if haveMine {
+		// my agent's row goes under mine: the blank row of a roomy
+		// layout, or mine moves up one
+		if g.roomy {
+			agentY = meY + 1
+		} else {
+			agentY = meY
+			meY--
+		}
+		room = meY - 1 - y
+	}
 	if len(items) > room && active >= room {
 		start = min(active-room/2, len(items)-room)
 	}
 	for i := start; i < len(items) && y < meY-1; i++ {
 		m.drawSideItem(c, items[i], y, sb, mini)
 		y++
+	}
+	if agentY > y {
+		m.drawAgentRow(c, mine, agentY, sb, mini)
 	}
 	if meY > y {
 		c.put(2, meY, m.icon(icOnline), fgc(m.presenceColor(m.me.ID)), "")
@@ -192,6 +215,10 @@ func (m *Model) presenceColor(u uint64) rgb {
 
 func (m *Model) drawSideItem(c *canvas, it sideItem, y, sb int, mini bool) {
 	th := m.st.th
+	if it.agent != nil {
+		m.drawAgentRow(c, *it.agent, y, sb, mini)
+		return
+	}
 	if it.ch == 0 {
 		if it.section != "" && !mini {
 			c.put(2, y, it.section, fgc(th.faint), "")

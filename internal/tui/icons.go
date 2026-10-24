@@ -127,15 +127,16 @@ func iconIn(pack string, r iconRole) string {
 func (m *Model) icon(r iconRole) string { return iconIn(m.pack, r) }
 
 // resolvePack works out the pack in use: the chosen one, or for Auto, tc
-// Symbols when the font is installed here, we aren't over SSH (the font
-// would have to be on the other end) and the locale doesn't make ambiguous
-// characters wide; otherwise Unicode, or DOS with the Retro skin.
+// Symbols when the font is installed here, the terminal finds it per glyph
+// (symbolsFallback), we aren't over SSH (the font would have to be on the
+// other end) and the locale doesn't make ambiguous characters wide;
+// otherwise Unicode, or DOS with the Retro skin.
 func (m *Model) resolvePack() {
 	pack := m.ui.Icons
 	if pack == packAuto {
 		pack = packUnicode
 		switch {
-		case m.fontInstalled() && !m.opt.SSH && !cjkLocale():
+		case m.fontInstalled() && m.opt.FontFallback && !m.opt.SSH && !cjkLocale():
 			pack = packSymbols
 		case m.skin().id == "retro":
 			pack = packDOS
@@ -234,17 +235,44 @@ func (m *Model) iconFontInstalled(msg iconFontInstalledMsg) {
 			}
 		}
 	}
+	if !m.opt.FontFallback {
+		m.setInfo("installed · if your terminal shows them, pick tc Symbols in Settings › Icons")
+		return
+	}
 	m.setInfo("installed · restart your terminal, then tc uses its icons")
 }
 
 // iconsHint tells someone without the font, once, that it exists.
 func (m *Model) iconsHint() {
-	if m.ui.IconsHint || m.opt.Font.Installed == nil || m.fontInstalled() || m.opt.SSH {
+	if m.ui.IconsHint || m.opt.Font.Installed == nil || m.fontInstalled() || m.opt.SSH || !m.opt.FontFallback {
 		return
 	}
 	m.ui.IconsHint = true
 	m.savePrefs()
 	m.setInfo("New: tc icons · Settings › Icons")
+}
+
+// symbolsFallback reports whether the terminal finds a glyph missing from
+// its own font in another installed font, the tc Symbols one included.
+// Only terminals known to, and never inside a multiplexer: herdr, tmux and
+// the like (and terminals embedded in editors, such as Zed's) draw tc
+// Symbols' private-use code points as boxes.
+func symbolsFallback(env func(string) string) bool {
+	if env("TMUX") != "" || env("STY") != "" || env("HERDR_PANE_ID") != "" || env("ZELLIJ") != "" {
+		return false
+	}
+	switch env("TERM_PROGRAM") {
+	case "iTerm.app", "Apple_Terminal", "ghostty", "WezTerm", "kitty":
+		return true
+	case "":
+	default:
+		return false // a terminal that names itself, but not one of those
+	}
+	switch env("TERM") {
+	case "xterm-kitty", "xterm-ghostty", "wezterm":
+		return true
+	}
+	return false
 }
 
 // underlineStyles reports whether the terminal draws curly and dotted
@@ -287,7 +315,7 @@ func (m *Model) iconsCtl() setCtl {
 			cur = i
 		}
 	}
-	sub := "Auto: tc Symbols when the font is here"
+	sub := "Auto: tc Symbols in terminals that can show them"
 	if m.opt.SSH {
 		sub = "over SSH: run tc fonts install on your own computer"
 	}

@@ -9,8 +9,10 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -19,6 +21,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/skailama/tc/internal/agent"
+	"github.com/skailama/tc/internal/agent/home"
 	"github.com/skailama/tc/internal/alert"
 	"github.com/skailama/tc/internal/background"
 	"github.com/skailama/tc/internal/client"
@@ -105,6 +109,17 @@ type Backend interface {
 	RefreshDevices(ctx context.Context, user uint64) error
 	RevokeDevice(ctx context.Context, dev e2ecrypto.DevID, allowSelf bool) (int, error)
 	DeviceError() error // why this device isn't registered for encryption (nil: it is)
+	// Agents (agent.go, agentpanel.go): the cached list and live statuses,
+	// my agent's DM and access list, setup.
+	Agents() []proto.Agent
+	AgentStatus(ch, thread uint64) []client.AgentLive
+	AgentThreads(ch uint64) []uint64
+	AgentDM() (client.ChannelView, bool)
+	OpenAgentDM(ctx context.Context) (proto.Channel, error)
+	RegisterAgent(ctx context.Context, handle, icon string) (proto.Agent, error)
+	UpdateAgent(ctx context.Context, handle, icon string) (proto.Agent, error)
+	AgentAccess(ctx context.Context) ([]uint64, error)
+	SetAgentAccess(ctx context.Context, add, remove []uint64) ([]uint64, error)
 }
 
 var _ Backend = (*client.Client)(nil)
@@ -127,8 +142,13 @@ func Run(ctx context.Context, c *client.Client, version string) error {
 	o.UIPrefs = filepath.Join(c.Home(), "ui.json")
 	o.Font = osFont
 	o.Touches = underlineStyles(os.Getenv)
+	o.FontFallback = symbolsFallback(os.Getenv)
 	o.UpdateCheck = func() string {
 		return release.Check(ctx, c.Home(), version, release.NewSource(), time.Now())
+	}
+	o.AgentDir = home.Dir(c.Home())
+	o.AgentSetup = func(ctx context.Context, handle, icon string) error {
+		return setupAgentHome(ctx, c.Home(), c.Config().Addr, handle, icon)
 	}
 	if h := notify.DetectHerdr(env); h != nil {
 		o.Herdr = h
@@ -191,6 +211,16 @@ type Options struct {
 	// Touches: the terminal draws curly and dotted underlines in a color
 	// (SGR 4:3, 4:4, 58), detected conservatively in Run.
 	Touches bool
+	// FontFallback: the terminal draws tc Symbols from the installed font
+	// (symbolsFallback), so Auto may pick that pack.
+	FontFallback bool
+
+	// AgentDir is my agent's home (internal/agent/home) on this machine;
+	// "": tc doesn't know of one (tests).
+	AgentDir string
+	// AgentSetup sets up a just-registered agent's home here: files,
+	// config, its device login. nil: the panel only registers it.
+	AgentSetup func(ctx context.Context, handle, icon string) error
 
 	styles *styles // nil: from Out and NO_COLOR
 	motion bool    // tests: run animations (off when styles is set)
@@ -207,4 +237,39 @@ func awayAfter(v string) time.Duration {
 		return 0
 	}
 	return time.Duration(n * float64(time.Minute))
+}
+
+// setupAgentHome makes a registered agent's home on this computer, as `tc
+// agent setup` does: the files tc owns (the tc server's host on the
+// sandbox's network list), config.json with its handle, icon and this
+// machine's id, and its own device login with the owner's SSH key.
+// tc background then runs it.
+func setupAgentHome(ctx context.Context, tcHome, serverAddr, handle, icon string) error {
+	dir := home.Dir(tcHome)
+	var hosts []string
+	if h, _, err := net.SplitHostPort(serverAddr); err == nil && h != "" {
+		hosts = []string{h}
+	}
+	if err := home.EnsureWith(dir, home.Options{ExtraDomains: hosts}); err != nil {
+		return err
+	}
+	cfg, err := home.LoadConfig(dir)
+	if err != nil {
+		return err
+	}
+	mid, err := agent.MachineID(tcHome)
+	if err != nil {
+		return err
+	}
+	cfg.Handle, cfg.Icon, cfg.HomeMachine = handle, icon, mid
+	if err := home.SaveConfig(dir, cfg); err != nil {
+		return err
+	}
+	dev := home.PathsFor(dir).DeviceHome
+	var have client.Config
+	if b, err := os.ReadFile(filepath.Join(dev, "config.json")); err == nil && json.Unmarshal(b, &have) == nil && have.Agent == handle {
+		return nil // already signed in here: keep its device and keys
+	}
+	_, err = client.LoginAgent(ctx, tcHome, dev, handle)
+	return err
 }

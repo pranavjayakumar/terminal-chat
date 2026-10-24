@@ -169,6 +169,10 @@ func openStore(path string) (*store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrateAgents(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrating agents: %w", err)
+	}
 	s := &store{db: db}
 	err = db.QueryRow(`SELECT v FROM meta WHERE k = 'server_id'`).Scan(&s.serverID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -352,6 +356,9 @@ func getChannel(ctx context.Context, q querier, id uint64) (proto.Channel, error
 	if err != nil {
 		return c, err
 	}
+	if c.Kind == proto.ChanAgentDM {
+		c.Name = ""
+	}
 	if c.Members, err = currentMembers(ctx, q, id); err != nil {
 		return c, err
 	}
@@ -407,7 +414,7 @@ func visibleChannels(ctx context.Context, q querier, u uint64) ([]proto.Channel,
 	return out, nil
 }
 
-const msgCols = `id, chan, author, body, thread, time, edited, deleted, enc, edit_enc, del_enc, mid`
+const msgCols = `id, chan, author, body, thread, time, edited, deleted, enc, edit_enc, del_enc, mid, agent, via`
 
 func scanMessages(ctx context.Context, q querier, query string, args ...any) ([]proto.Message, error) {
 	rows, err := q.QueryContext(ctx, query, args...)
@@ -417,7 +424,7 @@ func scanMessages(ctx context.Context, q querier, query string, args ...any) ([]
 	var out []proto.Message
 	for rows.Next() {
 		var m proto.Message
-		if err := rows.Scan(&m.ID, &m.Chan, &m.Author, &m.Body, &m.Thread, &m.Time, &m.Edited, &m.Deleted, &m.Enc, &m.EditEnc, &m.DelEnc, &m.Mid); err != nil {
+		if err := rows.Scan(&m.ID, &m.Chan, &m.Author, &m.Body, &m.Thread, &m.Time, &m.Edited, &m.Deleted, &m.Enc, &m.EditEnc, &m.DelEnc, &m.Mid, &m.Agent, &m.Via); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -479,14 +486,17 @@ func isMember(ctx context.Context, q querier, ch, u uint64) (bool, error) {
 }
 
 // visibleEvents returns events in (since, h] that u may see (PROTOCOL.md §6
-// Visibility); e2e-only kinds (§13) only when e2e. Keep in step with
+// Visibility); e2e-only kinds (§13) only when e2e, agent kinds (§15) only
+// when agent. Keep in step with
 // Server.visibleLocked.
-func visibleEvents(ctx context.Context, q querier, u, since, h uint64, limit int, e2e bool) ([]proto.Event, error) {
+func visibleEvents(ctx context.Context, q querier, u, since, h uint64, limit int, e2e, agent bool) ([]proto.Event, error) {
 	rows, err := q.QueryContext(ctx, `
 		SELECT seq, kind, COALESCE(chan, 0), time, actor, data FROM events e
 		WHERE seq > ?1 AND seq <= ?2 AND (
 			kind IN ('user.new', 'user.update', 'group.update')
 			OR (?5 AND kind IN ('device.new', 'device.revoke'))
+			OR (?6 AND kind = 'agent.update')
+			OR (?6 AND kind = 'agent.access' AND actor = ?3)
 			OR (kind = 'read.update' AND actor = ?3)
 			OR (kind IN ('chan.join', 'chan.leave') AND about = ?3)
 			OR (kind IN ('chan.new', 'chan.update')
@@ -495,7 +505,7 @@ func visibleEvents(ctx context.Context, q querier, u, since, h uint64, limit int
 				SELECT 1 FROM membership m WHERE m.chan = e.chan AND m.user = ?3
 				AND m.join_seq <= e.seq AND (m.leave_seq IS NULL OR e.seq < m.leave_seq)))
 		)
-		ORDER BY seq LIMIT ?4`, since, h, u, limit, e2e)
+		ORDER BY seq LIMIT ?4`, since, h, u, limit, e2e, agent)
 	if err != nil {
 		return nil, err
 	}

@@ -85,6 +85,10 @@ type plainMsg struct {
 	TS        int64  `msgpack:"ts"`
 	Body      string `msgpack:"body"`
 	ThreadRef []byte `msgpack:"thread_ref,omitempty"`
+	// Agent is the sending agent's handle (§15.3), signed by its device.
+	Agent string `msgpack:"agent,omitempty"`
+	// Via is Message.Via, signed: in e2e channels only this one counts.
+	Via string `msgpack:"via,omitempty"`
 }
 
 var zeroRef = make([]byte, e2ecrypto.IDSize)
@@ -362,6 +366,22 @@ func (c *Client) judgeEnc(q dbtx, sid e2ecrypto.ServerID, hasSID bool, m *proto.
 		}
 	}
 	m.Body = p.Body
+	// Attribution only ever leans toward the agent (§15.3): the signed
+	// claim wins, a server's claim alone still marks it, and anything an
+	// agent's device signed is the agent's.
+	if p.Agent != "" {
+		m.Agent = p.Agent
+	}
+	if m.Agent == "" && c.agentDevice(sid, *d) {
+		m.Agent = "agent"
+		if a, ok := c.AgentOf(m.Author); ok {
+			m.Agent = a.Handle
+		}
+	}
+	m.Via = ""
+	if proto.ValidVia(p.Via) {
+		m.Via = p.Via
+	}
 	return SecE2E, mid[:], p.TS
 }
 
@@ -604,7 +624,7 @@ func (c *Client) seal(sid e2ecrypto.ServerID, dev *e2ecrypto.DeviceKeys, ep trus
 	if ep.Key == nil {
 		return nil, failErr{noKeyReason}
 	}
-	p := plainMsg{T: "msg", TS: e.time, Body: e.body}
+	p := plainMsg{T: "msg", TS: e.time, Body: e.body, Agent: c.AgentHandle(), Via: e.via}
 	if e.thread != 0 {
 		ref, err := c.threadRef(e.chan_, e.thread)
 		if err != nil {

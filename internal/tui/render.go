@@ -440,7 +440,7 @@ func grouped(prev, cur client.Message) bool {
 	if prev.Replies > 0 || prev.Pinned || hasReactions(prev) || prev.TimeDrift() || cur.TimeDrift() {
 		return false // a drifting message always shows its (signed) time
 	}
-	return prev.Author == cur.Author && cur.Time-prev.Time < groupWindow && cur.Time >= prev.Time &&
+	return prev.Author == cur.Author && prev.FromAgent() == cur.FromAgent() && prev.Via == cur.Via && cur.Time-prev.Time < groupWindow && cur.Time >= prev.Time &&
 		sameDay(prev.Time, cur.Time) && prev.Failed == ""
 }
 

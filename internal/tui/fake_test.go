@@ -60,6 +60,8 @@ type fakeClient struct {
 	nchans    map[uint64]client.ChanNotify
 	nset      map[string]string
 	myThreads map[uint64]bool
+
+	ag fakeAgents // fake_agents_test.go
 }
 
 type remindCall struct {
@@ -187,6 +189,9 @@ func (f *fakeClient) Edit(ctx context.Context, msg uint64, body string) error {
 func (f *fakeClient) Delete(ctx context.Context, msg uint64) error { f.record("delete"); return nil }
 func (f *fakeClient) React(ctx context.Context, msg uint64, emoji string) error {
 	f.record("react " + emoji)
+	f.mu.Lock()
+	f.ag.reacted = append(f.ag.reacted, strconv.FormatUint(msg, 10)+" "+emoji)
+	f.mu.Unlock()
 	return nil
 }
 func (f *fakeClient) Unreact(ctx context.Context, msg uint64, emoji string) error {

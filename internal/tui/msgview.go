@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/skailama/tc/internal/client"
+	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
 )
 
@@ -31,6 +32,8 @@ type blockKey struct {
 	split   bool // Settings › Messages: Split (ours on the right)
 	tail    bool // last of its group: ours shows time and status
 	concern concern
+	appr    apprState // an agent's approval card (approval.go)
+	fold    string    // an agent run's folded steps line (agentlive.go)
 }
 
 // blockCache memoizes message blocks in two generations: when the current
@@ -104,7 +107,7 @@ func (g *grower) done() *canvas {
 }
 
 func (m *Model) concernOf(x client.Message) concern {
-	if x.Author == m.me.ID || x.Deleted || m.users[x.Author].Bot {
+	if m.ownMsg(x) || x.Deleted || m.users[x.Author].Bot {
 		return cNone
 	}
 	switch {
@@ -116,20 +119,28 @@ func (m *Model) concernOf(x client.Message) concern {
 	return cNone
 }
 
+// viaMark marks a message an outside Claude session posted for its author
+// (tc mcp, proto.ViaMCP).
+const viaMark = "⇢"
+
+// ownMsg: a message I sent myself (not one my agent sent as my device).
+func (m *Model) ownMsg(x client.Message) bool { return x.Author == m.me.ID && !x.FromAgent() }
+
 // msgBlock draws one message at column width cw.
 func (m *Model) msgBlock(x client.Message, cw int, header, tail, left bool) *canvas {
-	return m.msgBlockFrom(nil, x, cw, header, tail, left)
+	k := m.blockKeyOf(x, cw, header, tail, left)
+	return m.msgBlockFrom(nil, k, x)
 }
 
-// msgBlockFrom is msgBlock, first looking in prev (a pane's last layout).
-func (m *Model) msgBlockFrom(prev map[blockKey]*canvas, x client.Message, cw int, header, tail, left bool) *canvas {
-	own := x.Author == m.me.ID
-	mine := own && !left && m.ui.Split // drawn on the right
-	k := m.blockKeyOf(x, cw, header, tail, left)
+// msgBlockFrom draws the message k names, first looking in prev (a pane's
+// last layout).
+func (m *Model) msgBlockFrom(prev map[blockKey]*canvas, k blockKey, x client.Message) *canvas {
+	own := m.ownMsg(x)
+	mine := own && !k.left && m.ui.Split // drawn on the right
 	if b, ok := prev[k]; ok {
 		return b
 	}
-	return m.blocks.get(k, func() *canvas { return m.drawBlock(x, cw, header, tail, mine, own, k.concern) })
+	return m.blocks.get(k, func() *canvas { return m.drawBlock(x, k, mine, own) })
 }
 
 func (m *Model) blockKeyOf(x client.Message, cw int, header, tail, left bool) blockKey {
@@ -138,8 +149,10 @@ func (m *Model) blockKeyOf(x client.Message, cw int, header, tail, left bool) bl
 
 // drawBlock draws one message. mine: ours on the right (split layout);
 // own: ours, wherever it goes.
-func (m *Model) drawBlock(x client.Message, cw int, header, tail, mine, own bool, cc concern) *canvas {
+func (m *Model) drawBlock(x client.Message, k blockKey, mine, own bool) *canvas {
+	cw, header, tail, cc := k.width, k.header, k.tail, k.concern
 	th := m.st.th
+	agent := x.FromAgent()
 	g := newGrower(cw, th)
 	c := func() *canvas { return g.c }
 	bw := bodyW(cw)
@@ -156,10 +169,17 @@ func (m *Model) drawBlock(x client.Message, cw int, header, tail, mine, own bool
 		textFg = th.dim
 	}
 	first := 0
-	if header && !mine {
+	if header && agent {
+		m.agentHeader(g, x, cw)
+		first = 1
+	} else if header && !mine {
 		y := g.row()
 		name := m.r.userName(x.Author)
-		e := c().put(2, y, name, fgb(th.nick(x.Author)), "")
+		e := 2
+		if x.Via == proto.ViaMCP {
+			e = c().put(e, y, viaMark+" ", fgc(th.faint), "") // posted for them by an outside Claude session
+		}
+		e = c().put(e, y, name, fgb(th.nick(x.Author)), "")
 		if m.users[x.Author].Bot {
 			e = c().put(e, y, botTag, fgc(th.faint), "")
 		}
@@ -191,13 +211,23 @@ func (m *Model) drawBlock(x client.Message, cw int, header, tail, mine, own bool
 			line("⚠ unauthenticated (legacy, server-claimed)", fgb(th.err))
 		}
 		if x.Sec != client.SecWaiting && x.Sec != client.SecInvalid {
-			m.drawText(g, x, bw, at, textFg)
+			if card, ok := parseApproval(x); ok && agent {
+				m.drawApproval(g, x, card, k.appr, bw, at, textFg)
+			} else {
+				m.drawText(g, x, bw, at, textFg)
+				if agent {
+					m.milestoneMark(g, first)
+				}
+			}
 		}
 	}
 	if g.full() {
 		y := g.row()
 		cut := truncate("… v views all of it", bw)
 		g.c.put(at(strWidth(cut)), y, cut, fgc(th.faint), "")
+	}
+	if k.fold != "" && !x.Deleted {
+		m.drawFold(g, x, k.fold, bw)
 	}
 	if !x.Deleted {
 		m.drawFooter(g, x, cw, bw, mine)
@@ -220,6 +250,9 @@ func (m *Model) drawBlock(x client.Message, cw int, header, tail, mine, own bool
 			st = "◌"
 		}
 		meta := time.UnixMilli(x.ShownTime()).Local().Format("15:04") + " " + st
+		if x.Via == proto.ViaMCP && mine {
+			meta = viaMark + " " + meta // no name row on the right: the mark goes here
+		}
 		c().put(at(strWidth(meta)), y, meta, fgc(th.faint), "")
 		if !mine {
 			barEnd = g.n // on the left the bar runs down to it
@@ -232,12 +265,17 @@ func (m *Model) drawBlock(x client.Message, cw int, header, tail, mine, own bool
 	out := g.done()
 	bar := mix(th.bg, th.nick(x.Author), 0.9)
 	bx, glyph := 0, "│"
+	if agent {
+		bar, glyph = mix(th.bg, m.agentColor(m.agentOfMsg(x)), 0.9), agentBar
+	}
 	switch {
 	case mine:
 		bar, bx = th.accent, cw-1
+	case cc == cMention && agent:
+		bar = th.accent // the dashed bar stays: it says "agent" without color
 	case cc == cMention:
 		bar, glyph = th.accent, "┃" // a heavier bar: still a mark without color
-	case cc == cHighlight:
+	case cc == cHighlight && !agent:
 		bar, glyph = th.warn, "┇"
 	}
 	for y := 0; y < barEnd; y++ {
@@ -591,9 +629,19 @@ func (r prow) text() string {
 // re-runs after a reload, resize, theme or density change.
 func (m *Model) paneLines(p *pane, w int) ([]prow, []int) {
 	left := p.root != 0
+	live := m.liveShown(p)
+	sig := liveSig(live)
 	if p.memoLines != nil && p.memoVer == p.ver && p.memoW == w && p.memoCompact == m.ui.Compact && p.memoDay == m.today() {
+		if p.memoLive != sig {
+			// only the live rows changed: keep the messages' layout
+			n := p.memoBase
+			p.memoLines, p.memoOwner = m.liveLines(p, live, w, p.memoLines[:n:n], p.memoOwner[:n:n])
+			p.memoLive = sig
+			p.keepView(len(p.memoLines) - n)
+		}
 		return p.memoLines, p.memoOwner
 	}
+	appr := m.approvalStates(p.msgs)
 	var rows []prow
 	var owner []int
 	now := m.now()
@@ -622,8 +670,12 @@ func (m *Model) paneLines(p *pane, w int) ([]prow, []int) {
 			}
 		}
 		tail := i == len(p.msgs)-1 || !sameDay(x.Time, p.msgs[i+1].Time) || !grouped(x, p.msgs[i+1])
-		b := m.msgBlockFrom(prev, x, w, header, tail, left)
-		used[blockKey{renderKey: keyFor(x, w, header), th: m.st.th, left: left, tail: tail, concern: m.concernOf(x)}] = b
+		k := m.blockKeyOf(x, w, header, tail, left)
+		if x.FromAgent() {
+			k.appr, k.fold = appr[x.ID], m.foldKey(x)
+		}
+		b := m.msgBlockFrom(prev, k, x)
+		used[k] = b
 		for y := 0; y < b.h; y++ {
 			rows = append(rows, prow{b: b, y: y})
 			owner = append(owner, i)
@@ -638,10 +690,13 @@ func (m *Model) paneLines(p *pane, w int) ([]prow, []int) {
 			owner = append(owner, -1)
 		}
 	}
+	p.memoBase = len(rows)
+	rows, owner = m.liveLines(p, live, w, rows, owner)
+	p.keepView(len(rows) - p.memoBase)
 	if rows == nil {
 		rows, owner = []prow{}, []int{}
 	}
-	p.memoLines, p.memoOwner, p.memoVer, p.memoW, p.memoBlocks = rows, owner, p.ver, w, used
+	p.memoLines, p.memoOwner, p.memoVer, p.memoW, p.memoBlocks, p.memoLive = rows, owner, p.ver, w, used, sig
 	p.memoCompact, p.memoDay = m.ui.Compact, m.today()
 	return rows, owner
 }

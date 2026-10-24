@@ -133,13 +133,17 @@ tc mark) comes from one table, `internal/tui/icons.go`, in three packs:
   every Private Use character in our width function.
 - **Unicode** and **DOS**: plain characters every terminal has.
 - Settings › Appearance › Icons: `Auto` · `tc Symbols` · `Unicode` · `DOS`, with a live preview row
-  (`"icons"` in `ui.json`). Auto is tc Symbols when the font is installed on this machine, we aren't over
+  (`"icons"` in `ui.json`). Auto is tc Symbols when the font is installed on this machine, the terminal is
+  one known to find a glyph in another installed font (`TERM_PROGRAM` or `TERM`: iTerm2, Terminal.app,
+  Ghostty, WezTerm, kitty) and isn't inside a multiplexer (tmux, screen, herdr, zellij), we aren't over
   SSH and the locale isn't CJK (ambiguous characters drawn wide); otherwise Unicode, or DOS with the Retro
   skin. The font is looked for once at start (drawing never touches the disk), and an installed font older
   than this build is refreshed then, quietly. When the font is missing (and not over SSH, where the row says
   to install it on your own computer), an **Install tc icons** button installs it; the icons switch at the
-  next start, since a running terminal often can't draw a font installed after it started. Someone without
-  the font sees "New: tc icons · Settings › Icons" once (`"icons_hint"`). Away is `◐` (DOS `◑`), so it
+  next start, since a running terminal often can't draw a font installed after it started. Elsewhere (herdr,
+  Zed's or VS Code's terminal) the Private Use glyphs draw as boxes, so Auto stays Unicode; picking tc
+  Symbols by hand is always honored. Someone without the font, in a terminal that could show it, sees
+  "New: tc icons · Settings › Icons" once (`"icons_hint"`). Away is `◐` (DOS `◑`), so it
   never looks like an offline `○` without color.
 - Touches: on terminals known to draw them (WezTerm, kitty, Ghostty, iTerm2; never inside tmux, screen or
   herdr), `@you` mentions get a wavy accent underline and `#channel` links a dotted info one (SGR 4:3 / 4:4
@@ -228,8 +232,9 @@ Unknown command → inline error, input kept.
 While the input is a bare `/command` (no space yet) a popup of up to 6 rows lists the
 matching commands (prefix matches first, then substring; an exact name first) with their argument hint and a
 dim one-line description; more matches scroll (`↑`/`↓` marks at the right). An `@` or `#` word at the cursor
-does the same for people (this channel's members first, then everyone else, then user groups like
-`@oncall`) and channels (joined ones first); a name equal to what was typed always comes first (my own name too, so `as @alice said` sends on Enter). For
+does the same for people (this channel's members first, then everyone else, then agents as `@rocky ▟▙`
+with a dim `Fizan's agent` or `your agent` (a prefix match on a handle still beats a person who only
+contains the letters), then user groups like `@oncall`) and channels (joined ones first); a name equal to what was typed always comes first (my own name too, so `as @alice said` sends on Enter). For
 `@`/`#` a substring match needs two letters and never comes from digits alone, so `fixed in #12` isn't offered `#release-12`. The popup is an
 opaque floating panel on the input's left edge, one blank row above it (that row keeps showing notices and
 typing), at most 72 columns and never wider than the column: a rounded frame with the kind (`Commands`,
@@ -449,6 +454,81 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
 - A delivered reminder is my own message, which never notifies, with one exception: a message of mine in my
   notes that starts with `⏰ ` notifies (`⏰ Reminder`, the text) unless I'm looking at the notes, and
   counts as unread (`@` badge) until read.
+
+## Agents
+
+Personal agents (v0.6.0, PROTOCOL.md §15). An agent is one more teammate in the room: a glyph, a `⟡` badge
+and one status row. Code: `internal/tui/agent.go` (icons, state), `agentlive.go` (status rows, folded runs),
+`approval.go`, `agentchrome.go` (sidebar, DM header, palette), `agentpanel.go` + `agentpanel_draw.go`.
+
+- **Identity.** A message with `Message.Agent` set draws `<icon> Rocky ⟡ · Fizan's agent  hh:mm` on the
+  first message of a group and a dashed `┆` bar where people get `│`; icon, name and bar take the agent's
+  color. Below 50 columns the badge drops `· Fizan's agent`. An agent's messages never group with its
+  owner's, and my agent's messages are not "mine" (no edit, no split side): `Message.FromAgent()` decides.
+  Name, icon and color are the author's agent now (`AgentOf`), so a rename shows on old messages too; a
+  retired agent keeps the handle its message carries. A reply starting `✓ ` (a milestone) gets its `✓` in
+  the ok color. A message an outside Claude session posted for someone (`Via == "mcp"`, `tc mcp`) shows a
+  faint `⇢` before their name (or before the time, for mine on the right) and doesn't group with their own.
+- **Icon and color** live in `proto.Agent.Icon`: `"<preset>"` or `"<preset>:<n>"`, n the theme name color
+  0–7 the owner picked (no color: a hash of the handle). Presets: pebble, orb, spark, owl, hive, moon,
+  meter, kite, each with idle / thinking / working / done / asleep frames (1–2 cells). Anything else in
+  the field shows as a static glyph. Timings: thinking 280 ms frames with a 1.12 s breath, working
+  110 ms, streaming 220 ms (working frames), done flashes twice in the ok color (0.29 s each), asleep
+  1.6 s at half strength (kept readable on its background). The frame tick runs only while a glyph on
+  screen moves (the breath in 140 ms steps), never for an asleep agent or while the terminal is unfocused;
+  Animations off shows still frames.
+- **Live reply.** `Update.AgentStatus` reloads the channel's live statuses (`AgentThreads` +
+  `AgentStatus`); each live agent gets a row at the bottom of the channel (top level) or of the open
+  thread: `<icon> Rocky is thinking…`, then its status line (`is reading the thread…`), then
+  `is writing…  live · not saved` with the preview streaming dim and italic behind a faint `┆` (its last
+  10 rows). Asleep says `is asleep 💤`, an error `is stuck: <why>` in the error color. The row goes as
+  soon as a message from that agent newer than its last status lands (or after done's flash). Narrow panes
+  truncate it from the right. Scrolled up, the view stays put while the rows grow and shrink.
+- **Work runs** (a run with 3+ distinct working steps; never my agent in Talk mode) fold under the reply
+  as `▸ 5 steps · 2m 41s · $0.42` (cost only for my agent, from its audit log); a click, or `o` / ⏎ / space
+  on the selected reply, unfolds the steps.
+  What tc saw of the run is kept for this session only.
+- **Sidebar.** Agents sit under their owner's DM row as `└ <icon> Name` (asleep: faint name, half-strength
+  glyph, `💤`); mine sits under the "you" row (taking the roomy layout's blank row, or moving "you" up
+  one). Its glyph moves with whatever it is doing anywhere. My agent's row: a click opens our DM, a click
+  on its glyph (or on the row while the DM is open) opens the panel; it shows the DM's unread count, or `✋`
+  while an approval waits (a click then opens that card). Someone else's agent: a click puts `@handle ` in
+  the input. The agent DM is never listed as a channel.
+- **Agent DM** (`ChanAgentDM`): header `<icon> Rocky · your agent · only you see this chat`, with the mode
+  on the right (click: the panel), or `✋ waiting in #chan` while an approval waits; the input box says
+  `only you` and `tell Rocky anything…`. The palette lists it as `@ Rocky (your agent)`, with its icon.
+  The palette's People group lists every other agent too (`@juno · Bob's agent`): picking one types
+  `@juno ` into the composer; my agent without a DM yet opens it. The agent speaks
+  first (the harness); tc only draws it. Without the DM yet, the panel's `d` creates it (`OpenAgentDM`).
+- **Approvals.** The harness posts `✋ @owner approve: <action>? react ✅ / ❌  ·  #code` + detail and waits
+  for the owner's ✅ / ❌. tc draws the detail, then `<action>?  1 yes  2 yes, ok today  3 no` (`PRs ok today`
+  when the action names a PR) and `only you can answer · keys 1–3`; everyone else sees `waiting for Fizan`.
+  Keys 1–3 answer only a card selected on purpose (select mode, where the footer reads `1 yes · 2 PRs ok
+  today · 3 no`); digits typed in the composer are always text. `⌥O` (or the palette's `Approval waiting ·
+  #chan` row) opens the newest waiting card and selects it. A click on a choice answers too. 1 reacts ✅,
+  2 reacts ✅ then ♾️ (the harness reads the ✅ as yes), 3 reacts ❌; a toast says what was answered. Only a verified card from my own agent takes an answer. Answered, it collapses to
+  `✓ Fizan said yes · <action>?` (`✗ … said no`); a card the harness gave up on (`⌛ no answer on #code`)
+  reads `⌛ no answer`. A card that arrives while I look elsewhere notifies me once, as `Rocky needs your
+  ok`: it replaces the mention alert its `@owner` would raise. A card in a thread that isn't open counts
+  as elsewhere.
+- **Panel** (`⌥K` › Agent, the glyph in the sidebar, the mode in the DM header): one page, no tabs. State
+  (awake / working / paused / asleep, idle time, sleep-after, on this or another computer), Spend today (`█` accent,
+  `░` faint, `$3.40 of $20  17%`), Asks today per person, the Mode radio (Talk / Work / Crew: `←/→`, `1–3`
+  or a click; `h`/`l` move it too), the note line, then Reads, Folders, Limits, Memory, Activity, Personality ("tell me in our
+  DM": opens the DM). `⏎` opens a row's page: Reads (channels it may read for anyone's asks, toggled on
+  the server with `agent.access`, plus "your DMs when you ask"), Folders (`a` adds a full path, `x`
+  removes after `y`), Limits (`←/→`: daily cap, per-run cap, asks per person, rollover %, sleep after), Memory
+  (`⏎` reads a note, `f` forgets one, `u` undoes today; both ask `y`), Activity (the audit log, newest
+  first). Keys `p` pause / resume, `d` open DM, `L` logs, `r` re-read, Esc back / close. A short terminal scrolls
+  the page to keep the focused row in view (`↑`/`↓` marks show more). Settings are the
+  agent home's `config.json` (`internal/agent/home`); spend, asks, status and the log come from its
+  `state/` files, written by the supervisor; nothing is read while drawing. On a computer that isn't the
+  agent's home (`agent.HomeHere`) the panel shows what the server knows and changes nothing.
+- **Setup.** With no agent the panel is the setup: handle (`@rocky`), the icon sheet, a color (auto or one
+  of the 8), a preview of the name row, `Set up Rocky`, and `or from a shell: tc agent setup`. It calls
+  `RegisterAgent`, then makes the agent home as `tc agent setup` does (`home.EnsureWith` with the server's
+  host, config with this machine's id, `client.LoginAgent` for its device unless it is signed in already);
+  `tc background` runs it. A refused handle shows the server's reason.
 
 ## Activity view
 

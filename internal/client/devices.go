@@ -63,13 +63,23 @@ func storeDevice(q dbtx, d proto.Device) error {
 	return nil
 }
 
+// storeEndorse keeps a KeyEndorse or an AgentEndorse (§15.1), unverified.
 func storeEndorse(q dbtx, e proto.Signed) error {
-	ke, err := identity.PeekKeyEndorse(identity.Signed(e))
-	if err != nil || !keepUnverified(q, "device_endorse", ke.ServerID[:], ke.User) {
+	var sid e2ecrypto.ServerID
+	var user uint64
+	var key []byte
+	if ke, err := identity.PeekKeyEndorse(identity.Signed(e)); err == nil {
+		sid, user, key = ke.ServerID, ke.User, ke.NewSSH
+	} else if ae, err := identity.PeekAgentEndorse(identity.Signed(e)); err == nil {
+		sid, user, key = ae.ServerID, ae.User, ae.AgentSSH
+	} else {
 		return nil
 	}
-	_, err = q.Exec(`INSERT OR IGNORE INTO device_endorse (endorse, user, new_ssh) VALUES (?, ?, ?)`,
-		[]byte(proto.MustRaw(e)), ke.User, ke.NewSSH)
+	if !keepUnverified(q, "device_endorse", sid[:], user) {
+		return nil
+	}
+	_, err := q.Exec(`INSERT OR IGNORE INTO device_endorse (endorse, user, new_ssh) VALUES (?, ?, ?)`,
+		[]byte(proto.MustRaw(e)), user, key)
 	return err
 }
 
@@ -145,7 +155,14 @@ func (c *Client) ensureDevice(ctx context.Context, s *session, signer ssh.Signer
 		return err
 	}
 	// The device.new event lands in the cache through the event stream.
-	if _, err = s.call(ctx, proto.OpDeviceRegister, proto.DeviceRegisterArgs{Cert: proto.Signed(cert)}, nil); err != nil {
+	reg := proto.DeviceRegisterArgs{Cert: proto.Signed(cert)}
+	if c.cfg.AgentEndorse != nil {
+		var e proto.Signed
+		if proto.Unmarshal(c.cfg.AgentEndorse, &e) == nil {
+			reg.Endorse = &e
+		}
+	}
+	if _, err = s.call(ctx, proto.OpDeviceRegister, reg, nil); err != nil {
 		var pe *proto.Error
 		if errors.As(err, &pe) && pe.Code == proto.ErrConflict {
 			// Another process on this TC_HOME (after revoke --self) may

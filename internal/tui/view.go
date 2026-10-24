@@ -25,6 +25,12 @@ func plural(n int, one, many string) string {
 
 // chanTitle is "#name" or "@names" for a DM.
 func (m *Model) chanTitle(id uint64) string {
+	if m.isAgentDM(id) {
+		if a, ok := m.myAgent(); ok {
+			return agentName(a.Handle)
+		}
+		return "your agent"
+	}
 	return alert.ChanTitle(m.chanView(id))
 }
 
@@ -150,6 +156,15 @@ func (m *Model) headerLeft(w int) string {
 		return truncate(b.String(), w)
 	}
 	v, _ := m.chanView(m.active)
+	if m.isAgentDM(m.active) {
+		// "<icon> Rocky · your agent · only you see this chat"
+		if m.agentHeaderRoom() {
+			b.WriteString("   ")
+		}
+		b.WriteString(m.st.header.Render(m.chanTitle(m.active)))
+		b.WriteString(m.st.topic.Render(" · your agent · only you see this chat"))
+		return truncate(b.String(), w)
+	}
 	b.WriteString(m.st.header.Render(m.chanTitle(m.active)))
 	if m.dmUnverified(v) {
 		b.WriteString(m.st.dim.Render("?"))

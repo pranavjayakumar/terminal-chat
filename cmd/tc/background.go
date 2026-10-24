@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/skailama/tc/internal/agent"
 	"github.com/skailama/tc/internal/alert"
 	"github.com/skailama/tc/internal/background"
 	"github.com/skailama/tc/internal/client"
@@ -182,6 +183,21 @@ func backgroundRun(ctx context.Context, home string) error {
 	if !filepath.IsAbs(exe) {
 		exe, _ = os.Executable()
 	}
+	// The personal agent's supervisor runs beside the notifier, also while
+	// the chat window is open, and stops with it.
+	actx, stopAgent := context.WithCancel(ctx)
+	agentDone := make(chan struct{})
+	go func() {
+		defer close(agentDone)
+		background.Supervise(actx, background.Child{
+			Name: "agent", Path: exe, Args: []string{"agent", "run"},
+			Want: func() bool { return agent.HomeHere(home) }, Stdout: logw, Log: log,
+		})
+	}()
+	defer func() {
+		stopAgent()
+		<-agentDone
+	}()
 	err = background.Run(ctx, background.Config{Home: home, Version: version, Env: alert.OSEnv(), Log: log, Exe: exe})
 	if errors.Is(err, background.ErrBinaryChanged) {
 		return nil // the service manager starts the new binary

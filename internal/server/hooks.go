@@ -293,7 +293,7 @@ func (s *Server) opHookCreate(ctx context.Context, u proto.User, a proto.HookCre
 			return nil, errNotFound
 		case !s.members[a.Chan][u.ID]:
 			return nil, errForbidden
-		case kind == proto.ChanDM:
+		case proto.IsDMKind(kind):
 			return nil, badRequest("webhooks can't post into DMs")
 		}
 		var e2e bool
