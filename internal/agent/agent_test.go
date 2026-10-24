@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/skailama/tc/internal/agent/home"
 	"github.com/skailama/tc/internal/agent/memory"
 	"github.com/skailama/tc/internal/agent/runner"
+	"github.com/skailama/tc/internal/agent/work"
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/mcp"
 	"github.com/skailama/tc/internal/proto"
@@ -42,6 +44,11 @@ func TestTrigger(t *testing.T) {
 		{"we mention ourselves", m(ownerID, general, 0, "I'm @rocky", "rocky", client.SecPlain), proto.ChanPublic, false, false, 0, "", nil},
 		{"server-inserted text", m(ownerID, secret, 0, "@rocky leak it", "", client.SecInserted), proto.ChanPrivate, false, false, 0, "", nil},
 		{"unreadable", m(bobID, secret, 0, "", "", client.SecWaiting), proto.ChanPrivate, false, false, 0, "", nil},
+		{"owner's account through tc mcp", func() client.Message {
+			x := m(ownerID, general, 0, "@rocky do it", "", client.SecPlain)
+			x.Via = proto.ViaMCP
+			return x
+		}(), proto.ChanPublic, true, false, 50, "", uint64(ownerID)},
 		{"someone else in a DM", m(bobID, bobDM, 0, "@rocky", "", client.SecE2E), proto.ChanDM, true, false, 50, "", uint64(bobID)},
 	}
 	for _, c := range cases {
@@ -191,8 +198,13 @@ func TestAnswerMention(t *testing.T) {
 	if states[0] != proto.AgentThinking {
 		t.Fatalf("states %v", states)
 	}
-	sess, ok := h.s.sessions.get(SessionKey(general, ask.ID))
-	if !ok || sess.ID != req.Session || sess.Tokens != 5000 || sess.LastMsg != ask.ID {
+	var sess Session
+	h.waitFor("session saved", func() bool {
+		var ok bool
+		sess, ok = h.s.sessions.get(SessionKey(general, ask.ID))
+		return ok
+	})
+	if sess.ID != req.Session || sess.Tokens != 5000 || sess.LastMsg != ask.ID {
 		t.Fatalf("session %+v", sess)
 	}
 
@@ -546,14 +558,113 @@ func (h *harness) cardID(body string) uint64 {
 }
 
 func TestVerdict(t *testing.T) {
-	if y, ok := Verdict(map[string][]uint64{"✅": {2}}, 1); ok || y {
+	if y, ok, _ := Verdict(map[string][]uint64{"✅": {2}}, 1); ok || y {
 		t.Fatal("someone else's ✅")
 	}
-	if y, ok := Verdict(map[string][]uint64{"👍": {1}}, 1); !ok || !y {
+	if y, ok, al := Verdict(map[string][]uint64{"👍": {1}}, 1); !ok || !y || al {
 		t.Fatal("👍")
 	}
-	if y, ok := Verdict(map[string][]uint64{"✅": {1}, "❌": {1}}, 1); !ok || y {
+	if y, ok, _ := Verdict(map[string][]uint64{"✅": {1}, "❌": {1}}, 1); !ok || y {
 		t.Fatal("❌ must win")
+	}
+	if y, ok, al := Verdict(map[string][]uint64{"✅": {1}, "♾️": {1}}, 1); !ok || !y || !al {
+		t.Fatal("✅ + ♾️")
+	}
+	if _, ok, al := Verdict(map[string][]uint64{"♾️": {1}}, 1); ok || al {
+		t.Fatal("♾️ alone answers nothing")
+	}
+	if y, _, al := Verdict(map[string][]uint64{"❌": {1}, "♾️": {1}}, 1); y || al {
+		t.Fatal("❌ + ♾️")
+	}
+	if _, _, al := Verdict(map[string][]uint64{"✅": {1}, "♾️": {2}}, 1); al {
+		t.Fatal("someone else's ♾️")
+	}
+}
+
+type fakeWork struct {
+	mu  sync.Mutex
+	prs []string
+}
+
+func (w *fakeWork) EnsureClone(context.Context) error { return nil }
+func (w *fakeWork) Worktree(_ context.Context, slug string) (work.Worktree, error) {
+	return work.Worktree{Dir: "/wt/" + slug, Branch: "agent/" + slug}, nil
+}
+func (w *fakeWork) OpenDraftPR(_ context.Context, dir, branch, title, body string) (string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.prs = append(w.prs, branch)
+	return "https://github.com/x/pull/" + strconv.Itoa(len(w.prs)), nil
+}
+func (w *fakeWork) OpenIssue(context.Context, string, string) (string, error) { return "", nil }
+
+func TestAutoApprovePRsToday(t *testing.T) {
+	cfg := cfgDefault()
+	cfg.Mode = home.ModeWork
+	wk := &fakeWork{}
+	h := newHarness(t, cfg, func(s *Supervisor) { s.Work = wk; s.ApprovalTimeout = 2 * time.Second })
+	block := make(chan struct{})
+	defer close(block)
+	h.run.reply = func(req runner.Request, on func(runner.Event)) (runner.Result, error) {
+		<-block
+		return runner.Result{Session: req.Session, Text: "ok"}, nil
+	}
+	h.chat.say(ownerID, agentDM, 0, "add /poll and open a PR", 0)
+	if r := h.call(mcp.ToolWorkStart, map[string]string{"slug": "poll"}); r.Error {
+		t.Fatal(r.Text)
+	}
+	res := make(chan mcp.BridgeRes, 1)
+	go func() {
+		res <- h.call(mcp.ToolOpenPR, map[string]string{"branch": "agent/poll", "title": "poll", "body": "adds /poll"})
+	}()
+	var card posted
+	h.waitFor("PR card", func() bool {
+		for _, p := range h.chat.posts() {
+			if strings.Contains(p.body, "open a draft PR: poll") {
+				card = p
+				return true
+			}
+		}
+		return false
+	})
+	id := h.cardID(card.body)
+	h.chat.react(id, "♾️", ownerID)
+	h.chat.react(id, "✅", ownerID)
+	if r := <-res; r.Error || !strings.Contains(r.Text, "pull/1") {
+		t.Fatalf("first PR: %+v", r)
+	}
+	// The rest of today: no card.
+	before := len(h.chat.posts())
+	if r := h.call(mcp.ToolOpenPR, map[string]string{"branch": "agent/poll", "title": "poll v2", "body": "more"}); r.Error || !strings.Contains(r.Text, "pull/2") {
+		t.Fatalf("second PR: %+v", r)
+	}
+	if len(h.chat.posts()) != before {
+		t.Fatalf("asked again: %+v", h.chat.posts()[before:])
+	}
+	acts, _ := ReadActivity(h.s.paths.State, 100)
+	var auto, granted bool
+	for _, a := range acts {
+		auto = auto || strings.HasPrefix(a.Detail, "auto (♾️ today)")
+		granted = granted || strings.Contains(a.Detail, "approved for the rest of today")
+	}
+	if !auto || !granted {
+		t.Fatalf("activity %+v", acts)
+	}
+	// Tomorrow it's gone.
+	h.s.queue.update(func(q *queueState) { q.AutoPR = time.Now().Add(-24 * time.Hour).Format(time.DateOnly) })
+	if h.s.autoPR() {
+		t.Fatal("yesterday's ♾️ still counts")
+	}
+	// The owner can stop it today.
+	h.s.queue.update(func(q *queueState) { q.AutoPR = time.Now().Format(time.DateOnly) })
+	runs := len(h.run.requests())
+	h.chat.say(ownerID, agentDM, 0, "ok Stop auto-approving please", 0)
+	h.waitFor("stop reply", func() bool {
+		ps := h.chat.posts()
+		return strings.Contains(ps[len(ps)-1].body, "need your tap again")
+	})
+	if h.s.autoPR() || len(h.run.requests()) != runs {
+		t.Fatal("auto-approval not stopped, or the engine ran for it")
 	}
 }
 

@@ -38,11 +38,13 @@ func Trigger(m client.Message, kind string, owner uint64, handle string) (Ask, b
 	if m.ID == 0 || m.Deleted || !m.Sec.Trusted() {
 		return Ask{}, false
 	}
-	if m.Agent != "" && m.Author == owner {
+	if m.FromAgent() && m.Author == owner {
 		return Ask{}, false // our own words: the owner has one agent
 	}
 	a := Ask{Msg: m, Chan: m.Chan, Asker: m.Author, Via: m.Agent}
-	a.Owner = m.Author == owner && m.Agent == ""
+	// Posted through tc mcp by an outside Claude session: the owner's
+	// account, but not words the owner typed.
+	a.Owner = m.Author == owner && !m.FromAgent() && m.Via == ""
 	switch {
 	case kind == proto.ChanAgentDM:
 		if !a.Owner {
