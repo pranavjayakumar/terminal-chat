@@ -191,7 +191,7 @@ func (s *Supervisor) turn(ctx context.Context, a Ask, cfg home.Config, mode runn
 			if text.Len() < proto.MaxAgentPreview {
 				text.WriteString(e.Text)
 			}
-			r.live.set(proto.AgentStreaming, "", tail(text.String(), proto.MaxAgentPreview))
+			r.live.set(proto.AgentStreaming, "writing…", tail(text.String(), proto.MaxAgentPreview))
 		case runner.EvToolDone:
 			text.Reset() // the reply is the last message; drop narration before tools
 		}

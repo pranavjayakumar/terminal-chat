@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -167,7 +168,15 @@ func agentSetup(args []string, tcHome string, stdin io.Reader, out io.Writer) er
 	// An agent device already signed in here keeps its device and keys;
 	// only a missing login or one under an old handle is redone.
 	dev := home.PathsFor(dir).DeviceHome
-	if !deviceLoggedIn(dev, a.Handle) {
+	switch cur := deviceHandle(dev, c.Me().ID); {
+	case cur == a.Handle:
+	case cur != "":
+		// Renamed: the device stays; its next login names the new handle.
+		// A fresh login would wipe the cache under a running agent.
+		if err := renameDevice(dev, a.Handle); err != nil {
+			return err
+		}
+	default:
 		if _, err := client.LoginAgent(ctx, tcHome, dev, a.Handle); err != nil {
 			return fmt.Errorf("signing the agent in: %w", err)
 		}
@@ -210,13 +219,35 @@ func sandboxMissing(mode home.Mode) string {
 	return "Work and Crew asks need bubblewrap for the sandbox: install it (apt install bubblewrap, dnf install bubblewrap), or switch the agent to Talk mode"
 }
 
-func deviceLoggedIn(dev, handle string) bool {
-	c, err := client.Open(dev)
-	if err != nil {
-		return false
+// deviceHandle is the handle the agent device at dev logs in with, ""
+// when it isn't an agent login of user.
+func deviceHandle(dev string, user uint64) string {
+	var cfg client.Config
+	b, err := os.ReadFile(filepath.Join(dev, "config.json"))
+	if err != nil || json.Unmarshal(b, &cfg) != nil || cfg.UserID != user {
+		return ""
 	}
-	defer c.Close()
-	return c.Config().Agent == handle
+	return cfg.Agent
+}
+
+// renameDevice points the agent device's login at a new handle, keeping
+// every other field of its config.json.
+func renameDevice(dev, handle string) error {
+	p := filepath.Join(dev, "config.json")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return err
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return fmt.Errorf("parsing %s: %w", p, err)
+	}
+	m["agent"] = handle
+	out, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	return home.WriteFileAtomic(p, append(out, '\n'), 0o600)
 }
 
 func ask(in *bufio.Reader, out io.Writer, q, def string) string {

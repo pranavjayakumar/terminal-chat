@@ -21,7 +21,7 @@ const usage = `tc — terminal team chat
   tc login tc://host:port#pin [--key path]
                              sign in on another computer with the same SSH key
   tc login                   show this computer's tc://host:port#pin
-  tc send <#chan|@user> [message...]   (reads stdin if no message)
+  tc send <#chan|@user|@your-agent> [message...]   (reads stdin if no message)
   tc send <#chan|@user> --file path[:start[-end]] [--context N] [message...]
   tc tail <#chan>            stream a channel
   tc notify [--to #chan|@user|@me] [--on-fail] -- <cmd...>

@@ -126,3 +126,18 @@ func TestServerHosts(t *testing.T) {
 		t.Fatal("garbage host")
 	}
 }
+
+func TestRenameDevice(t *testing.T) {
+	dev := t.TempDir()
+	os.WriteFile(filepath.Join(dev, "config.json"), []byte(`{"addr":"h:1","pin":"p","user_id":7,"name":"alice","agent":"rocky","key_fp":"SHA256:x"}`), 0o600)
+	if deviceHandle(dev, 7) != "rocky" || deviceHandle(dev, 8) != "" || deviceHandle(t.TempDir(), 7) != "" {
+		t.Fatal("deviceHandle")
+	}
+	if err := renameDevice(dev, "bolt"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(dev, "config.json"))
+	if deviceHandle(dev, 7) != "bolt" || !strings.Contains(string(b), `"key_fp": "SHA256:x"`) {
+		t.Fatalf("config %s", b)
+	}
+}

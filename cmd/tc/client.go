@@ -122,6 +122,10 @@ func resolve(ctx context.Context, c *client.Client, target string) (uint64, erro
 		return notes.ID, err
 	case strings.HasPrefix(target, "@"):
 		name := target[1:]
+		if a, ok := c.MyAgent(); ok && a.Handle == name {
+			dm, err := c.OpenAgentDM(ctx)
+			return dm.ID, err
+		}
 		for _, u := range c.Users() {
 			if u.Name == name {
 				dm, err := c.OpenDM(ctx, []uint64{u.ID})
