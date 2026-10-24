@@ -28,10 +28,11 @@ import (
 
 // agentHomeState is my agent's home as this machine sees it.
 type agentHomeState struct {
-	dir string // the agent home ("" when tc doesn't know where)
-	ok  bool   // its config.json is here: this is its home machine
-	cfg home.Config
-	err string // why the config can't be read
+	dir  string // the agent home ("" when tc doesn't know where)
+	ok   bool   // its config.json is here
+	here bool   // and it lives on this computer (agent.HomeHere)
+	cfg  home.Config
+	err  string // why the config can't be read
 }
 
 // loadAgentHome reads my agent's config.json (a small local file).
@@ -44,6 +45,7 @@ func (m *Model) loadAgentHome() {
 				h.err = err.Error()
 			} else {
 				h.ok, h.cfg = true, cfg
+				h.here = agent.HomeHere(filepath.Dir(h.dir))
 			}
 		}
 	}
@@ -151,7 +153,7 @@ func (m *Model) refreshPanel() {
 	if st, err := agent.ReadStatus(state); err == nil && st.State != "" {
 		p.status, p.statusOK = st, true
 	}
-	now := m.now()
+	now := time.Now() // the ledger's days are the supervisor's: wall-clock local days
 	if l, err := agent.OpenLedger(state); err == nil {
 		p.spent = l.Spent(now)
 		for _, u := range m.userList {
@@ -201,8 +203,8 @@ func (m *Model) runCost(run *agentRun) float64 {
 // saveAgentConfig writes a changed config and says so.
 func (m *Model) saveAgentConfig(change func(*home.Config)) {
 	h := &m.ag.home
-	if !h.ok {
-		m.setInfo("settings live on " + m.homeMachine() + " · open tc there")
+	if !h.ok || !h.here {
+		m.setInfo("its settings live on its home computer · open tc there")
 		return
 	}
 	cfg := h.cfg
@@ -212,13 +214,6 @@ func (m *Model) saveAgentConfig(change func(*home.Config)) {
 		return
 	}
 	h.cfg = cfg
-}
-
-func (m *Model) homeMachine() string {
-	if m.ag.home.cfg.HomeMachine != "" {
-		return sanitize.Line(m.ag.home.cfg.HomeMachine)
-	}
-	return "its home machine"
 }
 
 // agentMsg handles the panel's async results; false: not one of them.

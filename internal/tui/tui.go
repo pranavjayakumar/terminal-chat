@@ -9,6 +9,8 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
+	"net"
 	"errors"
 	"io"
 	"os"
@@ -19,6 +21,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/skailama/tc/internal/agent"
 	"github.com/skailama/tc/internal/agent/home"
 	"github.com/skailama/tc/internal/alert"
 	"github.com/skailama/tc/internal/background"
@@ -144,7 +147,7 @@ func Run(ctx context.Context, c *client.Client, version string) error {
 	}
 	o.AgentDir = home.Dir(c.Home())
 	o.AgentSetup = func(ctx context.Context, handle, icon string) error {
-		return setupAgentHome(ctx, c.Home(), o.AgentDir, handle, icon)
+		return setupAgentHome(ctx, c.Home(), c.Config().Addr, handle, icon)
 	}
 	if h := notify.DetectHerdr(env); h != nil {
 		o.Herdr = h
@@ -232,24 +235,37 @@ func awayAfter(v string) time.Duration {
 	return time.Duration(n * float64(time.Minute))
 }
 
-// setupAgentHome makes a registered agent's home under agentDir: the files
-// tc owns, config.json with its handle and icon, and its own device login
-// with the owner's SSH key. tc background then runs it.
-func setupAgentHome(ctx context.Context, ownerHome, agentDir, handle, icon string) error {
-	if err := home.Ensure(agentDir); err != nil {
+// setupAgentHome makes a registered agent's home on this computer, as `tc
+// agent setup` does: the files tc owns (the tc server's host on the
+// sandbox's network list), config.json with its handle, icon and this
+// machine's id, and its own device login with the owner's SSH key.
+// tc background then runs it.
+func setupAgentHome(ctx context.Context, tcHome, serverAddr, handle, icon string) error {
+	dir := home.Dir(tcHome)
+	var hosts []string
+	if h, _, err := net.SplitHostPort(serverAddr); err == nil && h != "" {
+		hosts = []string{h}
+	}
+	if err := home.EnsureWith(dir, home.Options{ExtraDomains: hosts}); err != nil {
 		return err
 	}
-	cfg, err := home.LoadConfig(agentDir)
+	cfg, err := home.LoadConfig(dir)
 	if err != nil {
 		return err
 	}
-	cfg.Handle, cfg.Icon = handle, icon
-	if cfg.HomeMachine == "" {
-		cfg.HomeMachine, _ = os.Hostname()
-	}
-	if err := home.SaveConfig(agentDir, cfg); err != nil {
+	mid, err := agent.MachineID(tcHome)
+	if err != nil {
 		return err
 	}
-	_, err = client.LoginAgent(ctx, ownerHome, home.PathsFor(agentDir).DeviceHome, handle)
+	cfg.Handle, cfg.Icon, cfg.HomeMachine = handle, icon, mid
+	if err := home.SaveConfig(dir, cfg); err != nil {
+		return err
+	}
+	dev := home.PathsFor(dir).DeviceHome
+	var have client.Config
+	if b, err := os.ReadFile(filepath.Join(dev, "config.json")); err == nil && json.Unmarshal(b, &have) == nil && have.Agent == handle {
+		return nil // already signed in here: keep its device and keys
+	}
+	_, err = client.LoginAgent(ctx, tcHome, dev, handle)
 	return err
 }

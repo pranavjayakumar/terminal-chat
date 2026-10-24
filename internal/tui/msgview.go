@@ -619,7 +619,13 @@ func (m *Model) paneLines(p *pane, w int) ([]prow, []int) {
 	left := p.root != 0
 	live := m.liveShown(p)
 	sig := liveSig(live)
-	if p.memoLines != nil && p.memoVer == p.ver && p.memoW == w && p.memoCompact == m.ui.Compact && p.memoDay == m.today() && p.memoLive == sig {
+	if p.memoLines != nil && p.memoVer == p.ver && p.memoW == w && p.memoCompact == m.ui.Compact && p.memoDay == m.today() {
+		if p.memoLive != sig {
+			// only the live rows changed: keep the messages' layout
+			n := p.memoBase
+			p.memoLines, p.memoOwner = m.liveLines(p, live, w, p.memoLines[:n:n], p.memoOwner[:n:n])
+			p.memoLive = sig
+		}
 		return p.memoLines, p.memoOwner
 	}
 	appr := m.approvalStates(p.msgs)
@@ -671,6 +677,7 @@ func (m *Model) paneLines(p *pane, w int) ([]prow, []int) {
 			owner = append(owner, -1)
 		}
 	}
+	p.memoBase = len(rows)
 	rows, owner = m.liveLines(p, live, w, rows, owner)
 	if rows == nil {
 		rows, owner = []prow{}, []int{}

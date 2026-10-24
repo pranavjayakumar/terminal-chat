@@ -55,7 +55,7 @@ func TestAgentPanel(t *testing.T) {
 			t.Fatal("panel not open")
 		}
 		v := frameText(t, m, "panel")
-		for _, want := range []string{"Rocky ⟡ · your agent", "State", "awake", "idle 4m", "on alice-mbp",
+		for _, want := range []string{"Rocky ⟡ · your agent", "State", "awake", "idle 4m", "on this computer",
 			"Spend today", "$3.40 of $20", "17%", "Asks today", "carol 2", "you 1",
 			"Mode", "Talk", "Work", "Crew", "always ask you first",
 			"Reads", "#general + wherever it is called", "Folders", "/src/tc", "Limits", "$20/day · 15 asks/person · roll over at 50%",
@@ -244,11 +244,33 @@ func TestAgentPanelElsewhere(t *testing.T) {
 	m.opt.AgentDir = filepath.Join(t.TempDir(), "nothing")
 	run(m, m.openAgentPanel())
 	v := frameText(t, m, "elsewhere")
-	if !strings.Contains(v, "no agent home here") {
+	if !strings.Contains(v, "no agent home here") || strings.Contains(v, "Spend today") {
 		t.Fatalf("no hint:\n%s", v)
 	}
 	press(m, "p")
 	frameText(t, m, "p elsewhere")
+	// set up, but on another computer: read only
+	m.opt.AgentDir = agentDirOf(t, m)
+	cfgPath := home.PathsFor(m.opt.AgentDir)
+	c, _ := home.LoadConfig(m.opt.AgentDir)
+	c.HomeMachine = "ffffffffffffffffffffffffffffffff"
+	home.SaveConfig(m.opt.AgentDir, c)
+	_ = cfgPath
+	press(m, "esc")
+	run(m, m.openAgentPanel())
+	if v := frameText(t, m, "other computer"); !strings.Contains(v, "it lives on another computer") {
+		t.Fatalf("no hint:\n%s", v)
+	}
+	press(m, "p")
+	if c, _ := home.LoadConfig(m.opt.AgentDir); c.Paused {
+		t.Fatal("paused an agent that lives elsewhere")
+	}
+}
+
+// agentDirOf is the agent home agentModel made.
+func agentDirOf(t *testing.T, m *Model) string {
+	t.Helper()
+	return filepath.Join(os.Getenv("HOME"), ".config", "tc", "agent")
 }
 
 // Every skin with every theme: the agent views read on what they sit on.

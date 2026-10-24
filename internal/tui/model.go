@@ -57,6 +57,7 @@ type pane struct {
 	memoOwner               []int
 	memoBlocks              map[blockKey]*canvas // the blocks memoLines uses
 	memoLive                string               // the live agent rows it drew
+	memoBase                int                  // where they start in memoLines
 	liveMarks               map[*canvas]liveMark // their animated glyphs (agentlive.go)
 }
 

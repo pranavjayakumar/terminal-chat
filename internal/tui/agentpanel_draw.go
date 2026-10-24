@@ -210,19 +210,22 @@ func (m *Model) drawPanelMain(d *apDraw) {
 	if h.ok {
 		bits = append(bits, "sleeps after "+idleText(cfg.IdleMinutes)+" idle")
 	}
-	if cfg.HomeMachine != "" {
-		bits = append(bits, "on "+sanitize.Line(cfg.HomeMachine))
+	switch {
+	case h.here:
+		bits = append(bits, "on this computer")
+	case h.ok && cfg.HomeMachine != "":
+		bits = append(bits, "on another computer")
 	}
 	if len(bits) > 0 {
 		c.put(e+2, d.y, truncate(strings.Join(bits, " · "), d.x+d.w-e-2), fgc(th.dim), "")
 	}
 	d.y++
-	if !h.ok {
-		msg := "its settings live in its home on " + m.homeMachine() + " · open tc there"
+	if !h.ok || !h.here {
+		msg := "it lives on another computer · its settings change there (tc on that computer)"
 		if h.err != "" {
 			msg = "! " + h.err
 		} else if h.dir == "" || !m.agentHomeExists() {
-			msg = "no agent home here · run tc agent setup on the machine it should live on"
+			msg = "no agent home here · tc agent setup on the computer it should live on"
 		}
 		c.put(d.x, d.y+1, truncate(msg, d.w), fgc(th.warn), "")
 		d.y += 3

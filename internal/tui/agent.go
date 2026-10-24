@@ -350,12 +350,8 @@ func (m *Model) reloadLive(ch uint64) {
 	} else {
 		m.ag.live[ch] = rows
 	}
-	if m.main.ch == ch {
-		m.main.ver++
-	}
-	if m.thread.ch == ch {
-		m.thread.ver++
-	}
+	// paneLines notices the change itself (its live signature): the
+	// messages' layout stays memoized while a reply streams.
 }
 
 // liveIn is the live statuses shown at the bottom of a pane: the channel's

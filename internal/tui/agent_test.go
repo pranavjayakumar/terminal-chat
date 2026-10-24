@@ -93,7 +93,13 @@ func agentModel(t *testing.T, f *fakeClient, w, h int, prefs string) *Model {
 	t.Setenv("HOME", hd)
 	dir := filepath.Join(hd, ".config", "tc", "agent")
 	cfg := home.DefaultConfig()
-	cfg.Handle, cfg.Icon, cfg.HomeMachine = "rocky", "pebble:5", "alice-mbp"
+	// it lives here: this machine's id and its device login
+	tcHome := filepath.Dir(dir)
+	const mid = "0123456789abcdef0123456789abcdef"
+	os.MkdirAll(home.PathsFor(dir).DeviceHome, 0o700)
+	os.WriteFile(filepath.Join(home.PathsFor(dir).DeviceHome, "config.json"), []byte(`{}`), 0o600)
+	os.WriteFile(filepath.Join(tcHome, "machine-id"), []byte(mid+"\n"), 0o600)
+	cfg.Handle, cfg.Icon, cfg.HomeMachine = "rocky", "pebble:5", mid
 	cfg.Access.Folders = []string{"/src/tc"}
 	if err := home.SaveConfig(dir, cfg); err != nil {
 		t.Fatal(err)
