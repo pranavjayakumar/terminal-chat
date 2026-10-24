@@ -50,7 +50,7 @@ const (
 // parseApproval reads an agent's approval card. Only a verified message
 // counts: in encrypted channels the agent's device signed it.
 func parseApproval(x client.Message) (approvalCard, bool) {
-	if x.Agent == "" || x.Deleted || !x.Sec.Trusted() {
+	if !x.FromAgent() || x.Deleted || !x.Sec.Trusted() {
 		return approvalCard{}, false
 	}
 	first, detail, _ := strings.Cut(x.Body, "\n")
@@ -111,7 +111,7 @@ func (m *Model) approvalStates(msgs []client.Message) map[uint64]apprState {
 		st := verdict(x)
 		if st == apprPending {
 			for _, y := range msgs[i+1:] {
-				if y.Agent == x.Agent && strings.Contains(y.Body, "no answer on "+card.code) {
+				if y.FromAgent() && y.Author == x.Author && strings.Contains(y.Body, "no answer on "+card.code) {
 					st = apprExpired
 				}
 			}
@@ -233,7 +233,7 @@ func (m *Model) pendingCard(p *pane) (client.Message, bool) {
 	st := m.approvalStates(p.msgs)
 	for i := len(p.msgs) - 1; i >= 0 && i >= len(p.msgs)-8; i-- {
 		x := p.msgs[i]
-		if x.Author == m.me.ID && x.Agent != "" && st[x.ID] == apprPending {
+		if x.Author == m.me.ID && x.FromAgent() && st[x.ID] == apprPending {
 			if _, ok := parseApproval(x); ok {
 				return x, true
 			}
@@ -293,12 +293,18 @@ func (m *Model) noteApprovals(news []client.Message) tea.Cmd {
 		if (x.Chan == m.active && m.focused) || m.opt.Notifier == nil {
 			continue
 		}
-		a := m.agentByHandle(x.Agent)
+		a := m.agentOfMsg(x)
 		n := notify.Note{Title: agentName(a.Handle) + " needs your ok", Body: sanitize.Line(card.action) + "?", Tag: "tc-agent"}
 		send := m.opt.Notifier
 		cmd = func() tea.Msg { send.Send(n); return noopMsg{} }
 	}
 	return cmd
+}
+
+// myApprovalCard: x is a verified approval card from my own agent.
+func (m *Model) myApprovalCard(x client.Message) bool {
+	_, ok := parseApproval(x)
+	return ok && x.Author == m.me.ID
 }
 
 // waitingApproval is the newest card still waiting for me.

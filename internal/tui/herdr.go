@@ -70,7 +70,15 @@ func (m *Model) notifyFor(news []client.Message) tea.Cmd {
 	if m.opt.Notifier == nil {
 		return nil
 	}
-	return alertCmd(m.al.Messages(news))
+	// my agent's approval cards get their own ping (noteApprovals), not
+	// the mention alert their @owner would raise
+	keep := news[:0:0]
+	for _, x := range news {
+		if !m.myApprovalCard(x) {
+			keep = append(keep, x)
+		}
+	}
+	return alertCmd(m.al.Messages(keep))
 }
 
 func (m *Model) flushNote(msg notifyFlushMsg) tea.Cmd { return alertCmd(m.al.Flush(msg.ch, msg.gen)) }

@@ -374,3 +374,33 @@ func TestAgentRunFold(t *testing.T) {
 	lineWith(t, v, "▾ 3 steps")
 	lineWith(t, v, "· editing poll.go…")
 }
+
+// A visitor post (an outside Claude session, tc mcp) shows ⇢ by the name.
+func TestViaMark(t *testing.T) {
+	f := agentFake()
+	f.msgs[10] = append(f.msgs[10], client.Message{Message: proto.Message{ID: 530, Chan: 10, Author: 2, Via: proto.ViaMCP, Body: "posted from claude", Time: agentTime.UnixMilli()}})
+	m := agentModel(t, f, 120, 40, "")
+	v := frameText(t, m, "via")
+	if r := lineWith(t, v, "bob  21:07"); !strings.Contains(r, viaMark+" bob") {
+		t.Errorf("no via mark: %q", r)
+	}
+	if grouped(f.msgs[10][4], f.msgs[10][5]) {
+		t.Error("a visitor post grouped with its author's own")
+	}
+}
+
+// Identity follows the agent's current handle and icon (AgentOf the
+// author), not the handle the message was sent under.
+func TestAgentIdentityFollowsRename(t *testing.T) {
+	f := agentFake()
+	f.ag.agents[0].Handle, f.ag.agents[0].Icon = "boulder", "kite:2"
+	m := agentModel(t, f, 120, 40, "")
+	r := lineWith(t, frameText(t, m, "renamed"), "Boulder ⟡")
+	if !strings.Contains(r, "◆ Boulder ⟡ · Alice's agent") {
+		t.Errorf("name row: %q", r)
+	}
+	// an agent that has left keeps the handle its message carries
+	f.ag.agents = f.ag.agents[1:]
+	run(m, m.applyUpdate(client.Update{Agents: true}))
+	lineWith(t, frameText(t, m, "retired"), "Rocky ⟡")
+}
