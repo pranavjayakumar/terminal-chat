@@ -303,6 +303,9 @@ func (s *Supervisor) accept(ctx context.Context, a Ask) {
 	if a.Msg.Time < s.queue.since() || !s.queue.claim(a.Msg.ID, now) {
 		return
 	}
+	if s.stopAuto(a) {
+		return
+	}
 	if now.Sub(time.UnixMilli(a.Msg.Time)) > s.StaleAfter {
 		s.reply(a.Chan, a.Thread, "sorry, I was asleep 💤 ask me again?")
 		s.activity(a, "stale", "asked while asleep", 0)

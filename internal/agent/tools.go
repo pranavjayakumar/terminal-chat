@@ -299,7 +299,9 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		if dir == "" {
 			return "", fmt.Errorf("no worktree for branch %s: start it with work_start", sanitize.Line(p.Branch))
 		}
-		if !s.askOwner(ctx, r, "push "+p.Branch+" and open a draft PR: "+p.Title, p.Body) {
+		if s.autoPR() {
+			s.activity(a, "approval", "auto (♾️ today): draft PR "+oneLine(p.Title, 200), 0)
+		} else if !s.askOwner(ctx, r, "push "+p.Branch+" and open a draft PR: "+p.Title, p.Body) {
 			return "your owner said no (or didn't answer): nothing pushed", nil
 		}
 		url, err := s.Work.OpenDraftPR(ctx, dir, p.Branch, p.Title, p.Body)

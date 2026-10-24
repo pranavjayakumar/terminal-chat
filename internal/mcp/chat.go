@@ -26,10 +26,6 @@ type Chat interface {
 	AgentOf(user uint64) (proto.Agent, bool)
 }
 
-// VisitorMark starts every post made through the visitor `tc mcp`, so
-// people can tell the owner didn't type it.
-const VisitorMark = "⇢ "
-
 // ResolveChan finds a channel by "#name", "name", its id, or "dm" (the
 // agent DM). It only finds channels in the cache.
 func ResolveChan(c Chat, s string) (client.ChannelView, error) {
@@ -77,8 +73,11 @@ func Author(c Chat, m proto.Message) string {
 	if name == "" {
 		name = fmt.Sprintf("user%d", m.Author)
 	}
-	if m.Agent != "" {
+	switch {
+	case m.Agent != "":
 		return sanitize.Line(m.Agent) + " (" + name + "'s agent)"
+	case m.Via != "":
+		return name + " (via " + sanitize.Line(m.Via) + ")"
 	}
 	return name
 }

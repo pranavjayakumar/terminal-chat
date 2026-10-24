@@ -16,13 +16,13 @@ import (
 // VisitorChat is what the visitor needs from the owner's client.
 type VisitorChat interface {
 	Chat
-	Send(ch uint64, body string, thread uint64) error
+	SendVia(ch uint64, body string, thread uint64, via string) error
 	Flush(ctx context.Context) error
 }
 
 // Visitor serves an outside Claude session from the owner's tc home. It
 // reads only the channels the owner allowed for agents, and posts as the
-// owner with VisitorMark.
+// owner marked Via proto.ViaMCP (tc shows ⇢).
 type Visitor struct {
 	Chat VisitorChat
 	// Allowed lists the channels the owner allowed in the agent panel. It
@@ -126,14 +126,14 @@ func (v *Visitor) Call(ctx context.Context, name string, raw json.RawMessage) (s
 		if text == "" {
 			return "", errors.New("nothing to post")
 		}
-		body := VisitorMark + text
+		body := text
 		if len(body) > proto.MaxBody {
 			return "", fmt.Errorf("too long: %d bytes, the limit is %d", len(body), proto.MaxBody)
 		}
 		if a.Thread != 0 && !inChan(v.Chat, a.Thread, cv.ID) {
 			return "", fmt.Errorf("no thread %d in %s", a.Thread, ChanLabel(cv))
 		}
-		if err := v.Chat.Send(cv.ID, body, a.Thread); err != nil {
+		if err := v.Chat.SendVia(cv.ID, body, a.Thread, proto.ViaMCP); err != nil {
 			return "", err
 		}
 		if err := v.Chat.Flush(ctx); err != nil {

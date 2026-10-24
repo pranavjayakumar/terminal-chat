@@ -18,6 +18,8 @@ func (world) Chan(id uint64) (client.ChannelView, bool) {
 		return client.ChannelView{Channel: proto.Channel{ID: 20, Kind: proto.ChanDM, Members: []uint64{1, 2}}, Display: "bob", Member: true}, true
 	case 10:
 		return client.ChannelView{Channel: proto.Channel{ID: 10, Name: "general", Members: []uint64{1, 2}}, Member: true}, true
+	case 30:
+		return client.ChannelView{Channel: proto.Channel{ID: 30, Kind: proto.ChanAgentDM, Members: []uint64{1}, Creator: 1}, Display: "rocky", Member: true}, true
 	}
 	return client.ChannelView{}, false
 }
@@ -120,5 +122,24 @@ func TestEngineRing(t *testing.T) {
 	e.CheckRing()
 	if e.Ring.Ch != 0 {
 		t.Fatal("ring survived an empty huddle")
+	}
+}
+
+// My agent's reply is not my own message: it notifies like a DM, titled
+// after the agent.
+func TestEngineAgentReply(t *testing.T) {
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	o := &out{}
+	e := New(world{}, o, func() time.Time { return now })
+	mine := proto.Message{ID: 1, Chan: 30, Author: 1, Body: "my ask"}
+	reply := proto.Message{ID: 2, Chan: 30, Author: 1, Agent: "rocky", Body: "done: build is green"}
+	if e.ShouldNotify(mine) {
+		t.Fatal("my own message notified")
+	}
+	if !e.ShouldNotify(reply) {
+		t.Fatal("my agent's reply didn't notify")
+	}
+	if title, body, _ := e.NoteText(reply); title != "rocky (your agent)" || body != "done: build is green" {
+		t.Fatalf("note %q %q", title, body)
 	}
 }

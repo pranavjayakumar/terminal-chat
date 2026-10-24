@@ -183,6 +183,7 @@ type queueState struct {
 	Handled   map[uint64]int64 `json:"handled"` // ask message id → when
 	Greeted   bool             `json:"greeted"`
 	LastDream string           `json:"last_dream,omitempty"` // YYYY-MM-DD
+	AutoPR    string           `json:"auto_pr,omitempty"`    // YYYY-MM-DD the owner's ♾️ approves draft PRs
 }
 
 type queue struct {
