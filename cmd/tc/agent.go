@@ -323,6 +323,9 @@ func agentRun(ctx context.Context, tcHome string) error {
 	s := &agent.Supervisor{
 		Dir: dir, Chat: c, Runner: runner.Claude{}, Memory: mem, Work: work.New(dir),
 		TCBin: exe, Server: c.Config().Addr, Version: version, Log: log, Model: os.Getenv("TC_AGENT_MODEL"),
+		Refresh: func() error {
+			return home.EnsureWith(dir, home.Options{ExtraDomains: serverHosts(c.Config().Addr)})
+		},
 	}
 	err = s.Run(cctx)
 	if err != nil {

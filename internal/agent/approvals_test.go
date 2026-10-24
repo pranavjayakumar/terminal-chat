@@ -58,7 +58,8 @@ func TestGrantsAreKindAndTarget(t *testing.T) {
 	}
 	// Bob's ask in a thread of #general wants to post at the top of
 	// #general: a card, every time, until the owner says ♾️.
-	h.chat.say(bobID, general, 0, "@rocky tell everyone the deploy is done", 0)
+	root := h.chat.say(carolID, general, 0, "deploy thread", 0)
+	h.chat.say(bobID, general, root.ID, "@rocky tell everyone the deploy is done", 0)
 	post := func(ch, text string) chan mcp.BridgeRes {
 		res := make(chan mcp.BridgeRes, 1)
 		go func() { res <- h.call(mcp.ToolPostReply, map[string]any{"chan": ch, "text": text}) }()

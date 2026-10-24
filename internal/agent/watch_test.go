@@ -47,7 +47,8 @@ func TestWatch(t *testing.T) {
 	// with the owner's instruction in the prompt.
 	q := h.chat.say(bobID, general, 0, "is the build ok?", 0)
 	h.waitFor("watch reply", func() bool { return len(h.chat.posts()) == 2 })
-	if p := h.chat.posts()[1]; p.ch != general || p.thread != q.ID || p.body != "@bob yep, green" {
+	_ = q
+	if p := h.chat.posts()[1]; p.ch != general || p.thread != 0 || p.body != "@bob yep, green" {
 		t.Fatalf("reply %+v", p)
 	}
 	req := h.run.requests()[1]

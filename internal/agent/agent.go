@@ -49,6 +49,9 @@ type Memory interface {
 	Recall(query string, includePrivate bool) ([]memory.Hit, error)
 	WriteHandoff(key, text string) error
 	Commit(msg string) error
+	Read(rel string) (memory.Note, error)
+	Write(n memory.Note) error
+	Forget(rel string) error
 	PrepareDream() (*memory.Dream, error)
 	ApplyDream(d *memory.Dream) error
 	DiscardDream(d *memory.Dream) error
@@ -70,9 +73,13 @@ type Supervisor struct {
 	Memory Memory
 	Work   Work
 	// TCBin is the tc binary the engine starts as its MCP server.
-	TCBin   string
-	Server  string // the tc server's address, for the identity block
-	Model   string // engine model; "" = the runner's default (sonnet)
+	TCBin  string
+	Server string // the tc server's address, for the identity block
+	Model  string // engine model; "" = the runner's default (sonnet)
+	// Refresh rewrites the tc-owned files of the agent home (home.Ensure);
+	// called before a run when the tc binary changed since the last one,
+	// so a running supervisor picks up a tc update's code and skills.
+	Refresh func() error
 	Version string
 	Log     *slog.Logger
 	Now     func() time.Time
@@ -108,6 +115,7 @@ type Supervisor struct {
 	wg       sync.WaitGroup
 	actMu    sync.Mutex
 	dreaming bool
+	exeStamp string // TCBin's size and mtime when the home was last refreshed
 }
 
 func (s *Supervisor) defaults() {

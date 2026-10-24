@@ -166,11 +166,7 @@ func (s *Supervisor) watchAsk(m client.Message, kind string) (Ask, bool) {
 	if over {
 		return Ask{}, false
 	}
-	thread := m.Thread
-	if thread == 0 {
-		thread = m.ID
-	}
-	return Ask{Msg: m, Chan: m.Chan, Thread: thread, Key: watchKey(w.Chan, w.Thread), Asker: m.Author,
+	return Ask{Msg: m, Chan: m.Chan, Thread: m.Thread, Key: watchKey(w.Chan, w.Thread), Asker: m.Author,
 		Owner: m.Author == s.owner, FollowUp: true, Watch: w}, true
 }
 
@@ -239,6 +235,21 @@ func (s *Supervisor) People(ch, thread uint64) string {
 		for _, id := range cv.Members {
 			add(id)
 		}
+	}
+	// Agents whose owners are here can be talked to: they hear only an
+	// @mention of their handle.
+	me := s.handleNow()
+	for _, a := range s.Chat.Agents() {
+		if !seen[a.Owner] || a.Handle == "" || len(names) >= 50 {
+			continue
+		}
+		n := "@" + sanitize.Line(a.Handle)
+		if a.Handle == me {
+			n += " (you)"
+		} else {
+			n += " (" + sanitize.Line(s.Chat.User(a.Owner).Name) + "'s agent)"
+		}
+		names = append(names, n)
 	}
 	return strings.Join(names, ", ")
 }

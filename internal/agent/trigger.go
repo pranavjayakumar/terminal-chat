@@ -58,10 +58,7 @@ func Trigger(m client.Message, kind string, owner uint64, handle string) (Ask, b
 		a.InDM = true
 		a.Thread = m.Thread
 	case client.Mentioned(m.Body, []string{handle}):
-		a.Thread = m.Thread
-		if a.Thread == 0 {
-			a.Thread = m.ID // answer in a thread on the mention
-		}
+		a.Thread = m.Thread // reply at the level it was asked
 	default:
 		return Ask{}, false
 	}

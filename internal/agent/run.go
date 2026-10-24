@@ -57,6 +57,7 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 		s.activity(a, "refused", "asks per person reached", 0)
 		return
 	}
+	s.refreshHome()
 	mode := EffectiveMode(cfg.Mode, a)
 	kind := "ask"
 	if a.FollowUp {
@@ -116,7 +117,7 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 	left := s.left[a.Key]
 	delete(s.left, a.Key)
 	s.mu.Unlock()
-	if replied && !left && a.Thread != 0 && a.Watch == nil {
+	if replied && !left && a.Watch == nil && !a.InDM {
 		s.engage(a.Key, time.Duration(cfg.EngageMinutes)*time.Minute)
 	}
 	sess.Tokens, sess.Window = res.ContextTokens, res.ContextWindow
@@ -464,4 +465,29 @@ func newUUID() string {
 	b[8] = b[8]&0x3f | 0x80
 	h := hex.EncodeToString(b[:])
 	return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
+}
+
+// refreshHome runs Refresh when the tc binary changed since the last time
+// (a tc update under a running supervisor). memory/ is never touched.
+func (s *Supervisor) refreshHome() {
+	if s.Refresh == nil || s.TCBin == "" {
+		return
+	}
+	fi, err := os.Stat(s.TCBin)
+	if err != nil {
+		return
+	}
+	stamp := fmt.Sprintf("%d-%d", fi.Size(), fi.ModTime().UnixNano())
+	s.mu.Lock()
+	first, same := s.exeStamp == "", s.exeStamp == stamp
+	s.exeStamp = stamp
+	s.mu.Unlock()
+	if first || same {
+		return
+	}
+	if err := s.Refresh(); err != nil {
+		s.Log.Warn("refreshing the agent home", "err", err)
+	} else {
+		s.Log.Info("tc changed: refreshed the agent's code and skills")
+	}
 }

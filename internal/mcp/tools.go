@@ -27,6 +27,8 @@ const (
 	ToolSetIdentity  = "set_identity"
 	ToolLeaveThread  = "leave_thread"
 	ToolWatch        = "watch"
+	ToolUpdateMemory = "update_memory"
+	ToolForget       = "forget"
 	ToolUnwatch      = "unwatch"
 )
 
@@ -70,9 +72,10 @@ var allTools = map[string]Tool{
 		prop{"chan", "string", "only this channel (optional)", false})},
 	ToolListChannels: {ToolListChannels, "List the channels you can read.", schema()},
 	ToolWhoami:       {ToolWhoami, "Who you are, who asked, where, and what you may do in this ask.", schema()},
-	ToolPostReply: {ToolPostReply, "Post a message in a channel or thread. Your final message is posted for you; use this only for milestones during long work.", schema(
+	ToolPostReply: {ToolPostReply, "Post a message. Your final message is posted for you where you were asked; use this for milestones during long work, to post somewhere else, or with where=thread to put long output in a thread on the ask (then reply NO_REPLY).", schema(
 		prop{"chan", "string", chanDesc, true},
 		prop{"thread", "integer", "thread to reply in (0 = top level)", false},
+		prop{"where", "string", "\"here\" (default: the given chan/thread) or \"thread\" (a thread on the message you were asked in)", false},
 		prop{"text", "string", "the message", true})},
 	ToolStatus: {ToolStatus, "Set your live status line, shown under the thread while you work (a few words).", schema(
 		prop{"text", "string", "e.g. \"running tests\"", true})},
@@ -100,10 +103,15 @@ var allTools = map[string]Tool{
 		prop{"slug", "string", "short branch-friendly name, e.g. poll-cmd", true})},
 	ToolSetSoul: {ToolSetSoul, "Rewrite soul.md, your personality. Only when your owner asks, in your DM.", schema(
 		prop{"text", "string", "the whole new soul.md, under 2 KB", true})},
-	ToolSetIdentity: {ToolSetIdentity, "Change your own @handle and/or icon. Only when your owner asks, in your DM. Everyone's tc updates by itself.", schema(
+	ToolSetIdentity: {ToolSetIdentity, "Change your own @handle and/or icon. Only when your owner asks, in your DM. Everyone's tc updates by itself. Prefer an animated preset over an emoji: they move in tc while you think, work, finish and sleep.", schema(
 		prop{"handle", "string", "new handle without @: lowercase letters, digits, dashes (optional)", false},
-		prop{"icon", "string", "new icon, an emoji (optional)", false})},
+		prop{"icon", "string", "optional: an animated preset — pebble ▟▙, orb ◉, spark ✦, owl ◕◕, hive ⣿, moon ☾, meter ▃▅, kite ◆ — optionally with a name color like \"orb:3\" (0-7); or a single emoji (shown still)", false})},
 	ToolLeaveThread: {ToolLeaveThread, "Stop listening in this thread: new messages here reach you again only with an @mention.", schema()},
+	ToolUpdateMemory: {ToolUpdateMemory, "Your owner only: write a memory note (create or replace). note is a path like people/fahim.md, channels/general.md, facts/deploy.md or MEMORY.md, or a person's name.", schema(
+		prop{"note", "string", "the note's path, or a person's name", true},
+		prop{"text", "string", "the note's whole new text, under 2 KB", true})},
+	ToolForget: {ToolForget, "Your owner only: delete a memory note, by its path or by words that find exactly one note.", schema(
+		prop{"note", "string", "the note's path, or words to find it", true})},
 	ToolWatch: {ToolWatch, "Watch a channel or thread for a while when your owner asks (\"keep an eye on #general for 5 min and reply to fahim\"): new messages there reach you without a mention, with their instruction. Your owner gets a one-line summary when it ends.", schema(
 		prop{"chan", "string", chanDesc, true},
 		prop{"thread", "integer", "only this thread (optional; default the whole channel)", false},
@@ -127,7 +135,7 @@ func pick(names ...string) []Tool {
 func AgentTools() []Tool {
 	return pick(ToolReadThread, ToolReadChannel, ToolSearch, ToolListChannels, ToolWhoami, ToolPostReply,
 		ToolStatus, ToolStream, ToolRemember, ToolRecall, ToolAskOwner, ToolApprove,
-		ToolOpenIssue, ToolOpenPR, ToolWorkStart, ToolSetSoul, ToolSetMe, ToolSetIdentity, ToolLeaveThread, ToolWatch, ToolUnwatch)
+		ToolOpenIssue, ToolOpenPR, ToolWorkStart, ToolSetSoul, ToolSetMe, ToolSetIdentity, ToolLeaveThread, ToolWatch, ToolUnwatch, ToolUpdateMemory, ToolForget)
 }
 
 // VisitorTools are the tools of `tc mcp` for an outside session.

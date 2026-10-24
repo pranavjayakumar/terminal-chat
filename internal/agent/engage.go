@@ -51,12 +51,12 @@ func (s *Supervisor) Engaged(ch, thread uint64) bool {
 }
 
 // followUp turns a message without a mention into a follow-up ask when the
-// agent is engaged in its thread. Only people count (not bots, agents or
-// posts through tc mcp), and only text that is what its author sent. A
-// message that calls another agent ends the engagement: the conversation
-// moved on.
+// agent is engaged where it was written: a thread, or a channel's top
+// level. Only people count (not bots, agents or posts through tc mcp), and
+// only text that is what its author sent. A message that calls another
+// agent ends the engagement: the conversation moved on.
 func (s *Supervisor) followUp(m client.Message, kind string) (Ask, bool) {
-	if m.Thread == 0 || m.ID == 0 || m.Deleted || !m.Sec.Trusted() || m.FromAgent() || m.Via != "" || s.Chat.User(m.Author).Bot {
+	if m.ID == 0 || m.Deleted || !m.Sec.Trusted() || m.FromAgent() || m.Via != "" || s.Chat.User(m.Author).Bot {
 		return Ask{}, false
 	}
 	key := SessionKey(m.Chan, m.Thread)

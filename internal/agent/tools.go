@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/skailama/tc/internal/agent/home"
@@ -117,10 +118,18 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		var p struct {
 			Chan   string `json:"chan"`
 			Thread uint64 `json:"thread"`
+			Where  string `json:"where"`
 			Text   string `json:"text"`
 		}
 		if err := mcp.Args(raw, &p); err != nil {
 			return "", err
+		}
+		if p.Where == "thread" {
+			// a thread on the ask: its own thread, or a new one on it
+			p.Chan, p.Thread = strconv.FormatUint(a.Chan, 10), a.Thread
+			if p.Thread == 0 && a.Msg.ID != 0 {
+				p.Thread = a.Msg.ID
+			}
 		}
 		cv, err := s.readable(r, p.Chan)
 		if err != nil {
@@ -135,7 +144,8 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		}
 		// The owner's own ask to post somewhere is the approval; anyone
 		// else's post outside their thread needs the owner's ok.
-		if !a.Owner && (cv.ID != a.Chan || p.Thread != a.Thread) {
+		onAsk := cv.ID == a.Chan && (p.Thread == a.Thread || p.Where == "thread")
+		if !a.Owner && !onAsk {
 			where := mcp.ChanLabel(cv)
 			if !s.askOwner(ctx, r, Approval{Kind: KindPost, Target: where, Action: "post in " + where, Preview: text}) {
 				return "your owner said no (or didn't answer): not posted", nil
@@ -312,6 +322,58 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		s.activity(a, "pr", url, 0)
 		return url, nil
 
+	case mcp.ToolUpdateMemory:
+		var p struct {
+			Note string `json:"note"`
+			Text string `json:"text"`
+		}
+		if err := mcp.Args(raw, &p); err != nil {
+			return "", err
+		}
+		if !a.Owner {
+			return "", errOwnerOnly
+		}
+		if s.Memory == nil {
+			return "", errors.New("memory isn't available")
+		}
+		rel := notePath(p.Note)
+		n, err := s.Memory.Read(rel)
+		if err != nil {
+			n = memory.Note{Path: rel}
+		}
+		n.Body, n.Source, n.Trust = p.Text, s.Chat.User(a.Asker).Name, memory.TrustOwner
+		n.Private = n.Private || a.InDM
+		if err := s.Memory.Write(n); err != nil {
+			return "", err
+		}
+		_ = s.Memory.Commit("memory: " + s.Chat.User(a.Asker).Name + " edited " + rel)
+		s.activity(a, "memory", "wrote "+rel, 0)
+		return "saved " + rel, nil
+
+	case mcp.ToolForget:
+		var p struct {
+			Note string `json:"note"`
+		}
+		if err := mcp.Args(raw, &p); err != nil {
+			return "", err
+		}
+		if !a.Owner {
+			return "", errOwnerOnly
+		}
+		if s.Memory == nil {
+			return "", errors.New("memory isn't available")
+		}
+		rel, err := s.findNote(p.Note)
+		if err != nil {
+			return "", err
+		}
+		if err := s.Memory.Forget(rel); err != nil {
+			return "", err
+		}
+		_ = s.Memory.Commit("memory: " + s.Chat.User(a.Asker).Name + " forgot " + rel)
+		s.activity(a, "memory", "forgot "+rel, 0)
+		return "forgot " + rel + " (undo today in the panel brings it back)", nil
+
 	case mcp.ToolWatch:
 		var p struct {
 			Chan    string `json:"chan"`
@@ -390,8 +452,8 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		if p.Handle != "" && !proto.ValidAgentHandle(p.Handle) {
 			return "", fmt.Errorf("@%s can't be a handle: lowercase letters, digits and dashes, not a reserved name", sanitize.Line(p.Handle))
 		}
-		if len(p.Icon) > proto.MaxAgentIcon {
-			return "", errors.New("that icon is too long")
+		if p.Icon != "" && !ValidIcon(p.Icon) {
+			return "", errors.New("icon: one of the animated presets (" + IconHelp() + "), optionally with a color like orb:3 (0-7), or a single emoji")
 		}
 		ag, err := s.Chat.UpdateAgent(ctx, p.Handle, p.Icon)
 		if err != nil {
@@ -532,4 +594,45 @@ func (s *Supervisor) approvePrompt(ctx context.Context, r *run, raw json.RawMess
 		out, _ = json.Marshal(map[string]any{"behavior": "deny", "message": "your owner said no (or didn't answer)"})
 	}
 	return string(out), nil
+}
+
+// notePath turns update_memory's note into a memory path: a path as given,
+// a bare name as that person's note.
+func notePath(note string) string {
+	note = strings.TrimSpace(note)
+	if strings.Contains(note, "/") || strings.HasSuffix(note, ".md") {
+		return note
+	}
+	return memory.PersonPath(strings.TrimPrefix(note, "@"))
+}
+
+// findNote resolves forget's note: an existing path, or words that match
+// exactly one note (daily logs are a record and can't be forgotten here).
+func (s *Supervisor) findNote(q string) (string, error) {
+	q = strings.TrimSpace(q)
+	if q == "" {
+		return "", errors.New("which note?")
+	}
+	for _, rel := range []string{q, notePath(q)} {
+		if _, err := s.Memory.Read(rel); err == nil {
+			return rel, nil
+		}
+	}
+	hits, err := s.Memory.Recall(q, true)
+	if err != nil {
+		return "", err
+	}
+	var paths []string
+	for _, h := range hits {
+		if !strings.HasPrefix(h.Path, "daily/") && h.Path != "MEMORY.md" && !slices.Contains(paths, h.Path) {
+			paths = append(paths, h.Path)
+		}
+	}
+	switch len(paths) {
+	case 0:
+		return "", fmt.Errorf("no note matches %q", q)
+	case 1:
+		return paths[0], nil
+	}
+	return "", fmt.Errorf("several notes match: %s; say which", strings.Join(paths, ", "))
 }

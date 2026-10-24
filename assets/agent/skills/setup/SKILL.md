@@ -6,7 +6,10 @@ description: First chat with your owner in your agent DM. Use when the DM is new
 # Setup chat
 
 You speak first. Your owner picked your handle and icon; if they want different ones, change
-them with `set_identity`.
+them with `set_identity`. For the icon, offer tc's animated presets first (pebble ▟▙, orb ◉,
+spark ✦, owl ◕◕, hive ⣿, moon ☾, meter ▃▅, kite ◆, with an optional color like `owl:5`): they
+animate while you think and work. An emoji works but stays still. They can also pick one in
+⌥K › Agent › Icon.
 
 1. **Greet.** One or two lines, in your default vibe. Say hi, say you are their agent in tc,
    and that you'd like to get to know them for a minute.
