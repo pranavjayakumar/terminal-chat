@@ -14,6 +14,7 @@ import (
 
 	"github.com/skailama/tc/internal/agent"
 	"github.com/skailama/tc/internal/agent/home"
+	"github.com/skailama/tc/internal/agent/memory"
 	"github.com/skailama/tc/internal/agent/tools"
 	"github.com/skailama/tc/internal/proto"
 )
@@ -415,5 +416,67 @@ func TestAgentPanelSchedules(t *testing.T) {
 		if m.ag.panel.page != apMain || apRows[m.ag.panel.row] != "Schedules" {
 			t.Fatalf("back on %q row %d", m.ag.panel.page, m.ag.panel.row)
 		}
+	}
+}
+
+// Memory: a adds a note and e edits one in the panel's editor; ctrl+s
+// saves and commits, and a note over the cap stays open with the error.
+func TestAgentPanelMemoryEdit(t *testing.T) {
+	m, _ := panelModel(t, 100, 34, "")
+	for range slices.Index(apRows, "Memory") {
+		press(m, "down")
+	}
+	press(m, "enter")
+	if m.ag.panel.memErr != "" {
+		t.Skipf("memory store unavailable here: %s", m.ag.panel.memErr)
+	}
+	ctrlS := func() { _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS}); run(m, cmd) }
+	press(m, "a")
+	typeVia(m, "elsewhere/x")
+	press(m, "enter")
+	if !strings.Contains(m.ag.panel.err, "facts/") || m.ag.panel.page != apMemory {
+		t.Fatalf("bad folder: err %q page %q", m.ag.panel.err, m.ag.panel.page)
+	}
+	press(m, "ctrl+u")
+	typeVia(m, "facts/Deploy Day")
+	press(m, "enter")
+	if m.ag.panel.page != apMemEdit || m.ag.panel.edNote.Path != "facts/deploy-day.md" {
+		t.Fatalf("page %q note %q", m.ag.panel.page, m.ag.panel.edNote.Path)
+	}
+	typeVia(m, "ships on friday")
+	lineWith(t, frameText(t, m, "editor"), "ships on friday")
+	ctrlS()
+	if m.ag.panel.page != apMemory || m.ag.panel.err != "" {
+		t.Fatalf("after save: page %q err %q", m.ag.panel.page, m.ag.panel.err)
+	}
+	st, err := memory.Open(m.opt.AgentDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := st.Read("facts/deploy-day.md")
+	if err != nil || strings.TrimSpace(n.Body) != "ships on friday" || n.Trust != memory.TrustOwner {
+		t.Fatalf("note %+v %v", n, err)
+	}
+	// e reopens it (the cursor is on it), with its text
+	press(m, "e")
+	if m.ag.panel.page != apMemEdit || !strings.Contains(m.ag.panel.ed.Value(), "ships on friday") {
+		t.Fatalf("edit: page %q value %q", m.ag.panel.page, m.ag.panel.ed.Value())
+	}
+	m.ag.panel.ed.SetValue(strings.Repeat("x", memory.NoteMaxBytes-1))
+	ctrlS()
+	if m.ag.panel.page != apMemEdit || !strings.Contains(m.ag.panel.err, "cap") {
+		t.Fatalf("over cap: page %q err %q", m.ag.panel.page, m.ag.panel.err)
+	}
+	m.ag.panel.ed.SetValue("ships on monday now")
+	ctrlS()
+	if n, _ = st.Read("facts/deploy-day.md"); strings.TrimSpace(n.Body) != "ships on monday now" {
+		t.Fatalf("edited note %q", n.Body)
+	}
+	// esc drops unsaved changes
+	press(m, "e")
+	typeVia(m, "junk")
+	press(m, "esc")
+	if n, _ = st.Read("facts/deploy-day.md"); strings.Contains(n.Body, "junk") || m.ag.panel.page != apMemory {
+		t.Fatalf("esc saved: %q", n.Body)
 	}
 }

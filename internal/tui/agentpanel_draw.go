@@ -10,6 +10,7 @@ import (
 
 	"github.com/skailama/tc/internal/agent"
 	"github.com/skailama/tc/internal/agent/home"
+	"github.com/skailama/tc/internal/agent/memory"
 	"github.com/skailama/tc/internal/agent/tools"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
@@ -108,6 +109,8 @@ func (m *Model) drawAgentPanel(c *canvas) {
 		m.drawNote(d)
 	case apActivity:
 		m.drawActivity(d)
+	case apMemEdit:
+		m.drawMemEdit(d)
 	default:
 		m.drawPanelScrolled(c, d, in)
 	}
@@ -134,7 +137,7 @@ func (m *Model) drawAgentPanel(c *canvas) {
 }
 
 var apTitles = map[string]string{
-	apIcon: "Icon", apJobs: "Schedules", apReads: "Reads", apFolders: "Folders", apLimits: "Limits", apMemory: "Memory", apNote: "Memory", apActivity: "Activity",
+	apIcon: "Icon", apJobs: "Schedules", apReads: "Reads", apFolders: "Folders", apLimits: "Limits", apMemory: "Memory", apNote: "Memory", apMemEdit: "Memory", apActivity: "Activity",
 }
 
 // drawPanelKeys draws the key hints along the bottom.
@@ -165,8 +168,11 @@ func (m *Model) drawPanelKeys(d *apDraw, y int) {
 		pills = [][2]string{{"x", "Cancel"}}
 		hint = "esc back"
 	case apMemory:
-		pills = [][2]string{{"⏎", "Read"}, {"f", "Forget"}, {"u", "Undo today"}}
+		pills = [][2]string{{"⏎", "Read"}, {"e", "Edit"}, {"a", "Add"}, {"f", "Forget"}, {"u", "Undo today"}}
 		hint = "esc back"
+	case apMemEdit:
+		pills = [][2]string{{"^S", "Save"}}
+		hint = "esc drop changes"
 	default:
 		hint = "↑↓ scroll · esc back"
 	}
@@ -179,6 +185,9 @@ func (m *Model) drawPanelKeys(d *apDraw, y int) {
 		act := "ap:key:" + p[0]
 		if p[0] == "⏎" {
 			act = "ap:key:" + kEnter
+		}
+		if p[0] == "^S" {
+			act = "ap:savenote"
 		}
 		e := c.put(x, y, " "+p[0]+" ", fgb(th.fg).on(th.element).with(aMonoRev), act)
 		e = c.put(e, y, p[1]+" ", fgc(th.dim).on(th.element), act)
@@ -634,8 +643,14 @@ func (m *Model) drawMemory(d *apDraw) {
 		c.put(d.x, d.y, truncate("! "+p.memErr, d.w), fgc(th.err), "")
 		return
 	}
+	if p.adding {
+		c.put(d.x, d.y, "new note ", fgc(th.dim), "")
+		c.putANSI(d.x+9, d.y, dropBidi(m.line.View()), d.w-9, fgc(th.fg), "")
+		d.focusY = d.y
+		d.y += 2
+	}
 	if len(p.notes) == 0 {
-		c.put(d.x, d.y, "nothing remembered yet", fgc(th.dim), "")
+		c.put(d.x, d.y, "nothing remembered yet · a adds a note", fgc(th.dim), "")
 		return
 	}
 	start := scrollStart(p.row, len(p.notes), d.left())
@@ -907,3 +922,27 @@ func (m *Model) drawJobs(d *apDraw) {
 }
 
 func oneLineText(s string) string { return strings.Join(strings.Fields(sanitize.Line(s)), " ") }
+
+// drawMemEdit is the note editor: the note's path, then the text.
+func (m *Model) drawMemEdit(d *apDraw) {
+	th := m.st.th
+	c := d.c
+	p := &m.ag.panel
+	head := sanitize.Line(p.edNote.Path)
+	if p.edNote.Modified.IsZero() {
+		head += " · new"
+	}
+	head += fmt.Sprintf(" · %d/%d bytes", len(p.ed.Value()), memory.NoteMaxBytes)
+	c.put(d.x, d.y, truncate(head, d.w), fgc(th.faint), "")
+	d.y += 2
+	h := max(d.left()-1, 1)
+	p.ed.SetWidth(max(d.w, 10))
+	p.ed.SetHeight(h)
+	for i, l := range strings.Split(p.ed.View(), "\n") {
+		if i >= h || d.y >= d.bot {
+			break
+		}
+		c.putANSI(d.x, d.y, dropBidi(l), d.w, fgc(th.fg), "")
+		d.y++
+	}
+}

@@ -2,7 +2,9 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/skailama/tc/internal/agent"
@@ -74,6 +77,9 @@ type agentPanel struct {
 	accessOK bool
 	jobs     []tools.Job // schedules and reminders
 	jobsErr  string
+	ed       textarea.Model // the memory note editor
+	edNote   memory.Note    // the note being edited (Path set; new notes have no Modified)
+	adding   bool           // the line input names a new note
 
 	icon, color int // setup choices
 	err         string
@@ -96,6 +102,7 @@ const (
 	apSetup    = "setup"
 	apIcon     = "icon"
 	apJobs     = "schedules"
+	apMemEdit  = "memedit"
 )
 
 // Main page rows, in order.
@@ -317,6 +324,9 @@ func (m *Model) agentPanelKey(k tea.KeyMsg) tea.Cmd {
 			m.panelConfirm(c)
 		}
 		return nil
+	}
+	if p.page == apMemEdit {
+		return m.memEditKey(k, key)
 	}
 	if p.editing {
 		return m.panelEditKey(k, key)
@@ -628,7 +638,135 @@ func (m *Model) memoryKey(key string) {
 		}
 	case "u":
 		p.confirm = "undo"
+	case "e":
+		if p.row < len(p.notes) {
+			m.editNote(p.notes[p.row].Path)
+		}
+	case "a":
+		if !m.ag.home.here {
+			m.setInfo("its memory lives on its home computer · open tc there")
+			return
+		}
+		p.adding, p.editing, p.err = true, true, ""
+		m.line.Reset()
+		m.line.Placeholder = "facts/deploy-day or people/ana"
+		m.line.Prompt = ""
+		m.line.Focus()
 	}
+}
+
+// editNote opens a note in the panel's editor. Daily logs and handoffs are
+// tc's own; the index and person, channel and fact notes are the owner's
+// to change.
+func (m *Model) editNote(rel string) {
+	p := &m.ag.panel
+	if !m.ag.home.here {
+		m.setInfo("its memory lives on its home computer · open tc there")
+		return
+	}
+	n := memory.Note{Path: rel}
+	if !strings.HasPrefix(rel, "daily/") && !strings.HasPrefix(rel, "handoff/") {
+		st, err := memory.Open(m.ag.home.dir)
+		if err == nil {
+			n, err = st.Read(rel)
+		}
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			m.setErr("memory", err)
+			return
+		}
+		n.Path = rel
+	} else {
+		m.setInfo(rel + " is tc's own log · it isn't edited")
+		return
+	}
+	ed := textarea.New()
+	ed.ShowLineNumbers = false
+	ed.Prompt = ""
+	ed.CharLimit = memory.NoteMaxBytes
+	ed.MaxHeight = 0
+	styleInput(&ed, m.st)
+	ed.SetValue(n.Body)
+	ed.Focus()
+	p.ed, p.edNote, p.page, p.err = ed, n, apMemEdit, ""
+}
+
+// memEditKey types into the note editor: ctrl+s saves, esc drops it.
+func (m *Model) memEditKey(k tea.KeyMsg, key string) tea.Cmd {
+	p := &m.ag.panel
+	switch key {
+	case kEsc:
+		p.page, p.err = apMemory, ""
+		return nil
+	case "ctrl+s":
+		m.saveNote()
+		return nil
+	}
+	var cmd tea.Cmd
+	p.ed, cmd = p.ed.Update(k)
+	return cmd
+}
+
+// saveNote writes the edited note within memory's caps and commits it. A
+// note over its cap stays open with the error, so nothing typed is lost.
+func (m *Model) saveNote() {
+	p := &m.ag.panel
+	st, err := memory.Open(m.ag.home.dir)
+	if err != nil {
+		p.err = errText(err)
+		return
+	}
+	n := p.edNote
+	n.Body = strings.TrimRight(p.ed.Value(), "\n") + "\n"
+	if n.Source == "" {
+		n.Source = m.me.Name
+	}
+	if n.Trust == "" {
+		n.Trust = memory.TrustOwner
+	}
+	if err := st.Write(n); err != nil {
+		if errors.Is(err, memory.ErrMergeFirst) {
+			p.err = "too big for memory's cap: shorten it (or merge notes) and save again"
+		} else {
+			p.err = errText(err)
+		}
+		return
+	}
+	if err := st.Commit("memory: " + n.Path + " edited in the panel"); err != nil {
+		p.err = errText(err)
+		return
+	}
+	m.setInfo("saved " + n.Path)
+	p.page, p.err = apMemory, ""
+	m.refreshPanel()
+	if i := slices.IndexFunc(p.notes, func(x memory.NoteInfo) bool { return x.Path == n.Path }); i >= 0 {
+		p.row = i
+	}
+}
+
+// newNotePath turns "facts/deploy day", "people/Ana" or "deploy day" (a
+// fact) into a note path.
+func newNotePath(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	dir, name, ok := strings.Cut(s, "/")
+	if !ok {
+		dir, name = "facts", s
+	}
+	switch dir {
+	case "fact":
+		dir = "facts"
+	case "person", "people":
+		dir = "people"
+	case "channel", "channels":
+		dir = "channels"
+	case "facts":
+	default:
+		return "", errors.New("a new note goes in facts/, people/ or channels/")
+	}
+	slug := memory.Slug(strings.TrimSuffix(strings.TrimPrefix(name, "#"), ".md"))
+	if slug == "" {
+		return "", errors.New("give the note a name")
+	}
+	return dir + "/" + slug + ".md", nil
 }
 
 // panelConfirm runs a confirmed forget or undo.
@@ -676,12 +814,23 @@ func (m *Model) panelEditKey(k tea.KeyMsg, key string) tea.Cmd {
 			m.mode = modeNormal
 			return nil
 		}
-		p.editing = false
+		p.editing, p.adding = false, false
 		m.line.Blur()
 		return nil
 	case kEnter:
 		if p.page == apSetup {
 			return m.submitSetup()
+		}
+		if p.adding {
+			rel, err := newNotePath(m.line.Value())
+			if err != nil {
+				p.err = err.Error()
+				return nil
+			}
+			p.adding, p.editing = false, false
+			m.line.Blur()
+			m.editNote(rel)
+			return nil
 		}
 		path := expandHome(strings.TrimSpace(m.line.Value()))
 		if path == "" {
@@ -847,6 +996,10 @@ func (m *Model) agentPanelClick(rest string) tea.Cmd {
 		return m.submitSetup()
 	case "saveicon":
 		return m.saveIcon()
+	case "savenote":
+		if p.page == apMemEdit {
+			m.saveNote()
+		}
 	case "handle":
 		p.row, p.editing = 0, true
 		m.line.Focus()
