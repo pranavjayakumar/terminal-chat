@@ -9,28 +9,28 @@
 ▎ # general             │                                                                                                                   
   # secret          @1  │                                                                                                                   
                         │                                                                                                                   
-  Direct                │                                                                                                                   
-  ◐ bob                 │                                                                         ──────────────── Today ─────────────────  
-   └ ◡◡ Juno 💤         │                                                                                                                   
-                        │  ────────────────────────────── Today ──────────────────────────────    │ bob  20:41                              
-                        │                                                                         │ can we get /poll? picking dinner        
-                        │  │ bob  20:37                                                           │ took 43 messages                        
-                        │  │ my manager replied to my 3-page proposal with "let's revisit       │ │ ↳ 2 replies                             
-                        │  │ after Q4 👍"                                                       │                                           
-                        │                                                                       │ ────────────── 2 replies ───────────────  
-                        │  │ carol  20:38                                                       │                                           
-                        │  │ @rocky what is he really saying?                                   │ │ alice                                   
-                        │                                                                         │ @rocky add /poll to tc                  
-                        │  ┆ ▟▙ Rocky ⟡ · Alice's agent  20:39                                    │ 20:42 ✓                                 
-                        │  ┆ translation: no, but politely.                                                                                 
-                        │  ┆ "revisit after Q4" is where proposals go to rest.                    ┆ ▟▙ Rocky ⟡  20:42                       
-                        │                                                                         ┆ plan for /poll, about 15 min and        
-                        │  │ alice                                                                ┆ ~$2:                                    
-                        │  │ lol                                                                  ┆ · proto poll op + vote event            
-                        │  │ 20:40 ✓                                                              ┆ · tests unit + e2e, then a draft        
-                        │                                                                         ┆ PR                                      
-                        │  │ bob  20:41                                                           ┆ open a draft PR?  ▐ 1 yes ▌             
-                        │  │ can we get /poll? picking dinner took 43 messages                    ┆ ▐ 2 yes, PRs ok today ▌ ▐ 3 no ▌        
+  Direct                │                                                                         ──────────────── Today ─────────────────  
+  ◐ bob                 │                                                                                                                   
+   └ ◡◡ Juno 💤         │                                                                         │ bob  20:41                              
+                        │  ────────────────────────────── Today ──────────────────────────────    │ can we get /poll? picking dinner        
+                        │                                                                         │ took 43 messages                        
+                        │  │ bob  20:37                                                           │ ↳ 2 replies                             
+                        │  │ my manager replied to my 3-page proposal with "let's revisit       │                                           
+                        │  │ after Q4 👍"                                                       │ ────────────── 2 replies ───────────────  
+                        │                                                                       │                                           
+                        │  │ carol  20:38                                                       │ │ alice                                   
+                        │  │ @rocky what is he really saying?                                   │ │ @rocky add /poll to tc                  
+                        │                                                                         │ 20:42 ✓                                 
+                        │  ┆ ▟▙ Rocky ⟡ · Alice's agent  20:39                                                                              
+                        │  ┆ translation: no, but politely.                                       ┆ ▟▙ Rocky ⟡  20:42                       
+                        │  ┆ "revisit after Q4" is where proposals go to rest.                    ┆ Rocky wants to open a draft PR on…      
+                        │                                                                         ┆ ▏ plan for /poll, about 15 min an…      
+                        │  │ alice                                                                ┆ ▏ proto poll op + vote event            
+                        │  │ lol                                                                  ┆ ▏ tests unit + e2e, then a draft …      
+                        │  │ 20:40 ✓                                                              ┆ why: alice asked in #general: "@r…      
+                        │                                                                         ┆ ▐ 1 open it ▌                           
+                        │  │ bob  20:41                                                           ┆ ▐ 2 open, and don't ask again to…▌      
+                        │  │ can we get /poll? picking dinner took 43 messages                    ┆ ▐ 3 don't ▌                             
                         │  │ ↳ 2 replies                                                          ┆ only you can answer · select it, …      
                         │                                                                                                                   
                         │  ╭─ #general ──────────────────────────────────────────────────────╮    ╭─ reply ──────────────────────────────╮  

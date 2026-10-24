@@ -1,8 +1,6 @@
   ≡  Chat View Huddle Theme ? Help          
  Thread #general                          ✕ 
                                             
-                                            
- │ bob  20:41                               
  │ can we get /poll? picking dinner         
  │ took 43 messages                         
  │ ► 2 replies                              
@@ -14,12 +12,14 @@
  │ 20:42 ✓                                  
                                             
  ┆ ▟▙ Rocky ⟡  20:42                        
- ┆ plan for /poll, about 15 min and         
- ┆ ~$2:                                     
- ┆ · proto poll op + vote event             
- ┆ · tests unit + e2e, then a draft PR      
- ┆ open a draft PR?  ▐ 1 yes ▌              
- ┆ ▐ 2 yes, PRs ok today ▌ ▐ 3 no ▌         
+ ┆ Rocky wants to open a draft PR on t…     
+ ┆ ▏ plan for /poll, about 15 min and …     
+ ┆ ▏ proto poll op + vote event             
+ ┆ ▏ tests unit + e2e, then a draft PR      
+ ┆ why: alice asked in #general: "@roc…     
+ ┆ ▐ 1 open it ▌                            
+ ┆ ▐ 2 open, and don't ask again toda…▌     
+ ┆ ▐ 3 don't ▌                              
  ┆ only you can answer · select it, th…     
                                             
  ╔═ reply ════════════════════════════════╗ 
