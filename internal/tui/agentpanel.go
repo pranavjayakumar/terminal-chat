@@ -15,6 +15,7 @@ import (
 	"github.com/skailama/tc/internal/agent"
 	"github.com/skailama/tc/internal/agent/home"
 	"github.com/skailama/tc/internal/agent/memory"
+	"github.com/skailama/tc/internal/agent/tools"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
 )
@@ -71,6 +72,8 @@ type agentPanel struct {
 	note     memory.Note // the note page
 	access   []uint64
 	accessOK bool
+	jobs     []tools.Job // schedules and reminders
+	jobsErr  string
 
 	icon, color int // setup choices
 	err         string
@@ -91,10 +94,12 @@ const (
 	apNote     = "note"
 	apActivity = "activity"
 	apSetup    = "setup"
+	apIcon     = "icon"
+	apJobs     = "schedules"
 )
 
 // Main page rows, in order.
-var apRows = []string{"Mode", "Reads", "Folders", "Limits", "Memory", "Activity", "Personality"}
+var apRows = []string{"Mode", "Icon", "Reads", "Folders", "Limits", "Schedules", "Memory", "Activity", "Personality"}
 
 type (
 	agentAccessMsg struct {
@@ -107,6 +112,10 @@ type (
 	}
 	agentDMMsg struct {
 		ch  uint64
+		err error
+	}
+	agentIconMsg struct {
+		a   proto.Agent
 		err error
 	}
 )
@@ -170,6 +179,12 @@ func (m *Model) refreshPanel() {
 	if acts, err := agent.ReadActivity(state, 200); err == nil {
 		slices.Reverse(acts)
 		p.activity = acts
+	}
+	p.jobs, p.jobsErr = nil, ""
+	if jobs, err := tools.LoadJobs(state); err != nil {
+		p.jobsErr = err.Error()
+	} else {
+		p.jobs = jobs
 	}
 	p.notes, p.memErr = nil, ""
 	if st, err := memory.Open(h.dir); err != nil {
@@ -243,6 +258,22 @@ func (m *Model) agentMsg(msg tea.Msg) (tea.Cmd, bool) {
 		m.line.Blur()
 		m.refreshPanel()
 		return tea.Batch(m.fetchAccess(), m.openAgentDM()), true
+	case agentIconMsg:
+		p := &m.ag.panel
+		p.busy = false
+		if msg.err != nil {
+			p.err = errText(msg.err)
+			return nil, true
+		}
+		m.reloadAgents()
+		if m.ag.home.ok && m.ag.home.here {
+			m.saveAgentConfig(func(c *home.Config) { c.Icon = msg.a.Icon })
+		}
+		m.setInfo(agentName(msg.a.Handle) + "'s icon is saved · everyone sees it now")
+		if p.page == apIcon {
+			p.page, p.row, p.err = apMain, slices.Index(apRows, "Icon"), ""
+		}
+		return nil, true
 	case agentDMMsg:
 		if msg.err != nil {
 			m.setErr("agent DM", msg.err)
@@ -316,6 +347,10 @@ func (m *Model) agentPanelKey(k tea.KeyMsg) tea.Cmd {
 		m.limitsKey(key)
 	case apMemory:
 		m.memoryKey(key)
+	case apIcon:
+		return m.iconKey(key)
+	case apJobs:
+		m.jobsKey(key)
 	case apActivity, apNote:
 		switch key {
 		case kUp, "k":
@@ -404,6 +439,16 @@ func (m *Model) panelOpenRow(row string) tea.Cmd {
 		p.page = apActivity
 	case "Personality":
 		return m.openAgentDM()
+	case "Icon":
+		a, ok := m.myAgent()
+		if !ok {
+			return nil
+		}
+		l := parseAgentIcon(a.Icon)
+		p.page, p.icon, p.color, p.err = apIcon, max(l.preset, 0), l.color, ""
+	case "Schedules":
+		m.refreshPanel()
+		p.page = apJobs
 	default:
 		return nil
 	}
@@ -588,6 +633,10 @@ func (m *Model) memoryKey(key string) {
 
 // panelConfirm runs a confirmed forget or undo.
 func (m *Model) panelConfirm(c string) {
+	if id, ok := strings.CutPrefix(c, "job:"); ok {
+		m.cancelJob(id)
+		return
+	}
 	if f, ok := strings.CutPrefix(c, "folder:"); ok {
 		m.saveAgentConfig(func(c *home.Config) {
 			c.Access.Folders = slices.DeleteFunc(slices.Clone(c.Access.Folders), func(x string) bool { return x == f })
@@ -773,7 +822,7 @@ func (m *Model) agentPanelClick(rest string) tea.Cmd {
 			}
 			return m.panelOpenRow(apRows[n])
 		}
-		if p.page == apReads || p.page == apMemory || p.page == apLimits {
+		if p.page == apReads || p.page == apMemory || p.page == apLimits || p.page == apIcon {
 			return m.agentPanelKey(tea.KeyMsg{Type: tea.KeyEnter})
 		}
 	case "mode":
@@ -785,11 +834,19 @@ func (m *Model) agentPanelClick(rest string) tea.Cmd {
 	case "icon":
 		p.icon = min(max(n, 0), len(agentPresets)-1)
 		p.row = 1
+		if p.page == apIcon {
+			p.row = 0
+		}
 	case "color":
 		p.color = min(max(n, -1), 7)
 		p.row = 2
+		if p.page == apIcon {
+			p.row = 1
+		}
 	case "setup":
 		return m.submitSetup()
+	case "saveicon":
+		return m.saveIcon()
 	case "handle":
 		p.row, p.editing = 0, true
 		m.line.Focus()
@@ -806,4 +863,92 @@ func keyMsg1(k string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyEnter}
 	}
 	return keyMsgRune([]rune(k)[0])
+}
+
+// ---- icon (an agent that exists) ----
+
+// iconRows: icon, color, the save button.
+const iconRows = 3
+
+func (m *Model) iconKey(key string) tea.Cmd {
+	p := &m.ag.panel
+	switch key {
+	case kUp, "k", kShiftTab:
+		p.row = max(p.row-1, 0)
+	case kDown, "j", kTab:
+		p.row = min(p.row+1, iconRows-1)
+	case kLeft, "h":
+		m.iconNudge(-1)
+	case kRight, "l":
+		m.iconNudge(1)
+	case kEnter, " ":
+		if p.row == iconRows-1 || key == kEnter {
+			return m.saveIcon()
+		}
+		m.iconNudge(1)
+	}
+	return nil
+}
+
+func (m *Model) iconNudge(d int) {
+	p := &m.ag.panel
+	switch p.row {
+	case 0:
+		p.icon = (p.icon + d + len(agentPresets)) % len(agentPresets)
+	case 1:
+		p.color = (p.color+d+1+9)%9 - 1
+	}
+}
+
+// saveIcon sends the picked icon to the server; everyone's tc redraws it.
+func (m *Model) saveIcon() tea.Cmd {
+	p := &m.ag.panel
+	if p.busy {
+		return nil
+	}
+	p.busy, p.err = true, ""
+	icon := agentIcon(p.icon, p.color)
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(m.ctx, reqTimeout)
+		defer cancel()
+		a, err := m.c.UpdateAgent(ctx, "", icon)
+		return agentIconMsg{a, err}
+	}
+}
+
+// ---- schedules ----
+
+func (m *Model) jobsKey(key string) {
+	p := &m.ag.panel
+	switch key {
+	case kUp, "k":
+		p.row = max(p.row-1, 0)
+	case kDown, "j":
+		p.row = min(p.row+1, max(len(p.jobs)-1, 0))
+	case "x", "c", "delete", "backspace":
+		if p.row < len(p.jobs) {
+			if !m.ag.home.here {
+				m.setInfo("its schedules live on its home computer · open tc there")
+				return
+			}
+			p.confirm = "job:" + p.jobs[p.row].ID
+		}
+	}
+}
+
+// cancelJob drops a schedule from the agent's state; the supervisor reads
+// the file under the same lock, so it never fires afterwards.
+func (m *Model) cancelJob(id string) {
+	h := m.ag.home
+	if !h.ok || !h.here {
+		return
+	}
+	if _, ok, err := tools.CancelJob(home.PathsFor(h.dir).State, id); err != nil {
+		m.setErr("cancel", err)
+		return
+	} else if ok {
+		m.setInfo("cancelled " + id)
+	}
+	m.refreshPanel()
+	m.ag.panel.row = min(m.ag.panel.row, max(len(m.ag.panel.jobs)-1, 0))
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/skailama/tc/internal/agent"
 	"github.com/skailama/tc/internal/agent/home"
+	"github.com/skailama/tc/internal/agent/tools"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
 )
@@ -121,6 +122,9 @@ func (m *Model) drawAgentPanel(c *canvas) {
 		if f, ok := strings.CutPrefix(p.confirm, "folder:"); ok {
 			what = "stop granting " + tildePath(f) + "?"
 		}
+		if id, ok := strings.CutPrefix(p.confirm, "job:"); ok {
+			what = "cancel " + sanitize.Line(id) + "?"
+		}
 		c.put(d.x, y, truncate(what+"  y to confirm", d.w), fgb(th.warn), "")
 	case p.err != "":
 		c.put(d.x, y, truncate("! "+p.err, d.w), fgc(th.err), "")
@@ -130,7 +134,7 @@ func (m *Model) drawAgentPanel(c *canvas) {
 }
 
 var apTitles = map[string]string{
-	apReads: "Reads", apFolders: "Folders", apLimits: "Limits", apMemory: "Memory", apNote: "Memory", apActivity: "Activity",
+	apIcon: "Icon", apJobs: "Schedules", apReads: "Reads", apFolders: "Folders", apLimits: "Limits", apMemory: "Memory", apNote: "Memory", apActivity: "Activity",
 }
 
 // drawPanelKeys draws the key hints along the bottom.
@@ -155,6 +159,11 @@ func (m *Model) drawPanelKeys(d *apDraw, y int) {
 		hint = "esc back"
 	case apLimits:
 		hint = "←→ change · esc back"
+	case apIcon:
+		hint = "↑↓ move · ←→ pick · ⏎ save · esc back"
+	case apJobs:
+		pills = [][2]string{{"x", "Cancel"}}
+		hint = "esc back"
 	case apMemory:
 		pills = [][2]string{{"⏎", "Read"}, {"f", "Forget"}, {"u", "Undo today"}}
 		hint = "esc back"
@@ -323,7 +332,7 @@ func (m *Model) drawPanelMain(d *apDraw) {
 		act := "ap:row:" + strconv.Itoa(row)
 		x := d.row(name, focus == row, act)
 		v := vals[name]
-		hint := map[string]string{"Reads": "⏎ edit", "Folders": "⏎ edit", "Limits": "⏎ edit",
+		hint := map[string]string{"Icon": "⏎ change", "Schedules": "⏎ list · cancel", "Reads": "⏎ edit", "Folders": "⏎ edit", "Limits": "⏎ edit",
 			"Memory": "⏎ browse · forget · undo today", "Activity": "⏎ full log", "Personality": ""}[name]
 		vst := fgc(th.fg)
 		if name == "Personality" {
@@ -367,6 +376,10 @@ func (m *Model) drawPanelScrolled(c *canvas, d *apDraw, in rect) {
 		m.drawLimits(sd)
 	case apMemory:
 		m.drawMemory(sd)
+	case apIcon:
+		m.drawIconPage(sd)
+	case apJobs:
+		m.drawJobs(sd)
 	}
 	end := sd.y
 	off := 0
@@ -414,6 +427,29 @@ func (m *Model) panelValues() map[string]string {
 		reads = append(reads, "+ your DMs when you ask")
 	}
 	v["Reads"] = strings.Join(reads, " ")
+	if a, ok := m.myAgent(); ok {
+		l := parseAgentIcon(a.Icon)
+		look := "custom"
+		if l.preset >= 0 && l.literal == "" {
+			look = agentPresets[l.preset].idle + " " + agentPresets[l.preset].id
+		}
+		if l.color >= 0 {
+			look += " · color " + strconv.Itoa(l.color+1)
+		} else {
+			look += " · auto color"
+		}
+		v["Icon"] = look
+	}
+	switch {
+	case !h.ok:
+		v["Schedules"] = "—"
+	case p.jobsErr != "":
+		v["Schedules"] = "can't read: " + p.jobsErr
+	case len(p.jobs) == 0:
+		v["Schedules"] = "none · ask it: “every weekday at 9 post … in #dev”"
+	default:
+		v["Schedules"] = fmt.Sprintf("%d pending · next %s", len(p.jobs), time.UnixMilli(p.jobs[0].At).Local().Format("Mon 15:04"))
+	}
 	if !h.ok {
 		for _, k := range []string{"Folders", "Limits", "Memory", "Activity"} {
 			v[k] = "—"
@@ -718,14 +754,34 @@ func (m *Model) drawSetup(d *apDraw) {
 		c.put(x+1, d.y, truncate(sanitize.Line(v), 22), st, "ap:handle")
 	}
 	d.y += 2
-	// icon
-	x = d.row("Icon", p.row == 1, "")
-	col := th.nicks[0]
-	if p.color >= 0 {
-		col = th.nicks[p.color]
-	} else {
-		col = m.agentColor(proto.Agent{Handle: m.setupHandle()})
+	h := m.setupHandle()
+	m.drawIconSheet(d, 1, h)
+	// the button
+	label := " Set up " + agentName(h) + " "
+	if p.busy {
+		label = " setting up… "
 	}
+	st := fgc(th.info).on(th.element)
+	if p.row == 3 {
+		st = fgb(th.accentFg).on(th.accent).with(aMonoRev)
+		c.put(d.x-2, d.y, "›", fgc(th.accent), "")
+		d.focusY = d.y + 2 // and the shell hint under it
+	}
+	c.pill(d.x, d.y, label, st, "ap:setup")
+	d.y += 2
+	c.put(d.x, d.y, truncate("or from a shell: tc agent setup", d.w), fgc(th.faint), "")
+}
+
+// drawIconSheet is the icon picker: the eight animated icons, the eight
+// colors, and a live preview of the name row and every state. Its icon
+// row is row first, the color row first+1.
+func (m *Model) drawIconSheet(d *apDraw, first int, handle string) {
+	th := m.st.th
+	c := d.c
+	p := &m.ag.panel
+	x := d.row("Icon", p.row == first, "")
+	pv := proto.Agent{Handle: handle, Icon: agentIcon(p.icon, p.color), Owner: m.me.ID}
+	col := m.agentColor(pv)
 	xx := x
 	for i, pr := range agentPresets {
 		cell := pr.idle + " " + pr.id
@@ -746,8 +802,7 @@ func (m *Model) drawSetup(d *apDraw) {
 		xx += w + 1
 	}
 	d.y += 2
-	// color
-	x = d.row("Color", p.row == 2, "")
+	x = d.row("Color", p.row == first+1, "")
 	xx = c.put(x, d.y, " auto ", map[bool]cstyle{true: fgb(th.fg).on(th.element), false: fgc(th.dim)}[p.color < 0], "ap:color:-1") + 1
 	for i := 0; i < 8; i++ {
 		g := " ● "
@@ -755,30 +810,100 @@ func (m *Model) drawSetup(d *apDraw) {
 		if i == p.color {
 			g, st = "[●]", fgb(th.nicks[i]).on(th.element)
 		}
+		if xx+strWidth(g) > d.x+d.w {
+			d.y++
+			xx = x
+		}
 		xx = c.put(xx, d.y, g, st, "ap:color:"+strconv.Itoa(i))
 	}
 	d.y += 2
-	// preview of its name row
-	h := m.setupHandle()
-	pv := proto.Agent{Handle: h, Icon: agentIcon(p.icon, p.color), Owner: m.me.ID}
+	// the name row as everyone sees it
 	g, gcol := m.agentGlyph(pv, "", time.Time{}, th.panel)
 	e := c.put(d.x, d.y, g, fgc(gcol), "")
-	e = c.put(e+1, d.y, agentName(h), fgb(m.agentColor(pv)), "")
-	e = c.put(e+1, d.y, agentBadge, fgc(m.agentColor(pv)), "")
+	e = c.put(e+1, d.y, agentName(handle), fgb(col), "")
+	e = c.put(e+1, d.y, agentBadge, fgc(col), "")
 	c.put(e, d.y, truncate(" · "+m.ownerName(m.me.ID)+"'s agent", d.x+d.w-e), fgc(th.faint), "")
+	d.y++
+	// and every state, moving
+	since := m.fx.dialogAt
+	xx = d.x
+	for _, st := range []struct{ id, name string }{
+		{"", "idle"}, {proto.AgentThinking, "thinking"}, {proto.AgentWorking, "working"},
+		{proto.AgentStreaming, "writing"}, {proto.AgentAsleep, "asleep"},
+	} {
+		g, gc := m.agentGlyph(pv, st.id, since, th.panel)
+		w := strWidth(g) + 1 + strWidth(st.name) + 3
+		if xx+w > d.x+d.w {
+			d.y++
+			xx = d.x
+		}
+		e := c.put(xx, d.y, g, fgc(gc), "")
+		c.put(e+1, d.y, st.name, fgc(th.faint), "")
+		xx += w
+	}
 	d.y += 2
-	// the button
-	label := " Set up " + agentName(h) + " "
+}
+
+func (m *Model) drawIconPage(d *apDraw) {
+	th := m.st.th
+	c := d.c
+	p := &m.ag.panel
+	a, _ := m.myAgent()
+	c.put(d.x, d.y, truncate("How "+agentName(a.Handle)+" looks to everyone: pick an icon and a color.", d.w), fgc(th.dim), "")
+	d.y += 2
+	m.drawIconSheet(d, 0, a.Handle)
+	label := " Save "
 	if p.busy {
-		label = " setting up… "
+		label = " saving… "
 	}
 	st := fgc(th.info).on(th.element)
-	if p.row == 3 {
+	if p.row == iconRows-1 {
 		st = fgb(th.accentFg).on(th.accent).with(aMonoRev)
 		c.put(d.x-2, d.y, "›", fgc(th.accent), "")
-		d.focusY = d.y + 2 // and the shell hint under it
+		d.focusY = d.y
 	}
-	c.pill(d.x, d.y, label, st, "ap:setup")
-	d.y += 2
-	c.put(d.x, d.y, truncate("or from a shell: tc agent setup", d.w), fgc(th.faint), "")
+	c.pill(d.x, d.y, label, st, "ap:saveicon")
+	d.y++
 }
+
+func (m *Model) drawJobs(d *apDraw) {
+	th := m.st.th
+	c := d.c
+	p := &m.ag.panel
+	c.put(d.x, d.y, truncate("What it will post later. Ask it in chat to add one; x cancels.", d.w), fgc(th.faint), "")
+	d.y += 2
+	if p.jobsErr != "" {
+		c.put(d.x, d.y, truncate("! "+p.jobsErr, d.w), fgc(th.err), "")
+		d.y++
+		return
+	}
+	if len(p.jobs) == 0 {
+		c.put(d.x, d.y, truncate("nothing scheduled", d.w), fgc(th.dim), "")
+		d.y++
+		return
+	}
+	for i, j := range p.jobs {
+		act := "ap:row:" + strconv.Itoa(i)
+		d.row("", p.row == i, act)
+		when := time.UnixMilli(j.At).Local().Format("Mon 2 Jan 15:04")
+		c.put(d.x, d.y, when, fgc(th.dim), act)
+		x := d.x + strWidth(when) + 2
+		what := sanitize.Line(j.Where)
+		if j.Repeat == tools.Daily || j.Repeat == tools.Weekdays {
+			what = string(j.Repeat) + " · " + what
+		}
+		if j.Kind == tools.KindRemind && j.Person != "" {
+			what = "⏰ @" + sanitize.Line(j.Person) + " · " + what
+		}
+		c.put(x, d.y, truncate(what, max(d.x+d.w-x, 0)), fgc(th.fg), act)
+		d.y++
+		line := sanitize.Line(j.ID) + "  " + oneLineText(j.Text)
+		if j.AskerName != "" {
+			line += "  · " + sanitize.Line(j.AskerName)
+		}
+		c.put(d.x+2, d.y, truncate(line, d.w-2), fgc(th.faint), act)
+		d.y++
+	}
+}
+
+func oneLineText(s string) string { return strings.Join(strings.Fields(sanitize.Line(s)), " ") }

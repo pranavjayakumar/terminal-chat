@@ -14,6 +14,7 @@ import (
 
 	"github.com/skailama/tc/internal/agent"
 	"github.com/skailama/tc/internal/agent/home"
+	"github.com/skailama/tc/internal/agent/tools"
 	"github.com/skailama/tc/internal/proto"
 )
 
@@ -103,7 +104,7 @@ func TestAgentPanelKeys(t *testing.T) {
 		t.Fatal("p didn't resume")
 	}
 	// Limits: ⏎ opens it, → raises the daily cap by $5
-	press(m, "down", "down", "down", "enter")
+	press(m, "down", "down", "down", "down", "enter")
 	if m.ag.panel.page != apLimits {
 		t.Fatalf("page %q", m.ag.panel.page)
 	}
@@ -170,7 +171,7 @@ func TestAgentPanelMemory(t *testing.T) {
 	m, _ := panelModel(t, 100, 34, "")
 	dir := m.opt.AgentDir
 	_ = dir
-	press(m, "down", "down", "down", "down", "enter")
+	press(m, "down", "down", "down", "down", "down", "down", "enter")
 	if m.ag.panel.page != apMemory {
 		t.Fatalf("page %q", m.ag.panel.page)
 	}
@@ -334,5 +335,85 @@ func TestAgentReadsElsewhere(t *testing.T) {
 	press(m, "enter")
 	if len(f.ag.access) != 1 || !strings.Contains(m.notice, "home computer") {
 		t.Fatalf("access %v notice %q", f.ag.access, m.notice)
+	}
+}
+
+// The Icon row changes an existing agent's icon and color.
+func TestAgentPanelIcon(t *testing.T) {
+	for _, size := range [][2]int{{100, 34}, {40, 12}} {
+		m, f := panelModel(t, size[0], size[1], "")
+		press(m, "down", "enter")
+		if m.ag.panel.page != apIcon {
+			t.Fatalf("page %q", m.ag.panel.page)
+		}
+		m.ag.panel.color = -1 // auto: three steps right land on color 2
+		v := frameText(t, m, "icon sheet")
+		lineWith(t, v, "Icon")
+		if size[0] == 100 {
+			for _, want := range []string{"orb", "kite", "Color", "thinking", "working", "asleep", "Rocky ⟡"} {
+				if !strings.Contains(v, want) {
+					t.Errorf("icon sheet lacks %q", want)
+				}
+			}
+		}
+		press(m, "right", "right", "down", "right", "right", "right", "down")
+		if r := lineWith(t, frameText(t, m, "save"), "Save"); !strings.Contains(r, "›") {
+			t.Errorf("%v: save not focused in view: %q", size, r)
+		}
+		press(m, "enter")
+		if !f.called("updateagent  spark:2") {
+			t.Fatalf("%v: calls %v", size, f.calls)
+		}
+		if m.ag.panel.page != apMain {
+			t.Fatalf("still on %q", m.ag.panel.page)
+		}
+		if c, _ := home.LoadConfig(m.opt.AgentDir); c.Icon != "spark:2" {
+			t.Fatalf("config icon %q", c.Icon)
+		}
+		if a, _ := m.myAgent(); a.Icon != "spark:2" {
+			t.Fatalf("agent icon %q", a.Icon)
+		}
+	}
+}
+
+// Schedules lists the agent's jobs and cancels one after a y.
+func TestAgentPanelSchedules(t *testing.T) {
+	for _, size := range [][2]int{{100, 34}, {40, 12}} {
+		m, _ := panelModel(t, size[0], size[1], "")
+		state := home.PathsFor(m.opt.AgentDir).State
+		at := time.Now().Add(time.Hour).UnixMilli()
+		for i, id := range []string{"sa", "sb", "sc", "sd"} {
+			j := tools.Job{ID: id, Kind: tools.KindSchedule, Chan: 10, Where: "#general", Text: "standup " + id, At: at + int64(i), Repeat: tools.Weekdays, AskerName: "me"}
+			if i == 3 {
+				j.Kind, j.Person, j.Repeat = tools.KindRemind, "carol", tools.Once
+			}
+			if err := tools.UpdateJobs(state, func(js []tools.Job) ([]tools.Job, error) { return append(js, j), nil }); err != nil {
+				t.Fatal(err)
+			}
+		}
+		press(m, "r")
+		for range slices.Index(apRows, "Schedules") {
+			press(m, "down")
+		}
+		lineWith(t, frameText(t, m, "main"), "4 pending")
+		press(m, "enter")
+		if m.ag.panel.page != apJobs {
+			t.Fatalf("page %q", m.ag.panel.page)
+		}
+		press(m, "down", "down", "down")
+		if r := lineWith(t, frameText(t, m, "jobs"), "@carol"); !strings.Contains(r, "›") {
+			t.Errorf("%v: last job not focused in view: %q", size, r)
+		}
+		press(m, "x")
+		lineWith(t, frameText(t, m, "confirm"), "cancel sd?")
+		press(m, "y")
+		jobs, _ := tools.LoadJobs(state)
+		if len(jobs) != 3 || slices.ContainsFunc(jobs, func(j tools.Job) bool { return j.ID == "sd" }) {
+			t.Fatalf("%v: jobs %+v", size, jobs)
+		}
+		press(m, "esc")
+		if m.ag.panel.page != apMain || apRows[m.ag.panel.row] != "Schedules" {
+			t.Fatalf("back on %q row %d", m.ag.panel.page, m.ag.panel.row)
+		}
 	}
 }

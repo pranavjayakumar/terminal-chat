@@ -409,6 +409,9 @@ func (m *Model) agentWake() time.Duration {
 			consider(r.State, m.ag.since[liveKey{r.Agent.Owner, p.ch, r.thread}].at)
 		}
 	}
+	if m.mode == modeAgent && (m.ag.panel.page == apIcon || m.ag.panel.page == apSetup) {
+		want(agentWorkFrame) // the icon sheet's preview moves
+	}
 	if a, ok := m.myAgent(); ok && m.agentHeaderRoom() {
 		if st, since := m.agentStateOf(a); st != proto.AgentAsleep {
 			consider(st, since)
