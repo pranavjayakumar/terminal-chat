@@ -198,8 +198,13 @@ func TestAnswerMention(t *testing.T) {
 	if states[0] != proto.AgentThinking {
 		t.Fatalf("states %v", states)
 	}
-	sess, ok := h.s.sessions.get(SessionKey(general, ask.ID))
-	if !ok || sess.ID != req.Session || sess.Tokens != 5000 || sess.LastMsg != ask.ID {
+	var sess Session
+	h.waitFor("session saved", func() bool {
+		var ok bool
+		sess, ok = h.s.sessions.get(SessionKey(general, ask.ID))
+		return ok
+	})
+	if sess.ID != req.Session || sess.Tokens != 5000 || sess.LastMsg != ask.ID {
 		t.Fatalf("session %+v", sess)
 	}
 
