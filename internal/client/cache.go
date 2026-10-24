@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS removed (chan INTEGER PRIMARY KEY, actor INTEGER NOT 
 CREATE TABLE IF NOT EXISTS msgs (
 	id INTEGER PRIMARY KEY, chan INTEGER NOT NULL, author INTEGER NOT NULL, body TEXT NOT NULL,
 	thread INTEGER NOT NULL, time INTEGER NOT NULL, edited INTEGER NOT NULL,
-	deleted INTEGER NOT NULL, reactions TEXT NOT NULL,
+	deleted INTEGER NOT NULL, reactions TEXT NOT NULL, agent TEXT NOT NULL DEFAULT '',
 	enc BLOB, sec INTEGER NOT NULL DEFAULT 0, mid BLOB,
 	eenc BLOB, epend BLOB, ev INTEGER NOT NULL DEFAULT 0, ets INTEGER NOT NULL DEFAULT 0, denc BLOB, cmid BLOB,
 	sts INTEGER NOT NULL DEFAULT 0);
@@ -297,7 +297,7 @@ func setMember(q dbtx, chanID, user uint64, in bool) error {
 
 // ---- messages ----
 
-const msgCols = `id, chan, author, body, thread, time, edited, deleted, reactions`
+const msgCols = `id, chan, author, body, thread, time, edited, deleted, reactions, agent`
 
 // upsertMsg stores a message of a plaintext channel as is (tests; server
 // messages go through Client.saveMsg, which judges encrypted ones).
@@ -312,8 +312,8 @@ func storeMsg(q dbtx, m proto.Message, sec Sec, mid []byte, replace bool) error 
 	if !replace {
 		verb = "INSERT OR IGNORE"
 	}
-	_, err := q.Exec(verb+` INTO msgs (`+msgCols+`, enc, sec, mid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.Chan, m.Author, m.Body, m.Thread, m.Time, m.Edited, m.Deleted, encodeReactions(m.Reactions), m.Enc, sec, mid)
+	_, err := q.Exec(verb+` INTO msgs (`+msgCols+`, enc, sec, mid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.Chan, m.Author, m.Body, m.Thread, m.Time, m.Edited, m.Deleted, encodeReactions(m.Reactions), m.Agent, m.Enc, sec, mid)
 	return err
 }
 
@@ -328,7 +328,7 @@ func encodeReactions(r map[string][]uint64) string {
 func scanMsg(sc interface{ Scan(...any) error }, extra ...any) (proto.Message, error) {
 	var m proto.Message
 	var reactions string
-	dst := append([]any{&m.ID, &m.Chan, &m.Author, &m.Body, &m.Thread, &m.Time, &m.Edited, &m.Deleted, &reactions}, extra...)
+	dst := append([]any{&m.ID, &m.Chan, &m.Author, &m.Body, &m.Thread, &m.Time, &m.Edited, &m.Deleted, &reactions, &m.Agent}, extra...)
 	if err := sc.Scan(dst...); err != nil {
 		return m, err
 	}

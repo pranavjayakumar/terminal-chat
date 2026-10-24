@@ -282,16 +282,16 @@ func Login(ctx context.Context, home, invite, name, keyPath string) (proto.User,
 	if err != nil {
 		return proto.User{}, err
 	}
-	w, err := loginOnce(ctx, inv, signer, inv.Token, name)
+	w, err := loginOnce(ctx, inv, signer, inv.Token, name, "")
 	var bye *ByeError
 	if errors.As(err, &bye) && inv.Token != "" {
 		switch {
 		case bye.Code == proto.ByeKeyExists:
-			w, err = loginOnce(ctx, inv, signer, "", "")
+			w, err = loginOnce(ctx, inv, signer, "", "", "")
 		case bye.Code == proto.ByeInviteInvalid && len(bye.Keys) == 0 && v020Retry(bye, signer):
 			// A v0.2.0 server checks the invite before the key, so a join
 			// retried after a lost WELCOME gets invite_invalid there.
-			if w2, err2 := loginOnce(ctx, inv, signer, "", ""); err2 == nil {
+			if w2, err2 := loginOnce(ctx, inv, signer, "", "", ""); err2 == nil {
 				w, err = w2, nil
 			}
 		}
@@ -311,49 +311,54 @@ func Login(ctx context.Context, home, invite, name, keyPath string) (proto.User,
 			keyPath = abs
 		}
 	}
-	if err := ensurePrivateDir(home); err != nil {
-		return proto.User{}, fmt.Errorf("creating %s: %w", home, err)
-	}
-	db, err := openCache(filepath.Join(home, "cache.db"))
-	if err != nil {
-		return proto.User{}, err
-	}
-	defer db.Close()
-	tx, err := db.Begin()
-	if err != nil {
-		return proto.User{}, err
-	}
-	defer tx.Rollback()
-	if err := wipe(tx); err != nil {
-		return proto.User{}, err
-	}
-	if err := upsertUser(tx, w.User); err != nil {
-		return proto.User{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return proto.User{}, err
-	}
-	if len(w.ServerID) == e2ecrypto.IDSize {
-		// An explicit login is the one place a new server identity is trusted.
-		ts, err := trust.Open(home)
-		if err != nil {
-			return proto.User{}, err
-		}
-		err = ts.RepinServer(inv.Addr, inv.Pin, e2ecrypto.ServerID(w.ServerID))
-		ts.Close()
-		if err != nil {
-			return proto.User{}, err
-		}
-	}
 	cfg := Config{Addr: inv.Addr, Pin: inv.Pin, KeyPath: keyPath, KeyFP: keyFP, UserID: w.User.ID, Name: w.User.Name}
-	if err := writeConfig(home, cfg); err != nil {
+	if err := saveLogin(home, cfg, w); err != nil {
 		return proto.User{}, err
 	}
 	return w.User, nil
 }
 
+// saveLogin starts a fresh cache in home, trusts w's server identity (an
+// explicit login is the one place a new one is trusted) and writes cfg.
+func saveLogin(home string, cfg Config, w proto.Welcome) error {
+	if err := ensurePrivateDir(home); err != nil {
+		return fmt.Errorf("creating %s: %w", home, err)
+	}
+	db, err := openCache(filepath.Join(home, "cache.db"))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := wipe(tx); err != nil {
+		return err
+	}
+	if err := upsertUser(tx, w.User); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if len(w.ServerID) == e2ecrypto.IDSize {
+		ts, err := trust.Open(home)
+		if err != nil {
+			return err
+		}
+		err = ts.RepinServer(cfg.Addr, cfg.Pin, e2ecrypto.ServerID(w.ServerID))
+		ts.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return writeConfig(home, cfg)
+}
+
 // loginOnce runs one handshake on a new connection.
-func loginOnce(ctx context.Context, inv proto.Invite, signer ssh.Signer, token, name string) (proto.Welcome, error) {
+func loginOnce(ctx context.Context, inv proto.Invite, signer ssh.Signer, token, name, agent string) (proto.Welcome, error) {
 	conn, err := transport.Dial(ctx, inv.Addr, inv.Pin)
 	if err != nil {
 		return proto.Welcome{}, err
@@ -361,7 +366,7 @@ func loginOnce(ctx context.Context, inv proto.Invite, signer ssh.Signer, token, 
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
-	w, err := handshake(conn, proto.NewCodec(conn), signer, token, name, "", false, defaultTiming.handshake)
+	w, err := handshake(conn, proto.NewCodec(conn), signer, token, name, agent, false, defaultTiming.handshake)
 	if err != nil && ctx.Err() != nil {
 		return proto.Welcome{}, ctx.Err()
 	}
@@ -531,7 +536,7 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
 	codec := proto.NewCodec(conn)
-	w, err := handshake(conn, codec, signer, "", "", c.cfg.Agent, c.passive.Load(), c.timing.handshake)
+	w, err := handshake(conn, codec, signer, "", "", c.AgentHandle(), c.passive.Load(), c.timing.handshake)
 	if err != nil {
 		conn.Close()
 		return false, err
@@ -605,6 +610,13 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 				c.e2eLoop(sctx, s, signer)
 			}()
 		}
+		if s.agent1() {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				c.agentAfterSync(sctx)
+			}()
+		}
 		err = <-readErr
 	} else {
 		s.fail()
@@ -632,6 +644,7 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 	c.presence = map[uint64]Presence{}
 	c.mu.Unlock()
 	c.clearHuddles()
+	c.clearAgentLive()
 	wg.Wait()
 	c.post(Update{Presence: true, Typing: typing})
 	return online, err

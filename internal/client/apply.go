@@ -129,6 +129,9 @@ func (c *Client) applySnapshot(s *session, sn proto.Snapshot) error {
 				return err
 			}
 		}
+		if len(sn.Agents) > 0 {
+			c.replaceAgents(sn.Agents)
+		}
 		me := c.Me().ID
 		memo := newKeyMemo()
 		for _, m := range sn.Msgs {
@@ -277,6 +280,8 @@ func (c *Client) appliedElsewhere(ev proto.Event) Update {
 		}
 	case proto.KGroupUpdate:
 		u.Channels = true
+	case proto.KAgentUpdate, proto.KAgentAccess:
+		c.applyAgentEvent(c.db, ev, &u)
 	}
 	if ev.Chan != 0 {
 		u.msgs(ev.Chan)
@@ -316,6 +321,7 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		if sec != SecWaiting { // a waiting one is announced once it opens
 			m.Enc = nil
 			u.New = append(u.New, Message{Message: m, Sec: sec})
+			c.grantOnMention(tx, m, sec)
 		}
 	case proto.KMsgEdit:
 		var d proto.MsgEdit
@@ -462,6 +468,8 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 		*newUser = &x
 		u.Users = true
 		u.Channels = true // DM display names
+	case proto.KAgentUpdate, proto.KAgentAccess:
+		c.applyAgentEvent(tx, ev, u)
 	case proto.KGroupUpdate:
 		var g proto.Group
 		if !decode(&g) || !proto.ValidName(g.Name) {
@@ -579,6 +587,8 @@ func (c *Client) ephemeral(e proto.Ephemeral) {
 		c.mu.Unlock()
 	case proto.EphHuddle:
 		c.huddleEphemeral(e)
+	case proto.EphAgent, proto.EphAgentPresence:
+		c.agentEphemeral(e)
 	case proto.EphKeyNeed:
 		select { // the worker answers; drop if it's swamped
 		case c.keyNeeds <- e:
