@@ -311,6 +311,58 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		s.activity(a, "pr", url, 0)
 		return url, nil
 
+	case mcp.ToolWatch:
+		var p struct {
+			Chan    string `json:"chan"`
+			Thread  uint64 `json:"thread"`
+			Minutes int    `json:"minutes"`
+			About   string `json:"about"`
+		}
+		if err := mcp.Args(raw, &p); err != nil {
+			return "", err
+		}
+		if !a.Owner {
+			return "", errOwnerOnly
+		}
+		if p.Minutes < 1 || p.Minutes > MaxWatchMinutes {
+			return "", fmt.Errorf("minutes: 1 to %d", MaxWatchMinutes)
+		}
+		if strings.TrimSpace(p.About) == "" {
+			return "", errors.New("say what you're watching for")
+		}
+		cv, err := s.readable(r, p.Chan)
+		if err != nil {
+			return "", err
+		}
+		if cv.Kind == proto.ChanAgentDM {
+			return "", errors.New("you already answer everything in your DM")
+		}
+		if p.Thread != 0 && !threadIn(s.Chat, p.Thread, cv.ID) {
+			return "", fmt.Errorf("no thread %d there", p.Thread)
+		}
+		w := s.startWatch(cv, p.Thread, p.Minutes, p.About)
+		return fmt.Sprintf("watching %s for %d min. New messages there come to you as follow-ups; your owner gets a summary at the end. People there: %s",
+			w.Where, p.Minutes, s.People(cv.ID, p.Thread)), nil
+
+	case mcp.ToolUnwatch:
+		var p struct {
+			Chan string `json:"chan"`
+		}
+		if err := mcp.Args(raw, &p); err != nil {
+			return "", err
+		}
+		if !a.Owner {
+			return "", errOwnerOnly
+		}
+		cv, err := mcp.ResolveChan(s.Chat, p.Chan)
+		if err != nil {
+			return "", err
+		}
+		if s.stopWatches(cv.ID, 0, "stopped") == 0 {
+			return "you weren't watching " + mcp.ChanLabel(cv), nil
+		}
+		return "stopped watching " + mcp.ChanLabel(cv) + "; your owner got the summary", nil
+
 	case mcp.ToolLeaveThread:
 		s.disengage(a.Key)
 		s.mu.Lock()

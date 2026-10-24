@@ -375,6 +375,11 @@ func agentStatus(out io.Writer, tcHome string, now time.Time) error {
 			fmt.Fprintf(out, "last answered: %s\n", ago(now, st.LastRun))
 		}
 	}
+	if running && err == nil {
+		for _, w := range st.Watches {
+			fmt.Fprintf(out, "watching %s until %s: %s\n", sanitize.Line(w.Where), time.UnixMilli(w.Until).Local().Format("15:04"), sanitize.Line(w.About))
+		}
+	}
 	if err == nil && st.Err != "" {
 		fmt.Fprintf(out, "last error: %s\n", sanitize.Line(st.Err))
 	}

@@ -261,6 +261,7 @@ type Status struct {
 	CapUSD   float64 `json:"cap_usd"`
 	LastRun  int64   `json:"last_run,omitempty"`
 	Err      string  `json:"err,omitempty"`
+	Watches  []Watch `json:"watches,omitempty"`
 }
 
 // ReadStatus reads state/status.json.

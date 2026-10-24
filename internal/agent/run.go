@@ -70,7 +70,10 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 		sess = Session{ID: newUUID()}
 	}
 	prompt := s.askPrompt(a, mode, sess, resume)
-	if a.FollowUp {
+	switch {
+	case a.Watch != nil:
+		prompt = s.watchNote(a.Watch) + "\n\n" + prompt
+	case a.FollowUp:
 		prompt = FollowUpNote + "\n\n" + prompt
 	}
 	res, err := s.turn(ctx, a, cfg, mode, sess, resume, prompt, kind)
@@ -102,6 +105,9 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 		s.reply(a.Chan, a.Thread, text)
 		s.activity(a, "reply", short(text, 120), res.CostUSD)
 		replied = true
+		if a.Watch != nil {
+			s.watchReplied(a.Watch)
+		}
 		if a.FollowUp {
 			_ = s.ledger.Add(Spend{T: s.Now().UnixMilli(), Asker: a.Asker, Key: a.Key, Kind: "ask"})
 		}
@@ -110,7 +116,7 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 	left := s.left[a.Key]
 	delete(s.left, a.Key)
 	s.mu.Unlock()
-	if replied && !left && a.Thread != 0 {
+	if replied && !left && a.Thread != 0 && a.Watch == nil {
 		s.engage(a.Key, time.Duration(cfg.EngageMinutes)*time.Minute)
 	}
 	sess.Tokens, sess.Window = res.ContextTokens, res.ContextWindow
@@ -339,6 +345,9 @@ func (s *Supervisor) askPrompt(a Ask, mode runner.Mode, sess Session, resume boo
 	if fresh = mcp.LastN(fresh, 15); len(fresh) > 0 {
 		b.WriteString("\nEarlier in this conversation:\n")
 		b.WriteString(mcp.FormatMessages(s.Chat, fresh))
+	}
+	if people := s.People(a.Chan, a.Thread); people != "" {
+		b.WriteString("\nPeople here (mention them exactly like this): " + people + "\n")
 	}
 	b.WriteString("\nThe ask:\n")
 	b.WriteString(mcp.FormatMessages(s.Chat, []client.Message{a.Msg}))

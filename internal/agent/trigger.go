@@ -24,6 +24,8 @@ type Ask struct {
 	// FollowUp: no mention, but the agent is engaged in the thread
 	// (engage.go); the run decides whether to answer at all.
 	FollowUp bool
+	// Watch is the owner's watch this follow-up falls under (watch.go).
+	Watch *Watch
 }
 
 // SessionKey names the session of a thread of ch.

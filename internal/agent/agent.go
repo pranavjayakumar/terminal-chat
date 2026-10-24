@@ -99,6 +99,7 @@ type Supervisor struct {
 	branches map[string]string      // work branch → worktree dir
 	engaged  map[string]*engagement // session key → listening without a mention
 	left     map[string]bool        // session key → the run called leave_thread
+	watches  map[string]*Watch      // watch key → the owner's watch
 	status   Status
 	lastRun  time.Time
 	online   bool
@@ -155,7 +156,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	s.sem = make(chan struct{}, s.MaxRuns)
 	s.runs, s.threads, s.busy = map[string]*run{}, map[string][]Ask{}, map[string]bool{}
 	s.pending, s.branches = map[string]*approval{}, map[string]string{}
-	s.engaged, s.left = map[string]*engagement{}, map[string]bool{}
+	s.engaged, s.left, s.watches = map[string]*engagement{}, map[string]bool{}, map[string]*Watch{}
 	s.owner = s.Chat.Me().ID
 	if s.handleNow() == "" {
 		return errors.New("this tc home isn't an agent's (no agent handle in its config.json)")
@@ -247,6 +248,8 @@ func (s *Supervisor) handleUpdate(ctx context.Context, u client.Update) {
 		}
 		cv, _ := s.Chat.Channel(m.Chan)
 		if a, ok := s.trigger(m, cv.Kind); ok {
+			s.accept(ctx, a)
+		} else if a, ok := s.watchAsk(m, cv.Kind); ok {
 			s.accept(ctx, a)
 		} else if a, ok := s.followUp(m, cv.Kind); ok {
 			s.accept(ctx, a)
@@ -364,6 +367,7 @@ func (s *Supervisor) drain(ctx context.Context, key string) {
 func (s *Supervisor) housekeeping(ctx context.Context) {
 	s.setState(s.idleState())
 	s.pruneEngaged()
+	s.expireWatches()
 	s.maybeDream(ctx)
 }
 
@@ -414,6 +418,7 @@ func (s *Supervisor) saveStatus() {
 	}
 	st := s.status
 	s.mu.Unlock()
+	st.Watches = s.Watches()
 	if s.ledger != nil {
 		st.SpentUSD = s.ledger.Spent(s.Now())
 	}
