@@ -114,9 +114,10 @@ func pick(names ...string) []Tool {
 
 // AgentTools are the tools of `tc mcp --agent`.
 func AgentTools() []Tool {
-	return pick(ToolReadThread, ToolReadChannel, ToolSearch, ToolListChannels, ToolWhoami, ToolPostReply,
+	tools := pick(ToolReadThread, ToolReadChannel, ToolSearch, ToolListChannels, ToolWhoami, ToolPostReply,
 		ToolStatus, ToolStream, ToolRemember, ToolRecall, ToolAskOwner, ToolApprove,
 		ToolOpenIssue, ToolOpenPR, ToolWorkStart, ToolSetSoul, ToolSetMe, ToolSetIdentity)
+	return append(tools, pick(extraAgentToolNames()...)...)
 }
 
 // VisitorTools are the tools of `tc mcp` for an outside session.

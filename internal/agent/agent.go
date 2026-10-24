@@ -82,6 +82,7 @@ type Supervisor struct {
 	StaleAfter      time.Duration // older asks get an apology instead (24 h)
 	StatusEvery     time.Duration // live status throttle (250 ms: ≤ 4/s)
 	DreamAfter      time.Duration // idle time before the daily dream (30 min)
+	Extras          Extras        // the helper tools' tunables (extras.go)
 
 	paths    home.Paths
 	sock     string
@@ -177,6 +178,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		}
 	}()
 	defer s.wg.Wait()
+	s.startExtras(ctx)
 
 	now := s.Now().UnixMilli()
 	s.mu.Lock()

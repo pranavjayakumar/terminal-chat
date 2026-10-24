@@ -368,7 +368,7 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		s.activity(a, "edit", file, 0)
 		return "saved " + file, nil
 	}
-	return "", fmt.Errorf("unknown tool %s", name)
+	return s.extraTool(ctx, r, name, raw)
 }
 
 // canRead: the channel the ask came from; the agent DM for the owner;
