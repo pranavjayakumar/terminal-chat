@@ -298,8 +298,8 @@ func (f *fakeChat) AgentOf(user uint64) (proto.Agent, bool) {
 	}
 	return proto.Agent{}, false
 }
-func (f *fakeChat) Send(ch uint64, body string, thread uint64) error {
-	f.sent = append(f.sent, body)
+func (f *fakeChat) SendVia(ch uint64, body string, thread uint64, via string) error {
+	f.sent = append(f.sent, via+":"+body)
 	return nil
 }
 func (f *fakeChat) Flush(context.Context) error { return nil }
@@ -356,7 +356,7 @@ func TestVisitor(t *testing.T) {
 	if _, err = call(ToolPostReply, `{"chan":"#general","thread":100,"text":"  shipped \u001b[31m "}`); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.sent) != 1 || f.sent[0] != VisitorMark+"shipped" {
+	if len(f.sent) != 1 || f.sent[0] != "mcp:shipped" {
 		t.Fatalf("sent %q", f.sent)
 	}
 	if _, err = call(ToolRemember, `{}`); err == nil {

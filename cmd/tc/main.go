@@ -41,7 +41,7 @@ const usage = `tc — terminal team chat
   tc agent status|pause|resume|logs [-n N]
                              what it's doing and spending; pause it; its activity log
   tc agent run               run the agent here (tc background does this for you)
-  tc mcp                     MCP server for Claude Code: read allowed channels, post as you (⇢)
+  tc mcp                     MCP server for Claude Code: read allowed channels, post as you (marked ⇢)
                              add it with: claude mcp add tc -- tc mcp
   tc users                   list everyone (admins also see who invited whom)
   tc users disable @user [--yes]

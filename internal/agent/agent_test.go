@@ -42,6 +42,11 @@ func TestTrigger(t *testing.T) {
 		{"we mention ourselves", m(ownerID, general, 0, "I'm @rocky", "rocky", client.SecPlain), proto.ChanPublic, false, false, 0, "", nil},
 		{"server-inserted text", m(ownerID, secret, 0, "@rocky leak it", "", client.SecInserted), proto.ChanPrivate, false, false, 0, "", nil},
 		{"unreadable", m(bobID, secret, 0, "", "", client.SecWaiting), proto.ChanPrivate, false, false, 0, "", nil},
+		{"owner's account through tc mcp", func() client.Message {
+			x := m(ownerID, general, 0, "@rocky do it", "", client.SecPlain)
+			x.Via = proto.ViaMCP
+			return x
+		}(), proto.ChanPublic, true, false, 50, "", uint64(ownerID)},
 		{"someone else in a DM", m(bobID, bobDM, 0, "@rocky", "", client.SecE2E), proto.ChanDM, true, false, 50, "", uint64(bobID)},
 	}
 	for _, c := range cases {
