@@ -314,8 +314,10 @@ const GreetPrompt = `[tc] Your owner just set you up and your DM with them is br
 Send only your greeting and your first question now; they answer in the DM.`
 
 func (s *Supervisor) greet(ctx context.Context) {
-	dm, err := s.Chat.OpenAgentDM(ctx)
-	if err != nil {
+	var dm proto.Channel
+	if cv, err := mcp.ResolveChan(s.Chat, "dm"); err == nil {
+		dm = cv.Channel
+	} else if dm, err = s.Chat.OpenAgentDM(ctx); err != nil {
 		s.Log.Warn("opening the agent DM", "err", err)
 		return
 	}
