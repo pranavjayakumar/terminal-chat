@@ -30,7 +30,7 @@ func (m *Model) frame() *canvas {
 	c := reuseCanvas(m.spare, m.w, m.h, th)
 	m.spare = nil
 	g := m.geo()
-	m.emo.anchored = false
+	m.emo.anchored, m.mm.anchored = false, false
 	m.drawMain(c, g)
 	if g.split {
 		m.drawThreadPane(c, g)
@@ -42,11 +42,13 @@ func (m *Model) frame() *canvas {
 		m.drawInput(c, g)
 		m.drawPopup(c, g)
 		m.drawPicker(c, g)
+		m.drawMsgMenu(c, g)
 		c.setClip(old)
 	} else {
 		m.drawInput(c, g)
 		m.drawPopup(c, g)
 		m.drawPicker(c, g)
+		m.drawMsgMenu(c, g)
 	}
 	if g.SB > 0 {
 		m.drawSidebar(c, g)
@@ -214,7 +216,7 @@ func (m *Model) viewPane(c *canvas, p *pane, key string, x, y, w, h, unread int)
 	old := c.setClip(rect{x - 3, y, x + w + 4, y + h})
 	defer c.setClip(old)
 	sel := -1
-	if m.mode == modeSelect || m.mode == modeConfirmDelete || m.mode == modeEmoji && m.emo.react {
+	if m.mode == modeSelect || m.mode == modeConfirmDelete || m.mode == modeMsgMenu || m.mode == modeEmoji && m.emo.react {
 		if p == m.focus() {
 			sel = p.sel
 		}
@@ -244,11 +246,13 @@ func (m *Model) viewPane(c *canvas, p *pane, key string, x, y, w, h, unread int)
 	}
 	for o, yy := range firstRow {
 		m.drawMsgFx(c, p, o, x, yy, w)
+		bx0, bx1 := x+w, x+w
 		if o == sel || o == hov {
-			m.drawToolbar(c, p, key, o, x, yy, w)
+			bx0, bx1 = m.drawToolbar(c, p, key, o, x, yy, w)
 		}
 		if o == sel {
 			m.emo.anchored, m.emo.ax, m.emo.ay, m.emo.aw = true, x, yy, w
+			m.mm.anchored, m.mm.ax0, m.mm.ax1, m.mm.ay = true, bx0, bx1, yy
 		}
 	}
 	if p == &m.main && m.histBusy[p.ch] {
@@ -448,25 +452,35 @@ func (m *Model) drawMsgFx(c *canvas, p *pane, o, x, y, w int) {
 	}
 }
 
-// drawToolbar draws ☺ ↩ ⧉ ⋯ on a hovered or selected message.
-func (m *Model) drawToolbar(c *canvas, p *pane, key string, o, x, y, w int) {
+// drawToolbar draws ☺ ↩ ⧉ ⋯ on a hovered or selected message; it returns
+// the ⋯ button's columns, or the row's right end when there is no toolbar.
+func (m *Model) drawToolbar(c *canvas, p *pane, key string, o, x, y, w int) (bx0, bx1 int) {
 	if w < 30 || o >= len(p.msgs) {
-		return
+		return x + w, x + w
 	}
 	th := m.st.th
 	x0 := p.msgs[o]
 	if x0.ID == 0 || x0.Deleted {
-		return
+		return x + w, x + w
 	}
 	idx := msgRef(key, o, x0)
 	tx := x + w - 13
 	if x0.Author == m.me.ID && p.root == 0 && m.ui.Split {
 		tx = x + 1 // ours is on the right: the toolbar goes left
 	}
+	bx0, bx1 = x+w, x+w
 	for _, b := range [][2]string{{m.icon(icReact), "react"}, {m.icon(icReply), "reply"}, {m.icon(icCopy), "copy"}, {m.icon(icMore), "more"}} {
+		if b[1] == "more" && p == &m.main && m.thread.open() {
+			break // the selection belongs to the thread: no menu here
+		}
 		a := "tb:" + idx + ":" + b[1]
+		at := tx
 		tx = c.put(tx, y, " "+b[0]+" ", fgc(th.dim).on(th.element), a)
+		if b[1] == "more" {
+			bx0, bx1 = at, tx
+		}
 	}
+	return bx0, bx1
 }
 
 func (m *Model) drawThreadFull(c *canvas, g geo) {
@@ -571,7 +585,7 @@ func (m *Model) drawInput(c *canvas, g geo) {
 	keys := [][3]string{{"⌥K", "commands", "palette:"}, {"⌥⏎", "newline", ""}, {"⏎", "send", "send"}}
 	if m.mode == modeEmoji {
 		keys = [][3]string{{"esc", "close emoji", ""}}
-	} else if m.mode == modeSelect {
+	} else if m.mode == modeSelect || m.mode == modeMsgMenu {
 		keys = [][3]string{{"esc", "back", ""}}
 	}
 	kw := 0

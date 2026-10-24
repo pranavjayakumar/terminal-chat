@@ -35,6 +35,7 @@ const (
 	kSelCopy    = "y"
 	kSelPin     = "p"
 	kSelView    = "v"
+	kSelMenu    = "m" // the message menu
 	kConfirmYes = "y"
 	kTalk       = "ctrl+t" // only inside a voice huddle (huddle.go)
 	kSettings   = "ctrl+," // only where the terminal reports it (kitty keys); /settings works everywhere

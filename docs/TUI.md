@@ -124,11 +124,11 @@ first run with no cache, the same logo screen stays until the first channels arr
 ### Icons
 
 Every icon the UI draws for a role (channel, private, person, huddle, mic, muted, agent, e2e, search, pin,
-settings, react, reply, copy, more, thread, file, image, code, bell, away, online, notes, talking, and the
+settings, react, reply, copy, more, thread, file, image, code, bell, away, online, notes, talking, edit, delete, and the
 tc mark) comes from one table, `internal/tui/icons.go`, in three packs:
 
-- **tc Symbols**: tc's own 25-icon font (`internal/iconfont`, generated from `assets/iconfont/icons.txt` by
-  `scripts/iconfont.py`), at U+E400–U+E419: Private Use, in the gap Nerd Fonts leave between Weather (to
+- **tc Symbols**: tc's own 27-icon font (`internal/iconfont`, generated from `assets/iconfont/icons.txt` by
+  `scripts/iconfont.py`), at U+E400–U+E41B: Private Use, in the gap Nerd Fonts leave between Weather (to
   U+E3E3) and Seti-UI (from U+E5FA), so Nerd Font users still get these. Each glyph is one column, like
   every Private Use character in our width function.
 - **Unicode** and **DOS**: plain characters every terminal has.
@@ -173,7 +173,7 @@ tc mark) comes from one table, `internal/tui/icons.go`, in three packs:
 - 256-color terminals get each theme's surfaces on distinct grey steps; 16-color terminals keep their own
   background and mark selections in reverse. A selected message's bar becomes `▌`; a mention's bar is `┃`
   and a highlight word's `┇`, so they read without color too.
-- Mouse: click channels, messages (select), reactions, `☺+`, `↳ replies`, the hover toolbar (`☺ ↩ ⧉ ⋯`), emoji picker cells and tabs, huddle
+- Mouse: click channels, messages (select), reactions, `☺+`, `↳ replies`, the hover toolbar (`☺ ↩ ⧉ ⋯`; `⋯` opens the message menu), emoji picker cells and tabs, huddle
   join/leave, palette rows and tabs, settings controls, toasts, the theme in the status bar, the Retro menu bar; drag the sidebar or thread pane edge to size it; the wheel
   scrolls the pane under the pointer. A pointer move that changes nothing reuses the last frame.
 
@@ -191,13 +191,24 @@ tc mark) comes from one table, `internal/tui/icons.go`, in three packs:
 | `Alt-Shift-↑/↓` | previous / next unread channel |
 | `PgUp/PgDn`, mouse wheel | scroll history (fetches older via History at top) |
 | `↑` on empty input | select messages mode (↑/↓ moves selection) |
-| in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (emoji picker; typing filters, so `+ +1 Enter` and `+ :tada: Enter` still work), `y` copy body (OSC 52), `p` pin / unpin (notice "pinned" / "unpinned"), `Esc` leave |
+| in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (emoji picker; typing filters, so `+ +1 Enter` and `+ :tada: Enter` still work), `y` copy body (OSC 52), `p` pin / unpin (notice "pinned" / "unpinned"), `m` or `Enter` message menu (below), `Esc` leave |
 | `Esc` | close the completion popup / thread / palette / dialog / select mode; never quits |
 | `Ctrl-C` twice (the second while `press Ctrl-C again to quit` shows, 4 s), or `/quit` | quit |
 | `F1` or `/help` | keyboard sheet: Navigate, Messages, Write, Huddle, App, then every command (`?` is just text, so messages can start with it) |
 | `Ctrl-B`, `F2` | sidebar size: normal → wide → icons |
 | `⌥[` / `⌥]` (thread pane open) | its edge 4 columns left (wider) / right (narrower), saved; macOS Option-as-text sends `“` `‘`, which count only on an empty input |
 | `/settings` (or `Ctrl-,` where the terminal reports it) | Settings: Appearance (skin, theme, density, sidebar, messages, animations, startup), Notifications (runs `/notify`, `/sounds`, `/dnd`), Keys, Account & devices, About; `↑/↓` move, `←/→` change, `Enter` toggles, `Tab` next page |
+
+**Message menu** (`⋯` on the hover toolbar, or `m` / `Enter` in select mode): a small floating panel by the
+button, in the skin's frame (Modern rounded, Retro double line with a shadow) with the icon pack's icons.
+Its rows run the select-mode keys and show them on the right: `↩ Reply in thread` (r), `☺ React` (+),
+`✎ Edit` (e, own), `⧉ Copy text` (y), `¶ Pin` / `Unpin` (p), `✕ Delete` (d, own, error color, still asks to
+confirm). Only rows that do something show: a deleted or unsent message gets `Copy text`, a failed one
+`Retry send` (r), `Copy text` and `Discard` (d). `↑/↓` move, `Enter` runs, the letters run directly, `Esc`,
+`m` or a click outside closes it (the click still acts), `⋯` again closes it; any other key closes it and
+does what it does in select mode (`v`, `Option-K`, `PgUp`); the pointer lights a row and a
+click runs it. It sits right-aligned under the button, above it when there is no room below; when neither
+side holds every row, the roomier side gets a shorter menu that scrolls. It works in the thread pane too.
 
 ## Slash commands
 

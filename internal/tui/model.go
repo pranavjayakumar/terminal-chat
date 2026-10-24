@@ -29,7 +29,8 @@ const (
 	modeHelp
 	modeSearch
 	modeConfirmDelete
-	modeEmoji // emojipick.go
+	modeEmoji   // emojipick.go
+	modeMsgMenu // msgmenu.go
 	modePanePick
 	modeSharePreview
 	modeActivity
@@ -116,6 +117,7 @@ type Model struct {
 	helpBack     bool // the keys sheet was opened from Settings: closing goes back there
 	view         viewer
 	emo          emojiPicker
+	mm           msgMenu
 
 	sw     switcher
 	search searchState
@@ -422,6 +424,9 @@ func (m *Model) reloadChans() {
 			m.active = 0
 			m.main = pane{sel: -1}
 			m.closeThread()
+			if m.mode == modeSelect || m.mode == modeConfirmDelete || m.mode == modeMsgMenu {
+				m.mode = modeNormal // nothing left to act on
+			}
 			if ch := m.defaultChannel(); ch != 0 {
 				m.openChannel(ch)
 			}
@@ -508,8 +513,16 @@ func (m *Model) reloadPane(p *pane) {
 				break
 			}
 		}
+		kept := p.sel >= 0
 		if p.sel < 0 && len(p.msgs) > 0 {
 			p.sel = len(p.msgs) - 1
+		}
+		if m.mode == modeMsgMenu && p == m.focus() {
+			if kept {
+				m.fillMsgMenu() // it may have been sent, edited or deleted
+			} else {
+				m.closeMsgMenu() // its message is gone
+			}
 		}
 	}
 }
@@ -570,7 +583,7 @@ func (m *Model) openChannel(ch uint64) tea.Cmd {
 	m.main = pane{ch: ch, sel: -1}
 	m.closeThread()
 	m.closePicker(false)
-	if m.mode == modeSelect || m.mode == modeConfirmDelete {
+	if m.mode == modeSelect || m.mode == modeConfirmDelete || m.mode == modeMsgMenu {
 		m.mode = modeNormal
 	}
 	m.cancelEdit()
@@ -1302,6 +1315,8 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 		return nil
 	case modeEmoji:
 		return m.emojiKey(k)
+	case modeMsgMenu:
+		return m.msgMenuKey(k)
 	case modePanePick:
 		return m.panePickKey(key)
 	case modeSharePreview:
@@ -1738,6 +1753,9 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 		}), true
 	case kSelView:
 		m.openViewer(sel)
+		return nil, true
+	case kSelMenu, kEnter:
+		m.openMsgMenu()
 		return nil, true
 	}
 	return nil, false

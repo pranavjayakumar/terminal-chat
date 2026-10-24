@@ -37,7 +37,7 @@ func TestFontMatchesSource(t *testing.T) {
 // The font maps exactly First..Last minus the gaps in icons.txt, all
 // inside the range Nerd Fonts leave free.
 func TestRange(t *testing.T) {
-	if First != 0xE400 || Last != 0xE419 || First <= 0xE3E3 || Last >= 0xE5FA {
+	if First != 0xE400 || Last != 0xE41B || First <= 0xE3E3 || Last >= 0xE5FA {
 		t.Fatal("tc Symbols must stay between Nerd Fonts' Weather (to U+E3E3) and Seti-UI (from U+E5FA)")
 	}
 	if len(TTF) < 1000 || string(TTF[:4]) != "\x00\x01\x00\x00" {

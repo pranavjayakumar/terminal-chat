@@ -78,6 +78,11 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 				m.emo.sel = n // one highlight for keys and pointer
 			}
 		}
+		if i, ok := strings.CutPrefix(a, "mm:"); ok && m.mode == modeMsgMenu {
+			if n, err := strconv.Atoi(i); err == nil && n >= 0 && n < len(m.mm.items) {
+				m.mm.sel = n
+			}
+		}
 		return nil
 	case tea.MouseActionRelease:
 		m.endDrag(msg.X, true)
@@ -189,6 +194,18 @@ func (m *Model) click(a string) tea.Cmd {
 			return nil
 		}
 		m.closePicker(true) // a click anywhere else closes it and still acts
+	}
+	menuRef := ""
+	if m.mode == modeMsgMenu {
+		switch kind {
+		case "mm":
+			i, _ := strconv.Atoi(rest)
+			return m.runMenuItem(i)
+		case "noop":
+			return nil
+		}
+		menuRef = m.mm.ref
+		m.closeMsgMenu() // like the picker: a click elsewhere closes it and still acts
 	}
 	switch kind {
 	case "":
@@ -328,6 +345,14 @@ func (m *Model) click(a string) tea.Cmd {
 			m.selectAt(p, i)
 			cmd, _ := m.selectKey(keyMsgRune('+'))
 			return cmd
+		case "more":
+			if menuRef != "" && findRef(p.msgs, menuRef) == i && m.mode == modeSelect && m.focus() == p {
+				return nil // its own ⋯ again: the click only closed the menu
+			}
+			m.selectAt(p, i)
+			if m.mode == modeSelect && m.focus() == p && p.sel == i {
+				m.openMsgMenu()
+			}
 		default:
 			m.selectAt(p, i)
 		}

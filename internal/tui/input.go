@@ -176,6 +176,7 @@ func (m *Model) selectFooter() string {
 		}
 		keys = append(keys, "v view", "y copy")
 	}
+	keys = append(keys, "m menu")
 	full := strings.Join(keys, " · ") + " · Esc"
 	if strWidth(full) < m.dims().inputW {
 		return full
@@ -190,7 +191,7 @@ func (m *Model) selectFooter() string {
 
 func (m *Model) updatePlaceholder() {
 	switch {
-	case m.mode == modeSelect:
+	case m.mode == modeSelect || m.mode == modeMsgMenu:
 		m.input.Placeholder = m.selectFooter()
 	case m.thread.open():
 		m.input.Placeholder = "reply in thread"
