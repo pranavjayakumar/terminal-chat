@@ -10,9 +10,9 @@ package tui
 import (
 	"context"
 	"encoding/json"
-	"net"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"

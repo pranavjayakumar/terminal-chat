@@ -182,9 +182,9 @@ type Model struct {
 	lastCanvas *canvas // the last frame, for clicks and the theme cross-fade
 	spare      *canvas // the frame before it, reused for the next
 	lastFrame  string
-	reuseFrame bool   // nothing changed since lastFrame (pointer motion)
-	blinkIdle  bool   // the cursor blink loop stopped after blinkFor without keys
-	sbForce    string // Ctrl-B's choice below sbIconsBelow columns, this session only
+	reuseFrame bool    // nothing changed since lastFrame (pointer motion)
+	blinkIdle  bool    // the cursor blink loop stopped after blinkFor without keys
+	sbForce    string  // Ctrl-B's choice below sbIconsBelow columns, this session only
 	ag         agentUI // personal agents (agent.go)
 }
 

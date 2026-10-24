@@ -218,8 +218,8 @@ type agentUI struct {
 	open  map[uint64]bool       // folds expanded
 	// pending: my agent's approval cards still waiting (approval.go)
 	pending map[uint64]pendingAppr
-	home  agentHomeState        // my agent's home config (agentpanel.go)
-	panel agentPanel
+	home    agentHomeState // my agent's home config (agentpanel.go)
+	panel   agentPanel
 }
 
 type liveRow struct {
