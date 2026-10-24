@@ -486,7 +486,7 @@ and one status row. Code: `internal/tui/agent.go` (icons, state), `agentlive.go`
   reads `⌛ no answer`. A card that arrives while I look elsewhere notifies me (`Rocky needs your ok`),
   since my agent posts as me and the usual mention notification skips my own messages.
 - **Panel** (`⌥K` › Agent, the glyph in the sidebar, the mode in the DM header): one page, no tabs. State
-  (awake / working / paused / asleep, idle time, sleep-after, home machine), Spend today (`█` accent,
+  (awake / working / paused / asleep, idle time, sleep-after, on this or another computer), Spend today (`█` accent,
   `░` faint, `$3.40 of $20  17%`), Asks today per person, the Mode radio (Talk / Work / Crew: `←/→`, `1–3`
   or a click), the note line, then Reads, Folders, Limits, Memory, Activity, Personality ("tell me in our
   DM": opens the DM). `⏎` opens a row's page: Reads (channels it may read for anyone's asks, toggled on
@@ -495,11 +495,12 @@ and one status row. Code: `internal/tui/agent.go` (icons, state), `agentlive.go`
   (`⏎` reads a note, `f` forgets one, `u` undoes today; both ask `y`), Activity (the audit log, newest
   first). Keys `p` pause / resume, `d` open DM, `l` logs, `r` re-read, Esc back / close. Settings are the
   agent home's `config.json` (`internal/agent/home`); spend, asks, status and the log come from its
-  `state/` files, written by the supervisor; nothing is read while drawing. On a machine that isn't the
-  agent's home the panel says where its settings live.
+  `state/` files, written by the supervisor; nothing is read while drawing. On a computer that isn't the
+  agent's home (`agent.HomeHere`) the panel shows what the server knows and changes nothing.
 - **Setup.** With no agent the panel is the setup: handle (`@rocky`), the icon sheet, a color (auto or one
   of the 8), a preview of the name row, `Set up Rocky`, and `or from a shell: tc agent setup`. It calls
-  `RegisterAgent`, then makes the agent home (`home.Ensure`, config, `client.LoginAgent` for its device);
+  `RegisterAgent`, then makes the agent home as `tc agent setup` does (`home.EnsureWith` with the server's
+  host, config with this machine's id, `client.LoginAgent` for its device unless it is signed in already);
   `tc background` runs it. A refused handle shows the server's reason.
 
 ## Activity view
