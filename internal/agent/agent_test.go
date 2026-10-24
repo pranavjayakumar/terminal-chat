@@ -212,6 +212,20 @@ func TestAnswerMention(t *testing.T) {
 	}
 }
 
+func TestBotsDontCall(t *testing.T) {
+	h := newHarness(t, cfgDefault(), nil)
+	h.chat.mu.Lock()
+	h.chat.users[9] = proto.User{ID: 9, Name: "ci-bot", Bot: true}
+	h.chat.mu.Unlock()
+	h.chat.say(9, general, 0, "@rocky deploy failed, fix it", 0)
+	h.chat.say(bobID, general, 0, "@rocky hi", 0)
+	h.waitFor("bob's answer", func() bool { return len(h.chat.posts()) == 1 })
+	time.Sleep(30 * time.Millisecond)
+	if n := len(h.run.requests()); n != 1 || strings.Contains(h.run.requests()[0].Prompt, "deploy failed") {
+		t.Fatalf("bot triggered a run (%d runs)", n)
+	}
+}
+
 func TestNoReply(t *testing.T) {
 	h := newHarness(t, cfgDefault(), nil)
 	h.run.reply = func(req runner.Request, on func(runner.Event)) (runner.Result, error) {
@@ -564,6 +578,14 @@ func TestToolAccess(t *testing.T) {
 	}
 	if r := h.call(mcp.ToolReadChannel, map[string]string{"chan": "#secret"}); r.Error {
 		t.Fatalf("allowed channel refused: %s", r.Text)
+	}
+	h.s.mu.Lock()
+	for _, r := range h.s.runs {
+		r.cfg.Access.Chans = append(r.cfg.Access.Chans, bobDM)
+	}
+	h.s.mu.Unlock()
+	if r := h.call(mcp.ToolReadChannel, map[string]string{"chan": "13"}); !r.Error {
+		t.Fatalf("a listed DM was readable for bob's ask: %s", r.Text)
 	}
 	if r := h.call(mcp.ToolSearch, map[string]string{"q": "pin"}); strings.Contains(r.Text, "1234") {
 		t.Fatalf("search leaked the DM: %s", r.Text)

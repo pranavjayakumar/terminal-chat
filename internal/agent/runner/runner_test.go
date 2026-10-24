@@ -160,3 +160,13 @@ func TestRunCancelKillsGroup(t *testing.T) {
 		t.Fatalf("err %v after %v", err, time.Since(start))
 	}
 }
+
+func TestEngineEnv(t *testing.T) {
+	in := []string{"PATH=/bin", "HOME=/h", "SSH_AUTH_SOCK=/s", "SSH_AGENT_PID=1", "GH_TOKEN=x", "GITHUB_TOKEN=y",
+		"ANTHROPIC_API_KEY=k", "AWS_SECRET_ACCESS_KEY=a", "OPENAI_API_KEY=o", "DB_PASSWORD=p", "HERDR_PANE_ID=w1",
+		"CLAUDECODE=1", "CLAUDE_CODE_OAUTH_TOKEN=sub", "LANG=en", "TC_HOME=/t"}
+	got := strings.Join(engineEnv(in), " ")
+	if got != "PATH=/bin HOME=/h CLAUDE_CODE_OAUTH_TOKEN=sub LANG=en TC_HOME=/t" {
+		t.Fatalf("env %s", got)
+	}
+}

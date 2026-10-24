@@ -204,6 +204,15 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	}
 }
 
+// trigger is Trigger for this agent. Webhook bots never call it: their
+// text comes from outside tc and nobody answers for its cost.
+func (s *Supervisor) trigger(m client.Message, kind string) (Ask, bool) {
+	if s.Chat.User(m.Author).Bot {
+		return Ask{}, false
+	}
+	return Trigger(m, kind, s.owner, s.handleNow())
+}
+
 // handleNow is the agent's handle; it follows renames.
 func (s *Supervisor) handleNow() string { return s.Chat.AgentHandle() }
 
@@ -233,7 +242,7 @@ func (s *Supervisor) handleUpdate(ctx context.Context, u client.Update) {
 			continue
 		}
 		cv, _ := s.Chat.Channel(m.Chan)
-		if a, ok := Trigger(m, cv.Kind, s.owner, s.handleNow()); ok {
+		if a, ok := s.trigger(m, cv.Kind); ok {
 			s.accept(ctx, a)
 		}
 	}
@@ -278,7 +287,7 @@ func (s *Supervisor) backlog() []Ask {
 				if x.Time < since {
 					continue
 				}
-				if a, ok := Trigger(x, cv.Kind, s.owner, s.handleNow()); ok {
+				if a, ok := s.trigger(x, cv.Kind); ok {
 					out = append(out, a)
 				}
 			}

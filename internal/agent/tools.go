@@ -370,8 +370,10 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 }
 
 // canRead: the channel the ask came from; the agent DM for the owner;
-// channels the owner allowed; and for the owner's own asks anything the
-// owner can read (other people's DMs only when allowed in the panel).
+// for the owner's own asks anything the owner can read (DMs only when
+// allowed in the panel); for anyone else only the channels the owner
+// listed in the panel, never a DM. Channels the server granted because
+// someone called the agent there are not on that list.
 func (s *Supervisor) canRead(r *run, cv client.ChannelView) bool {
 	a := r.ask
 	switch {
@@ -379,6 +381,8 @@ func (s *Supervisor) canRead(r *run, cv client.ChannelView) bool {
 		return true
 	case cv.Kind == proto.ChanAgentDM:
 		return a.Owner
+	case !a.Owner && cv.Kind == proto.ChanDM:
+		return false
 	case slices.Contains(r.cfg.Access.Chans, cv.ID):
 		return true
 	case a.Owner && cv.Kind == proto.ChanDM:

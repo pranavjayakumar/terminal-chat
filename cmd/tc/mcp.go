@@ -5,8 +5,8 @@ import (
 	"errors"
 	"flag"
 	"os"
-	"sync"
 
+	"github.com/skailama/tc/internal/agent/home"
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/mcp"
 )
@@ -49,21 +49,16 @@ func visitorMCP(ctx context.Context) error {
 		for range c.Updates() {
 		}
 	}()
-	var mu sync.Mutex
-	var allowed []uint64
-	var known bool
-	v := &mcp.Visitor{Chat: c, Allowed: func(ctx context.Context) ([]uint64, error) {
-		ids, err := c.AgentAccess(ctx)
-		mu.Lock()
-		defer mu.Unlock()
-		if err == nil {
-			allowed, known = ids, true
-			return ids, nil
+	// The channels the owner listed in the agent panel; not the server's
+	// access list, which also holds channels granted because someone
+	// called the agent there.
+	dir := home.Dir(client.DefaultHome())
+	v := &mcp.Visitor{Chat: c, Allowed: func(context.Context) ([]uint64, error) {
+		cfg, err := home.LoadConfig(dir)
+		if err != nil {
+			return nil, err
 		}
-		if known {
-			return allowed, nil // offline: the last list we saw
-		}
-		return nil, err
+		return cfg.Access.Chans, nil
 	}}
 	s := &mcp.Server{Name: mcp.ServerName, Version: version, Tools: mcp.VisitorTools(), Instructions: mcp.VisitorInstructions, Call: v.Call}
 	return s.Serve(cctx, os.Stdin, os.Stdout)
