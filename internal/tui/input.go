@@ -159,7 +159,7 @@ func (m *Model) selectFooter() string {
 		keys = []string{"r retry", "d discard", "v view", "y copy"}
 	} else {
 		live := sel.ID != 0 && !sel.Deleted
-		mine := sel.Author == m.me.ID
+		mine := m.ownMsg(sel)
 		if mine && live && sel.Sec.Trusted() {
 			keys = append(keys, "e edit")
 		}
@@ -194,6 +194,8 @@ func (m *Model) updatePlaceholder() {
 		m.input.Placeholder = m.selectFooter()
 	case m.thread.open():
 		m.input.Placeholder = "reply in thread"
+	case m.isAgentDM(m.active):
+		m.input.Placeholder = "tell " + m.chanTitle(m.active) + " anything…"
 	case m.active != 0:
 		m.input.Placeholder = "message " + m.chanTitle(m.active)
 	default:

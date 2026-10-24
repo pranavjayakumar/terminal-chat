@@ -19,6 +19,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/skailama/tc/internal/agent/home"
 	"github.com/skailama/tc/internal/alert"
 	"github.com/skailama/tc/internal/background"
 	"github.com/skailama/tc/internal/client"
@@ -105,6 +106,17 @@ type Backend interface {
 	RefreshDevices(ctx context.Context, user uint64) error
 	RevokeDevice(ctx context.Context, dev e2ecrypto.DevID, allowSelf bool) (int, error)
 	DeviceError() error // why this device isn't registered for encryption (nil: it is)
+	// Agents (agent.go, agentpanel.go): the cached list and live statuses,
+	// my agent's DM and access list, setup.
+	Agents() []proto.Agent
+	AgentStatus(ch, thread uint64) []client.AgentLive
+	AgentThreads(ch uint64) []uint64
+	AgentDM() (client.ChannelView, bool)
+	OpenAgentDM(ctx context.Context) (proto.Channel, error)
+	RegisterAgent(ctx context.Context, handle, icon string) (proto.Agent, error)
+	UpdateAgent(ctx context.Context, handle, icon string) (proto.Agent, error)
+	AgentAccess(ctx context.Context) ([]uint64, error)
+	SetAgentAccess(ctx context.Context, add, remove []uint64) ([]uint64, error)
 }
 
 var _ Backend = (*client.Client)(nil)
@@ -129,6 +141,10 @@ func Run(ctx context.Context, c *client.Client, version string) error {
 	o.Touches = underlineStyles(os.Getenv)
 	o.UpdateCheck = func() string {
 		return release.Check(ctx, c.Home(), version, release.NewSource(), time.Now())
+	}
+	o.AgentDir = home.Dir(c.Home())
+	o.AgentSetup = func(ctx context.Context, handle, icon string) error {
+		return setupAgentHome(ctx, c.Home(), o.AgentDir, handle, icon)
 	}
 	if h := notify.DetectHerdr(env); h != nil {
 		o.Herdr = h
@@ -192,6 +208,13 @@ type Options struct {
 	// (SGR 4:3, 4:4, 58), detected conservatively in Run.
 	Touches bool
 
+	// AgentDir is my agent's home (internal/agent/home) on this machine;
+	// "": tc doesn't know of one (tests).
+	AgentDir string
+	// AgentSetup sets up a just-registered agent's home here: files,
+	// config, its device login. nil: the panel only registers it.
+	AgentSetup func(ctx context.Context, handle, icon string) error
+
 	styles *styles // nil: from Out and NO_COLOR
 	motion bool    // tests: run animations (off when styles is set)
 }
@@ -207,4 +230,26 @@ func awayAfter(v string) time.Duration {
 		return 0
 	}
 	return time.Duration(n * float64(time.Minute))
+}
+
+// setupAgentHome makes a registered agent's home under agentDir: the files
+// tc owns, config.json with its handle and icon, and its own device login
+// with the owner's SSH key. tc background then runs it.
+func setupAgentHome(ctx context.Context, ownerHome, agentDir, handle, icon string) error {
+	if err := home.Ensure(agentDir); err != nil {
+		return err
+	}
+	cfg, err := home.LoadConfig(agentDir)
+	if err != nil {
+		return err
+	}
+	cfg.Handle, cfg.Icon = handle, icon
+	if cfg.HomeMachine == "" {
+		cfg.HomeMachine, _ = os.Hostname()
+	}
+	if err := home.SaveConfig(agentDir, cfg); err != nil {
+		return err
+	}
+	_, err = client.LoginAgent(ctx, ownerHome, home.PathsFor(agentDir).DeviceHome, handle)
+	return err
 }

@@ -91,6 +91,9 @@ func (m *Model) drawOverlay(c *canvas, g geo) {
 	case modeHelp:
 		m.drawKeys(c)
 		return
+	case modeAgent:
+		m.drawAgentPanel(c)
+		return
 	}
 	r := m.dialog(c, 110, m.h-2, "")
 	w, h := r.x1-r.x0-4, r.y1-r.y0-2

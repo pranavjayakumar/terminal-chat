@@ -178,9 +178,12 @@ func (m *Model) frameTick() tea.Cmd {
 		if w := m.introWake(); w > 0 && (d == 0 || w < d) {
 			d = w
 		}
-		if d == 0 {
-			return nil
-		}
+	}
+	if w := m.agentWake(); w > 0 && (d == 0 || w < d) {
+		d = w // an agent glyph on screen moves
+	}
+	if d == 0 {
+		return nil
 	}
 	at := m.now().Add(d)
 	if m.fx.running && !at.Before(m.fx.wakeAt) {
@@ -297,7 +300,7 @@ type msgSnap struct {
 func (m *Model) snapshot(ms []client.Message) []msgSnap {
 	out := make([]msgSnap, len(ms))
 	for i, x := range ms {
-		s := msgSnap{k: keyOf(x.ID, x.Local), local: x.Local, mine: x.Author == m.me.ID, pending: x.Pending}
+		s := msgSnap{k: keyOf(x.ID, x.Local), local: x.Local, mine: m.ownMsg(x), pending: x.Pending}
 		if len(x.Reactions) > 0 {
 			s.reacts = make(map[string]int, len(x.Reactions))
 			for e, us := range x.Reactions {

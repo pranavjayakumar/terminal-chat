@@ -39,6 +39,7 @@ const (
 	modeDevices // devices.go
 	modeDisable // disable.go
 	modeSettings
+	modeAgent // agentpanel.go
 )
 
 // pane is a scrollable message list: a channel (root 0) or a thread.
@@ -55,6 +56,8 @@ type pane struct {
 	memoLines               []prow
 	memoOwner               []int
 	memoBlocks              map[blockKey]*canvas // the blocks memoLines uses
+	memoLive                string               // the live agent rows it drew
+	liveMarks               map[*canvas]liveMark // their animated glyphs (agentlive.go)
 }
 
 func (p *pane) open() bool { return p.ch != 0 }
@@ -181,6 +184,7 @@ type Model struct {
 	reuseFrame bool   // nothing changed since lastFrame (pointer motion)
 	blinkIdle  bool   // the cursor blink loop stopped after blinkFor without keys
 	sbForce    string // Ctrl-B's choice below sbIconsBelow columns, this session only
+	ag         agentUI // personal agents (agent.go)
 }
 
 // ---- tea messages ----
@@ -263,6 +267,7 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 	m.loadDrafts()
 	m.refreshPrefs()
 	m.reloadAll()
+	m.loadAgentHome()
 	if ch := m.defaultChannel(); ch != 0 {
 		m.openChannel(ch)
 	}
@@ -346,6 +351,7 @@ func (m *Model) reloadAll() {
 	m.status = m.c.Status()
 	m.reloadUsers()
 	m.reloadChans()
+	m.reloadAgents()
 	m.reloadPane(&m.main)
 	m.reloadPane(&m.thread)
 	m.reloadTyping()
@@ -923,6 +929,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if cmd, ok := m.huddleMsg(msg); ok {
 		return m, cmd
 	}
+	if cmd, ok := m.agentMsg(msg); ok {
+		return m, cmd
+	}
 	switch msg.(type) {
 	case inviteShownMsg, hookShownMsg, listMsg, searchMsg, pinsMsg:
 		if m.mode == modeViewer && m.view.secret {
@@ -1175,6 +1184,16 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 		m.reloadChans()
 		cmds = append(cmds, m.openDefault())
 	}
+	if u.Agents || u.Channels || u.Users {
+		m.reloadAgents()
+		if u.Agents {
+			m.loadAgentHome()
+		}
+	}
+	for ch := range u.AgentStatus {
+		m.reloadLive(ch)
+	}
+	cmds = append(cmds, m.noteApprovals(u.New))
 	if u.Msgs[m.main.ch] {
 		m.reloadPane(&m.main)
 	}
@@ -1273,6 +1292,8 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 		return m.disableKey(key)
 	case modeSettings:
 		return m.settingsKey(key)
+	case modeAgent:
+		return m.agentPanelKey(k)
 	case modeViewer:
 		if key == kSelCopy {
 			if m.view.copy != "" {
@@ -1324,6 +1345,9 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 		if cmd, ok := m.compKey(key); ok {
 			return cmd
 		}
+	}
+	if cmd, ok := m.approvalKey(key); ok {
+		return cmd
 	}
 	switch {
 	case key == kTab && m.tabComplete():
@@ -1664,7 +1688,10 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 	if !ok {
 		return nil, false
 	}
-	mine := sel.Author == m.me.ID
+	if cmd, ok := m.approvalKey(key); ok {
+		return cmd, true
+	}
+	mine := m.ownMsg(sel)
 	switch key {
 	case kSelEdit:
 		if !mine || sel.ID == 0 || sel.Deleted {

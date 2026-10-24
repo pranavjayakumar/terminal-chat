@@ -22,7 +22,7 @@ func (m *Model) hoverMsg() (string, int, bool) {
 		return "", 0, false
 	}
 	switch kind {
-	case "msg", "tb", "react", "addreact", "thread", "copy", "chanlink":
+	case "msg", "tb", "react", "addreact", "thread", "copy", "chanlink", "fold", "appr":
 	default:
 		return "", 0, false
 	}
@@ -250,6 +250,12 @@ func (m *Model) click(a string) tea.Cmd {
 		return nil
 	case "setpage", "set":
 		return m.settingsClick(a)
+	case "ap":
+		return m.agentPanelClick(rest)
+	case "agent":
+		return m.agentRowClick(rest)
+	case "agentappr":
+		return m.openApproval()
 	case "thread":
 		if rest == "close" {
 			m.closeThread()
@@ -289,6 +295,11 @@ func (m *Model) click(a string) tea.Cmd {
 		arg = parts[2]
 	}
 	switch kind {
+	case "fold":
+		m.toggleFold(x.ID)
+		return nil
+	case "appr":
+		return m.answerApproval(x, arg)
 	case "chanlink":
 		id, err := strconv.ParseUint(arg, 10, 64)
 		if err != nil {

@@ -139,6 +139,7 @@ func (m *Model) drawLines(c *canvas, x, y, w, h int, lines []string) {
 }
 
 func (m *Model) drawHeader(c *canvas, g geo) {
+	defer m.drawAgentHeaderGlyph(c, g)
 	th := m.st.th
 	y := g.top
 	if g.thrFull {
@@ -149,7 +150,9 @@ func (m *Model) drawHeader(c *canvas, g geo) {
 		return
 	}
 	right := []struct{ t, act string }{}
-	if m.active != 0 && g.CW >= 50 {
+	if m.isAgentDM(m.active) && g.CW >= 40 {
+		right = append(right, m.agentDMRight())
+	} else if m.active != 0 && g.CW >= 50 {
 		v, _ := m.chanView(m.active)
 		if n := m.membersOf(v); n > 0 {
 			right = append(right, struct{ t, act string }{m.icon(icPerson) + " " + strconv.Itoa(n), "cmd:/members"})
@@ -237,7 +240,10 @@ func (m *Model) viewPane(c *canvas, p *pane, key string, x, y, w, h, unread int)
 		if _, ok := firstRow[o]; !ok && o >= 0 {
 			firstRow[o] = yy
 		}
-		m.blitRow(c, r, o, p, key, x, yy, w, o >= 0 && (o == sel || o == hov), o == sel)
+		m.blitRow(c, r, o, p, key, x, yy, w, o >= 0 && (o == sel || o == hov), o >= 0 && o == sel)
+		if mk, ok := p.liveMarks[r.b]; ok && r.y == 0 {
+			m.drawLiveGlyph(c, mk, x, yy)
+		}
 		if o >= 0 && o == sel {
 			m.emo.ayEnd = yy
 		}
@@ -460,7 +466,7 @@ func (m *Model) drawToolbar(c *canvas, p *pane, key string, o, x, y, w int) {
 	}
 	idx := msgRef(key, o, x0)
 	tx := x + w - 13
-	if x0.Author == m.me.ID && p.root == 0 && m.ui.Split {
+	if m.ownMsg(x0) && p.root == 0 && m.ui.Split {
 		tx = x + 1 // ours is on the right: the toolbar goes left
 	}
 	for _, b := range [][2]string{{m.icon(icReact), "react"}, {m.icon(icReply), "reply"}, {m.icon(icCopy), "copy"}, {m.icon(icMore), "more"}} {
@@ -555,7 +561,9 @@ func (m *Model) drawInput(c *canvas, g geo) {
 		c.put(x+2, y, " "+truncate(title, w/2)+" ", fgc(th.dim), "")
 		if v, ok := m.chanView(m.active); ok && !m.thread.open() && w >= 40 {
 			kind, kc := " public ", th.faint
-			if _, enc := m.e2e[m.active]; enc {
+			if m.isAgentDM(m.active) {
+				kind = " only you "
+			} else if _, enc := m.e2e[m.active]; enc {
 				kind, kc = " "+m.icon(icE2E)+" e2e ", th.info
 			} else if v.Kind != proto.ChanPublic {
 				kind = " private "
@@ -720,4 +728,4 @@ func findRef(msgs []client.Message, ref string) int {
 	return -1
 }
 
-func isBar(s string) bool { return s == "│" || s == "┃" || s == "┇" }
+func isBar(s string) bool { return s == "│" || s == "┃" || s == "┇" || s == agentBar }

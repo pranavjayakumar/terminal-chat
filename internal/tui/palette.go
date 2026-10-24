@@ -50,6 +50,7 @@ func (m *Model) palCommands() []palItem {
 		{group: "Commands", label: "Keyboard shortcuts", meta: "F1", icon: "⌨", run: "app:keys", tabs: "ams"},
 		{group: "Commands", label: "Toggle sidebar size", meta: "⌃B", icon: "◧", run: "app:sidebar", tabs: "am"},
 		{group: "Commands", label: "Change theme…", icon: "◐", run: "app:themes", tabs: "am"},
+		m.agentPalItem(),
 		{group: "Messages", label: "Activity", desc: "mentions, replies, reactions, DMs", meta: "⌥A", icon: "@", run: "/activity", tabs: "m"},
 		{group: "Messages", label: "Search", meta: "/search", icon: m.icon(icSearch), run: "/search ", tabs: "m"},
 		{group: "Messages", label: "Insert emoji", desc: "picker; + reacts in select mode, :name completes", meta: "⌥E", icon: m.icon(icReact), run: "app:emoji", tabs: "m"},
@@ -344,6 +345,8 @@ func (m *Model) palRun(it palItem) tea.Cmd {
 // appAction runs an action named by a palette row, a click or a key.
 func (m *Model) appAction(run string) tea.Cmd {
 	switch {
+	case run == "app:agent":
+		return m.openAgentPanel()
 	case run == "app:settings":
 		m.openSettings("")
 	case strings.HasPrefix(run, "app:settings:"):

@@ -274,7 +274,7 @@ func (m *Model) userItems(q string) {
 // chanItems lists named channels, the ones I'm in first.
 func (m *Model) chanItems(q string) {
 	for _, v := range m.chans {
-		if v.Kind == proto.ChanDM || (!v.Member && v.Kind != proto.ChanPublic) {
+		if proto.IsDMKind(v.Kind) || (!v.Member && v.Kind != proto.ChanPublic) {
 			continue
 		}
 		r := wordRank(q, v.Name)

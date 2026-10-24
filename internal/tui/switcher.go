@@ -128,6 +128,13 @@ func (m *Model) switchItems() []switchItem {
 			items = append(items, switchItem{label: "@ " + name, match: match, ch: v.ID, unread: v.Unread, mention: v.Mention})
 			continue
 		}
+		if v.Kind == proto.ChanAgentDM {
+			if a, ok := m.myAgent(); ok && v.Member {
+				name := agentName(a.Handle) + " (your agent)"
+				items = append(items, switchItem{label: "@ " + name, match: name + " " + a.Handle, ch: v.ID, unread: v.Unread, mention: v.Mention})
+			}
+			continue
+		}
 		if !v.Member && v.Kind != proto.ChanPublic {
 			continue
 		}
