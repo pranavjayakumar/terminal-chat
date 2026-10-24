@@ -21,8 +21,11 @@ type LogWriter struct {
 }
 
 // OpenLog opens home's log.
-func OpenLog(home string) (*LogWriter, error) {
-	w := &LogWriter{path: filepath.Join(home, LogFile)}
+func OpenLog(home string) (*LogWriter, error) { return OpenLogAt(filepath.Join(home, LogFile)) }
+
+// OpenLogAt opens a log at path, rotating the same way.
+func OpenLogAt(path string) (*LogWriter, error) {
+	w := &LogWriter{path: path}
 	if err := w.open(); err != nil {
 		return nil, err
 	}
