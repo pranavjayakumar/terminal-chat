@@ -42,14 +42,17 @@ type MCPServer struct {
 
 // Config is config.json in the agent home. The owner edits it from the panel.
 type Config struct {
-	Handle        string               `json:"handle"`
-	Icon          string               `json:"icon"`
-	Mode          Mode                 `json:"mode"`
-	DailyCapUSD   float64              `json:"daily_cap_usd"`
-	RunCapUSD     float64              `json:"run_cap_usd"`
-	AsksPerPerson int                  `json:"asks_per_person"` // per person per day
-	RolloverPct   int                  `json:"rollover_pct"`    // % of the context window
-	IdleMinutes   int                  `json:"idle_minutes"`    // stop Claude after this long idle
+	Handle        string  `json:"handle"`
+	Icon          string  `json:"icon"`
+	Mode          Mode    `json:"mode"`
+	DailyCapUSD   float64 `json:"daily_cap_usd"`
+	RunCapUSD     float64 `json:"run_cap_usd"`
+	AsksPerPerson int     `json:"asks_per_person"` // per person per day
+	RolloverPct   int     `json:"rollover_pct"`    // % of the context window
+	IdleMinutes   int     `json:"idle_minutes"`    // stop Claude after this long idle
+	// EngageMinutes keeps the agent in a thread after it replies: new
+	// messages there reach it without an @mention for this long (0 = off).
+	EngageMinutes int                  `json:"engage_minutes"`
 	Access        Access               `json:"access"`
 	MCPServers    map[string]MCPServer `json:"mcp_servers,omitempty"`
 	HomeMachine   string               `json:"home_machine"` // machine id the agent runs on
@@ -65,6 +68,7 @@ func DefaultConfig() Config {
 		AsksPerPerson: 15,
 		RolloverPct:   50,
 		IdleMinutes:   60,
+		EngageMinutes: 10,
 		Access:        Access{Folders: []string{}, Chans: []uint64{}},
 	}
 }
@@ -84,6 +88,8 @@ func (c Config) Validate() error {
 		return errors.New("asks_per_person must be at least 1")
 	case c.RolloverPct < 10 || c.RolloverPct > 95:
 		return errors.New("rollover_pct must be 10..95")
+	case c.EngageMinutes < 0 || c.EngageMinutes > 24*60:
+		return errors.New("engage_minutes must be 0..1440")
 	case c.IdleMinutes < 1:
 		return errors.New("idle_minutes must be at least 1")
 	}

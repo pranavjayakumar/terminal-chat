@@ -311,6 +311,13 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		s.activity(a, "pr", url, 0)
 		return url, nil
 
+	case mcp.ToolLeaveThread:
+		s.disengage(a.Key)
+		s.mu.Lock()
+		s.left[a.Key] = true
+		s.mu.Unlock()
+		return "ok: you've left this thread; an @mention brings you back", nil
+
 	case mcp.ToolSetIdentity:
 		var p struct {
 			Handle string `json:"handle"`

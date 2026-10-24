@@ -21,6 +21,9 @@ type Ask struct {
 	Via   string
 	Owner bool // Asker is our owner, asking in person
 	InDM  bool // in our agent DM
+	// FollowUp: no mention, but the agent is engaged in the thread
+	// (engage.go); the run decides whether to answer at all.
+	FollowUp bool
 }
 
 // SessionKey names the session of a thread of ch.

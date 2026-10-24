@@ -40,6 +40,7 @@ type Chat interface {
 	Send(ch uint64, body string, thread uint64) error
 	SendAgentStatus(ch, thread uint64, state, status, preview string) error
 	UpdateAgent(ctx context.Context, handle, icon string) (proto.Agent, error)
+	Agents() []proto.Agent
 }
 
 // Memory is the agent's memory store (memory.Store).
@@ -91,11 +92,13 @@ type Supervisor struct {
 
 	mu       sync.Mutex
 	owner    uint64
-	runs     map[string]*run      // bridge token → run
-	threads  map[string][]Ask     // session key → asks waiting their turn
-	busy     map[string]bool      // session key → a run is going
-	pending  map[string]*approval // card code → approval
-	branches map[string]string    // work branch → worktree dir
+	runs     map[string]*run        // bridge token → run
+	threads  map[string][]Ask       // session key → asks waiting their turn
+	busy     map[string]bool        // session key → a run is going
+	pending  map[string]*approval   // card code → approval
+	branches map[string]string      // work branch → worktree dir
+	engaged  map[string]*engagement // session key → listening without a mention
+	left     map[string]bool        // session key → the run called leave_thread
 	status   Status
 	lastRun  time.Time
 	online   bool
@@ -152,6 +155,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	s.sem = make(chan struct{}, s.MaxRuns)
 	s.runs, s.threads, s.busy = map[string]*run{}, map[string][]Ask{}, map[string]bool{}
 	s.pending, s.branches = map[string]*approval{}, map[string]string{}
+	s.engaged, s.left = map[string]*engagement{}, map[string]bool{}
 	s.owner = s.Chat.Me().ID
 	if s.handleNow() == "" {
 		return errors.New("this tc home isn't an agent's (no agent handle in its config.json)")
@@ -244,6 +248,8 @@ func (s *Supervisor) handleUpdate(ctx context.Context, u client.Update) {
 		cv, _ := s.Chat.Channel(m.Chan)
 		if a, ok := s.trigger(m, cv.Kind); ok {
 			s.accept(ctx, a)
+		} else if a, ok := s.followUp(m, cv.Kind); ok {
+			s.accept(ctx, a)
 		}
 	}
 	for ch := range u.Msgs {
@@ -306,6 +312,9 @@ func (s *Supervisor) accept(ctx context.Context, a Ask) {
 	if s.stopAuto(a) {
 		return
 	}
+	if a.FollowUp && now.Sub(time.UnixMilli(a.Msg.Time)) > s.StaleAfter {
+		return
+	}
 	if now.Sub(time.UnixMilli(a.Msg.Time)) > s.StaleAfter {
 		s.reply(a.Chan, a.Thread, "sorry, I was asleep 💤 ask me again?")
 		s.activity(a, "stale", "asked while asleep", 0)
@@ -354,6 +363,7 @@ func (s *Supervisor) drain(ctx context.Context, key string) {
 
 func (s *Supervisor) housekeeping(ctx context.Context) {
 	s.setState(s.idleState())
+	s.pruneEngaged()
 	s.maybeDream(ctx)
 }
 

@@ -147,6 +147,9 @@ func (f *fakeChat) AgentHandleLocked() string {
 	}
 	return f.handle
 }
+func (f *fakeChat) Agents() []proto.Agent {
+	return []proto.Agent{{Handle: f.AgentHandle(), Owner: ownerID}, {Handle: "bobbot", Owner: bobID}}
+}
 func (f *fakeChat) Updates() <-chan client.Update { return f.updates }
 func (f *fakeChat) Status() client.Status         { return client.Status{State: client.Online} }
 func (f *fakeChat) AgentHandle() string {

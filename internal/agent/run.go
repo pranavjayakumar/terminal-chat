@@ -40,6 +40,9 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 		return
 	}
 	now := s.Now()
+	if a.FollowUp && (cfg.Paused || s.ledger.Spent(now) >= cfg.DailyCapUSD) {
+		return // a follow-up nobody asked for answers nothing when it can't run
+	}
 	switch {
 	case cfg.Paused:
 		s.reply(a.Chan, a.Thread, "I'm paused right now 💤")
@@ -49,25 +52,36 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 		s.reply(a.Chan, a.Thread, "out of juice for today 🪫 back tomorrow")
 		s.activity(a, "refused", "daily cap reached", 0)
 		return
-	case !a.Owner && s.ledger.Asks(a.Asker, now) >= cfg.AsksPerPerson:
+	case !a.Owner && !a.FollowUp && s.ledger.Asks(a.Asker, now) >= cfg.AsksPerPerson:
 		s.reply(a.Chan, a.Thread, fmt.Sprintf("that's your %d asks for today, try me tomorrow", cfg.AsksPerPerson))
 		s.activity(a, "refused", "asks per person reached", 0)
 		return
 	}
 	mode := EffectiveMode(cfg.Mode, a)
-	s.activity(a, "ask", string(mode), 0)
+	kind := "ask"
+	if a.FollowUp {
+		kind = "followup" // only a run that answers counts as an ask
+	} else {
+		s.activity(a, "ask", string(mode), 0)
+	}
 
 	sess, resume := s.sessions.get(a.Key)
 	if !resume {
 		sess = Session{ID: newUUID()}
 	}
 	prompt := s.askPrompt(a, mode, sess, resume)
-	res, err := s.turn(ctx, a, cfg, mode, sess, resume, prompt, "ask")
+	if a.FollowUp {
+		prompt = FollowUpNote + "\n\n" + prompt
+	}
+	res, err := s.turn(ctx, a, cfg, mode, sess, resume, prompt, kind)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return
 		}
 		s.Log.Warn("run failed", "key", a.Key, "err", err)
+		if a.FollowUp {
+			return // nobody asked: don't post an error for it
+		}
 		if resume && res.Session == "" {
 			// A session the engine lost (or another machine's): start over.
 			_ = s.sessions.drop(a.Key)
@@ -76,8 +90,9 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 		s.activity(a, "error", err.Error(), res.CostUSD)
 		return
 	}
+	replied := false
 	switch text := strings.TrimSpace(res.Text); {
-	case res.IsBudgetStop():
+	case a.FollowUp && (res.IsError || res.IsBudgetStop()):
 		s.reply(a.Chan, a.Thread, "that one ran past my budget for a single ask, so I stopped. try a smaller piece?")
 	case res.IsError:
 		s.reply(a.Chan, a.Thread, "I got stuck on that one, sorry.")
@@ -86,6 +101,17 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 	default:
 		s.reply(a.Chan, a.Thread, text)
 		s.activity(a, "reply", short(text, 120), res.CostUSD)
+		replied = true
+		if a.FollowUp {
+			_ = s.ledger.Add(Spend{T: s.Now().UnixMilli(), Asker: a.Asker, Key: a.Key, Kind: "ask"})
+		}
+	}
+	s.mu.Lock()
+	left := s.left[a.Key]
+	delete(s.left, a.Key)
+	s.mu.Unlock()
+	if replied && !left && a.Thread != 0 {
+		s.engage(a.Key, time.Duration(cfg.EngageMinutes)*time.Minute)
 	}
 	sess.Tokens, sess.Window = res.ContextTokens, res.ContextWindow
 	sess.Turns++
@@ -142,8 +168,9 @@ func (s *Supervisor) rollover(ctx context.Context, a Ask, cfg home.Config, sess 
 // turn runs one engine turn with its live status and bookkeeping.
 func (s *Supervisor) turn(ctx context.Context, a Ask, cfg home.Config, mode runner.Mode, sess Session, resume bool, prompt, kind string) (runner.Result, error) {
 	token := newToken()
-	quiet := kind != "ask" && kind != "greet"
+	quiet := kind != "ask" && kind != "greet" && kind != "followup"
 	r := &run{ask: a, mode: mode, cfg: cfg, live: newLive(s.Chat, a.Chan, a.Thread, s.StatusEvery*time.Duration(s.MaxRuns), quiet)}
+	r.live.hold = a.FollowUp
 	s.mu.Lock()
 	s.runs[token] = r
 	s.mu.Unlock()
@@ -190,6 +217,9 @@ func (s *Supervisor) turn(ctx context.Context, a Ask, cfg home.Config, mode runn
 		case runner.EvText:
 			if text.Len() < proto.MaxAgentPreview {
 				text.WriteString(e.Text)
+			}
+			if r.live.held() && !hushedUntilReply(text.String()) {
+				r.live.release()
 			}
 			r.live.set(proto.AgentStreaming, "writing…", tail(text.String(), proto.MaxAgentPreview))
 		case runner.EvToolDone:
