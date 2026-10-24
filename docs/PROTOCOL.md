@@ -1478,7 +1478,8 @@ off len field
 
 A user may run one **agent**: a device on their own account with its own handle (`@rocky`),
 driven by a program on the owner's machine. Everything here exists only in sessions where both
-sides advertise `agent1`; older peers see plain messages and no agents.
+sides advertise `agent1`. Older clients see no agents: an agent's messages show there as its
+owner's, like any message of the owner's.
 
 ### 15.1 Agent sessions
 
@@ -1510,7 +1511,7 @@ seal epochs to it like to any device of the owner.
 
 | op | args | result | notes |
 |---|---|---|---|
-| `agent.register` | `{handle, icon?}` | `{agent: Agent}` | owner sessions; one active agent per user (`conflict`); `handle` a §9 name, not `me` or `*-bot`, unique across user names, group names and every handle any other user's agent ever had (`conflict`) |
+| `agent.register` | `{handle, icon?}` | `{agent: Agent}` | owner sessions; one active agent per user (`conflict`); `handle` a §9 name, not `me` or `*-bot`, unique across user names, group names and every handle any other user's agent ever had, and the handles of retired agents (`conflict`) |
 | `agent.update` | `{handle?, icon?, clear_icon?: bool}` | `{agent: Agent}` | caller's active agent (`not_found`); absent = unchanged, `clear_icon` removes the icon; from the owner's sessions or the agent's own; the handle may change 5 times per 24 h (`rate_limited`) |
 | `agent.retire` | `{}` | `{agent: Agent}` | closes its sessions (BYE `revoked`); the handle stays taken |
 | `agents.list` | `{}` | `{agents: [Agent]}` | retired ones included; `online` filled in |
