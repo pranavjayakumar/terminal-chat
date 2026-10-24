@@ -76,7 +76,8 @@ func ValidAgentState(s string) bool {
 
 // ChanAgentDM is the kind of an owner's private chat with their own agent:
 // one per user, sole member the owner, readable only by the owner's sessions
-// (person and agent devices). Sent only to agent1 sessions.
+// (person and agent devices). Older clients list it as a channel of unknown
+// kind.
 const ChanAgentDM = "agent_dm"
 
 // Agent limits (PROTOCOL.md §15.6).
@@ -88,6 +89,16 @@ const (
 	// AgentEphRate is the most EphAgent frames per second per session.
 	AgentEphRate = 4
 )
+
+// ViaMCP marks a message an outside Claude session posted for its author
+// through tc mcp (Message.Via).
+const ViaMCP = "mcp"
+
+// MaxVia bounds Message.Via.
+const MaxVia = 16
+
+// ValidVia reports whether v may be a Message.Via: "" or a short name.
+func ValidVia(v string) bool { return v == "" || len(v) <= MaxVia && ValidName(v) }
 
 // ValidAgentHandle reports whether h may name a new agent: a ValidName that
 // isn't reserved. Uniqueness across user names and handles is the server's.
@@ -111,10 +122,12 @@ type AgentRegisterArgs struct {
 	Icon   string `msgpack:"icon,omitempty"`
 }
 
-// AgentUpdateArgs changes the caller's active agent; "" leaves a field as is.
+// AgentUpdateArgs changes the caller's active agent; "" leaves a field as
+// is, and ClearIcon removes the icon.
 type AgentUpdateArgs struct {
-	Handle string `msgpack:"handle,omitempty"`
-	Icon   string `msgpack:"icon,omitempty"`
+	Handle    string `msgpack:"handle,omitempty"`
+	Icon      string `msgpack:"icon,omitempty"`
+	ClearIcon bool   `msgpack:"clear_icon,omitempty"`
 }
 
 type AgentRes struct {

@@ -1495,8 +1495,9 @@ An agent session is the owner (`user` is the owner's id) with these differences:
 - it holds none of the owner's admin powers (it can't delete others' messages, …);
 - it can't join huddles (no `voice1` rosters reach it);
 - `read` is accepted and ignored (read markers are the owner's);
-- refused with `forbidden`: every `agent.*` write op (it may read its own access list with an empty
-  `agent.access`), `invite.*`, `user.disable`, `user.update`, `group.set`, `hook.*`,
+- refused with `forbidden`: `react` and `unreact` (the owner's reactions are its approvals, and
+  an agent's would look like the owner's tap), `agent.register`, `agent.retire`, changing
+  `agent.access` (it may read its own list with an empty `agent.access`), `agent.dm`, `invite.*`, `user.disable`, `user.update`, `group.set`, `hook.*`,
   `device.revoke`, `chan.create`, `chan.join`, `chan.leave`, `chan.add`, `chan.remove`,
   `chan.topic`, `chan.encrypt`, `dm.open`, `huddle.join`.
 - `key.rotate` stays allowed in the channels it may read, so its sends can re-key like any member
@@ -1509,8 +1510,8 @@ seal epochs to it like to any device of the owner.
 
 | op | args | result | notes |
 |---|---|---|---|
-| `agent.register` | `{handle, icon?}` | `{agent: Agent}` | owner sessions; one active agent per user (`conflict`); `handle` a §9 name, not `me` or `*-bot`, unique across user names, group names and every handle ever used (`conflict`) |
-| `agent.update` | `{handle?, icon?}` | `{agent: Agent}` | caller's active agent (`not_found`); absent = unchanged |
+| `agent.register` | `{handle, icon?}` | `{agent: Agent}` | owner sessions; one active agent per user (`conflict`); `handle` a §9 name, not `me` or `*-bot`, unique across user names, group names and every handle any other user's agent ever had (`conflict`) |
+| `agent.update` | `{handle?, icon?, clear_icon?: bool}` | `{agent: Agent}` | caller's active agent (`not_found`); absent = unchanged, `clear_icon` removes the icon; from the owner's sessions or the agent's own; the handle may change 5 times per 24 h (`rate_limited`) |
 | `agent.retire` | `{}` | `{agent: Agent}` | closes its sessions (BYE `revoked`); the handle stays taken |
 | `agents.list` | `{}` | `{agents: [Agent]}` | retired ones included; `online` filled in |
 | `agent.access` | `{add?: [u64], remove?: [u64]}` | `{chans: [u64]}` | the owner's agent access list (§15.4) after the change; `{}` reads it |
@@ -1524,7 +1525,10 @@ Agent = {handle, icon?: str, owner: u64, online?: bool, created: i64, retired?: 
 `Agent`) on register, update and retire, to every `agent1` session; `agent.access` (data
 `{chans}`) to the owner's `agent1` sessions. Both replay through sync. `Snapshot.agents` and
 `UsersRes.agents` (to `agent1` sessions) carry every agent. Agent names share the `@` namespace
-with users and groups: `user.new` and `group.set` refuse a name an agent has.
+with users and groups: `user.new` and `group.set` refuse a name an agent has or had. A renamed
+agent's old handles stay reserved to its owner (it may take them back), so old messages and
+`@old` mentions never point at someone else; `Message.agent` keeps the handle it was sent under,
+and clients resolve it through the author's agent.
 
 ### 15.3 Messages
 
@@ -1533,12 +1537,17 @@ server from the session (its current handle) and stored with the message. In enc
 the agent device also signs it inside Plain (`{t: "msg", …, agent?: str}`); clients show a
 message as the agent's only when both agree, else as the owner's.
 
+`Message.via` (omitted when empty; ≤ 16 B, a §9 name) says what posted the message for its
+author: `"mcp"` marks an outside Claude session posting as its user through `tc mcp`. It is the
+sender's claim, not the server's: `send {…, via?}` sets it (kept only from `agent1` sessions;
+`bad_request` if malformed) and the server stores and relays it. In encrypted channels the
+sender also signs it in Plain (`{…, via?: str}`) and clients use only the signed one.
+
 ### 15.4 What an agent session sees
 
 Channel objects (snapshot `chans`, `chan.*` and `key.*` events) reach an agent session as they
 reach its owner. Message content — `msg.*`, `react.*` and `pin.*` events, snapshot `msgs`,
-`history`, `search` (which must name a channel), `pins.list`, `send`, `edit`, `delete`, `react`,
-`pin` — only for its **agent DM** and the channels in its owner's **access list**; elsewhere
+`history`, `search` (which must name a channel), `pins.list`, `send`, `edit`, `delete` — only for its **agent DM** and the channels in its owner's **access list**; elsewhere
 events are skipped and requests answer `forbidden`. Channel-scoped ephemerals follow the same
 rule. The access list is only the owner's to change (channels the owner can read, not agent
 DMs, at most 256).

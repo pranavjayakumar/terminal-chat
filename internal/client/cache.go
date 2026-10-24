@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS removed (chan INTEGER PRIMARY KEY, actor INTEGER NOT 
 CREATE TABLE IF NOT EXISTS msgs (
 	id INTEGER PRIMARY KEY, chan INTEGER NOT NULL, author INTEGER NOT NULL, body TEXT NOT NULL,
 	thread INTEGER NOT NULL, time INTEGER NOT NULL, edited INTEGER NOT NULL,
-	deleted INTEGER NOT NULL, reactions TEXT NOT NULL, agent TEXT NOT NULL DEFAULT '',
+	deleted INTEGER NOT NULL, reactions TEXT NOT NULL, agent TEXT NOT NULL DEFAULT '', via TEXT NOT NULL DEFAULT '',
 	enc BLOB, sec INTEGER NOT NULL DEFAULT 0, mid BLOB,
 	eenc BLOB, epend BLOB, ev INTEGER NOT NULL DEFAULT 0, ets INTEGER NOT NULL DEFAULT 0, denc BLOB, cmid BLOB,
 	sts INTEGER NOT NULL DEFAULT 0);
@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS outbox (
 	id INTEGER PRIMARY KEY AUTOINCREMENT, nonce BLOB NOT NULL UNIQUE, chan INTEGER NOT NULL,
 	thread INTEGER NOT NULL, body TEXT NOT NULL, time INTEGER NOT NULL,
 	failed TEXT NOT NULL DEFAULT '', msg INTEGER NOT NULL DEFAULT 0, sent INTEGER NOT NULL DEFAULT 0,
-	enc BLOB, encnonce BLOB);
+	enc BLOB, encnonce BLOB, via TEXT NOT NULL DEFAULT '');
 -- Server-provided E2E objects (msgpack Signed), unverified; see devices.go.
 CREATE TABLE IF NOT EXISTS devices (cert BLOB PRIMARY KEY, dev BLOB NOT NULL, user INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS devices_dev ON devices (dev);
@@ -297,7 +297,7 @@ func setMember(q dbtx, chanID, user uint64, in bool) error {
 
 // ---- messages ----
 
-const msgCols = `id, chan, author, body, thread, time, edited, deleted, reactions, agent`
+const msgCols = `id, chan, author, body, thread, time, edited, deleted, reactions, agent, via`
 
 // upsertMsg stores a message of a plaintext channel as is (tests; server
 // messages go through Client.saveMsg, which judges encrypted ones).
@@ -312,8 +312,8 @@ func storeMsg(q dbtx, m proto.Message, sec Sec, mid []byte, replace bool) error 
 	if !replace {
 		verb = "INSERT OR IGNORE"
 	}
-	_, err := q.Exec(verb+` INTO msgs (`+msgCols+`, enc, sec, mid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.Chan, m.Author, m.Body, m.Thread, m.Time, m.Edited, m.Deleted, encodeReactions(m.Reactions), m.Agent, m.Enc, sec, mid)
+	_, err := q.Exec(verb+` INTO msgs (`+msgCols+`, enc, sec, mid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.Chan, m.Author, m.Body, m.Thread, m.Time, m.Edited, m.Deleted, encodeReactions(m.Reactions), m.Agent, m.Via, m.Enc, sec, mid)
 	return err
 }
 
@@ -328,7 +328,7 @@ func encodeReactions(r map[string][]uint64) string {
 func scanMsg(sc interface{ Scan(...any) error }, extra ...any) (proto.Message, error) {
 	var m proto.Message
 	var reactions string
-	dst := append([]any{&m.ID, &m.Chan, &m.Author, &m.Body, &m.Thread, &m.Time, &m.Edited, &m.Deleted, &reactions, &m.Agent}, extra...)
+	dst := append([]any{&m.ID, &m.Chan, &m.Author, &m.Body, &m.Thread, &m.Time, &m.Edited, &m.Deleted, &reactions, &m.Agent, &m.Via}, extra...)
 	if err := sc.Scan(dst...); err != nil {
 		return m, err
 	}
@@ -411,13 +411,14 @@ type outboxEntry struct {
 	enc      []byte
 	encNonce []byte
 	sent     uint64 // 0: never handed to the server
+	via      string
 }
 
-const outboxCols = `id, nonce, chan, thread, body, time, failed, msg, enc, encnonce, sent`
+const outboxCols = `id, nonce, chan, thread, body, time, failed, msg, enc, encnonce, sent, via`
 
 func scanOutbox(sc interface{ Scan(...any) error }) (outboxEntry, error) {
 	var e outboxEntry
-	err := sc.Scan(&e.id, &e.nonce, &e.chan_, &e.thread, &e.body, &e.time, &e.failed, &e.msg, &e.enc, &e.encNonce, &e.sent)
+	err := sc.Scan(&e.id, &e.nonce, &e.chan_, &e.thread, &e.body, &e.time, &e.failed, &e.msg, &e.enc, &e.encNonce, &e.sent, &e.via)
 	return e, err
 }
 

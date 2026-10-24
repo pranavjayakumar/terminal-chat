@@ -53,7 +53,7 @@ var writeOps = map[string]bool{
 	proto.OpInviteCreate: true, proto.OpInviteList: true, proto.OpInviteRevoke: true, proto.OpUserDisable: true, proto.OpUserUpdate: true,
 	proto.OpHookCreate: true, proto.OpHookDelete: true, proto.OpHookList: true,
 	proto.OpDeviceRegister: true, proto.OpDeviceRevoke: true, proto.OpKeyRotate: true,
-	proto.OpKeyShare: true,
+	proto.OpKeyShare:      true,
 	proto.OpAgentRegister: true, proto.OpAgentUpdate: true, proto.OpAgentRetire: true, proto.OpAgentAccess: true, proto.OpAgentDM: true,
 }
 
@@ -281,6 +281,12 @@ func (s *Server) send(ctx context.Context, sess *session, u proto.User, a proto.
 	} else if err := validBody(a.Body); err != nil {
 		return nil, err
 	}
+	if !proto.ValidVia(a.Via) {
+		return nil, badRequest("invalid via")
+	}
+	if sess == nil || !sess.agentCap {
+		a.Via = ""
+	}
 	sid := s.sid()
 	var res proto.SendRes
 	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
@@ -359,7 +365,7 @@ func (s *Server) send(ctx context.Context, sess *session, u proto.User, a proto.
 		}
 		now := s.now()
 		m := proto.Message{Chan: a.Chan, Author: u.ID, Body: a.Body, Thread: a.Thread, Time: now, Enc: a.Enc, Mid: mid,
-			Agent: s.agentHandleLocked(sess)}
+			Agent: s.agentHandleLocked(sess), Via: a.Via}
 		ev, err := appendEvent(ctx, tx, proto.KMsgNew, a.Chan, u.ID, 0, now, m)
 		if err != nil {
 			return nil, err
@@ -368,8 +374,8 @@ func (s *Server) send(ctx context.Context, sess *session, u proto.User, a proto.
 		if err := patchEventData(ctx, tx, &ev, m); err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO messages (id, chan, author, body, thread, time, nonce, enc, mid, agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			m.ID, m.Chan, m.Author, m.Body, m.Thread, m.Time, a.Nonce, a.Enc, mid, m.Agent); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO messages (id, chan, author, body, thread, time, nonce, enc, mid, agent, via) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			m.ID, m.Chan, m.Author, m.Body, m.Thread, m.Time, a.Nonce, a.Enc, mid, m.Agent, m.Via); err != nil {
 			return nil, err
 		}
 		res.Msg = m.ID

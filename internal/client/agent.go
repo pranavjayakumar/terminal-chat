@@ -118,8 +118,9 @@ func (c *Client) RegisterAgent(ctx context.Context, handle, icon string) (proto.
 	return r.Agent, err
 }
 
-// UpdateAgent renames or re-icons the caller's agent; "" keeps a field. A
-// running agent follows the rename on its own.
+// UpdateAgent renames or re-icons the caller's agent; "" keeps a field.
+// The owner's sessions and the agent's own may call it (5 renames a day).
+// A running agent follows a rename on its own.
 func (c *Client) UpdateAgent(ctx context.Context, handle, icon string) (proto.Agent, error) {
 	if err := c.requireCap(proto.CapAgent, "agents"); err != nil {
 		return proto.Agent{}, err
@@ -128,8 +129,39 @@ func (c *Client) UpdateAgent(ctx context.Context, handle, icon string) (proto.Ag
 	err := c.call(ctx, proto.OpAgentUpdate, proto.AgentUpdateArgs{Handle: handle, Icon: icon}, &r, nil)
 	if err == nil {
 		c.setAgent(r.Agent)
+		c.followRename(r.Agent)
 	}
 	return r.Agent, err
+}
+
+// ClearAgentIcon removes my agent's icon.
+func (c *Client) ClearAgentIcon(ctx context.Context) (proto.Agent, error) {
+	if err := c.requireCap(proto.CapAgent, "agents"); err != nil {
+		return proto.Agent{}, err
+	}
+	var r proto.AgentRes
+	err := c.call(ctx, proto.OpAgentUpdate, proto.AgentUpdateArgs{ClearIcon: true}, &r, nil)
+	if err == nil {
+		c.setAgent(r.Agent)
+	}
+	return r.Agent, err
+}
+
+// followRename makes an agent session use its new handle at once (signed
+// Plain agent, mentions) and at its next login.
+func (c *Client) followRename(a proto.Agent) {
+	if a.Owner != c.cfg.UserID || !c.IsAgentSession() || a.Retired != 0 {
+		return
+	}
+	c.agentsMu.Lock()
+	renamed := a.Handle != c.agentName
+	c.agentName = a.Handle
+	c.agentsMu.Unlock()
+	if renamed {
+		cfg := c.cfg
+		cfg.Agent = a.Handle
+		_ = writeConfig(c.home, cfg)
+	}
 }
 
 // RetireAgent retires the caller's agent; the server closes its sessions.
@@ -629,16 +661,8 @@ func (c *Client) applyAgentEvent(q dbtx, ev proto.Event, u *Update) {
 			a.Online = old.Online
 		}
 		c.putAgentLocked(a)
-		renamed := a.Owner == c.cfg.UserID && c.IsAgentSession() && a.Retired == 0 && a.Handle != c.agentName
-		if renamed {
-			c.agentName = a.Handle
-		}
 		c.agentsMu.Unlock()
-		if renamed {
-			cfg := c.cfg
-			cfg.Agent = a.Handle
-			_ = writeConfig(c.home, cfg) // the next login must name the new handle
-		}
+		c.followRename(a)
 		u.Agents = true
 	case proto.KAgentAccess:
 		var r proto.AgentAccessRes

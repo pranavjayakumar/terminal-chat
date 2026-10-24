@@ -24,6 +24,16 @@ CREATE TABLE IF NOT EXISTS agents (
 	retired INTEGER NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS agents_active ON agents(owner) WHERE retired = 0;
+-- Every handle an agent ever had: a renamed agent's old handle stays its
+-- owner's, so old messages and mentions never point at someone else.
+CREATE TABLE IF NOT EXISTS agent_handles (
+	handle TEXT PRIMARY KEY,
+	owner INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agent_renames (
+	owner INTEGER NOT NULL,
+	time INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS agent_access (
 	owner INTEGER NOT NULL,
 	chan INTEGER NOT NULL,
@@ -37,17 +47,25 @@ func migrateAgents(db *sql.DB) error {
 	if _, err := db.Exec(agentsSchema); err != nil {
 		return err
 	}
-	if err := addColumn(db, "messages", "agent", "TEXT NOT NULL DEFAULT ''"); err != nil {
+	if _, err := db.Exec(`INSERT OR IGNORE INTO agent_handles (handle, owner) SELECT handle, owner FROM agents`); err != nil {
 		return err
+	}
+	for _, c := range []string{"agent", "via"} {
+		if err := addColumn(db, "messages", c, "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
 	}
 	_, err := db.Exec(`DROP INDEX IF EXISTS channels_name`)
 	return err
 }
 
-// agentOps are refused to agent sessions: an agent acts in its owner's name
-// only by sending, reacting and pinning in the channels it may read.
+// agentRefused are refused to agent sessions: an agent acts in its owner's
+// name only by sending and pinning in the channels it may read. Reactions
+// are refused because the owner's reactions are its approvals: an agent's
+// would look like the owner's tap. It may rename itself (agent.update).
 var agentRefused = map[string]bool{
-	proto.OpAgentRegister: true, proto.OpAgentUpdate: true, proto.OpAgentRetire: true,
+	proto.OpReact: true, proto.OpUnreact: true,
+	proto.OpAgentRegister: true, proto.OpAgentRetire: true,
 	proto.OpAgentAccess: true, proto.OpAgentDM: true,
 	proto.OpInviteCreate: true, proto.OpInviteList: true, proto.OpInviteRevoke: true,
 	proto.OpUserDisable: true, proto.OpUserUpdate: true, proto.OpGroupSet: true,
@@ -94,13 +112,20 @@ func activeAgent(ctx context.Context, q querier, owner uint64) (proto.Agent, err
 	return scanAgent(q.QueryRowContext(ctx, `SELECT `+agentCols+` FROM agents WHERE owner = ? AND retired = 0`, owner))
 }
 
-// agentHandleTaken reports whether name is an agent's handle (retired ones
-// keep theirs), so no user, group or other agent can take it.
+// agentHandleTaken reports whether name is or was an agent's handle (retired
+// and renamed agents keep theirs), so no user, group or other agent can take it.
 func agentHandleTaken(ctx context.Context, q querier, name string) bool {
-	var n int
-	q.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents WHERE handle = ?`, name).Scan(&n)
-	return n > 0
+	return agentHandleOwner(ctx, q, name) != 0
 }
+
+func agentHandleOwner(ctx context.Context, q querier, name string) uint64 {
+	var o uint64
+	q.QueryRowContext(ctx, `SELECT owner FROM agent_handles WHERE handle = ?`, name).Scan(&o)
+	return o
+}
+
+// maxAgentRenames is how many times an agent's handle may change per day.
+const maxAgentRenames = 5
 
 func (s *Server) loadAgents(ctx context.Context) error {
 	agents, err := listAgents(ctx, s.st.db)
@@ -190,6 +215,9 @@ func (s *Server) agentSeesLocked(sess *session, ch uint64) bool {
 }
 
 func (s *Server) agentSees(sess *session, ch uint64) bool {
+	if sess.agent == nil { // without taking s.mu: sync replays call this per event
+		return true
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.agentSeesLocked(sess, ch)
@@ -286,23 +314,33 @@ func (s *Server) gateAgentOp(ctx context.Context, sess *session, op string, args
 
 func validAgentIcon(icon string) bool { return validLine(icon, proto.MaxAgentIcon) }
 
-// handleTakenErr says why handle can't name an agent ("" if it can); own is
-// the caller's current handle, which it may keep.
-func handleTakenErr(ctx context.Context, tx *sql.Tx, handle, own string) error {
+// handleTakenErr says why owner's agent can't take handle (nil if it can):
+// a handle it had before is its own to take back.
+func handleTakenErr(ctx context.Context, tx *sql.Tx, handle string, owner uint64) error {
 	if !proto.ValidAgentHandle(handle) {
 		return badRequest("handle must match ^[a-z0-9][a-z0-9_-]{0,31}$ and not be me or end in -bot")
 	}
-	if handle == own {
-		return nil
+	if o := agentHandleOwner(ctx, tx, handle); o != 0 {
+		if o == owner {
+			return nil
+		}
+		return proto.Errf(proto.ErrConflict, "that name is taken")
 	}
 	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents WHERE handle = ? AND retired != 0`, handle).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return proto.Errf(proto.ErrConflict, "a retired agent keeps that name")
+	}
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE name = ?`, handle).Scan(&n); err != nil {
 		return err
 	}
-	if n > 0 || groupNameTaken(ctx, tx, handle) || agentHandleTaken(ctx, tx, handle) {
+	if n > 0 || groupNameTaken(ctx, tx, handle) {
 		return proto.Errf(proto.ErrConflict, "that name is taken")
 	}
-	return nil
+	_, err := tx.ExecContext(ctx, `INSERT INTO agent_handles (handle, owner) VALUES (?, ?)`, handle, owner)
+	return err
 }
 
 func (s *Server) opAgentRegister(ctx context.Context, u proto.User, a proto.AgentRegisterArgs) (any, error) {
@@ -316,7 +354,7 @@ func (s *Server) opAgentRegister(ctx context.Context, u proto.User, a proto.Agen
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
-		if err := handleTakenErr(ctx, tx, a.Handle, ""); err != nil {
+		if err := handleTakenErr(ctx, tx, a.Handle, u.ID); err != nil {
 			return nil, err
 		}
 		now := s.now()
@@ -345,13 +383,28 @@ func (s *Server) opAgentUpdate(ctx context.Context, u proto.User, a proto.AgentU
 			return nil, err
 		}
 		next := ag
-		if a.Handle != "" {
-			if err := handleTakenErr(ctx, tx, a.Handle, ag.Handle); err != nil {
+		now := s.now()
+		if a.Handle != "" && a.Handle != ag.Handle {
+			var n int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_renames WHERE owner = ? AND time > ?`,
+				u.ID, now-24*time.Hour.Milliseconds()).Scan(&n); err != nil {
+				return nil, err
+			}
+			if n >= maxAgentRenames {
+				return nil, proto.Errf(proto.ErrRateLimited, "an agent can change its name 5 times a day")
+			}
+			if err := handleTakenErr(ctx, tx, a.Handle, u.ID); err != nil {
+				return nil, err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO agent_renames (owner, time) VALUES (?, ?)`, u.ID, now); err != nil {
 				return nil, err
 			}
 			next.Handle = a.Handle
 		}
-		if a.Icon != "" {
+		switch {
+		case a.ClearIcon:
+			next.Icon = ""
+		case a.Icon != "":
 			next.Icon = a.Icon
 		}
 		next.Online = s.agentOnline[u.ID] > 0
@@ -363,7 +416,7 @@ func (s *Server) opAgentUpdate(ctx context.Context, u proto.User, a proto.AgentU
 			next.Handle, next.Icon, u.ID); err != nil {
 			return nil, err
 		}
-		ev, err := appendEvent(ctx, tx, proto.KAgentUpdate, 0, u.ID, u.ID, s.now(), next)
+		ev, err := appendEvent(ctx, tx, proto.KAgentUpdate, 0, u.ID, u.ID, now, next)
 		return []proto.Event{ev}, err
 	})
 	return res, err
