@@ -239,9 +239,12 @@ func handshake(conn transport.Conn, codec *proto.Codec, signer ssh.Signer, invit
 			if w.User.ID == 0 {
 				return w, errors.New("welcome without user")
 			}
-			if agent != "" && (w.Agent == nil || w.Agent.Handle != agent) {
+			if agent != "" && w.Agent == nil {
 				// A server without agent1 would log us in as the owner.
 				return w, errors.New("the server didn't accept this agent session")
+			}
+			if agent == "" && w.Agent != nil {
+				return w, errors.New("this key is an agent's: log in with the agent's home")
 			}
 			codec.SetMaxFrame(proto.MaxFrame)
 			return w, nil
@@ -540,6 +543,9 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 	if err != nil {
 		conn.Close()
 		return false, err
+	}
+	if w.Agent != nil {
+		c.followRename(*w.Agent) // renamed while we were away
 	}
 	if w.User.ID != c.cfg.UserID {
 		conn.Close()

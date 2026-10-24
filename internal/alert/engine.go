@@ -9,6 +9,7 @@ import (
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/notify"
 	"github.com/skailama/tc/internal/proto"
+	"github.com/skailama/tc/internal/sanitize"
 )
 
 // World is what the engine needs to know about the chat right now. The UI
@@ -123,7 +124,7 @@ func (e *Engine) Eligible(x proto.Message) bool {
 	if e.W.Looking(x.Chan) {
 		return false
 	}
-	if x.Author == e.W.Me() {
+	if x.Author == e.W.Me() && x.Agent == "" { // my agent's messages aren't mine
 		return e.IsReminder(x)
 	}
 	return true
@@ -132,10 +133,10 @@ func (e *Engine) Eligible(x proto.Message) bool {
 // MentionClass: DMs, @mentions, highlights, my reminders, replies in my
 // threads.
 func (e *Engine) MentionClass(x proto.Message) bool {
-	if x.Author == e.W.Me() {
+	if x.Author == e.W.Me() && x.Agent == "" {
 		return e.IsReminder(x)
 	}
-	if v, ok := e.W.Chan(x.Chan); ok && v.Kind == proto.ChanDM {
+	if v, ok := e.W.Chan(x.Chan); ok && proto.IsDMKind(v.Kind) {
 		return true
 	}
 	if ConcernsMe(x.Body, e.W.MentionNames(), e.W.Highlights()) {
@@ -163,7 +164,10 @@ func (e *Engine) NoteText(x proto.Message) (title, body, group string) {
 		return title, FirstNonEmptyLine(strings.TrimPrefix(x.Body, proto.RemindPrefix)), title
 	}
 	who := e.userName(x.Author)
-	if v, ok := e.W.Chan(x.Chan); ok && v.Kind == proto.ChanDM {
+	if x.Agent != "" {
+		who = "@" + sanitize.Line(x.Agent)
+	}
+	if v, ok := e.W.Chan(x.Chan); ok && proto.IsDMKind(v.Kind) {
 		title = who + " (DM)"
 		group = title
 	} else {
