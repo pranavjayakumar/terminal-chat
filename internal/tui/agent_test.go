@@ -235,3 +235,96 @@ func TestAgentIconParsing(t *testing.T) {
 		t.Fatal("names")
 	}
 }
+
+// ---- agents as people ----
+
+func TestAgentsInMentionCompletion(t *testing.T) {
+	m := agentModel(t, agentFake(), 100, 30, "")
+	typeKeys(m, "@")
+	texts := compTexts(m)
+	ix := func(s string) int {
+		for i, x := range texts {
+			if x == s {
+				return i
+			}
+		}
+		t.Fatalf("%s not offered: %v", s, texts)
+		return -1
+	}
+	for _, p := range []string{"@bob", "@carol"} {
+		if ix(p) > ix("@rocky") || ix(p) > ix("@juno") {
+			t.Errorf("agents before people: %v", texts)
+		}
+	}
+	for _, it := range m.comp.items {
+		switch it.text {
+		case "@rocky":
+			if it.desc != "your agent" || it.glyph != "▟▙" {
+				t.Errorf("rocky: %+v", it)
+			}
+		case "@juno":
+			if it.desc != "Bob's agent" || it.glyph != "◕◕" {
+				t.Errorf("juno: %+v", it)
+			}
+		}
+	}
+	row := lineWith(t, frameText(t, m, "@"), "@juno")
+	if !strings.Contains(row, "@juno ◕◕") || !strings.Contains(row, "Bob's agent") {
+		t.Errorf("popup row: %q", row)
+	}
+
+	// a prefix on the handle beats people who only contain it
+	typeKeys(m, "ju")
+	if texts = compTexts(m); len(texts) == 0 || texts[0] != "@juno" {
+		t.Fatalf("@ju: %v", texts)
+	}
+	send(m, tea.KeyMsg{Type: tea.KeyTab})
+	if got := m.input.Value(); got != "@juno " {
+		t.Errorf("completed to %q", got)
+	}
+}
+
+func TestAgentsInPalettePeople(t *testing.T) {
+	f := agentFake()
+	m := agentModel(t, f, 100, 30, "")
+	m.openPalette("people")
+	var juno, mine *palItem
+	for i, it := range m.pal.shown {
+		switch it.label {
+		case "@juno":
+			juno = &m.pal.shown[i]
+		case "@rocky":
+			mine = &m.pal.shown[i]
+		}
+	}
+	if juno == nil || juno.desc != "Bob's agent" || juno.icon != "◕◕" {
+		t.Fatalf("juno row: %+v", juno)
+	}
+	if mine != nil {
+		t.Error("my agent listed twice: its DM is already a row")
+	}
+	frameText(t, m, "palette")
+	run(m, m.palRun(*juno))
+	if got := m.input.Value(); got != "@juno " {
+		t.Errorf("selecting juno typed %q", got)
+	}
+
+	// without its DM yet, my agent's row opens it
+	f = agentFake()
+	f.chans = f.chans[:len(f.chans)-1]
+	m = agentModel(t, f, 100, 30, "")
+	m.openPalette("people")
+	for _, it := range m.pal.shown {
+		if it.label == "@rocky" {
+			if it.desc != "your agent" {
+				t.Errorf("rocky row: %+v", it)
+			}
+			run(m, m.palRun(it))
+			if !f.called("agentdm") {
+				t.Error("my agent's row didn't open its DM")
+			}
+			return
+		}
+	}
+	t.Fatal("my agent not in People")
+}

@@ -89,7 +89,7 @@ func iconModel(t *testing.T, prefs string, font FontHooks, ssh bool) *Model {
 	if prefs != "" {
 		os.WriteFile(p, []byte(prefs), 0o600)
 	}
-	m := New(context.Background(), newFake(), Options{Out: &syncBuf{}, Notifier: &fakeNotifier{}, styles: testStyles(true), UIPrefs: p, Font: font, SSH: ssh})
+	m := New(context.Background(), newFake(), Options{Out: &syncBuf{}, Notifier: &fakeNotifier{}, styles: testStyles(true), UIPrefs: p, Font: font, SSH: ssh, FontFallback: true})
 	m.Update(tea.WindowSizeMsg{Width: 140, Height: 44})
 	return m
 }
@@ -101,8 +101,8 @@ func fakeFont(installed *bool) FontHooks {
 	}
 }
 
-// Auto: tc Symbols when the font is here and we aren't over SSH or in a
-// CJK locale; else Unicode, or DOS in the Retro skin. A choice wins.
+// Auto: tc Symbols when the font is here, the terminal finds it per glyph
+// and we aren't over SSH or in a CJK locale; else Unicode, or DOS in the Retro skin. A choice wins.
 func TestIconPackAuto(t *testing.T) {
 	t.Setenv("LC_ALL", "en_US.UTF-8")
 	t.Setenv("LANG", "en_US.UTF-8")
@@ -127,11 +127,52 @@ func TestIconPackAuto(t *testing.T) {
 			t.Errorf("%s font=%v ssh=%v: %s, want %s", c.prefs, *c.font, c.ssh, m.pack, c.want)
 		}
 	}
+	// a terminal that can't find the font per glyph (herdr, Zed): Unicode,
+	// unless tc Symbols was picked by hand
+	for prefs, want := range map[string]string{"": packUnicode, `{"icons":"symbols"}`: packSymbols} {
+		m := iconModel(t, prefs, fakeFont(&yes), false)
+		m.opt.FontFallback = false
+		m.resolvePack()
+		if m.pack != want {
+			t.Errorf("no fallback %q: %s, want %s", prefs, m.pack, want)
+		}
+	}
 	t.Setenv("LC_ALL", "")
 	t.Setenv("LC_CTYPE", "")
 	t.Setenv("LANG", "ja_JP.UTF-8")
 	if m := iconModel(t, "", fakeFont(&yes), false); m.pack != packUnicode {
 		t.Fatalf("CJK locale: %s", m.pack)
+	}
+}
+
+func TestSymbolsFallback(t *testing.T) {
+	for env, want := range map[string]bool{
+		"TERM_PROGRAM=iTerm.app":                          true,
+		"TERM_PROGRAM=Apple_Terminal":                     true,
+		"TERM_PROGRAM=ghostty":                            true,
+		"TERM_PROGRAM=WezTerm":                            true,
+		"TERM_PROGRAM=kitty":                              true,
+		"TERM=xterm-kitty":                                true,
+		"TERM=xterm-ghostty":                              true,
+		"TERM_PROGRAM=zed":                                false,
+		"TERM_PROGRAM=vscode":                             false,
+		"TERM_PROGRAM=herdr":                              false,
+		"TERM=xterm-256color":                             false,
+		"TERM_PROGRAM=ghostty HERDR_PANE_ID=1":            false,
+		"TERM_PROGRAM=iTerm.app TMUX=/tmp/x":              false,
+		"TERM_PROGRAM=WezTerm STY=1.pts":                  false,
+		"TERM_PROGRAM=kitty ZELLIJ=0":                     false,
+		"TERM_PROGRAM=zed TERM=xterm-kitty":               false,
+		"TERM_PROGRAM=Apple_Terminal TERM=xterm-256color": true,
+	} {
+		vars := map[string]string{}
+		for _, kv := range strings.Fields(env) {
+			k, v, _ := strings.Cut(kv, "=")
+			vars[k] = v
+		}
+		if got := symbolsFallback(func(k string) string { return vars[k] }); got != want {
+			t.Errorf("%s: %v, want %v", env, got, want)
+		}
 	}
 }
 
@@ -198,7 +239,7 @@ func TestIconsHintOnce(t *testing.T) {
 	no, yes := false, true
 	p := filepath.Join(t.TempDir(), "ui.json")
 	open := func(font *bool, ssh bool) *Model {
-		return New(context.Background(), newFake(), Options{Out: &syncBuf{}, Notifier: &fakeNotifier{}, styles: testStyles(true), UIPrefs: p, Font: fakeFont(font), SSH: ssh})
+		return New(context.Background(), newFake(), Options{Out: &syncBuf{}, Notifier: &fakeNotifier{}, styles: testStyles(true), UIPrefs: p, Font: fakeFont(font), SSH: ssh, FontFallback: true})
 	}
 	if m := open(&no, true); strings.Contains(m.notice, "tc icons") {
 		t.Fatal("hint over SSH")

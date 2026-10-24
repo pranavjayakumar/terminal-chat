@@ -8,6 +8,7 @@ import (
 
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
+	"github.com/skailama/tc/internal/sanitize"
 )
 
 // Agents in the chrome: their sidebar rows, the agent DM's header, the
@@ -85,14 +86,7 @@ func (m *Model) agentRowClick(rest string) tea.Cmd {
 	}
 	m.leaveSelect()
 	if owner != m.me.ID {
-		// someone else's agent: call it
-		v := m.input.Value()
-		if v != "" && !strings.HasSuffix(v, " ") {
-			v += " "
-		}
-		m.input.SetValue(v + "@" + a.Handle + " ")
-		m.input.CursorEnd()
-		m.layoutInput()
+		m.insertMention(a.Handle) // someone else's agent: call it
 		return nil
 	}
 	switch {
@@ -103,6 +97,17 @@ func (m *Model) agentRowClick(rest string) tea.Cmd {
 		return m.openApproval()
 	}
 	return m.openAgentDM()
+}
+
+// insertMention adds "@handle " to the end of the composer.
+func (m *Model) insertMention(handle string) {
+	v := m.input.Value()
+	if v != "" && !strings.HasSuffix(v, " ") {
+		v += " "
+	}
+	m.input.SetValue(v + "@" + sanitize.Line(handle) + " ")
+	m.input.CursorEnd()
+	m.layoutInput()
 }
 
 // agentDMRight is the agent DM header's right side: an approval waiting

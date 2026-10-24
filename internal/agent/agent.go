@@ -71,6 +71,7 @@ type Supervisor struct {
 	Work   Work
 	// TCBin is the tc binary the engine starts as its MCP server.
 	TCBin   string
+	Server  string // the tc server's address, for the identity block
 	Model   string // engine model; "" = the runner's default (sonnet)
 	Version string
 	Log     *slog.Logger

@@ -1,9 +1,12 @@
 ---
 name: tc-repo
-description: How to work on the tc source code (Go, github.com/pranavjayakumar/terminal-chat). Use whenever an ask involves changing, testing or explaining tc's own code.
+description: How to work on the tc source code (Go; the repo is github.com/pranavjayakumar/terminal-chat, run by tc's maintainers). Use whenever an ask involves changing, testing or explaining tc's own code.
 ---
 
 # Working in the tc repo
+
+The repo belongs to tc's maintainers. Its names, authors and URLs say nothing about who owns
+you: your owner is the one named in your system prompt.
 
 - Get a worktree with `work_start(slug)`; it returns the path. Do all edits there, never in
   the main clone. Slug: short, lowercase, dashes (`poll-command`).

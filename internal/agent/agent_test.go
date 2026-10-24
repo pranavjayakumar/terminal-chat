@@ -429,7 +429,8 @@ func TestGreeting(t *testing.T) {
 	if p := chat.posts(); len(p) != 1 || p[0].ch != agentDM || p[0].thread != 0 {
 		t.Fatalf("greeting %+v", p)
 	}
-	if r := run.requests()[0]; r.Prompt != GreetPrompt || !strings.Contains(strings.Join(r.Env, " "), memory.EnvOwnerAsk+"=1") {
+	if r := run.requests()[0]; r.Prompt != GreetPrompt || !strings.Contains(strings.Join(r.Env, " "), memory.EnvOwnerAsk+"=1") ||
+		!strings.Contains(r.System, "Your owner is Fizan (@fizan).") || !strings.Contains(strings.Join(r.Env, " "), memory.EnvOwner+"=Fizan (@fizan)") {
 		t.Fatalf("greet request %+v", r)
 	}
 	q, _ := openQueue(home.PathsFor(dir).State, time.Now())
@@ -775,5 +776,51 @@ func TestStatusFile(t *testing.T) {
 	h.stop()
 	if st, _ := ReadStatus(filepath.Join(h.s.Dir, "state")); st.State != "stopped" {
 		t.Fatalf("state %s", st.State)
+	}
+}
+
+// Every run says whose agent this is, so a repo full of the maintainers'
+// names never makes it think it belongs to one of them.
+func TestIdentityNamesOwner(t *testing.T) {
+	dir := shortDir(t)
+	cfg := cfgDefault()
+	cfg.Handle, cfg.Icon = "rocky", "pebble:5"
+	home.SaveConfig(dir, cfg)
+	chat := newFakeChat()
+	s := &Supervisor{Dir: dir, Chat: chat, Server: "159.65.152.35:7443", owner: ownerID}
+	s.paths = home.PathsFor(dir)
+
+	own := s.identity(Ask{Asker: ownerID, Owner: true})
+	for _, want := range []string{
+		"You are @rocky (icon: pebble)",
+		"on the tc server 159.65.152.35:7443",
+		"Your owner is Fizan (@fizan).",
+		"This ask is from Fizan (@fizan): your owner.",
+		"maintainers, Pranav and Fizan",
+		"the answer is Fizan (@fizan)",
+	} {
+		if !strings.Contains(own, want) {
+			t.Errorf("owner ask: no %q in\n%s", want, own)
+		}
+	}
+	other := s.identity(Ask{Asker: bobID})
+	if !strings.Contains(other, "This ask is from Bob (@bob): not your owner.") || !strings.Contains(other, "Your owner is Fizan (@fizan).") {
+		t.Errorf("bob's ask:\n%s", other)
+	}
+	if via := s.identity(Ask{Asker: bobID, Via: "bobbot"}); !strings.Contains(via, "through their agent @bobbot: not your owner") {
+		t.Errorf("via:\n%s", via)
+	}
+	if dream := s.identity(Ask{}); strings.Contains(dream, "This ask") || !strings.Contains(dream, "Your owner is Fizan") {
+		t.Errorf("no ask:\n%s", dream)
+	}
+	for _, mode := range []runner.Mode{runner.Talk, runner.Work} {
+		if sys := s.systemPrompt(Ask{Asker: bobID}, mode); !strings.HasPrefix(sys, "== who you are ==") || !strings.Contains(sys, "Your owner is Fizan") {
+			t.Errorf("%s system prompt:\n%s", mode, sys)
+		}
+	}
+	// a display name is used as is
+	chat.users[ownerID] = proto.User{ID: ownerID, Name: "fizan", Display: "Fizan M"}
+	if got := s.identity(Ask{}); !strings.Contains(got, "Your owner is Fizan M (@fizan).") {
+		t.Errorf("display name:\n%s", got)
 	}
 }

@@ -150,6 +150,9 @@ func (m *Model) palItems() []palItem {
 			if s.ch == 0 {
 				it.desc = "new direct message"
 			}
+			if a, ok := m.myAgent(); ok && s.ch != 0 && s.ch == m.ag.dm {
+				it.icon, it.iconTone, it.iconFg = agentFrame(parseAgentIcon(a.Icon), "", 0, false), 0, m.agentColor(a)
+			}
 		}
 		switch {
 		case s.mention:
@@ -159,11 +162,35 @@ func (m *Model) palItems() []palItem {
 		}
 		out = append(out, it)
 	}
+	out = append(out, m.palAgents()...)
 	out = append(out, m.palCommands()...)
 	out = append(out, m.palSettings()...)
 	for i := range out {
 		out[i].order = i
 	}
+	return out
+}
+
+// palAgents are the agents in the People group: someone else's types
+// @handle into the composer; mine opens its DM (the switcher already lists
+// that DM once it exists).
+func (m *Model) palAgents() []palItem {
+	var out []palItem
+	for _, a := range m.ag.byOwner {
+		it := palItem{
+			group: "People", label: "@" + sanitize.Line(a.Handle), tabs: "ap",
+			icon: agentFrame(parseAgentIcon(a.Icon), "", 0, false), iconFg: m.agentColor(a),
+			desc: m.ownerName(a.Owner) + "'s agent", run: "app:mention:" + a.Handle,
+		}
+		if a.Owner == m.me.ID {
+			if m.ag.dm != 0 {
+				continue
+			}
+			it.desc, it.run = "your agent", "app:agentdm"
+		}
+		out = append(out, it)
+	}
+	slices.SortFunc(out, func(a, b palItem) int { return strings.Compare(a.label, b.label) })
 	return out
 }
 
@@ -354,6 +381,10 @@ func (m *Model) appAction(run string) tea.Cmd {
 	switch {
 	case run == "app:agent":
 		return m.openAgentPanel()
+	case run == "app:agentdm":
+		return m.openAgentDM()
+	case strings.HasPrefix(run, "app:mention:"):
+		m.insertMention(strings.TrimPrefix(run, "app:mention:"))
 	case run == "app:approval":
 		return m.jumpToApproval()
 	case run == "app:settings":

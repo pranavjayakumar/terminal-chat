@@ -31,6 +31,9 @@ type compItem struct {
 	rank int    // sort key: lower first
 	name string // emoji: the shortcode shown, with the query at name[at:at+len(query)]
 	at   int
+	// agent: the agent's glyph, drawn after text in the agent's color
+	glyph    string
+	glyphCol rgb
 }
 
 type completer struct {
@@ -256,6 +259,7 @@ func (m *Model) userItems(q string) {
 		}
 		m.comp.items = append(m.comp.items, compItem{text: "@" + sanitize.Line(u.Name), desc: desc, rank: rank})
 	}
+	m.agentItems(q)
 	for _, g := range m.groups {
 		if r := wordRank(q, g.Name); r >= 0 {
 			rank := r*3 + 2
@@ -268,6 +272,38 @@ func (m *Model) userItems(q string) {
 				rank: rank,
 			})
 		}
+	}
+}
+
+// agentItems lists agents after the people whose names match as well: a
+// prefix match on a handle still beats a substring match on a person.
+func (m *Model) agentItems(q string) {
+	list := make([]proto.Agent, 0, len(m.ag.byOwner))
+	for _, a := range m.ag.byOwner {
+		list = append(list, a)
+	}
+	slices.SortFunc(list, func(a, b proto.Agent) int { return strings.Compare(a.Handle, b.Handle) })
+	for _, a := range list {
+		h := strings.ToLower(a.Handle)
+		r := wordRank(q, h)
+		if r < 0 {
+			continue
+		}
+		rank := r*3 + 2
+		if h == q {
+			rank = exactRank
+		}
+		desc := m.ownerName(a.Owner) + "'s agent"
+		if a.Owner == m.me.ID {
+			desc = "your agent"
+		}
+		m.comp.items = append(m.comp.items, compItem{
+			text:     "@" + sanitize.Line(a.Handle),
+			desc:     desc,
+			rank:     rank,
+			glyph:    agentFrame(parseAgentIcon(a.Icon), "", 0, false),
+			glyphCol: m.agentColor(a),
+		})
 	}
 }
 

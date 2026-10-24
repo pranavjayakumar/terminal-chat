@@ -23,6 +23,7 @@ const (
 	EnvOwnerAsk   = "TC_AGENT_OWNER_ASK"   // "1" when the owner asked
 	EnvPeople     = "TC_AGENT_PEOPLE"      // comma-separated handles in the thread
 	EnvAsker      = "TC_AGENT_ASKER"       // handle of whoever asked
+	EnvOwner      = "TC_AGENT_OWNER"       // the owner: "Fizan (@fizan)"
 )
 
 // Raw hook lines are cut to this many bytes before they go in the daily log.
@@ -79,6 +80,7 @@ func runHook(name string, stdin io.Reader, stdout io.Writer, agentDir string, ge
 			OwnerAsk:   ownerAsk,
 			People:     splitPeople(getenv(EnvPeople)),
 			SessionKey: key,
+			Owner:      getenv(EnvOwner),
 		})
 	case home.HookStop, home.HookSessionEnd:
 		return s.hookLogReply(in, getenv(EnvAsker), ownerAsk)

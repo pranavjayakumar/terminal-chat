@@ -142,6 +142,7 @@ func Run(ctx context.Context, c *client.Client, version string) error {
 	o.UIPrefs = filepath.Join(c.Home(), "ui.json")
 	o.Font = osFont
 	o.Touches = underlineStyles(os.Getenv)
+	o.FontFallback = symbolsFallback(os.Getenv)
 	o.UpdateCheck = func() string {
 		return release.Check(ctx, c.Home(), version, release.NewSource(), time.Now())
 	}
@@ -210,6 +211,9 @@ type Options struct {
 	// Touches: the terminal draws curly and dotted underlines in a color
 	// (SGR 4:3, 4:4, 58), detected conservatively in Run.
 	Touches bool
+	// FontFallback: the terminal draws tc Symbols from the installed font
+	// (symbolsFallback), so Auto may pick that pack.
+	FontFallback bool
 
 	// AgentDir is my agent's home (internal/agent/home) on this machine;
 	// "": tc doesn't know of one (tests).

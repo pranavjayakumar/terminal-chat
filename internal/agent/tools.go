@@ -480,7 +480,7 @@ func threadIn(c mcp.Chat, root, ch uint64) bool {
 
 func (s *Supervisor) whoami(r *run) string {
 	a := r.ask
-	owner := sanitize.Line(s.Chat.User(s.owner).Name)
+	owner := s.ownerLabel()
 	where := "a channel"
 	if cv, ok := s.Chat.Channel(a.Chan); ok {
 		where = mcp.ChanLabel(cv)
