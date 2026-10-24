@@ -439,6 +439,69 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
   notes that starts with `⏰ ` notifies (`⏰ Reminder`, the text) unless I'm looking at the notes, and
   counts as unread (`@` badge) until read.
 
+## Agents
+
+Personal agents (v0.6.0, PROTOCOL.md §15). An agent is one more teammate in the room: a glyph, a `⟡` badge
+and one status row. Code: `internal/tui/agent.go` (icons, state), `agentlive.go` (status rows, folded runs),
+`approval.go`, `agentchrome.go` (sidebar, DM header, palette), `agentpanel.go` + `agentpanel_draw.go`.
+
+- **Identity.** A message with `Message.Agent` set draws `<icon> Rocky ⟡ · Fizan's agent  hh:mm` on the
+  first message of a group and a dashed `┆` bar where people get `│`; icon, name and bar take the agent's
+  color. Below 50 columns the badge drops `· Fizan's agent`. An agent's messages never group with its
+  owner's, and my agent's messages are not "mine" (no edit, no split side). A reply starting `✓ ` (a
+  milestone) gets its `✓` in the ok color.
+- **Icon and color** live in `proto.Agent.Icon`: `"<preset>"` or `"<preset>:<n>"`, n the theme name color
+  0–7 the owner picked (no color: a hash of the handle). Presets: pebble, orb, spark, owl, hive, moon,
+  meter, kite, each with idle / thinking / working / done / asleep frames (1–2 cells). Anything else in
+  the field shows as a static glyph. Timings: thinking 280 ms frames with a 1.12 s breath, working
+  110 ms, streaming 220 ms (working frames), done flashes twice in the ok color (0.29 s each), asleep
+  1.6 s at half strength (kept readable on its background). The frame tick runs only while a glyph on
+  screen moves; an asleep agent in the sidebar is still, and Animations off shows still frames.
+- **Live reply.** `Update.AgentStatus` reloads the channel's live statuses (`AgentThreads` +
+  `AgentStatus`); each live agent gets a row at the bottom of the channel (top level) or of the open
+  thread: `<icon> Rocky is thinking…`, then its status line (`is reading the thread…`), then
+  `is writing…  live · not saved` with the preview streaming dim and italic behind a faint `┆` (its last
+  10 rows). Asleep says `is asleep 💤`, an error `is stuck: <why>` in the error color. The row goes when
+  the real message lands (or after done's flash). Narrow panes truncate it from the right.
+- **Work runs** (a run with 3+ distinct working steps; never my agent in Talk mode) fold under the reply
+  as `▸ 5 steps · 2m 41s · $0.42` (cost only for my agent, from its audit log); a click unfolds the steps.
+  What tc saw of the run is kept for this session only.
+- **Sidebar.** Agents sit under their owner's DM row as `└ <icon> Name` (asleep: faint name, half-strength
+  glyph, `💤`); mine sits under the "you" row (taking the roomy layout's blank row, or moving "you" up
+  one). Its glyph moves with whatever it is doing anywhere. My agent's row: a click opens our DM, a click
+  on its glyph (or on the row while the DM is open) opens the panel; it shows the DM's unread count, or `✋`
+  while an approval waits (a click then opens that card). Someone else's agent: a click puts `@handle ` in
+  the input. The agent DM is never listed as a channel.
+- **Agent DM** (`ChanAgentDM`): header `<icon> Rocky · your agent · only you see this chat`, with the mode
+  on the right (click: the panel), or `✋ waiting in #chan` while an approval waits; the input box says
+  `only you` and `tell Rocky anything…`. The palette lists it as `@ Rocky (your agent)`. The agent speaks
+  first (the harness); tc only draws it. Without the DM yet, the panel's `d` creates it (`OpenAgentDM`).
+- **Approvals.** The harness posts `✋ @owner approve: <action>? react ✅ / ❌  ·  #code` + detail and waits
+  for the owner's ✅ / ❌. tc draws the detail, then `<action>?  1 yes  2 yes, ok today  3 no` (`PRs ok today`
+  when the action names a PR) and `only you can answer · keys 1–3`; everyone else sees `waiting for Fizan`.
+  Keys 1–3 (empty input, the newest waiting card of mine in the focused pane, scrolled to the bottom; or
+  select mode on a card) or a click answer: 1 reacts ✅, 2 reacts ✅ then ♾️ (the harness reads the ✅ as
+  yes), 3 reacts ❌. Only a verified card from my own agent takes an answer. Answered, it collapses to
+  `✓ Fizan said yes · <action>?` (`✗ … said no`); a card the harness gave up on (`⌛ no answer on #code`)
+  reads `⌛ no answer`. A card that arrives while I look elsewhere notifies me (`Rocky needs your ok`),
+  since my agent posts as me and the usual mention notification skips my own messages.
+- **Panel** (`⌥K` › Agent, the glyph in the sidebar, the mode in the DM header): one page, no tabs. State
+  (awake / working / paused / asleep, idle time, sleep-after, home machine), Spend today (`█` accent,
+  `░` faint, `$3.40 of $20  17%`), Asks today per person, the Mode radio (Talk / Work / Crew: `←/→`, `1–3`
+  or a click), the note line, then Reads, Folders, Limits, Memory, Activity, Personality ("tell me in our
+  DM": opens the DM). `⏎` opens a row's page: Reads (channels it may read for anyone's asks, toggled on
+  the server with `agent.access`, plus "your DMs when you ask"), Folders (`a` adds a full path, `x`
+  removes), Limits (`←/→`: daily cap, per-run cap, asks per person, rollover %, sleep after), Memory
+  (`⏎` reads a note, `f` forgets one, `u` undoes today; both ask `y`), Activity (the audit log, newest
+  first). Keys `p` pause / resume, `d` open DM, `l` logs, `r` re-read, Esc back / close. Settings are the
+  agent home's `config.json` (`internal/agent/home`); spend, asks, status and the log come from its
+  `state/` files, written by the supervisor; nothing is read while drawing. On a machine that isn't the
+  agent's home the panel says where its settings live.
+- **Setup.** With no agent the panel is the setup: handle (`@rocky`), the icon sheet, a color (auto or one
+  of the 8), a preview of the name row, `Set up Rocky`, and `or from a shell: tc agent setup`. It calls
+  `RegisterAgent`, then makes the agent home (`home.Ensure`, config, `client.LoginAgent` for its device);
+  `tc background` runs it. A refused handle shows the server's reason.
+
 ## Activity view
 
 `Alt-A` or `/activity` opens an overlay over the log with the last 100 things that concern me, newest
