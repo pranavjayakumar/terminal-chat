@@ -21,7 +21,7 @@ const usage = `tc — terminal team chat
   tc login tc://host:port#pin [--key path]
                              sign in on another computer with the same SSH key
   tc login                   show this computer's tc://host:port#pin
-  tc send <#chan|@user> [message...]   (reads stdin if no message)
+  tc send <#chan|@user|@your-agent> [message...]   (reads stdin if no message)
   tc send <#chan|@user> --file path[:start[-end]] [--context N] [message...]
   tc tail <#chan>            stream a channel
   tc notify [--to #chan|@user|@me] [--on-fail] -- <cmd...>
@@ -36,6 +36,13 @@ const usage = `tc — terminal team chat
   tc background on|off|status
                              notifications (mentions, DMs, huddle rings) while tc is closed;
                              starts at login; tc update restarts it
+  tc agent setup [--handle name] [--icon 🤖]
+                             make your personal agent (runs on this computer with Claude Code)
+  tc agent status|pause|resume|logs [-n N]
+                             what it's doing and spending; pause it; its activity log
+  tc agent run               run the agent here (tc background does this for you)
+  tc mcp                     MCP server for Claude Code: read allowed channels, post as you (⇢)
+                             add it with: claude mcp add tc -- tc mcp
   tc users                   list everyone (admins also see who invited whom)
   tc users disable @user [--yes]
                              (admin) shut an account out for good, e.g. after a stolen SSH key

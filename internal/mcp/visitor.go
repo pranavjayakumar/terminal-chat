@@ -25,8 +25,8 @@ type VisitorChat interface {
 // owner with VisitorMark.
 type Visitor struct {
 	Chat VisitorChat
-	// Allowed lists the channels the owner allowed (agent.access). It is
-	// asked on every call, so a change in the panel applies at once.
+	// Allowed lists the channels the owner allowed in the agent panel. It
+	// is asked on every call, so a change in the panel applies at once.
 	Allowed func(ctx context.Context) ([]uint64, error)
 }
 
@@ -151,7 +151,10 @@ func (v *Visitor) allowed(ctx context.Context) (map[uint64]bool, error) {
 	}
 	out := make(map[uint64]bool, len(ids))
 	for _, id := range ids {
-		out[id] = true
+		// Never a DM or the agent DM, even if listed.
+		if cv, ok := v.Chat.Channel(id); ok && cv.Kind != proto.ChanDM && cv.Kind != proto.ChanAgentDM {
+			out[id] = true
+		}
 	}
 	return out, nil
 }

@@ -24,6 +24,7 @@ const (
 	ToolWorkStart    = "work_start"
 	ToolSetSoul      = "set_soul"
 	ToolSetMe        = "set_me"
+	ToolSetIdentity  = "set_identity"
 )
 
 // ServerName is the MCP server's name in --mcp-config, so its tools are
@@ -96,6 +97,9 @@ var allTools = map[string]Tool{
 		prop{"slug", "string", "short branch-friendly name, e.g. poll-cmd", true})},
 	ToolSetSoul: {ToolSetSoul, "Rewrite soul.md, your personality. Only when your owner asks, in your DM.", schema(
 		prop{"text", "string", "the whole new soul.md, under 2 KB", true})},
+	ToolSetIdentity: {ToolSetIdentity, "Change your own @handle and/or icon. Only when your owner asks, in your DM. Everyone's tc updates by itself.", schema(
+		prop{"handle", "string", "new handle without @: lowercase letters, digits, dashes (optional)", false},
+		prop{"icon", "string", "new icon, an emoji (optional)", false})},
 	ToolSetMe: {ToolSetMe, "Rewrite me.md, what you know about your owner. Only when your owner asks, in your DM.", schema(
 		prop{"text", "string", "the whole new me.md, under 2 KB", true})},
 }
@@ -112,7 +116,7 @@ func pick(names ...string) []Tool {
 func AgentTools() []Tool {
 	return pick(ToolReadThread, ToolReadChannel, ToolSearch, ToolListChannels, ToolWhoami, ToolPostReply,
 		ToolStatus, ToolStream, ToolRemember, ToolRecall, ToolAskOwner, ToolApprove,
-		ToolOpenIssue, ToolOpenPR, ToolWorkStart, ToolSetSoul, ToolSetMe)
+		ToolOpenIssue, ToolOpenPR, ToolWorkStart, ToolSetSoul, ToolSetMe, ToolSetIdentity)
 }
 
 // VisitorTools are the tools of `tc mcp` for an outside session.

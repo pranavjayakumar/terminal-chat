@@ -107,10 +107,15 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 	}
 }
 
+// MaxWindow caps the context window rollover counts against: on a 1M
+// window, half is far past where a chat thread stays sharp and cheap.
+const MaxWindow = 200_000
+
 // ShouldRollover reports whether a session has used rolloverPct of its
-// context window and should hand off to a fresh one.
+// context window (at most MaxWindow) and should hand off to a fresh one.
 func ShouldRollover(res runner.Result, rolloverPct int) bool {
-	return res.ContextWindow > 0 && rolloverPct > 0 && res.ContextPct() >= rolloverPct
+	w := min(res.ContextWindow, MaxWindow)
+	return w > 0 && rolloverPct > 0 && res.ContextTokens*100/w >= rolloverPct
 }
 
 // RolloverPrompt is the fixed turn that closes a full session.
@@ -164,10 +169,11 @@ func (s *Supervisor) turn(ctx context.Context, a Ask, cfg home.Config, mode runn
 		Session:        sess.ID,
 		Resume:         resume,
 		Mode:           mode,
+		Model:          s.Model,
 		MaxUSD:         capUSD,
 		MCPConfig:      s.mcpConfig(token, cfg),
 		Settings:       s.paths.Settings,
-		System:         s.systemPrompt(),
+		System:         s.systemPrompt(mode),
 		PermissionTool: mcp.PermissionTool,
 		Env:            s.runEnv(a, token),
 	}
@@ -185,16 +191,17 @@ func (s *Supervisor) turn(ctx context.Context, a Ask, cfg home.Config, mode runn
 			if text.Len() < proto.MaxAgentPreview {
 				text.WriteString(e.Text)
 			}
-			r.live.set(proto.AgentStreaming, "", tail(text.String(), proto.MaxAgentPreview))
+			r.live.set(proto.AgentStreaming, "writing…", tail(text.String(), proto.MaxAgentPreview))
 		case runner.EvToolDone:
 			text.Reset() // the reply is the last message; drop narration before tools
 		}
 	})
-	state := proto.AgentDone
+	// Always end on done: it clears the thread's indicator everywhere.
+	status := "done"
 	if err != nil || res.IsError {
-		state = proto.AgentError
+		status = "stuck"
 	}
-	r.live.set(state, "", "")
+	r.live.set(proto.AgentDone, status, "")
 	if err2 := s.ledger.Add(Spend{T: s.Now().UnixMilli(), Asker: a.Asker, Key: a.Key, USD: res.CostUSD, Kind: kind}); err2 != nil {
 		s.Log.Warn("writing ledger", "err", err2)
 	}
@@ -248,12 +255,14 @@ func (s *Supervisor) mcpConfig(token string, cfg home.Config) string {
 	return string(b)
 }
 
-// systemPrompt is the code, appended to the engine's own prompt. The
-// engine also reads CLAUDE.md from the agent home; passing it here keeps
-// it in force in restricted mode too.
-func (s *Supervisor) systemPrompt() string {
-	head := "You are @" + s.handle + ", a personal agent in tc."
+// systemPrompt names the agent and, in Talk, carries the code: restricted
+// mode doesn't load CLAUDE.md from the working directory (Work does).
+func (s *Supervisor) systemPrompt(mode runner.Mode) string {
+	head := "You are @" + s.handleNow() + ", a personal agent in tc."
 	code, err := os.ReadFile(s.paths.Code)
+	if mode == runner.Work {
+		return head + " Your code is CLAUDE.md in your home; it outranks everything else."
+	}
 	if err != nil {
 		return head + " Your code is CLAUDE.md in your home; it outranks everything else."
 	}
@@ -312,8 +321,10 @@ const GreetPrompt = `[tc] Your owner just set you up and your DM with them is br
 Send only your greeting and your first question now; they answer in the DM.`
 
 func (s *Supervisor) greet(ctx context.Context) {
-	dm, err := s.Chat.OpenAgentDM(ctx)
-	if err != nil {
+	var dm proto.Channel
+	if cv, err := mcp.ResolveChan(s.Chat, "dm"); err == nil {
+		dm = cv.Channel
+	} else if dm, err = s.Chat.OpenAgentDM(ctx); err != nil {
 		s.Log.Warn("opening the agent DM", "err", err)
 		return
 	}

@@ -108,7 +108,9 @@ func (c Claude) Run(ctx context.Context, req Request, on func(Event)) (Result, e
 	}
 	cmd := exec.Command(bin, c.Args(req)...)
 	cmd.Dir = req.Dir
-	cmd.Env = append(engineEnv(os.Environ()), req.Env...)
+	// tc keeps the agent's memory; Claude Code's own auto-memory would
+	// be a second, unchecked one.
+	cmd.Env = append(append(engineEnv(os.Environ()), "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1"), req.Env...)
 	cmd.Stdin = strings.NewReader(req.Prompt)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var stderr bytes.Buffer
@@ -151,19 +153,37 @@ func (c Claude) Run(ctx context.Context, req Request, on func(Event)) (Result, e
 	return res, nil
 }
 
-// engineEnv drops variables that would make the engine think it runs
-// inside another Claude Code session or a herdr pane it doesn't own.
+// engineEnv drops what the engine must not have: the owner's SSH agent
+// (it would let a shell sign in as the owner), credentials in the
+// environment (tc runs gh itself, outside the engine), an API key (the
+// agent runs on the subscription only), and variables that would make it
+// think it runs inside another Claude Code session or a herdr pane.
 func engineEnv(env []string) []string {
 	out := env[:0:0]
 	for _, kv := range env {
 		k, _, _ := strings.Cut(kv, "=")
-		switch {
-		case k == "CLAUDECODE", k == "CLAUDE_CODE_ENTRYPOINT", strings.HasPrefix(k, "HERDR_"):
+		if !keepEnv(k) {
 			continue
 		}
 		out = append(out, kv)
 	}
 	return out
+}
+
+func keepEnv(k string) bool {
+	u := strings.ToUpper(k)
+	switch {
+	case u == "CLAUDE_CODE_OAUTH_TOKEN":
+		return true // the subscription login (claude setup-token)
+	case u == "CLAUDECODE", u == "CLAUDE_CODE_ENTRYPOINT", strings.HasPrefix(u, "HERDR_"),
+		u == "SSH_AUTH_SOCK", u == "SSH_AGENT_PID", u == "ANTHROPIC_API_KEY", u == "ANTHROPIC_AUTH_TOKEN",
+		strings.HasPrefix(u, "AWS_"), strings.HasPrefix(u, "GOOGLE_APPLICATION"), strings.HasPrefix(u, "AZURE_"),
+		strings.Contains(u, "TOKEN"), strings.Contains(u, "SECRET"), strings.Contains(u, "PASSWORD"),
+		strings.Contains(u, "PASSWD"), strings.HasSuffix(u, "_KEY"), strings.HasSuffix(u, "_API_KEY"),
+		strings.Contains(u, "CREDENTIAL"):
+		return false
+	}
+	return true
 }
 
 func lastLine(s string) string {
