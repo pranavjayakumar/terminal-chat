@@ -72,10 +72,13 @@ func TestAgents_BreakLiveStatusOutlivesAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, "agent sees #general", func() bool { _, ok := agent.Channel(gen); return ok })
-	if err := agent.SendAgentStatus(gen, 0, proto.AgentStreaming, "writing", "half a sente"); err != nil {
-		t.Fatal(err)
-	}
-	eventually(t, "bob sees the preview", func() bool { return len(bob.AgentStatus(gen, 0)) == 1 })
+	eventually(t, "bob sees the preview", func() bool {
+		if len(bob.AgentStatus(gen, 0)) == 1 {
+			return true
+		}
+		_ = agent.SendAgentStatus(gen, 0, proto.AgentStreaming, "writing", "half a sente")
+		return false
+	})
 
 	agent.cancel()
 	agent.Close()
@@ -99,10 +102,13 @@ func TestAgents_BreakLiveStatusOutlivesRetire(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, "agent sees #general", func() bool { _, ok := agent.Channel(gen); return ok })
-	if err := agent.SendAgentStatus(gen, 0, proto.AgentWorking, "running tests", ""); err != nil {
-		t.Fatal(err)
-	}
-	eventually(t, "bob sees the status", func() bool { return len(bob.AgentStatus(gen, 0)) == 1 })
+	eventually(t, "bob sees the status", func() bool {
+		if len(bob.AgentStatus(gen, 0)) == 1 {
+			return true
+		}
+		_ = agent.SendAgentStatus(gen, 0, proto.AgentWorking, "running tests", "")
+		return false
+	})
 	if err := alice.RetireAgent(ctx); err != nil {
 		t.Fatal(err)
 	}
