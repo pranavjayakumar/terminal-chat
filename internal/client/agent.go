@@ -361,8 +361,22 @@ func (c *Client) AgentAccess(ctx context.Context) ([]uint64, error) {
 	return r.Chans, nil
 }
 
-// SetAgentAccess adds and removes channels from my agent's access list and
-// returns the list after the change. Owner sessions only.
+// AgentAccessInfo is AgentAccess with the end of each temporary grant (a
+// call by mention, proto.AgentGrantTTL); SetAgentAccess's add makes one lasting.
+func (c *Client) AgentAccessInfo(ctx context.Context) (proto.AgentAccessRes, error) {
+	if err := c.requireCap(proto.CapAgent, "agents"); err != nil {
+		return proto.AgentAccessRes{}, err
+	}
+	var r proto.AgentAccessRes
+	if err := c.call(ctx, proto.OpAgentAccess, proto.AgentAccessArgs{}, &r, nil); err != nil {
+		return r, err
+	}
+	c.noteAccess(r.Chans)
+	return r, nil
+}
+
+// SetAgentAccess adds (until removed) and removes channels from my agent's
+// access list and returns the list after the change. Owner sessions only.
 func (c *Client) SetAgentAccess(ctx context.Context, add, remove []uint64) ([]uint64, error) {
 	if c.IsAgentSession() {
 		return nil, proto.Errf(proto.ErrForbidden, "an agent can't change its own access")
@@ -451,18 +465,21 @@ func (c *Client) loadGranted(chans []uint64) {
 	}
 }
 
-// grantOnMention gives my agent the channel of a message that calls it
-// (§15.4): the owner's sessions do this because only they can read an
-// encrypted channel's text. Called inside the event transaction.
+// grantOnMention gives my agent the channel of a message that calls it,
+// for proto.AgentGrantTTL (§15.4): the owner's sessions do this because
+// only they can read an encrypted channel's text. People (never bots or
+// agents) call it in public channels; in private channels and DMs only I
+// can. Called inside the event transaction.
 func (c *Client) grantOnMention(q dbtx, m proto.Message, sec Sec) {
-	if c.IsAgentSession() || !sec.Trusted() || m.Deleted || time.Since(time.UnixMilli(m.Time)) > agentCallWindow {
+	if c.IsAgentSession() || !sec.Trusted() || m.Deleted || m.Agent != "" || time.Since(time.UnixMilli(m.Time)) > agentCallWindow {
 		return
 	}
 	a, ok := c.MyAgent()
-	if !ok || !Mentioned(m.Body, []string{a.Handle}) || slices.Contains(knownAccess(q), m.Chan) {
+	if !ok || !Mentioned(m.Body, []string{a.Handle}) || slices.Contains(knownAccess(q), m.Chan) || c.User(m.Author).Bot {
 		return
 	}
-	if ch, ok, err := getChan(q, m.Chan); err != nil || !ok || ch.Kind == proto.ChanAgentDM {
+	ch, ok, err := getChan(q, m.Chan)
+	if err != nil || !ok || ch.Kind == proto.ChanAgentDM || ch.Kind != proto.ChanPublic && m.Author != c.cfg.UserID {
 		return
 	}
 	c.agentsMu.Lock()
@@ -475,7 +492,10 @@ func (c *Client) grantOnMention(q dbtx, m proto.Message, sec Sec) {
 	go func() {
 		ctx, cancel := context.WithTimeout(c.ctx, 30*time.Second)
 		defer cancel()
-		_, _ = c.SetAgentAccess(ctx, []uint64{m.Chan}, nil)
+		var r proto.AgentAccessRes
+		if c.call(ctx, proto.OpAgentAccess, proto.AgentAccessArgs{Temp: []uint64{m.Chan}}, &r, nil) == nil {
+			c.noteAccess(r.Chans)
+		}
 		c.agentsMu.Lock()
 		delete(c.granting, m.Chan)
 		c.agentsMu.Unlock()
@@ -850,4 +870,10 @@ func (c *Client) agentDevice(sid e2ecrypto.ServerID, d trust.Device) bool {
 		}
 	}
 	return false
+}
+
+// agentMsg reports whether the cached message id was sent by an agent.
+func agentMsg(q dbtx, id uint64) bool {
+	var a string
+	return q.QueryRow(`SELECT agent FROM msgs WHERE id = ?`, id).Scan(&a) == nil && a != ""
 }

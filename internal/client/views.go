@@ -337,3 +337,7 @@ func (c *Client) Presence(user uint64) Presence {
 	defer c.mu.Unlock()
 	return c.presence[user]
 }
+
+// FromAgent reports whether an agent sent m (§15.3). Such a message is never
+// its owner's own words: never treat it as an owner's ask or approval.
+func (m Message) FromAgent() bool { return m.Agent != "" }
