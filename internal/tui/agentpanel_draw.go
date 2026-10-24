@@ -308,7 +308,14 @@ func (m *Model) drawPanelMain(d *apDraw) {
 		if h.dir != "" {
 			hp = tildePath(h.dir)
 		}
-		c.put(d.x, d.y, truncate("PRs, pushes and anything outside "+hp+" always ask you first.", d.w), fgc(th.faint).with(aItalic), "")
+		note := "PRs, pushes and anything outside " + hp + " ask you first."
+		switch cfg.Approvals {
+		case home.ApproveAlways:
+			note = "Posts outside the thread, PRs, pushes and anything outside " + hp + " ask you first."
+		case home.ApproveNever:
+			note = "Nothing asks you first."
+		}
+		c.put(d.x, d.y, truncate(note, d.w), fgc(th.faint).with(aItalic), "")
 	}
 	d.y += 2
 	d.rule()
@@ -323,7 +330,7 @@ func (m *Model) drawPanelMain(d *apDraw) {
 		act := "ap:row:" + strconv.Itoa(row)
 		x := d.row(name, focus == row, act)
 		v := vals[name]
-		hint := map[string]string{"Reads": "⏎ edit", "Folders": "⏎ edit", "Limits": "⏎ edit",
+		hint := map[string]string{"Approvals": "←/→ change", "Reads": "⏎ edit", "Folders": "⏎ edit", "Limits": "⏎ edit",
 			"Memory": "⏎ browse · forget · undo today", "Activity": "⏎ full log", "Personality": ""}[name]
 		vst := fgc(th.fg)
 		if name == "Personality" {
@@ -400,7 +407,19 @@ func (m *Model) panelValues() map[string]string {
 	p := &m.ag.panel
 	h := m.ag.home
 	cfg := h.cfg
-	v := map[string]string{"Personality": "tell me in our DM"}
+	v := map[string]string{"Personality": "tell me in our DM", "Approvals": "Only for code & PRs"}
+	for _, a := range apApprovals {
+		if a.id == cfg.Approvals {
+			v["Approvals"] = a.name
+		}
+	}
+	if cfg.Approvals == home.ApproveNever {
+		name := "it"
+		if a, ok := m.myAgent(); ok {
+			name = agentName(a.Handle)
+		}
+		v["Approvals"] = "Never · " + name + " acts without asking"
+	}
 	var reads []string
 	if p.accessOK {
 		for _, ch := range p.access {

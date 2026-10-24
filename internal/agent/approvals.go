@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skailama/tc/internal/agent/home"
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/mcp"
 	"github.com/skailama/tc/internal/sanitize"
@@ -133,6 +134,10 @@ func (s *Supervisor) askOwner(ctx context.Context, r *run, ap Approval) bool {
 	if ap.Why == "" {
 		ap.Why = s.why(r.ask)
 	}
+	if !NeedsApproval(r.cfg.Approvals, ap.Kind) {
+		s.activity(r.ask, "approval", "not asked (approvals: "+string(r.cfg.Approvals)+"): "+oneLine(ap.Action, 200), 0)
+		return true
+	}
 	if s.granted(ap.Kind, ap.Target) {
 		s.activity(r.ask, "approval", "auto (♾️ today): "+oneLine(ap.Action, 200), 0)
 		return true
@@ -171,6 +176,21 @@ func (s *Supervisor) askOwner(ctx context.Context, r *run, ap Approval) bool {
 		s.activity(r.ask, "approval", "♾️ "+GrantText(Grant{Kind: ap.Kind, Target: ap.Target})+" ok for the rest of today (say \""+StopAutoPhrase+"\" to stop)", 0)
 	}
 	return v.yes
+}
+
+// NeedsApproval reports whether a kind of action asks the owner first at
+// an approvals level. work_only asks only about code going out (PRs,
+// pushes), issues, tool calls the rules didn't settle (shell writes
+// outside granted folders) and what the agent itself flags with
+// ask_owner; posting never asks.
+func NeedsApproval(level home.Approvals, kind string) bool {
+	switch level {
+	case home.ApproveNever:
+		return false
+	case home.ApproveAlways:
+		return true
+	}
+	return kind != KindPost
 }
 
 // GrantText says what a grant covers.

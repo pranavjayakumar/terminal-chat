@@ -47,6 +47,7 @@ func TestOwnersAskToPostIsTheApproval(t *testing.T) {
 func TestGrantsAreKindAndTarget(t *testing.T) {
 	cfg := cfgDefault()
 	cfg.Mode = home.ModeCrew
+	cfg.Approvals = home.ApproveAlways
 	cfg.Access.Chans = []uint64{secret}
 	h := newHarness(t, cfg, nil)
 	block := make(chan struct{})
@@ -107,5 +108,65 @@ func TestGrantsAreKindAndTarget(t *testing.T) {
 	}
 	if GrantText(st.Grants[0]) != "posting in #general" {
 		t.Fatal(GrantText(st.Grants[0]))
+	}
+}
+
+func TestNeedsApproval(t *testing.T) {
+	for _, c := range []struct {
+		level home.Approvals
+		kind  string
+		want  bool
+	}{
+		{home.ApproveAlways, KindPost, true}, {home.ApproveAlways, KindPR, true},
+		{home.ApproveWorkOnly, KindPost, false}, {home.ApproveWorkOnly, KindPR, true},
+		{home.ApproveWorkOnly, KindIssue, true}, {home.ApproveWorkOnly, KindTool, true}, {home.ApproveWorkOnly, KindAsk, true},
+		{home.ApproveNever, KindPR, false}, {home.ApproveNever, KindTool, false},
+	} {
+		if got := NeedsApproval(c.level, c.kind); got != c.want {
+			t.Errorf("%s %s: %v", c.level, c.kind, got)
+		}
+	}
+	if home.DefaultConfig().Approvals != home.ApproveWorkOnly {
+		t.Fatal("default isn't work_only")
+	}
+}
+
+func TestWorkOnlyPostsWithoutAsking(t *testing.T) {
+	cfg := cfgDefault()
+	cfg.Access.Chans = []uint64{secret}
+	h := newHarness(t, cfg, nil)
+	block := make(chan struct{})
+	defer close(block)
+	h.run.reply = func(req runner.Request, on func(runner.Event)) (runner.Result, error) {
+		<-block
+		return runner.Result{Session: req.Session, Text: NoReply}, nil
+	}
+	h.chat.say(bobID, general, 0, "@rocky tell #secret hi", 0)
+	if r := h.call(mcp.ToolPostReply, map[string]any{"chan": "#secret", "text": "hi from bob"}); r.Text != "posted" {
+		t.Fatalf("post %+v", r)
+	}
+	for _, p := range h.chat.posts() {
+		if strings.HasPrefix(p.body, "✋") {
+			t.Fatalf("work_only asked about a post: %+v", p)
+		}
+	}
+}
+
+func TestNeverAsks(t *testing.T) {
+	cfg := cfgDefault()
+	cfg.Approvals = home.ApproveNever
+	h := newHarness(t, cfg, nil)
+	block := make(chan struct{})
+	defer close(block)
+	h.run.reply = func(req runner.Request, on func(runner.Event)) (runner.Result, error) {
+		<-block
+		return runner.Result{Session: req.Session, Text: NoReply}, nil
+	}
+	h.chat.say(bobID, general, 0, "@rocky can you push?", 0)
+	if r := h.call(mcp.ToolAskOwner, map[string]any{"action": "push"}); r.Text != "yes" {
+		t.Fatalf("ask_owner %+v", r)
+	}
+	if len(h.chat.posts()) != 0 {
+		t.Fatalf("posted a card: %+v", h.chat.posts())
 	}
 }

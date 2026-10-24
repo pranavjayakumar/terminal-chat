@@ -94,7 +94,37 @@ const (
 )
 
 // Main page rows, in order.
-var apRows = []string{"Mode", "Reads", "Folders", "Limits", "Memory", "Activity", "Personality"}
+var apRows = []string{"Mode", "Approvals", "Reads", "Folders", "Limits", "Memory", "Activity", "Personality"}
+
+// apApprovals are the Approvals row's levels, in order, with their names.
+var apApprovals = []struct {
+	id   home.Approvals
+	name string
+}{
+	{home.ApproveAlways, "Ask for everything"},
+	{home.ApproveWorkOnly, "Only for code & PRs"},
+	{home.ApproveNever, "Never"},
+}
+
+// stepApprovals moves the Approvals level by d (wrapping on ⏎).
+func (m *Model) stepApprovals(d int, wrap bool) {
+	i := slices.IndexFunc(apApprovals, func(a struct {
+		id   home.Approvals
+		name string
+	}) bool {
+		return a.id == m.ag.home.cfg.Approvals
+	})
+	if i < 0 {
+		i = 1
+	}
+	if wrap {
+		i = (i + d + len(apApprovals)) % len(apApprovals)
+	} else {
+		i = min(max(i+d, 0), len(apApprovals)-1)
+	}
+	lv := apApprovals[i].id
+	m.saveAgentConfig(func(c *home.Config) { c.Approvals = lv })
+}
 
 type (
 	agentAccessMsg struct {
@@ -380,6 +410,17 @@ func (m *Model) panelMainKey(key string) tea.Cmd {
 		}
 		mode := modes[max(i, 0)]
 		m.saveAgentConfig(func(c *home.Config) { c.Mode = mode })
+		return nil
+	}
+	if row == "Approvals" {
+		switch key {
+		case kLeft, "h":
+			m.stepApprovals(-1, false)
+		case kRight, "l":
+			m.stepApprovals(1, false)
+		case kEnter, " ":
+			m.stepApprovals(1, true)
+		}
 		return nil
 	}
 	if key != kEnter && key != " " && key != kRight {
@@ -769,6 +810,10 @@ func (m *Model) agentPanelClick(rest string) tea.Cmd {
 		p.row = n
 		if p.page == apMain && n < len(apRows) {
 			if apRows[n] == "Mode" {
+				return nil
+			}
+			if apRows[n] == "Approvals" {
+				m.stepApprovals(1, true)
 				return nil
 			}
 			return m.panelOpenRow(apRows[n])
