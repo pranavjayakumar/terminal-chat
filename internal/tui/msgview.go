@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/skailama/tc/internal/client"
+	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
 )
 
@@ -118,8 +119,12 @@ func (m *Model) concernOf(x client.Message) concern {
 	return cNone
 }
 
+// viaMark marks a message an outside Claude session posted for its author
+// (tc mcp, proto.ViaMCP).
+const viaMark = "⇢"
+
 // ownMsg: a message I sent myself (not one my agent sent as my device).
-func (m *Model) ownMsg(x client.Message) bool { return x.Author == m.me.ID && x.Agent == "" }
+func (m *Model) ownMsg(x client.Message) bool { return x.Author == m.me.ID && !x.FromAgent() }
 
 // msgBlock draws one message at column width cw.
 func (m *Model) msgBlock(x client.Message, cw int, header, tail, left bool) *canvas {
@@ -147,7 +152,7 @@ func (m *Model) blockKeyOf(x client.Message, cw int, header, tail, left bool) bl
 func (m *Model) drawBlock(x client.Message, k blockKey, mine, own bool) *canvas {
 	cw, header, tail, cc := k.width, k.header, k.tail, k.concern
 	th := m.st.th
-	agent := x.Agent != ""
+	agent := x.FromAgent()
 	g := newGrower(cw, th)
 	c := func() *canvas { return g.c }
 	bw := bodyW(cw)
@@ -170,7 +175,11 @@ func (m *Model) drawBlock(x client.Message, k blockKey, mine, own bool) *canvas 
 	} else if header && !mine {
 		y := g.row()
 		name := m.r.userName(x.Author)
-		e := c().put(2, y, name, fgb(th.nick(x.Author)), "")
+		e := 2
+		if x.Via == proto.ViaMCP {
+			e = c().put(e, y, viaMark+" ", fgc(th.faint), "") // posted for them by an outside Claude session
+		}
+		e = c().put(e, y, name, fgb(th.nick(x.Author)), "")
 		if m.users[x.Author].Bot {
 			e = c().put(e, y, botTag, fgc(th.faint), "")
 		}
@@ -241,6 +250,9 @@ func (m *Model) drawBlock(x client.Message, k blockKey, mine, own bool) *canvas 
 			st = "◌"
 		}
 		meta := time.UnixMilli(x.ShownTime()).Local().Format("15:04") + " " + st
+		if x.Via == proto.ViaMCP && mine {
+			meta = viaMark + " " + meta // no name row on the right: the mark goes here
+		}
 		c().put(at(strWidth(meta)), y, meta, fgc(th.faint), "")
 		if !mine {
 			barEnd = g.n // on the left the bar runs down to it
@@ -254,7 +266,7 @@ func (m *Model) drawBlock(x client.Message, k blockKey, mine, own bool) *canvas 
 	bar := mix(th.bg, th.nick(x.Author), 0.9)
 	bx, glyph := 0, "│"
 	if agent {
-		bar, glyph = mix(th.bg, m.agentColor(m.agentByHandle(x.Agent)), 0.9), agentBar
+		bar, glyph = mix(th.bg, m.agentColor(m.agentOfMsg(x)), 0.9), agentBar
 	}
 	switch {
 	case mine:
@@ -658,7 +670,7 @@ func (m *Model) paneLines(p *pane, w int) ([]prow, []int) {
 		}
 		tail := i == len(p.msgs)-1 || !sameDay(x.Time, p.msgs[i+1].Time) || !grouped(x, p.msgs[i+1])
 		k := m.blockKeyOf(x, w, header, tail, left)
-		if x.Agent != "" {
+		if x.FromAgent() {
 			k.appr, k.fold = appr[x.ID], m.foldKey(x)
 		}
 		b := m.msgBlockFrom(prev, k, x)

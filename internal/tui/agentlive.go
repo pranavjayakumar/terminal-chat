@@ -22,10 +22,7 @@ const agentBar = "┆"
 // columns drop "· Fizan's agent" first.
 func (m *Model) agentHeader(g *grower, x client.Message, cw int) {
 	th := m.st.th
-	a := m.agentByHandle(x.Agent)
-	if a.Owner == 0 {
-		a.Owner = x.Author
-	}
+	a := m.agentOfMsg(x)
 	col := m.agentColor(a)
 	y := g.row()
 	glyph := agentFrame(parseAgentIcon(a.Icon), "", 0, false)
@@ -90,7 +87,7 @@ func (m *Model) replied(p *pane, r liveRow) bool {
 	}
 	for i := len(p.msgs) - 1; i >= 0 && i >= len(p.msgs)-5; i-- {
 		x := p.msgs[i]
-		if x.Agent != "" && strings.EqualFold(x.Agent, r.Agent.Handle) && x.Time >= start.Add(-2*time.Second).UnixMilli() {
+		if x.FromAgent() && x.Author == r.Agent.Owner && x.Time >= start.Add(-2*time.Second).UnixMilli() {
 			return true
 		}
 	}
@@ -274,7 +271,7 @@ func (m *Model) attachRun(k liveKey, run *agentRun) {
 	}
 	for i := len(msgs) - 1; i >= 0; i-- {
 		x := msgs[i]
-		if x.ID != 0 && strings.EqualFold(x.Agent, run.handle) && x.Time >= run.start.Add(-2*time.Second).UnixMilli() {
+		if x.ID != 0 && x.FromAgent() && x.Author == k.owner && x.Time >= run.start.Add(-2*time.Second).UnixMilli() {
 			if m.ag.folds == nil {
 				m.ag.folds = map[uint64]*agentRun{}
 			}

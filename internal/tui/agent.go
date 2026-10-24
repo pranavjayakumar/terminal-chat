@@ -261,6 +261,15 @@ func (m *Model) reloadAgents() {
 	m.thread.ver++
 }
 
+// agentOfMsg is the agent that sent x: its owner's agent now (current
+// handle and icon), or one that has left (only the handle x carries).
+func (m *Model) agentOfMsg(x client.Message) proto.Agent {
+	if a, ok := m.ag.byOwner[x.Author]; ok {
+		return a
+	}
+	return proto.Agent{Handle: x.Agent, Owner: x.Author}
+}
+
 // agentByHandle is the active agent with handle h, or one that has left
 // (only its handle is known then).
 func (m *Model) agentByHandle(h string) proto.Agent {

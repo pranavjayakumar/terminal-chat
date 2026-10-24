@@ -448,8 +448,11 @@ and one status row. Code: `internal/tui/agent.go` (icons, state), `agentlive.go`
 - **Identity.** A message with `Message.Agent` set draws `<icon> Rocky ⟡ · Fizan's agent  hh:mm` on the
   first message of a group and a dashed `┆` bar where people get `│`; icon, name and bar take the agent's
   color. Below 50 columns the badge drops `· Fizan's agent`. An agent's messages never group with its
-  owner's, and my agent's messages are not "mine" (no edit, no split side). A reply starting `✓ ` (a
-  milestone) gets its `✓` in the ok color.
+  owner's, and my agent's messages are not "mine" (no edit, no split side): `Message.FromAgent()` decides.
+  Name, icon and color are the author's agent now (`AgentOf`), so a rename shows on old messages too; a
+  retired agent keeps the handle its message carries. A reply starting `✓ ` (a milestone) gets its `✓` in
+  the ok color. A message an outside Claude session posted for someone (`Via == "mcp"`, `tc mcp`) shows a
+  faint `⇢` before their name (or before the time, for mine on the right) and doesn't group with their own.
 - **Icon and color** live in `proto.Agent.Icon`: `"<preset>"` or `"<preset>:<n>"`, n the theme name color
   0–7 the owner picked (no color: a hash of the handle). Presets: pebble, orb, spark, owl, hive, moon,
   meter, kite, each with idle / thinking / working / done / asleep frames (1–2 cells). Anything else in
@@ -483,8 +486,8 @@ and one status row. Code: `internal/tui/agent.go` (icons, state), `agentlive.go`
   select mode on a card) or a click answer: 1 reacts ✅, 2 reacts ✅ then ♾️ (the harness reads the ✅ as
   yes), 3 reacts ❌. Only a verified card from my own agent takes an answer. Answered, it collapses to
   `✓ Fizan said yes · <action>?` (`✗ … said no`); a card the harness gave up on (`⌛ no answer on #code`)
-  reads `⌛ no answer`. A card that arrives while I look elsewhere notifies me (`Rocky needs your ok`),
-  since my agent posts as me and the usual mention notification skips my own messages.
+  reads `⌛ no answer`. A card that arrives while I look elsewhere notifies me once, as `Rocky needs your
+  ok`: it replaces the mention alert its `@owner` would raise.
 - **Panel** (`⌥K` › Agent, the glyph in the sidebar, the mode in the DM header): one page, no tabs. State
   (awake / working / paused / asleep, idle time, sleep-after, on this or another computer), Spend today (`█` accent,
   `░` faint, `$3.40 of $20  17%`), Asks today per person, the Mode radio (Talk / Work / Crew: `←/→`, `1–3`
