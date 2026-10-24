@@ -82,6 +82,12 @@ func TestEngagedThread(t *testing.T) {
 		t.Fatalf("posted %+v", p)
 	}
 	h.waitFor("live status", func() bool { return len(h.chat.lives()) > livesBefore })
+	h.waitFor("window extended", func() bool {
+		h.s.mu.Lock()
+		defer h.s.mu.Unlock()
+		e := h.s.engaged[SessionKey(general, 0)]
+		return e != nil && e.until.After(clock.now().Add(9*time.Minute))
+	})
 	clock.add(8 * time.Minute)
 	if !h.s.Engaged(general, 0) {
 		t.Fatal("the reply didn't extend the window")
