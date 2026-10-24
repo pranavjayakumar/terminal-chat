@@ -311,6 +311,9 @@ type Message struct {
 	// Agent is the handle of the agent that sent it (cap agent1), set by
 	// the server from the session, never by the sender (§15.3).
 	Agent string `msgpack:"agent,omitempty"`
+	// Via says what posted it for its author (cap agent1, §15.3): "mcp" for
+	// an outside Claude session. The sender's claim, signed in e2e.
+	Via string `msgpack:"via,omitempty"`
 }
 
 // ReactEnc is one encrypted reaction: user reacted with tag, proven by enc.
@@ -382,6 +385,8 @@ type SendArgs struct {
 	// Enc (cap e2e1) replaces Body in e2e channels: exactly one of the two
 	// is set (§13.4).
 	Enc []byte `msgpack:"enc,omitempty"`
+	// Via (cap agent1) becomes Message.Via.
+	Via string `msgpack:"via,omitempty"`
 }
 
 type SendRes struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -191,7 +192,8 @@ func TestAgentEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, "bob in secret", func() bool { return bob.E2EStatus(sec.ID).State == client.E2EOK })
-	if err := bob.Send(sec.ID, "@rocky keep this quiet", 0); err != nil {
+	// In a private channel only the owner's own call grants the agent.
+	if err := alice.Send(sec.ID, "@rocky keep this quiet", 0); err != nil {
 		t.Fatal(err)
 	}
 	var ecall client.Message
@@ -223,6 +225,13 @@ func TestAgentEndToEnd(t *testing.T) {
 		return ok && m.Sec == client.SecE2E && m.Agent == "rocky"
 	})
 
+	// The agent's own key, vouched for by alice's: no key-change warning anywhere.
+	for _, u := range []*user{alice, bob, agent} {
+		if kc := u.KeyChanges(); len(kc) != 0 {
+			t.Fatalf("key change warnings after the agent joined: %+v", kc)
+		}
+	}
+
 	// The access filter: a channel nobody called the agent in stays shut.
 	hidden, err := alice.CreateChannel(ctx, "hidden", true, "")
 	if err != nil {
@@ -235,7 +244,11 @@ func TestAgentEndToEnd(t *testing.T) {
 	if err := bob.Send(hidden.ID, "just us", 0); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, "alice reads hidden", func() bool { return alice.has(hidden.ID, "just us") })
+	if err := bob.Send(hidden.ID, "@rocky what did alice say", 0); err != nil {
+		t.Fatal(err) // someone else's call in a private channel grants nothing
+	}
+	eventually(t, "alice reads hidden", func() bool { return alice.has(hidden.ID, "@rocky what did alice say") })
+	time.Sleep(300 * time.Millisecond)
 	if _, err := agent.History(ctx, hidden.ID, 0); protoCode(err) != proto.ErrForbidden {
 		t.Fatalf("agent history of hidden: %v", err)
 	}
@@ -285,10 +298,64 @@ func TestAgentEndToEnd(t *testing.T) {
 		t.Fatalf("agent retire: %v", err)
 	}
 
+	// Visitor posts (tc mcp) carry via, signed in the encrypted channel.
+	if err := alice.SendVia(gen, "posted by claude", 0, proto.ViaMCP); err != nil {
+		t.Fatal(err)
+	}
+	if err := alice.SendVia(sec.ID, "sealed by claude", 0, proto.ViaMCP); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "bob sees via", func() bool {
+		m1, ok1 := bob.msg(gen, "posted by claude")
+		m2, ok2 := bob.msg(sec.ID, "sealed by claude")
+		return ok1 && ok2 && m1.Via == proto.ViaMCP && m2.Via == proto.ViaMCP && m2.Sec == client.SecE2E
+	})
+
+	// The owner tells it a new name in the DM; the agent renames itself.
+	if _, err := agent.UpdateAgent(ctx, "bolt", "⚡"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "bob sees bolt", func() bool { ag, ok := bob.AgentOf(a); return ok && ag.Handle == "bolt" && ag.Icon == "⚡" })
+	if agent.AgentHandle() != "bolt" || agent.MentionNames()[0] != "bolt" {
+		t.Fatalf("agent handle after rename: %q", agent.AgentHandle())
+	}
+	if cfg, err := client.Open(agent.home); err == nil {
+		h := cfg.Config().Agent
+		cfg.Close()
+		if h != "bolt" {
+			t.Fatalf("config handle after rename: %q", h)
+		}
+	}
+	if err := agent.Send(sec.ID, "bolt here", 0); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "bob reads bolt", func() bool {
+		m, ok := bob.msg(sec.ID, "bolt here")
+		return ok && m.Agent == "bolt" && m.Sec == client.SecE2E
+	})
+
 	// The agent never makes its owner look online.
 	alice.cancel()
 	eventually(t, "alice offline for bob", func() bool { return bob.Presence(a).State == proto.PresOffline })
 	if ag, ok := bob.AgentOf(a); !ok || !ag.Online {
 		t.Fatal("the agent went offline with its owner's client")
+	}
+}
+
+// The agent logs in with its own key, and that key can't be its owner.
+func TestAgentKeyIsNotTheOwner(t *testing.T) {
+	alice, _, agent, _ := brAgentSetup(t)
+	acfg := agent.Config()
+	ocfg := alice.Config()
+	if acfg.KeyPath == "" || acfg.KeyPath == ocfg.KeyPath || acfg.AgentEndorse == nil {
+		t.Fatalf("agent config %+v", acfg)
+	}
+	// A home that claims to be alice but holds the agent's key.
+	home := filepath.Join(t.TempDir(), "fake")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := client.Login(ctx, home, "tc://"+ocfg.Addr+"#"+ocfg.Pin, "", acfg.KeyPath)
+	if err == nil || !strings.Contains(err.Error(), "agent") {
+		t.Fatalf("the agent's key as its owner: %v", err)
 	}
 }

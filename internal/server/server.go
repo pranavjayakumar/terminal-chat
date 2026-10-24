@@ -64,7 +64,8 @@ type Server struct {
 	// Agents (agents.go): owner → active agent, access list, agent DM,
 	// connected agent sessions; agent sessions' own rate buckets.
 	agents      map[uint64]proto.Agent
-	agentAccess map[uint64]map[uint64]bool
+	chanE2E     map[uint64]bool             // chan -> encrypted (agent previews)
+	agentAccess map[uint64]map[uint64]int64 // owner → chan → grant end (0 = until removed)
 	agentDMs    map[uint64]uint64
 	agentOnline map[uint64]int
 	alimits     map[uint64]*bucket
@@ -123,8 +124,8 @@ func New(cfg Config) (*Server, error) {
 		limits:   map[uint64]*bucket{},
 		wlimits:  map[uint64]*bucket{},
 		disabled: map[uint64]bool{},
-		agents:   map[uint64]proto.Agent{}, agentAccess: map[uint64]map[uint64]bool{},
-		agentDMs: map[uint64]uint64{}, agentOnline: map[uint64]int{},
+		agents:   map[uint64]proto.Agent{}, agentAccess: map[uint64]map[uint64]int64{},
+		chanE2E: map[uint64]bool{}, agentDMs: map[uint64]uint64{}, agentOnline: map[uint64]int{},
 		alimits: map[uint64]*bucket{}, awlimits: map[uint64]*bucket{},
 		remindWake: make(chan struct{}, 1),
 		hud:        newHuddles(),
@@ -157,18 +158,20 @@ func (s *Server) now() int64 { return s.cfg.Now().UnixMilli() }
 
 func (s *Server) loadCache() error {
 	ctx := context.Background()
-	rows, err := s.st.db.QueryContext(ctx, `SELECT id, kind FROM channels`)
+	rows, err := s.st.db.QueryContext(ctx, `SELECT id, kind, e2e FROM channels`)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var id uint64
 		var kind string
-		if err := rows.Scan(&id, &kind); err != nil {
+		var e2e bool
+		if err := rows.Scan(&id, &kind, &e2e); err != nil {
 			rows.Close()
 			return err
 		}
 		s.kinds[id] = kind
+		s.chanE2E[id] = e2e
 		s.members[id] = map[uint64]bool{}
 	}
 	rows.Close()
@@ -208,7 +211,7 @@ func (s *Server) loadCache() error {
 // ensureGeneral creates the default #general channel on a fresh server.
 func (s *Server) ensureGeneral() error {
 	var n int
-	if err := s.st.db.QueryRow(`SELECT COUNT(*) FROM channels WHERE kind != 'dm'`).Scan(&n); err != nil || n > 0 {
+	if err := s.st.db.QueryRow(`SELECT COUNT(*) FROM channels WHERE kind IN ('public', 'private')`).Scan(&n); err != nil || n > 0 {
 		return err
 	}
 	_, err := s.write(context.Background(), func(tx *sql.Tx) ([]proto.Event, error) {

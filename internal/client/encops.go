@@ -220,6 +220,9 @@ func (c *Client) applyEdit(q dbtx, row msgRow, enc []byte, seq uint64, memo *key
 	}
 	// Judged: whatever was pending for this message is settled.
 	q.Exec(`UPDATE msgs SET epend = NULL WHERE id = ? AND epend = ?`, row.id, enc)
+	if sec == SecE2E && c.agentDevice(sid, *d) && !agentMsg(q, row.id) {
+		sec, why = SecInvalid, "an agent's device can't change its owner's words"
+	}
 	if sec != SecE2E {
 		c.reject(row.id, "edit: %s", why)
 		return false
@@ -279,6 +282,9 @@ func (c *Client) deleteVerdict(q dbtx, sid e2ecrypto.ServerID, hasSID bool, ch, 
 		return SecWaiting
 	}
 	raw, d, sec, why := c.openEnc(sid, ch, author, seq, enc, memo)
+	if sec == SecE2E && c.agentDevice(sid, *d) && !agentMsg(q, id) {
+		sec, why = SecInvalid, "an agent's device can't delete its owner's words"
+	}
 	switch sec {
 	case SecWaiting:
 		return SecWaiting
@@ -404,6 +410,10 @@ func (c *Client) judgeReact(q dbtx, row msgRow, user uint64, tag string, enc []b
 		return reactBad, ""
 	}
 	raw, d, sec, why := c.openEnc(sid, row.ch, user, seq, enc, memo)
+	if sec == SecE2E && c.agentDevice(sid, *d) {
+		// Its owner's reactions are approvals (§15.1): an agent's never count.
+		sec, why = SecInvalid, "an agent's device can't react"
+	}
 	switch sec {
 	case SecWaiting:
 		return reactPending, ""

@@ -88,13 +88,16 @@ func (c *Client) Channels() []ChannelView {
 	removed := c.uintMap(`SELECT chan, actor FROM removed`)
 	reads := c.uintMap(`SELECT chan, seq FROM reads`)
 	last := c.uintMap(`SELECT chan, MAX(id) FROM msgs GROUP BY chan`)
+	// Mine is what I wrote here: my author id and my agent handle ("" for a
+	// person), so my agent's replies count for me and mine for my agent.
+	ag := c.AgentHandle()
 	unread := c.uintMap(`SELECT m.chan, COUNT(*) FROM msgs m LEFT JOIN reads r ON r.chan = m.chan
-		WHERE m.id > COALESCE(r.seq, 0) AND m.author != ? AND m.deleted = 0 GROUP BY m.chan`, me.ID)
+		WHERE m.id > COALESCE(r.seq, 0) AND (m.author != ? OR m.agent != ?) AND m.deleted = 0 GROUP BY m.chan`, me.ID, ag)
 	// Bot (webhook) messages count as unread but never as mentions: their
 	// text comes from outside (e.g. a branch named "fix-@priya").
 	human := c.uintMap(`SELECT m.chan, COUNT(*) FROM msgs m LEFT JOIN reads r ON r.chan = m.chan
-		WHERE m.id > COALESCE(r.seq, 0) AND m.author != ? AND m.deleted = 0 AND m.sec IN (?, ?)
-		AND m.author NOT IN (SELECT id FROM users WHERE bot = 1) GROUP BY m.chan`, me.ID, SecPlain, SecE2E)
+		WHERE m.id > COALESCE(r.seq, 0) AND (m.author != ? OR m.agent != ?) AND m.deleted = 0 AND m.sec IN (?, ?)
+		AND m.author NOT IN (SELECT id FROM users WHERE bot = 1) GROUP BY m.chan`, me.ID, ag, SecPlain, SecE2E)
 	// A mention is @me or one of my highlight keywords. The SQL narrows the
 	// rows; Go applies the exact whole-word rules.
 	words := c.Highlights()
@@ -104,9 +107,9 @@ func (c *Client) Channels() []ChannelView {
 	// Only authenticated text counts as a mention: never plaintext in an
 	// encrypted channel (legacy or inserted by the server).
 	if mrows, err := c.db.Query(`SELECT m.chan, m.body FROM msgs m LEFT JOIN reads r ON r.chan = m.chan
-		WHERE m.id > COALESCE(r.seq, 0) AND m.author != ? AND m.deleted = 0 AND m.sec IN (?, ?) AND `+filter+`
+		WHERE m.id > COALESCE(r.seq, 0) AND (m.author != ? OR m.agent != ?) AND m.deleted = 0 AND m.sec IN (?, ?) AND `+filter+`
 		AND m.author NOT IN (SELECT id FROM users WHERE bot = 1)`,
-		append([]any{me.ID, SecPlain, SecE2E}, fargs...)...); err == nil {
+		append([]any{me.ID, ag, SecPlain, SecE2E}, fargs...)...); err == nil {
 		for mrows.Next() {
 			var ch uint64
 			var body string
@@ -127,7 +130,7 @@ func (c *Client) Channels() []ChannelView {
 		v.Removed = v.Removed && !v.Member
 		if v.Member {
 			v.Unread = int(unread[v.ID])
-			v.Mention = mention[v.ID] || (v.Kind == proto.ChanDM && human[v.ID] > 0)
+			v.Mention = mention[v.ID] || (proto.IsDMKind(v.Kind) && human[v.ID] > 0)
 			// Reminders are my own messages, which never count as unread,
 			// but they exist to be noticed.
 			if v.Kind == proto.ChanDM && len(v.Members) == 1 {
@@ -284,7 +287,7 @@ func (c *Client) outboxMsgs(where string, args ...any) []Message {
 
 func (e outboxEntry) message(me uint64, agent string) Message {
 	return Message{
-		Message: proto.Message{Chan: e.chan_, Author: me, Body: e.body, Thread: e.thread, Time: e.time, Agent: agent},
+		Message: proto.Message{Chan: e.chan_, Author: me, Body: e.body, Thread: e.thread, Time: e.time, Agent: agent, Via: e.via},
 		Pending: e.failed == "", Failed: e.failed, Local: e.id,
 	}
 }
@@ -334,3 +337,7 @@ func (c *Client) Presence(user uint64) Presence {
 	defer c.mu.Unlock()
 	return c.presence[user]
 }
+
+// FromAgent reports whether an agent sent m (§15.3). Such a message is never
+// its owner's own words: never treat it as an owner's ask or approval.
+func (m Message) FromAgent() bool { return m.Agent != "" }
