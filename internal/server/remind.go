@@ -291,7 +291,7 @@ func (s *Server) remindOrigin(ctx context.Context, tx *sql.Tx, ch, user uint64) 
 	if !ok || !(kind == proto.ChanPublic || s.members[ch][user]) {
 		return ""
 	}
-	if kind == proto.ChanDM {
+	if proto.IsDMKind(kind) {
 		return "a DM"
 	}
 	var name string

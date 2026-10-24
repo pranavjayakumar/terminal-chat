@@ -387,7 +387,7 @@ func TestHookDeletedInFlight(t *testing.T) {
 		t.Fatal(err)
 	}
 	alice.ok(proto.OpHookDelete, proto.HookArgs{ID: h.ID}, nil)
-	_, err = ts.send(ctx, live.bot, proto.SendArgs{Chan: live.ch, Body: "late", Nonce: make([]byte, 16)}, &live)
+	_, err = ts.send(ctx, nil, live.bot, proto.SendArgs{Chan: live.ch, Body: "late", Nonce: make([]byte, 16)}, &live)
 	if pe, ok := err.(*proto.Error); !ok || pe.Code != proto.ErrNotFound {
 		t.Fatalf("send through deleted hook: %v", err)
 	}

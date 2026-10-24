@@ -271,7 +271,7 @@ func (c *Client) outboxLoop(ctx context.Context, s *session) {
 		case reason != "":
 			if _, err := c.db.Exec(`UPDATE outbox SET failed = ?, msg = 0 WHERE id = ?`, reason, e.id); err == nil {
 				e.failed = reason
-				m := e.message(c.Me().ID)
+				m := e.message(c.Me().ID, c.AgentHandle())
 				c.outboxChanged(e.chan_, &m)
 			}
 			if reason == noKeyReason {

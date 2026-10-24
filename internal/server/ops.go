@@ -54,6 +54,7 @@ var writeOps = map[string]bool{
 	proto.OpHookCreate: true, proto.OpHookDelete: true, proto.OpHookList: true,
 	proto.OpDeviceRegister: true, proto.OpDeviceRevoke: true, proto.OpKeyRotate: true,
 	proto.OpKeyShare: true,
+	proto.OpAgentRegister: true, proto.OpAgentUpdate: true, proto.OpAgentRetire: true, proto.OpAgentAccess: true, proto.OpAgentDM: true,
 }
 
 // e2eOps exist only in sessions that negotiated proto.CapE2E.
@@ -64,6 +65,16 @@ var e2eOps = map[string]bool{
 
 func (s *Server) dispatch(ctx context.Context, sess *session, op string, args proto.Raw) (any, error) {
 	u := sess.user
+	if agentOps[op] && !sess.agentCap {
+		return nil, proto.Errf(proto.ErrUnknownOp, "")
+	}
+	if sess.agent != nil {
+		if err := s.gateAgentOp(ctx, sess, op, args); err != nil {
+			return nil, err
+		}
+		// An agent never holds its owner's admin powers.
+		u.Admin = false
+	}
 	if e2eOps[op] && !sess.e2e || voiceOps[op] && !sess.voice {
 		return nil, proto.Errf(proto.ErrUnknownOp, "")
 	}
@@ -73,7 +84,7 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 	s.mu.Lock()
 	disabled := s.disabled[u.ID]
 	// huddle.leave is exempt: refusing a cleanup would leave a ghost listener.
-	limited := (writeOps[op] || op == proto.OpHuddleJoin) && !s.allowWrite(u.ID)
+	limited := (writeOps[op] || op == proto.OpHuddleJoin) && !s.allowWriteSess(sess)
 	s.mu.Unlock()
 	if disabled {
 		return nil, proto.Errf(proto.ErrUnauthorized, "account disabled")
@@ -87,7 +98,7 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 	case proto.OpHuddleLeave:
 		return s.opHuddleLeave(sess)
 	case proto.OpSend:
-		return withArgs(args, func(a proto.SendArgs) (any, error) { return s.opSend(ctx, u, a) })
+		return withArgs(args, func(a proto.SendArgs) (any, error) { return s.send(ctx, sess, u, a, nil) })
 	case proto.OpEdit:
 		return withArgs(args, func(a proto.EditArgs) (any, error) { return s.opEdit(ctx, u, a) })
 	case proto.OpDelete:
@@ -113,6 +124,9 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 	case proto.OpSearch:
 		return withArgs(args, func(a proto.SearchArgs) (any, error) { return s.opSearch(ctx, u, a) })
 	case proto.OpRead:
+		if sess.agent != nil { // read markers are the owner's
+			return proto.SeqRes{}, nil
+		}
 		return withArgs(args, func(a proto.ReadArgs) (any, error) { return s.opRead(ctx, u, a) })
 	case proto.OpChanCreate:
 		return withArgs(args, func(a proto.ChanCreateArgs) (any, error) { return s.opChanCreate(ctx, sess, a) })
@@ -133,7 +147,29 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 	case proto.OpDMOpen:
 		return withArgs(args, func(a proto.DMOpenArgs) (any, error) { return s.opDMOpen(ctx, sess, a) })
 	case proto.OpUsersList:
-		return s.opUsersList(ctx, u)
+		res, err := s.opUsersList(ctx, u)
+		if r, ok := res.(proto.UsersRes); ok && err == nil && sess.agentCap {
+			if r.Agents, err = listAgents(ctx, s.st.db); err == nil {
+				s.markAgentsOnline(r.Agents)
+			}
+			res = r
+		}
+		return res, err
+	case proto.OpAgentRegister:
+		if sess.agent != nil {
+			return nil, errForbidden
+		}
+		return withArgs(args, func(a proto.AgentRegisterArgs) (any, error) { return s.opAgentRegister(ctx, u, a) })
+	case proto.OpAgentUpdate:
+		return withArgs(args, func(a proto.AgentUpdateArgs) (any, error) { return s.opAgentUpdate(ctx, u, a) })
+	case proto.OpAgentRetire:
+		return s.opAgentRetire(ctx, u)
+	case proto.OpAgentsList:
+		return s.opAgentsList(ctx)
+	case proto.OpAgentAccess:
+		return withArgs(args, func(a proto.AgentAccessArgs) (any, error) { return s.opAgentAccess(ctx, u, a) })
+	case proto.OpAgentDM:
+		return s.opAgentDM(ctx, sess)
 	case proto.OpInviteCreate:
 		return withArgs(args, func(a proto.InviteCreateArgs) (any, error) { return s.opInviteCreate(ctx, u, a) })
 	case proto.OpInviteList:
@@ -215,14 +251,15 @@ func (s *Server) canRead(ch, u uint64) (string, bool) {
 
 // ---- messages ----
 
+// opSend sends as u from no particular session (tests).
 func (s *Server) opSend(ctx context.Context, u proto.User, a proto.SendArgs) (any, error) {
-	return s.send(ctx, u, a, nil)
+	return s.send(ctx, nil, u, a, nil)
 }
 
-// send implements the send op. For a webhook send, hook is the hook that
-// was looked up; it is re-checked inside the write transaction so a hook
-// deleted or revoked meanwhile never posts.
-func (s *Server) send(ctx context.Context, u proto.User, a proto.SendArgs, hook *liveHook) (any, error) {
+// send implements the send op; sess is nil for a webhook. For a webhook
+// send, hook is the hook that was looked up; it is re-checked inside the
+// write transaction so a hook deleted or revoked meanwhile never posts.
+func (s *Server) send(ctx context.Context, sess *session, u proto.User, a proto.SendArgs, hook *liveHook) (any, error) {
 	if len(a.Nonce) != 16 {
 		return nil, badRequest("nonce must be 16 bytes")
 	}
@@ -272,7 +309,7 @@ func (s *Server) send(ctx context.Context, u proto.User, a proto.SendArgs, hook 
 		if !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
-		if !s.members[a.Chan][u.ID] {
+		if !s.members[a.Chan][u.ID] || sess != nil && !s.agentSeesLocked(sess, a.Chan) {
 			return nil, errForbidden
 		}
 		head, err := chanEpoch(ctx, tx, a.Chan)
@@ -317,11 +354,12 @@ func (s *Server) send(ctx context.Context, u proto.User, a proto.SendArgs, hook 
 		if hook != nil && !s.allowSend(hook.creator) {
 			return nil, proto.Errf(proto.ErrRateLimited, "slow down")
 		}
-		if !s.allowSend(u.ID) {
+		if !s.allowSendSess(sess, u.ID) {
 			return nil, proto.Errf(proto.ErrRateLimited, "slow down")
 		}
 		now := s.now()
-		m := proto.Message{Chan: a.Chan, Author: u.ID, Body: a.Body, Thread: a.Thread, Time: now, Enc: a.Enc, Mid: mid}
+		m := proto.Message{Chan: a.Chan, Author: u.ID, Body: a.Body, Thread: a.Thread, Time: now, Enc: a.Enc, Mid: mid,
+			Agent: s.agentHandleLocked(sess)}
 		ev, err := appendEvent(ctx, tx, proto.KMsgNew, a.Chan, u.ID, 0, now, m)
 		if err != nil {
 			return nil, err
@@ -330,8 +368,8 @@ func (s *Server) send(ctx context.Context, u proto.User, a proto.SendArgs, hook 
 		if err := patchEventData(ctx, tx, &ev, m); err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO messages (id, chan, author, body, thread, time, nonce, enc, mid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			m.ID, m.Chan, m.Author, m.Body, m.Thread, m.Time, a.Nonce, a.Enc, mid); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO messages (id, chan, author, body, thread, time, nonce, enc, mid, agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			m.ID, m.Chan, m.Author, m.Body, m.Thread, m.Time, a.Nonce, a.Enc, mid, m.Agent); err != nil {
 			return nil, err
 		}
 		res.Msg = m.ID
@@ -653,8 +691,11 @@ func (s *Server) opRead(ctx context.Context, u proto.User, a proto.ReadArgs) (an
 // createChannel inserts a channel whose members all join at the chan.new seq.
 func createChannel(ctx context.Context, tx *sql.Tx, now int64, actor uint64, name, kind, topic string, members []uint64, e2e bool) (proto.Channel, proto.Event, error) {
 	var dmkey any
-	if kind == proto.ChanDM {
+	switch kind {
+	case proto.ChanDM:
 		dmkey = dmKey(members)
+	case proto.ChanAgentDM:
+		dmkey = agentDMKey(actor)
 	}
 	r, err := tx.ExecContext(ctx, `INSERT INTO channels (name, kind, topic, created, dmkey, e2e, creator) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		name, kind, topic, now, dmkey, e2e, actor)
@@ -756,7 +797,7 @@ func (s *Server) opChanTopic(ctx context.Context, u proto.User, a proto.ChanTopi
 	}
 	var res proto.SeqRes
 	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
-		if !s.members[a.Chan][u.ID] || s.kinds[a.Chan] == proto.ChanDM {
+		if !s.members[a.Chan][u.ID] || proto.IsDMKind(s.kinds[a.Chan]) {
 			return nil, errForbidden
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE channels SET topic = ? WHERE id = ?`, a.Topic, a.Chan); err != nil {

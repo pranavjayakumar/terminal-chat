@@ -277,14 +277,14 @@ func (c *Client) outboxMsgs(where string, args ...any) []Message {
 		if err != nil {
 			return out
 		}
-		out = append(out, e.message(me))
+		out = append(out, e.message(me, c.AgentHandle()))
 	}
 	return out
 }
 
-func (e outboxEntry) message(me uint64) Message {
+func (e outboxEntry) message(me uint64, agent string) Message {
 	return Message{
-		Message: proto.Message{Chan: e.chan_, Author: me, Body: e.body, Thread: e.thread, Time: e.time},
+		Message: proto.Message{Chan: e.chan_, Author: me, Body: e.body, Thread: e.thread, Time: e.time, Agent: agent},
 		Pending: e.failed == "", Failed: e.failed, Local: e.id,
 	}
 }

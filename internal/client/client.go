@@ -84,15 +84,18 @@
 //	func (c *Client) AgentOf(user uint64) (proto.Agent, bool)   // user's active agent
 //	func (c *Client) AgentByHandle(h string) (proto.Agent, bool)
 //	func (c *Client) MyAgent() (proto.Agent, bool)
-//	AgentAccess(ctx) ([]uint64, error); SetAgentAccess(ctx, add, remove []uint64) ([]uint64, error)
+//	AgentAccess(ctx) ([]uint64, error)                          // channels my agent may read (also on the agent)
+//	SetAgentAccess(ctx, add, remove []uint64) ([]uint64, error) // owner sessions; a mention of my agent adds its channel by itself
 //	OpenAgentDM(ctx) (proto.Channel, error)                     // create or return my agent DM
 //	func (c *Client) AgentDM() (ChannelView, bool)              // my agent DM, cached
-//	SendAgentStatus(ch, thread, state, status, preview) error   // agent sessions; ≤ 4/s, sealed in e2e
+//	SendAgentStatus(ch, thread, state, status, preview) error   // agent sessions; coalesced to 4/s, sealed in e2e
 //	func (c *Client) AgentStatus(ch, thread uint64) []AgentLive // agents live in that thread (0 = top level)
 //	func (c *Client) AgentThreads(ch uint64) []uint64           // threads of ch with a live agent
 //
 // Message.Agent is the sending agent's handle ("" for people); in e2e
-// channels it is shown only when the signed Plain agent agrees.
+// channels it is kept only when the signed Plain agent agrees. On an agent
+// session MentionNames is just its handle, and a newly granted channel's
+// recent calls arrive in Update.New.
 //
 // Messages in e2e channels carry Message.Sec (encrypted and verified, waiting
 // for a key, invalid, legacy or server-inserted plaintext); the cache holds
@@ -262,9 +265,15 @@ type Client struct {
 
 	hud huddleState // voice huddles (huddle.go)
 
-	agentsMu  sync.Mutex
-	agents    map[uint64]proto.Agent             // owner → their agent, retired ones included
-	agentLive map[agentKey]map[uint64]AgentLive // (chan, thread) → owner → live status
+	agentsMu   sync.Mutex
+	agentName  string                            // our handle on an agent session (follows renames)
+	agents     map[uint64]proto.Agent            // owner → their agent, retired ones included
+	agentLive  map[agentKey]map[uint64]AgentLive // (chan, thread) → owner → live status
+	granting   map[uint64]bool                   // channels grantOnMention is adding
+	agentPend  map[agentKey]proto.Ephemeral      // SendAgentStatus's queue, latest per thread
+	agentOrder []agentKey
+	agentTimer *time.Timer
+	agentLast  time.Time
 }
 
 // timing holds the protocol's timers; tests shrink them.
@@ -349,7 +358,8 @@ func Open(home string) (*Client, error) {
 		obChanged: make(chan struct{}), timing: defaultTiming,
 		e2eKick: make(chan struct{}, 1), keyNeeds: make(chan proto.Ephemeral, 32),
 		e2eSoft: map[uint64]string{}, needSent: map[uint64]time.Time{}, shared: map[shareKey]time.Time{},
-		agents: map[uint64]proto.Agent{}, agentLive: map[agentKey]map[uint64]AgentLive{},
+		agentName: cfg.Agent, agents: map[uint64]proto.Agent{}, agentLive: map[agentKey]map[uint64]AgentLive{},
+		granting: map[uint64]bool{}, agentPend: map[agentKey]proto.Ephemeral{},
 		autoTried: map[uint64]time.Time{}, owedTried: map[uint64]time.Time{}, poisonSeen: map[[2]uint64]time.Time{}, reopenBatch: reopenBatch, badCerts: map[[32]byte]struct{}{}, probed: map[uint64]uint32{},
 	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())

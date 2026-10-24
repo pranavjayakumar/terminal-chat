@@ -2,11 +2,17 @@ package client
 
 import (
 	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/skailama/tc/internal/e2ecrypto"
+	"github.com/skailama/tc/internal/identity"
 	"github.com/skailama/tc/internal/proto"
 )
 
@@ -28,35 +34,75 @@ type agentKey struct{ ch, thread uint64 }
 // ErrNotAgent refuses an agent-only call on a person's session.
 var ErrNotAgent = errors.New("this is not an agent session")
 
+const (
+	// agentEvery spaces our EphAgent frames (the server allows 4/s).
+	agentEvery = time.Second / proto.AgentEphRate
+	// A live status nobody refreshes is gone after agentLiveTTL; done and
+	// error stay only long enough to be seen.
+	agentLiveTTL = 90 * time.Second
+	agentDoneTTL = 5 * time.Second
+	// agentPreviewSkew bounds how old a sealed preview's ts may be, so a
+	// server can't replay yesterday's preview.
+	agentPreviewSkew = 5 * time.Minute
+	// agentCallWindow: a mention older than this doesn't grant access or
+	// count as a call when a channel is granted (the harness's stale-ask cutoff).
+	agentCallWindow = 24 * time.Hour
+)
+
+// plainAgent is Plain t = "agent": a sealed preview (§15.5).
+type plainAgent struct {
+	T      string `msgpack:"t"`
+	TS     int64  `msgpack:"ts"`
+	Body   string `msgpack:"body"`
+	Agent  string `msgpack:"agent"`
+	Thread uint64 `msgpack:"thread,omitempty"`
+}
+
 // LoginAgent logs agentHome in as the agent handle of the user logged in at
-// ownerHome, with the same SSH key: a new device of that user whose
-// sessions carry HELLO agent = handle. The agent must already be registered
-// (RegisterAgent).
+// ownerHome, with the owner's SSH key: agentHome becomes a separate device
+// of that user (its own cache, trust store and device keys, made on the
+// first Run) whose sessions carry HELLO agent = handle. The agent must be
+// registered (RegisterAgent); the server confirms the handle here.
 func LoginAgent(ctx context.Context, ownerHome, agentHome, handle string) (proto.Agent, error) {
+	if !proto.ValidAgentHandle(handle) {
+		return proto.Agent{}, fmt.Errorf("invalid agent handle %q", handle)
+	}
 	owner, err := Open(ownerHome)
 	if err != nil {
 		return proto.Agent{}, err
 	}
 	cfg := owner.Config()
 	owner.Close()
-	if !proto.ValidAgentHandle(handle) {
-		return proto.Agent{}, fmt.Errorf("invalid agent handle %q", handle)
-	}
-	cfg.Agent = handle
-	if err := ensurePrivateDir(agentHome); err != nil {
-		return proto.Agent{}, fmt.Errorf("creating %s: %w", agentHome, err)
-	}
-	if err := writeConfig(agentHome, cfg); err != nil {
+	signer, err := identity.Load(cfg.KeySpec())
+	if err != nil {
 		return proto.Agent{}, err
 	}
-	return proto.Agent{Handle: handle, Owner: cfg.UserID}, nil
+	w, err := loginOnce(ctx, proto.Invite{Addr: cfg.Addr, Pin: cfg.Pin}, signer, "", "", handle)
+	if err != nil {
+		return proto.Agent{}, err
+	}
+	if w.User.ID != cfg.UserID {
+		return proto.Agent{}, errors.New("the server logged the key in as someone else")
+	}
+	cfg.Agent = handle
+	if err := saveLogin(agentHome, cfg, w); err != nil {
+		return proto.Agent{}, err
+	}
+	return *w.Agent, nil
 }
 
 // IsAgentSession reports whether this client logs in as an agent.
 func (c *Client) IsAgentSession() bool { return c.cfg.Agent != "" }
 
-// AgentHandle is the handle this client logs in as ("" for a person).
-func (c *Client) AgentHandle() string { return c.cfg.Agent }
+// AgentHandle is the handle this client logs in as ("" for a person). It
+// follows renames.
+func (c *Client) AgentHandle() string {
+	c.agentsMu.Lock()
+	defer c.agentsMu.Unlock()
+	return c.agentName
+}
+
+func (s *session) agent1() bool { return slices.Contains(s.welcome.Caps, proto.CapAgent) }
 
 // RegisterAgent creates the caller's agent. Owner sessions only; one active
 // agent per user.
@@ -72,7 +118,8 @@ func (c *Client) RegisterAgent(ctx context.Context, handle, icon string) (proto.
 	return r.Agent, err
 }
 
-// UpdateAgent renames or re-icons the caller's agent; "" keeps a field.
+// UpdateAgent renames or re-icons the caller's agent; "" keeps a field. A
+// running agent follows the rename on its own.
 func (c *Client) UpdateAgent(ctx context.Context, handle, icon string) (proto.Agent, error) {
 	if err := c.requireCap(proto.CapAgent, "agents"); err != nil {
 		return proto.Agent{}, err
@@ -85,7 +132,7 @@ func (c *Client) UpdateAgent(ctx context.Context, handle, icon string) (proto.Ag
 	return r.Agent, err
 }
 
-// RetireAgent retires the caller's agent; its sessions are closed.
+// RetireAgent retires the caller's agent; the server closes its sessions.
 func (c *Client) RetireAgent(ctx context.Context) error {
 	if err := c.requireCap(proto.CapAgent, "agents"); err != nil {
 		return err
@@ -107,19 +154,41 @@ func (c *Client) FetchAgents(ctx context.Context) ([]proto.Agent, error) {
 	if err := c.call(ctx, proto.OpAgentsList, proto.Empty{}, &r, nil); err != nil {
 		return nil, err
 	}
+	c.replaceAgents(r.Agents)
+	return r.Agents, nil
+}
+
+func (c *Client) replaceAgents(agents []proto.Agent) {
 	c.agentsMu.Lock()
 	clear(c.agents)
-	for _, a := range r.Agents {
-		c.agents[a.Owner] = a
+	for _, a := range agents {
+		c.putAgentLocked(a)
 	}
 	c.agentsMu.Unlock()
 	c.post(Update{Agents: true})
-	return r.Agents, nil
+}
+
+// putAgentLocked keeps the newest record per owner: an active agent over a
+// retired one, a later retirement over an earlier one.
+func (c *Client) putAgentLocked(a proto.Agent) {
+	if a.Owner == 0 || !proto.ValidName(a.Handle) {
+		return
+	}
+	if old, ok := c.agents[a.Owner]; ok && old.Retired == 0 && a.Retired != 0 && old.Handle != a.Handle {
+		return
+	}
+	if len(a.Icon) > proto.MaxAgentIcon {
+		a.Icon = ""
+	}
+	c.agents[a.Owner] = a
 }
 
 func (c *Client) setAgent(a proto.Agent) {
 	c.agentsMu.Lock()
-	c.agents[a.Owner] = a
+	if old, ok := c.agents[a.Owner]; ok && old.Handle == a.Handle {
+		a.Online = a.Online || old.Online
+	}
+	c.putAgentLocked(a)
 	c.agentsMu.Unlock()
 	c.post(Update{Agents: true})
 }
@@ -134,15 +203,7 @@ func (c *Client) Agents() []proto.Agent {
 			out = append(out, a)
 		}
 	}
-	slices.SortFunc(out, func(a, b proto.Agent) int {
-		switch {
-		case a.Handle < b.Handle:
-			return -1
-		case a.Handle > b.Handle:
-			return 1
-		}
-		return 0
-	})
+	slices.SortFunc(out, func(a, b proto.Agent) int { return strings.Compare(a.Handle, b.Handle) })
 	return out
 }
 
@@ -169,20 +230,139 @@ func (c *Client) AgentByHandle(h string) (proto.Agent, bool) {
 // MyAgent is my active agent (also on the agent's own session).
 func (c *Client) MyAgent() (proto.Agent, bool) { return c.AgentOf(c.cfg.UserID) }
 
-// AgentAccess is the list of channels my agent may see besides its DM.
+// AgentAccess is the list of channels my agent may read besides its DM
+// (also on the agent's own session).
 func (c *Client) AgentAccess(ctx context.Context) ([]uint64, error) {
-	return c.SetAgentAccess(ctx, nil, nil)
-}
-
-// SetAgentAccess adds and removes channels from my agent's access list and
-// returns the list after the change.
-func (c *Client) SetAgentAccess(ctx context.Context, add, remove []uint64) ([]uint64, error) {
 	if err := c.requireCap(proto.CapAgent, "agents"); err != nil {
 		return nil, err
 	}
 	var r proto.AgentAccessRes
-	err := c.call(ctx, proto.OpAgentAccess, proto.AgentAccessArgs{Add: add, Remove: remove}, &r, nil)
-	return r.Chans, err
+	if err := c.call(ctx, proto.OpAgentAccess, proto.AgentAccessArgs{}, &r, nil); err != nil {
+		return nil, err
+	}
+	c.noteAccess(r.Chans)
+	return r.Chans, nil
+}
+
+// SetAgentAccess adds and removes channels from my agent's access list and
+// returns the list after the change. Owner sessions only.
+func (c *Client) SetAgentAccess(ctx context.Context, add, remove []uint64) ([]uint64, error) {
+	if c.IsAgentSession() {
+		return nil, proto.Errf(proto.ErrForbidden, "an agent can't change its own access")
+	}
+	if err := c.requireCap(proto.CapAgent, "agents"); err != nil {
+		return nil, err
+	}
+	var r proto.AgentAccessRes
+	if err := c.call(ctx, proto.OpAgentAccess, proto.AgentAccessArgs{Add: add, Remove: remove}, &r, nil); err != nil {
+		return nil, err
+	}
+	c.noteAccess(r.Chans)
+	return r.Chans, nil
+}
+
+// noteAccess stores the access list we know of and, on the agent's
+// session, loads the channels it just gained.
+func (c *Client) noteAccess(chans []uint64) {
+	var added []uint64
+	err := c.tx(func(tx *sql.Tx) error {
+		var err error
+		added, err = storeAccess(tx, chans)
+		return err
+	})
+	if err == nil && len(added) > 0 && c.IsAgentSession() {
+		go c.loadGranted(added)
+	}
+}
+
+// storeAccess records chans as the access list and returns those that are new.
+func storeAccess(q dbtx, chans []uint64) ([]uint64, error) {
+	old := knownAccess(q)
+	b, err := json.Marshal(chans)
+	if err != nil {
+		return nil, err
+	}
+	if err := setMeta(q, "agent_access", string(b)); err != nil {
+		return nil, err
+	}
+	var added []uint64
+	for _, ch := range chans {
+		if !slices.Contains(old, ch) {
+			added = append(added, ch)
+		}
+	}
+	return added, nil
+}
+
+func knownAccess(q dbtx) []uint64 {
+	var s string
+	if q.QueryRow(`SELECT v FROM meta WHERE k = 'agent_access'`).Scan(&s) != nil {
+		return nil
+	}
+	var out []uint64
+	_ = json.Unmarshal([]byte(s), &out)
+	return out
+}
+
+// loadGranted fetches the latest messages of channels the agent just
+// gained and reports the recent ones that call it in Update.New: the ask
+// that got the channel granted came before the agent could see it.
+func (c *Client) loadGranted(chans []uint64) {
+	ctx, cancel := context.WithTimeout(c.ctx, time.Minute)
+	defer cancel()
+	names := c.MentionNames()
+	since := time.Now().Add(-agentCallWindow).UnixMilli()
+	for _, ch := range chans {
+		if _, err := c.History(ctx, ch, 0); err != nil {
+			continue
+		}
+		var u Update
+		rows, err := c.db.Query(`SELECT `+msgCols+`, sec FROM msgs WHERE chan = ? AND time >= ? AND deleted = 0 ORDER BY id`, ch, since)
+		if err != nil {
+			continue
+		}
+		for rows.Next() {
+			var sec Sec
+			m, err := scanMsg(rows, &sec)
+			if err == nil && sec.Trusted() && m.Agent == "" && Mentioned(m.Body, names) {
+				u.New = append(u.New, Message{Message: m, Sec: sec})
+			}
+		}
+		rows.Close()
+		u.msgs(ch)
+		c.post(u)
+	}
+}
+
+// grantOnMention gives my agent the channel of a message that calls it
+// (§15.4): the owner's sessions do this because only they can read an
+// encrypted channel's text. Called inside the event transaction.
+func (c *Client) grantOnMention(q dbtx, m proto.Message, sec Sec) {
+	if c.IsAgentSession() || !sec.Trusted() || m.Deleted || time.Since(time.UnixMilli(m.Time)) > agentCallWindow {
+		return
+	}
+	a, ok := c.MyAgent()
+	if !ok || !Mentioned(m.Body, []string{a.Handle}) || slices.Contains(knownAccess(q), m.Chan) {
+		return
+	}
+	if ch, ok, err := getChan(q, m.Chan); err != nil || !ok || ch.Kind == proto.ChanAgentDM {
+		return
+	}
+	c.agentsMu.Lock()
+	busy := c.granting[m.Chan]
+	c.granting[m.Chan] = true
+	c.agentsMu.Unlock()
+	if busy {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(c.ctx, 30*time.Second)
+		defer cancel()
+		_, _ = c.SetAgentAccess(ctx, []uint64{m.Chan}, nil)
+		c.agentsMu.Lock()
+		delete(c.granting, m.Chan)
+		c.agentsMu.Unlock()
+	}()
 }
 
 // OpenAgentDM returns (creating if needed) my private chat with my agent.
@@ -199,7 +379,7 @@ func (c *Client) OpenAgentDM(ctx context.Context) (proto.Channel, error) {
 // AgentDM is my agent DM from the cache.
 func (c *Client) AgentDM() (ChannelView, bool) {
 	for _, ch := range c.Channels() {
-		if ch.Kind == proto.ChanAgentDM {
+		if ch.Kind == proto.ChanAgentDM && ch.Member {
 			return ch, true
 		}
 	}
@@ -207,7 +387,10 @@ func (c *Client) AgentDM() (ChannelView, bool) {
 }
 
 // SendAgentStatus publishes this agent's live status in thread of ch (0 =
-// top level). Agent sessions only; preview is the reply so far.
+// top level); preview is the reply so far. Agent sessions only. Updates
+// faster than the server's 4/s coalesce: only the latest per thread goes
+// out. In an encrypted channel the preview is sealed; without the key only
+// the status goes out.
 func (c *Client) SendAgentStatus(ch, thread uint64, state, status, preview string) error {
 	if !c.IsAgentSession() {
 		return ErrNotAgent
@@ -227,14 +410,262 @@ func (c *Client) SendAgentStatus(ch, thread uint64, state, status, preview strin
 	if s == nil {
 		return ErrOffline
 	}
-	if !slices.Contains(s.welcome.Caps, proto.CapAgent) {
+	if !s.agent1() {
 		return errors.New("this server doesn't support agents")
 	}
-	e := proto.Ephemeral{Kind: proto.EphAgent, Chan: ch, Thread: thread, State: state, Status: status, Text: preview}
-	if err := s.send(proto.TEphemeral, e); err != nil {
-		return ErrOffline
+	c.agentsMu.Lock()
+	k := agentKey{ch, thread}
+	if _, queued := c.agentPend[k]; !queued {
+		c.agentOrder = append(c.agentOrder, k)
 	}
+	c.agentPend[k] = proto.Ephemeral{Kind: proto.EphAgent, Chan: ch, Thread: thread, State: state, Status: status, Text: preview}
+	if c.agentTimer == nil {
+		c.agentTimer = time.AfterFunc(max(0, time.Until(c.agentLast.Add(agentEvery))), c.flushAgentStatus)
+	}
+	c.agentsMu.Unlock()
 	return nil
+}
+
+// flushAgentStatus sends the oldest queued status and schedules the next.
+func (c *Client) flushAgentStatus() {
+	c.agentsMu.Lock()
+	c.agentTimer = nil
+	if len(c.agentOrder) == 0 {
+		c.agentsMu.Unlock()
+		return
+	}
+	k := c.agentOrder[0]
+	c.agentOrder = c.agentOrder[1:]
+	e := c.agentPend[k]
+	delete(c.agentPend, k)
+	c.agentLast = time.Now()
+	if len(c.agentOrder) > 0 {
+		c.agentTimer = time.AfterFunc(agentEvery, c.flushAgentStatus)
+	}
+	handle := c.agentName
+	c.agentsMu.Unlock()
+
+	if c.needsEnc(e.Chan) {
+		enc := c.sealPreview(e.Chan, e.Thread, handle, e.Text)
+		e.Text, e.Enc = "", enc
+	}
+	c.mu.Lock()
+	s := c.sess
+	c.mu.Unlock()
+	if s != nil {
+		_ = s.send(proto.TEphemeral, e)
+	}
+}
+
+// sealPreview encrypts text under ch's verified head epoch; nil when there
+// is nothing to seal or we don't hold the key.
+func (c *Client) sealPreview(ch, thread uint64, handle, text string) []byte {
+	if text == "" {
+		return nil
+	}
+	sid, ok := c.cacheServerID()
+	if !ok {
+		return nil
+	}
+	head, ok, err := c.trust.ChainHead(sid, ch)
+	if err != nil || !ok {
+		return nil
+	}
+	ep, ok, err := c.trust.Epoch(sid, ch, head.Epoch)
+	if err != nil || !ok || ep.Key == nil {
+		return nil
+	}
+	dev, err := c.trust.DeviceKeys(sid, c.Me().ID)
+	if err != nil {
+		return nil
+	}
+	raw, err := proto.Marshal(plainAgent{T: "agent", TS: time.Now().UnixMilli(), Body: text, Agent: handle, Thread: thread})
+	if err != nil {
+		return nil
+	}
+	enc, err := e2ecrypto.Encrypt(rand.Reader, *ep.Key, dev.Ed25519, sid, ch, ep.Epoch,
+		e2ecrypto.EpochHash(ep.Hash[:e2ecrypto.IDSize]), dev.ID, raw)
+	if err != nil || len(enc) > proto.MaxAgentEnc {
+		return nil
+	}
+	return enc
+}
+
+// openPreview decrypts a sealed preview: signed by a verified device of the
+// agent's owner, in the roster of its epoch, naming the same agent and
+// thread, and recent.
+func (c *Client) openPreview(e proto.Ephemeral) string {
+	if e.Enc == nil {
+		return ""
+	}
+	sid, ok := c.cacheServerID()
+	if !ok {
+		return ""
+	}
+	memo := newKeyMemo()
+	raw, _, sec, _ := c.openEnc(sid, e.Chan, e.User, 0, e.Enc, memo)
+	if sec != SecE2E {
+		return ""
+	}
+	if sec, _ := c.checkSealer(sid, e.Chan, e.User, 0, e.Enc, memo); sec != SecE2E {
+		return ""
+	}
+	var p plainAgent
+	if proto.Unmarshal(raw, &p) != nil || p.T != "agent" || p.Agent != e.Agent || p.Thread != e.Thread {
+		return ""
+	}
+	if d := time.Since(time.UnixMilli(p.TS)); d > agentPreviewSkew || d < -agentPreviewSkew {
+		return ""
+	}
+	return p.Body
+}
+
+// agentEphemeral applies an EphAgent or EphAgentPresence.
+func (c *Client) agentEphemeral(e proto.Ephemeral) {
+	if e.User == 0 {
+		return
+	}
+	if e.Kind == proto.EphAgentPresence {
+		c.agentsMu.Lock()
+		a, ok := c.agents[e.User]
+		if ok {
+			a.Online = e.State == proto.PresOnline
+			c.agents[e.User] = a
+		}
+		c.agentsMu.Unlock()
+		if ok {
+			c.post(Update{Agents: true})
+		}
+		return
+	}
+	if e.Chan == 0 || !proto.ValidAgentState(e.State) {
+		return
+	}
+	if cv, ok := c.Channel(e.Chan); !ok || !cv.Member {
+		return
+	}
+	a, ok := c.AgentOf(e.User)
+	if !ok || a.Handle != e.Agent {
+		return
+	}
+	var text string
+	if c.needsEnc(e.Chan) {
+		text = c.openPreview(e) // never plaintext in an encrypted channel
+	} else if e.Enc == nil {
+		text = e.Text
+	}
+	if len(text) > proto.MaxAgentPreview || !validPreview(text) {
+		text = ""
+	}
+	status := e.Status
+	if len(status) > proto.MaxStatus {
+		status = strings.ToValidUTF8(status[:proto.MaxStatus], "")
+	}
+	k := agentKey{e.Chan, e.Thread}
+	now := time.Now()
+	l := AgentLive{Agent: a, State: e.State, Status: status, Preview: text, At: now}
+	c.agentsMu.Lock()
+	m := c.agentLive[k]
+	if m == nil {
+		m = map[uint64]AgentLive{}
+		c.agentLive[k] = m
+	}
+	m[e.User] = l
+	c.agentsMu.Unlock()
+	c.post(Update{AgentStatus: map[uint64]bool{e.Chan: true}})
+	ttl := agentLiveTTL
+	if e.State == proto.AgentDone || e.State == proto.AgentError {
+		ttl = agentDoneTTL
+	}
+	owner := e.User
+	time.AfterFunc(ttl, func() {
+		c.agentsMu.Lock()
+		cur, ok := c.agentLive[k][owner]
+		gone := ok && cur.At.Equal(now)
+		if gone {
+			delete(c.agentLive[k], owner)
+			if len(c.agentLive[k]) == 0 {
+				delete(c.agentLive, k)
+			}
+		}
+		c.agentsMu.Unlock()
+		if gone {
+			c.post(Update{AgentStatus: map[uint64]bool{k.ch: true}})
+		}
+	})
+}
+
+func validPreview(s string) bool { return s == "" || validText(s) }
+
+// clearAgentLive drops every live status (the connection ended).
+func (c *Client) clearAgentLive() {
+	c.agentsMu.Lock()
+	chans := map[uint64]bool{}
+	for k := range c.agentLive {
+		chans[k.ch] = true
+	}
+	clear(c.agentLive)
+	for o, a := range c.agents {
+		a.Online = false
+		c.agents[o] = a
+	}
+	c.agentsMu.Unlock()
+	if len(chans) > 0 {
+		c.post(Update{AgentStatus: chans, Agents: true})
+	}
+}
+
+// applyAgentEvent applies agent.update and agent.access (inside the event
+// transaction).
+func (c *Client) applyAgentEvent(q dbtx, ev proto.Event, u *Update) {
+	switch ev.Kind {
+	case proto.KAgentUpdate:
+		var a proto.Agent
+		if proto.Unmarshal(ev.Data, &a) != nil {
+			return
+		}
+		c.agentsMu.Lock()
+		if old, ok := c.agents[a.Owner]; ok && old.Handle == a.Handle {
+			a.Online = old.Online
+		}
+		c.putAgentLocked(a)
+		renamed := a.Owner == c.cfg.UserID && c.IsAgentSession() && a.Retired == 0 && a.Handle != c.agentName
+		if renamed {
+			c.agentName = a.Handle
+		}
+		c.agentsMu.Unlock()
+		if renamed {
+			cfg := c.cfg
+			cfg.Agent = a.Handle
+			_ = writeConfig(c.home, cfg) // the next login must name the new handle
+		}
+		u.Agents = true
+	case proto.KAgentAccess:
+		var r proto.AgentAccessRes
+		if proto.Unmarshal(ev.Data, &r) != nil || ev.Actor != c.cfg.UserID {
+			return
+		}
+		added, err := storeAccess(q, r.Chans)
+		if err == nil && len(added) > 0 && c.IsAgentSession() {
+			go c.loadGranted(added)
+		}
+		u.Channels = true
+	}
+}
+
+// agentAfterSync refreshes the agents (with who's online) and the access
+// list after each sync: incremental syncs carry neither.
+func (c *Client) agentAfterSync(ctx context.Context) {
+	if _, err := c.FetchAgents(ctx); err != nil {
+		return
+	}
+	if c.IsAgentSession() {
+		_, _ = c.AgentAccess(ctx)
+		return
+	}
+	if _, ok := c.MyAgent(); ok {
+		_, _ = c.AgentAccess(ctx)
+	}
 }
 
 // AgentStatus lists the agents live in thread of ch (0 = top level), by
@@ -247,15 +678,7 @@ func (c *Client) AgentStatus(ch, thread uint64) []AgentLive {
 	for _, l := range m {
 		out = append(out, l)
 	}
-	slices.SortFunc(out, func(a, b AgentLive) int {
-		switch {
-		case a.Agent.Handle < b.Agent.Handle:
-			return -1
-		case a.Agent.Handle > b.Agent.Handle:
-			return 1
-		}
-		return 0
-	})
+	slices.SortFunc(out, func(a, b AgentLive) int { return strings.Compare(a.Agent.Handle, b.Agent.Handle) })
 	return out
 }
 

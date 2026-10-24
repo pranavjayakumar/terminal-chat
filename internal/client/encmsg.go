@@ -364,6 +364,9 @@ func (c *Client) judgeEnc(q dbtx, sid e2ecrypto.ServerID, hasSID bool, m *proto.
 		}
 	}
 	m.Body = p.Body
+	if p.Agent != m.Agent { // shown as the agent's only when both say so (§15.3)
+		m.Agent = ""
+	}
 	return SecE2E, mid[:], p.TS
 }
 
@@ -606,7 +609,7 @@ func (c *Client) seal(sid e2ecrypto.ServerID, dev *e2ecrypto.DeviceKeys, ep trus
 	if ep.Key == nil {
 		return nil, failErr{noKeyReason}
 	}
-	p := plainMsg{T: "msg", TS: e.time, Body: e.body}
+	p := plainMsg{T: "msg", TS: e.time, Body: e.body, Agent: c.AgentHandle()}
 	if e.thread != 0 {
 		ref, err := c.threadRef(e.chan_, e.thread)
 		if err != nil {

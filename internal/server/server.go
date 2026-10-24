@@ -61,6 +61,14 @@ type Server struct {
 	limits   map[uint64]*bucket         // sends
 	wlimits  map[uint64]*bucket         // other write ops
 	disabled map[uint64]bool
+	// Agents (agents.go): owner → active agent, access list, agent DM,
+	// connected agent sessions; agent sessions' own rate buckets.
+	agents      map[uint64]proto.Agent
+	agentAccess map[uint64]map[uint64]bool
+	agentDMs    map[uint64]uint64
+	agentOnline map[uint64]int
+	alimits     map[uint64]*bucket
+	awlimits    map[uint64]*bucket
 
 	remindWake chan struct{} // nudges the reminder scheduler
 }
@@ -115,6 +123,9 @@ func New(cfg Config) (*Server, error) {
 		limits:     map[uint64]*bucket{},
 		wlimits:    map[uint64]*bucket{},
 		disabled:   map[uint64]bool{},
+		agents:     map[uint64]proto.Agent{}, agentAccess: map[uint64]map[uint64]bool{},
+		agentDMs: map[uint64]uint64{}, agentOnline: map[uint64]int{},
+		alimits: map[uint64]*bucket{}, awlimits: map[uint64]*bucket{},
 		remindWake: make(chan struct{}, 1),
 		hud:        newHuddles(),
 	}
@@ -174,6 +185,9 @@ func (s *Server) loadCache() error {
 		s.disabled[id] = true
 	}
 	rows.Close()
+	if err := s.loadAgents(ctx); err != nil {
+		return err
+	}
 	rows, err = s.st.db.QueryContext(ctx, `SELECT chan, user FROM membership WHERE leave_seq IS NULL`)
 	if err != nil {
 		return err
@@ -235,6 +249,7 @@ func (s *Server) write(ctx context.Context, fn func(tx *sql.Tx) ([]proto.Event, 
 }
 
 func (s *Server) applyCache(ev proto.Event) {
+	s.applyAgentCache(ev)
 	switch ev.Kind {
 	case proto.KChanNew:
 		var c proto.Channel
@@ -263,9 +278,9 @@ func (s *Server) applyCache(ev proto.Event) {
 // e2e-only kinds are filtered by publishLocked.
 func (s *Server) visibleLocked(ev proto.Event, u uint64) bool {
 	switch ev.Kind {
-	case proto.KUserNew, proto.KUserUpdate, proto.KGroupUpdate, proto.KDeviceNew, proto.KDeviceRevoke:
+	case proto.KUserNew, proto.KUserUpdate, proto.KGroupUpdate, proto.KDeviceNew, proto.KDeviceRevoke, proto.KAgentUpdate:
 		return true
-	case proto.KReadUpdate:
+	case proto.KReadUpdate, proto.KAgentAccess:
 		return ev.Actor == u
 	case proto.KChanJoin, proto.KChanLeave:
 		var r proto.UserRef
@@ -286,9 +301,9 @@ func (s *Server) publishLocked(ev proto.Event) {
 		s.log.Error("encoding event", "seq", ev.Seq, "err", err)
 		return
 	}
-	e2eOnly := isE2EKind(ev.Kind)
+	e2eOnly, agentOnly, msg := isE2EKind(ev.Kind), proto.IsAgentKind(ev.Kind), proto.IsMsgKind(ev.Kind)
 	for sess := range s.sessions {
-		if e2eOnly && !sess.e2e {
+		if e2eOnly && !sess.e2e || agentOnly && !sess.agentCap || msg && !s.agentSeesLocked(sess, ev.Chan) {
 			continue
 		}
 		if s.visibleLocked(ev, sess.user.ID) {
@@ -305,7 +320,7 @@ func (s *Server) ephemeralLocked(e proto.Ephemeral, to map[uint64]bool, from *se
 		return
 	}
 	for sess := range s.sessions {
-		if sess == from || (to != nil && !to[sess.user.ID]) {
+		if sess == from || (to != nil && !to[sess.user.ID]) || !s.agentSeesLocked(sess, e.Chan) {
 			continue
 		}
 		sess.pushLive(outFrame{t: proto.TEphemeral, payload: payload})
@@ -392,6 +407,22 @@ type bucket struct {
 // changes, read markers) share a separate, looser bucket.
 func (s *Server) allowSend(u uint64) bool  { return s.take(s.limits, u, 30, 3) }
 func (s *Server) allowWrite(u uint64) bool { return s.take(s.wlimits, u, 60, 5) }
+
+// An agent session spends its own buckets, so a busy agent never slows its
+// owner down.
+func (s *Server) allowSendSess(sess *session, u uint64) bool {
+	if sess != nil && sess.agent != nil {
+		return s.take(s.alimits, u, 30, 3)
+	}
+	return s.allowSend(u)
+}
+
+func (s *Server) allowWriteSess(sess *session) bool {
+	if sess.agent != nil {
+		return s.take(s.awlimits, sess.user.ID, 60, 5)
+	}
+	return s.allowWrite(sess.user.ID)
+}
 
 func (s *Server) take(m map[uint64]*bucket, u uint64, burst, perSec float64) bool {
 	now := s.cfg.Now()
