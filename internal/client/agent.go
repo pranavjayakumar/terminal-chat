@@ -1,19 +1,27 @@
 package client
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/identity"
 	"github.com/skailama/tc/internal/proto"
+	"github.com/skailama/tc/internal/trust"
 )
 
 // Personal agents (PROTOCOL.md §15, cap agent1).
@@ -58,11 +66,14 @@ type plainAgent struct {
 	Thread uint64 `msgpack:"thread,omitempty"`
 }
 
-// LoginAgent logs agentHome in as the agent handle of the user logged in at
-// ownerHome, with the owner's SSH key: agentHome becomes a separate device
-// of that user (its own cache, trust store and device keys, made on the
-// first Run) whose sessions carry HELLO agent = handle. The agent must be
-// registered (RegisterAgent); the server confirms the handle here.
+// LoginAgent sets agentHome up as the agent of the user logged in at
+// ownerHome (the agent must be registered, RegisterAgent): it makes the
+// agent its own SSH key (agentHome/id_ed25519), has the owner's session
+// register it as the agent's key (agent.key), signs an AgentEndorse for it
+// with the owner's key, logs the new key in (the server confirms the agent)
+// and writes agentHome's config. The agent is then its own device on its
+// first Run; its key can never log in as the owner (§15.1). handle is the
+// agent's current handle.
 func LoginAgent(ctx context.Context, ownerHome, agentHome, handle string) (proto.Agent, error) {
 	if !proto.ValidAgentHandle(handle) {
 		return proto.Agent{}, fmt.Errorf("invalid agent handle %q", handle)
@@ -71,9 +82,51 @@ func LoginAgent(ctx context.Context, ownerHome, agentHome, handle string) (proto
 	if err != nil {
 		return proto.Agent{}, err
 	}
+	defer owner.Close()
+	if owner.IsAgentSession() {
+		return proto.Agent{}, errors.New("that home is an agent's, not its owner's")
+	}
 	cfg := owner.Config()
-	owner.Close()
-	signer, err := identity.Load(cfg.KeySpec())
+	ownerKey, err := identity.Load(cfg.KeySpec())
+	if err != nil {
+		return proto.Agent{}, err
+	}
+	rctx, stop := context.WithCancel(ctx)
+	defer stop()
+	go owner.Run(rctx)
+	for owner.Status().State != Online {
+		if st := owner.Status(); st.Stopped {
+			return proto.Agent{}, errors.New(st.Err)
+		}
+		select {
+		case <-ctx.Done():
+			return proto.Agent{}, ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if _, err := owner.FetchAgents(ctx); err != nil {
+		return proto.Agent{}, err
+	}
+	if a, ok := owner.MyAgent(); !ok || a.Handle != handle {
+		return proto.Agent{}, fmt.Errorf("@%s is not your agent (register it first)", handle)
+	}
+	sid, ok := owner.ServerID()
+	if !ok {
+		return proto.Agent{}, errors.New("the server has no identity yet")
+	}
+
+	if err := ensurePrivateDir(agentHome); err != nil {
+		return proto.Agent{}, fmt.Errorf("creating %s: %w", agentHome, err)
+	}
+	keyPath := filepath.Join(agentHome, "id_ed25519")
+	signer, err := newAgentKey(keyPath)
+	if err != nil {
+		return proto.Agent{}, err
+	}
+	if err := owner.call(ctx, proto.OpAgentKey, proto.AgentKeyArgs{Pubkey: signer.PublicKey().Marshal()}, nil, nil); err != nil {
+		return proto.Agent{}, fmt.Errorf("registering the agent's key: %w", err)
+	}
+	endorse, err := identity.NewAgentEndorse(ownerKey, sid, cfg.UserID, signer.PublicKey(), time.Now())
 	if err != nil {
 		return proto.Agent{}, err
 	}
@@ -81,14 +134,46 @@ func LoginAgent(ctx context.Context, ownerHome, agentHome, handle string) (proto
 	if err != nil {
 		return proto.Agent{}, err
 	}
-	if w.User.ID != cfg.UserID {
-		return proto.Agent{}, errors.New("the server logged the key in as someone else")
+	if w.User.ID != cfg.UserID || w.Agent == nil {
+		return proto.Agent{}, errors.New("the server didn't log the agent's key in as the agent")
 	}
-	cfg.Agent = handle
-	if err := saveLogin(agentHome, cfg, w); err != nil {
+	acfg := Config{Addr: cfg.Addr, Pin: cfg.Pin, KeyPath: keyPath, UserID: cfg.UserID, Name: cfg.Name,
+		Agent: w.Agent.Handle, AgentEndorse: proto.MustRaw(proto.Signed(endorse))}
+	if err := saveLogin(agentHome, acfg, w); err != nil {
+		return proto.Agent{}, err
+	}
+	// The agent trusts its owner's key from the start: it is the owner's
+	// own device, set up by the owner.
+	ts, err := trust.Open(agentHome)
+	if err != nil {
+		return proto.Agent{}, err
+	}
+	defer ts.Close()
+	ow := ownerKey.PublicKey()
+	if err := ts.PinKey(sid, cfg.UserID, ssh.FingerprintSHA256(ow), ow.Marshal(), trust.Verified); err != nil {
 		return proto.Agent{}, err
 	}
 	return *w.Agent, nil
+}
+
+// newAgentKey makes the agent's ed25519 SSH key at path (0600), or loads
+// the one a previous LoginAgent made.
+func newAgentKey(path string) (ssh.Signer, error) {
+	if b, err := os.ReadFile(path); err == nil {
+		return ssh.ParsePrivateKey(b)
+	}
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	blk, err := ssh.MarshalPrivateKey(priv, "tc agent")
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(path, pem.EncodeToMemory(blk), 0o600); err != nil {
+		return nil, err
+	}
+	return ssh.NewSignerFromKey(priv)
 }
 
 // IsAgentSession reports whether this client logs in as an agent.
@@ -217,8 +302,8 @@ func (c *Client) putAgentLocked(a proto.Agent) {
 
 func (c *Client) setAgent(a proto.Agent) {
 	c.agentsMu.Lock()
-	if old, ok := c.agents[a.Owner]; ok && old.Handle == a.Handle {
-		a.Online = a.Online || old.Online
+	if old, ok := c.agents[a.Owner]; ok && old.Retired == 0 && a.Retired == 0 {
+		a.Online = a.Online || old.Online // events never carry it
 	}
 	c.putAgentLocked(a)
 	c.agentsMu.Unlock()
@@ -276,8 +361,22 @@ func (c *Client) AgentAccess(ctx context.Context) ([]uint64, error) {
 	return r.Chans, nil
 }
 
-// SetAgentAccess adds and removes channels from my agent's access list and
-// returns the list after the change. Owner sessions only.
+// AgentAccessInfo is AgentAccess with the end of each temporary grant (a
+// call by mention, proto.AgentGrantTTL); SetAgentAccess's add makes one lasting.
+func (c *Client) AgentAccessInfo(ctx context.Context) (proto.AgentAccessRes, error) {
+	if err := c.requireCap(proto.CapAgent, "agents"); err != nil {
+		return proto.AgentAccessRes{}, err
+	}
+	var r proto.AgentAccessRes
+	if err := c.call(ctx, proto.OpAgentAccess, proto.AgentAccessArgs{}, &r, nil); err != nil {
+		return r, err
+	}
+	c.noteAccess(r.Chans)
+	return r, nil
+}
+
+// SetAgentAccess adds (until removed) and removes channels from my agent's
+// access list and returns the list after the change. Owner sessions only.
 func (c *Client) SetAgentAccess(ctx context.Context, add, remove []uint64) ([]uint64, error) {
 	if c.IsAgentSession() {
 		return nil, proto.Errf(proto.ErrForbidden, "an agent can't change its own access")
@@ -366,18 +465,21 @@ func (c *Client) loadGranted(chans []uint64) {
 	}
 }
 
-// grantOnMention gives my agent the channel of a message that calls it
-// (§15.4): the owner's sessions do this because only they can read an
-// encrypted channel's text. Called inside the event transaction.
+// grantOnMention gives my agent the channel of a message that calls it,
+// for proto.AgentGrantTTL (§15.4): the owner's sessions do this because
+// only they can read an encrypted channel's text. People (never bots or
+// agents) call it in public channels; in private channels and DMs only I
+// can. Called inside the event transaction.
 func (c *Client) grantOnMention(q dbtx, m proto.Message, sec Sec) {
-	if c.IsAgentSession() || !sec.Trusted() || m.Deleted || time.Since(time.UnixMilli(m.Time)) > agentCallWindow {
+	if c.IsAgentSession() || !sec.Trusted() || m.Deleted || m.Agent != "" || time.Since(time.UnixMilli(m.Time)) > agentCallWindow {
 		return
 	}
 	a, ok := c.MyAgent()
-	if !ok || !Mentioned(m.Body, []string{a.Handle}) || slices.Contains(knownAccess(q), m.Chan) {
+	if !ok || !Mentioned(m.Body, []string{a.Handle}) || slices.Contains(knownAccess(q), m.Chan) || c.User(m.Author).Bot {
 		return
 	}
-	if ch, ok, err := getChan(q, m.Chan); err != nil || !ok || ch.Kind == proto.ChanAgentDM {
+	ch, ok, err := getChan(q, m.Chan)
+	if err != nil || !ok || ch.Kind == proto.ChanAgentDM || ch.Kind != proto.ChanPublic && m.Author != c.cfg.UserID {
 		return
 	}
 	c.agentsMu.Lock()
@@ -390,7 +492,10 @@ func (c *Client) grantOnMention(q dbtx, m proto.Message, sec Sec) {
 	go func() {
 		ctx, cancel := context.WithTimeout(c.ctx, 30*time.Second)
 		defer cancel()
-		_, _ = c.SetAgentAccess(ctx, []uint64{m.Chan}, nil)
+		var r proto.AgentAccessRes
+		if c.call(ctx, proto.OpAgentAccess, proto.AgentAccessArgs{Temp: []uint64{m.Chan}}, &r, nil) == nil {
+			c.noteAccess(r.Chans)
+		}
 		c.agentsMu.Lock()
 		delete(c.granting, m.Chan)
 		c.agentsMu.Unlock()
@@ -568,6 +673,9 @@ func (c *Client) agentEphemeral(e proto.Ephemeral) {
 		if ok {
 			c.post(Update{Agents: true})
 		}
+		if e.State != proto.PresOnline {
+			c.clearLiveOf(e.User) // a gone agent isn't working on anything
+		}
 		return
 	}
 	if e.Chan == 0 || !proto.ValidAgentState(e.State) {
@@ -629,6 +737,25 @@ func (c *Client) agentEphemeral(e proto.Ephemeral) {
 
 func validPreview(s string) bool { return s == "" || validText(s) }
 
+// clearLiveOf drops owner's agent's live statuses.
+func (c *Client) clearLiveOf(owner uint64) {
+	chans := map[uint64]bool{}
+	c.agentsMu.Lock()
+	for k, m := range c.agentLive {
+		if _, ok := m[owner]; ok {
+			delete(m, owner)
+			chans[k.ch] = true
+			if len(m) == 0 {
+				delete(c.agentLive, k)
+			}
+		}
+	}
+	c.agentsMu.Unlock()
+	if len(chans) > 0 {
+		c.post(Update{AgentStatus: chans})
+	}
+}
+
 // clearAgentLive drops every live status (the connection ended).
 func (c *Client) clearAgentLive() {
 	c.agentsMu.Lock()
@@ -657,11 +784,15 @@ func (c *Client) applyAgentEvent(q dbtx, ev proto.Event, u *Update) {
 			return
 		}
 		c.agentsMu.Lock()
-		if old, ok := c.agents[a.Owner]; ok && old.Handle == a.Handle {
-			a.Online = old.Online
+		old, had := c.agents[a.Owner]
+		if had && old.Retired == 0 && a.Retired == 0 {
+			a.Online = old.Online // events never carry it
 		}
 		c.putAgentLocked(a)
 		c.agentsMu.Unlock()
+		if had && (a.Retired != 0 || old.Handle != a.Handle) {
+			c.clearLiveOf(a.Owner)
+		}
 		c.followRename(a)
 		u.Agents = true
 	case proto.KAgentAccess:
@@ -719,4 +850,30 @@ func (c *Client) AgentThreads(ch uint64) []uint64 {
 	}
 	slices.Sort(out)
 	return out
+}
+
+// agentDevice reports whether d is an agent's device: its cert is signed by
+// a key pinned as an agent key (§15.1).
+func (c *Client) agentDevice(sid e2ecrypto.ServerID, d trust.Device) bool {
+	var s proto.Signed
+	if proto.Unmarshal(d.Cert, &s) != nil {
+		return false
+	}
+	dc, err := identity.PeekDeviceCert(identity.Signed(s))
+	if err != nil {
+		return false
+	}
+	keys, _ := c.trust.PinnedKeys(sid, d.User)
+	for _, k := range keys {
+		if bytes.Equal(k.Wire, dc.SSH) {
+			return k.How == trust.Agent
+		}
+	}
+	return false
+}
+
+// agentMsg reports whether the cached message id was sent by an agent.
+func agentMsg(q dbtx, id uint64) bool {
+	var a string
+	return q.QueryRow(`SELECT agent FROM msgs WHERE id = ?`, id).Scan(&a) == nil && a != ""
 }

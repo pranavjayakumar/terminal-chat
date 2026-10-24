@@ -366,8 +366,17 @@ func (c *Client) judgeEnc(q dbtx, sid e2ecrypto.ServerID, hasSID bool, m *proto.
 		}
 	}
 	m.Body = p.Body
-	if p.Agent != m.Agent { // shown as the agent's only when both say so (§15.3)
-		m.Agent = ""
+	// Attribution only ever leans toward the agent (§15.3): the signed
+	// claim wins, a server's claim alone still marks it, and anything an
+	// agent's device signed is the agent's.
+	if p.Agent != "" {
+		m.Agent = p.Agent
+	}
+	if m.Agent == "" && c.agentDevice(sid, *d) {
+		m.Agent = "agent"
+		if a, ok := c.AgentOf(m.Author); ok {
+			m.Agent = a.Handle
+		}
 	}
 	m.Via = ""
 	if proto.ValidVia(p.Via) {

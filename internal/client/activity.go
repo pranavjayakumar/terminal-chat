@@ -133,6 +133,7 @@ func (c *Client) activity(q dbtx, me proto.User, limit int) []ActivityItem {
 	}
 	words := highlightsOf(q)
 	names := mentionNames(q, me)
+	ag := c.AgentHandle() // see Channels: mine is my id and my handle
 	floorID, floorTime := scanFloor(q)
 	seen := map[uint64]bool{}
 	var out []ActivityItem
@@ -144,8 +145,8 @@ func (c *Client) activity(q dbtx, me proto.User, limit int) []ActivityItem {
 
 	// Mentions and highlights.
 	filter, fargs := highlightFilter("m.body", names, words)
-	scanMsgs(q, `SELECT `+msgCols+` FROM msgs m WHERE m.id >= ? AND m.time >= ? AND m.author != ? AND m.deleted = 0 AND m.sec IN `+trustedSecs+` AND `+filter+` ORDER BY m.id DESC`,
-		append([]any{floorID, floorTime, me.ID}, fargs...), limit, func(m proto.Message) bool {
+	scanMsgs(q, `SELECT `+msgCols+` FROM msgs m WHERE m.id >= ? AND m.time >= ? AND (m.author != ? OR m.agent != ?) AND m.deleted = 0 AND m.sec IN `+trustedSecs+` AND `+filter+` ORDER BY m.id DESC`,
+		append([]any{floorID, floorTime, me.ID, ag}, fargs...), limit, func(m proto.Message) bool {
 			switch {
 			case !ok(m):
 			case Mentioned(m.Body, names):
@@ -179,8 +180,8 @@ func (c *Client) activity(q dbtx, me proto.User, limit int) []ActivityItem {
 		}
 		return v
 	}
-	scanMsgs(q, `SELECT `+msgCols+` FROM msgs r WHERE r.id >= ? AND r.time >= ? AND r.thread != 0 AND r.author != ? AND r.deleted = 0 AND r.sec IN `+trustedSecs+` ORDER BY r.id DESC`,
-		[]any{floorID, floorTime, me.ID}, limit, func(m proto.Message) bool {
+	scanMsgs(q, `SELECT `+msgCols+` FROM msgs r WHERE r.id >= ? AND r.time >= ? AND r.thread != 0 AND (r.author != ? OR r.agent != ?) AND r.deleted = 0 AND r.sec IN `+trustedSecs+` ORDER BY r.id DESC`,
+		[]any{floorID, floorTime, me.ID, ag}, limit, func(m proto.Message) bool {
 			if seen[m.ID] || !ok(m) || !(tookPart(m.Thread, m.ID) || isMyRoot(m.Thread)) {
 				return false
 			}
@@ -189,10 +190,10 @@ func (c *Client) activity(q dbtx, me proto.User, limit int) []ActivityItem {
 		})
 
 	// Direct messages.
-	scanMsgs(q, `SELECT `+msgCols+` FROM msgs m WHERE m.id >= ? AND m.time >= ? AND m.author != ? AND m.deleted = 0 AND m.sec IN `+trustedSecs+`
-		AND m.chan IN (SELECT id FROM chans WHERE kind = ?) ORDER BY m.id DESC`,
-		[]any{floorID, floorTime, me.ID, proto.ChanDM}, limit, func(m proto.Message) bool {
-			if seen[m.ID] || !ok(m) || chanKind[m.Chan] != proto.ChanDM {
+	scanMsgs(q, `SELECT `+msgCols+` FROM msgs m WHERE m.id >= ? AND m.time >= ? AND (m.author != ? OR m.agent != ?) AND m.deleted = 0 AND m.sec IN `+trustedSecs+`
+		AND m.chan IN (SELECT id FROM chans WHERE kind IN (?, ?)) ORDER BY m.id DESC`,
+		[]any{floorID, floorTime, me.ID, ag, proto.ChanDM, proto.ChanAgentDM}, limit, func(m proto.Message) bool {
+			if seen[m.ID] || !ok(m) || !proto.IsDMKind(chanKind[m.Chan]) {
 				return false
 			}
 			add(ActDM, m)
