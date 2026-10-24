@@ -1,13 +1,18 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"maps"
 	"slices"
 	"strconv"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
+	"github.com/skailama/tc/internal/identity"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
 )
@@ -42,7 +47,7 @@ CREATE TABLE IF NOT EXISTS agent_access (
 `
 
 // migrateAgents adds the agent tables and the message agent column, and
-// moves the channel-name index off agent DMs (they have no name, like DMs).
+// keys and access grants.
 func migrateAgents(db *sql.DB) error {
 	if _, err := db.Exec(agentsSchema); err != nil {
 		return err
@@ -55,16 +60,22 @@ func migrateAgents(db *sql.DB) error {
 			return err
 		}
 	}
-	_, err := db.Exec(`DROP INDEX IF EXISTS channels_name`)
-	return err
+	// keys.agent: the key logs in only as its user's agent (§15.1).
+	if err := addColumn(db, "keys", "agent", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	// agent_access.expires: the end of a temporary grant (0 = until removed).
+	return addColumn(db, "agent_access", "expires", "INTEGER NOT NULL DEFAULT 0")
 }
 
 // agentRefused are refused to agent sessions: an agent acts in its owner's
-// name only by sending and pinning in the channels it may read. Reactions
+// name only by sending (and editing or deleting what it sent) in the
+// channels it may read. Reactions
 // are refused because the owner's reactions are its approvals: an agent's
 // would look like the owner's tap. It may rename itself (agent.update).
 var agentRefused = map[string]bool{
-	proto.OpReact: true, proto.OpUnreact: true,
+	proto.OpReact: true, proto.OpUnreact: true, proto.OpPin: true, proto.OpUnpin: true,
+	proto.OpRemindCreate: true, proto.OpRemindList: true, proto.OpRemindDelete: true, proto.OpAgentKey: true,
 	proto.OpAgentRegister: true, proto.OpAgentRetire: true,
 	proto.OpAgentAccess: true, proto.OpAgentDM: true,
 	proto.OpInviteCreate: true, proto.OpInviteList: true, proto.OpInviteRevoke: true,
@@ -77,7 +88,7 @@ var agentRefused = map[string]bool{
 
 var agentOps = map[string]bool{
 	proto.OpAgentRegister: true, proto.OpAgentUpdate: true, proto.OpAgentRetire: true,
-	proto.OpAgentsList: true, proto.OpAgentAccess: true, proto.OpAgentDM: true,
+	proto.OpAgentsList: true, proto.OpAgentAccess: true, proto.OpAgentDM: true, proto.OpAgentKey: true,
 }
 
 // agentDMKey is an agent DM's channels.dmkey: one per owner.
@@ -137,20 +148,21 @@ func (s *Server) loadAgents(ctx context.Context) error {
 			s.agents[a.Owner] = a
 		}
 	}
-	rows, err := s.st.db.QueryContext(ctx, `SELECT owner, chan FROM agent_access`)
+	rows, err := s.st.db.QueryContext(ctx, `SELECT owner, chan, expires FROM agent_access`)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var o, c uint64
-		if err := rows.Scan(&o, &c); err != nil {
+		var exp int64
+		if err := rows.Scan(&o, &c, &exp); err != nil {
 			rows.Close()
 			return err
 		}
 		if s.agentAccess[o] == nil {
-			s.agentAccess[o] = map[uint64]bool{}
+			s.agentAccess[o] = map[uint64]int64{}
 		}
-		s.agentAccess[o][c] = true
+		s.agentAccess[o][c] = exp
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -191,14 +203,27 @@ func (s *Server) applyAgentCache(ev proto.Event) {
 		if proto.Unmarshal(ev.Data, &r) != nil {
 			return
 		}
-		m := map[uint64]bool{}
+		m := map[uint64]int64{}
 		for _, c := range r.Chans {
-			m[c] = true
+			m[c] = r.Expires[c]
 		}
 		s.agentAccess[ev.Actor] = m
-	case proto.KChanNew:
+	case proto.KChanLeave:
+		// Leaving (or being removed from) a channel ends the agent's grant.
+		var r proto.UserRef
+		if proto.Unmarshal(ev.Data, &r) == nil {
+			if _, ok := s.agentAccess[r.User][ev.Chan]; ok {
+				delete(s.agentAccess[r.User], ev.Chan)
+				s.st.db.Exec(`DELETE FROM agent_access WHERE owner = ? AND chan = ?`, r.User, ev.Chan)
+			}
+		}
+	case proto.KChanNew, proto.KChanUpdate:
 		var c proto.Channel
-		if proto.Unmarshal(ev.Data, &c) == nil && c.Kind == proto.ChanAgentDM {
+		if proto.Unmarshal(ev.Data, &c) != nil {
+			return
+		}
+		s.chanE2E[c.ID] = c.E2E
+		if c.Kind == proto.ChanAgentDM {
 			s.agentDMs[c.Creator] = c.ID
 		}
 	}
@@ -211,7 +236,11 @@ func (s *Server) agentSeesLocked(sess *session, ch uint64) bool {
 	if sess.agent == nil || ch == 0 {
 		return true
 	}
-	return s.agentDMs[sess.user.ID] == ch || s.agentAccess[sess.user.ID][ch]
+	if s.agentDMs[sess.user.ID] == ch {
+		return true
+	}
+	exp, ok := s.agentAccess[sess.user.ID][ch]
+	return ok && (exp == 0 || exp > s.now())
 }
 
 func (s *Server) agentSees(sess *session, ch uint64) bool {
@@ -235,14 +264,26 @@ func (s *Server) agentHandleLocked(sess *session) string {
 	return sess.agent.Handle
 }
 
-// agentLogin checks HELLO agent: handle must be u's active agent.
-func (s *Server) agentLogin(ctx context.Context, sess *session, u proto.User, handle string) (string, string) {
+// agentLogin makes sess an agent session of u's active agent. With an
+// agent key (byKey) any HELLO agent is fine; with one of u's own keys handle
+// must name the agent (now or before a rename) and the agent must have no
+// key of its own yet.
+func (s *Server) agentLogin(ctx context.Context, sess *session, u proto.User, handle string, byKey bool) (string, string) {
 	if !sess.agentCap {
 		return proto.ByeProtocolError, "agent sessions need cap agent1"
 	}
 	a, err := activeAgent(ctx, s.st.db, u.ID)
-	if err != nil || a.Handle != handle {
+	if err != nil {
 		return proto.ByeAuthFailed, "no such agent"
+	}
+	if !byKey {
+		if a.Handle != handle && agentHandleOwner(ctx, s.st.db, handle) != u.ID {
+			return proto.ByeAuthFailed, "no such agent"
+		}
+		var n int
+		if err := s.st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM keys WHERE user = ? AND agent = 1`, u.ID).Scan(&n); err != nil || n > 0 {
+			return proto.ByeAuthFailed, "this agent logs in with its own key"
+		}
 	}
 	a.Online = true
 	sess.agent = &a
@@ -295,13 +336,17 @@ func (s *Server) gateAgentOp(ctx context.Context, sess *session, op string, args
 			return err
 		}
 		ch = a.Chan
-	case proto.OpEdit, proto.OpDelete, proto.OpReact, proto.OpUnreact, proto.OpPin, proto.OpUnpin:
+	case proto.OpEdit, proto.OpDelete:
 		a, err := decodeArgs[proto.MsgRef](args)
 		if err != nil {
 			return err
 		}
-		if s.st.db.QueryRowContext(ctx, `SELECT chan FROM messages WHERE id = ?`, a.Msg).Scan(&ch) != nil {
+		var agent string
+		if s.st.db.QueryRowContext(ctx, `SELECT chan, agent FROM messages WHERE id = ?`, a.Msg).Scan(&ch, &agent) != nil {
 			return errNotFound
+		}
+		if agent == "" { // its owner's own words are not the agent's to change
+			return proto.Errf(proto.ErrForbidden, "an agent may change only what an agent sent")
 		}
 	default:
 		return nil
@@ -407,8 +452,8 @@ func (s *Server) opAgentUpdate(ctx context.Context, u proto.User, a proto.AgentU
 		case a.Icon != "":
 			next.Icon = a.Icon
 		}
-		next.Online = s.agentOnline[u.ID] > 0
 		res.Agent = next
+		res.Agent.Online = s.agentOnline[u.ID] > 0
 		if next.Handle == ag.Handle && next.Icon == ag.Icon {
 			return nil, nil
 		}
@@ -438,7 +483,18 @@ func (s *Server) opAgentRetire(ctx context.Context, u proto.User) (any, error) {
 		ag.Retired = now
 		res.Agent = ag
 		ev, err := appendEvent(ctx, tx, proto.KAgentUpdate, 0, u.ID, u.ID, now, ag)
-		return []proto.Event{ev}, err
+		if err != nil {
+			return nil, err
+		}
+		// A new agent starts from nothing: no grants, no key.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM keys WHERE user = ? AND agent = 1`, u.ID); err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM agent_access WHERE owner = ?`, u.ID); err != nil {
+			return nil, err
+		}
+		acc, err := appendEvent(ctx, tx, proto.KAgentAccess, 0, u.ID, u.ID, now, proto.AgentAccessRes{Chans: []uint64{}})
+		return []proto.Event{ev, acc}, err
 	})
 	if err != nil {
 		return nil, err
@@ -471,46 +527,69 @@ func (s *Server) markAgentsOnline(agents []proto.Agent) {
 }
 
 func (s *Server) opAgentAccess(ctx context.Context, u proto.User, a proto.AgentAccessArgs) (any, error) {
-	if len(a.Add) > proto.MaxAgentAccess || len(a.Remove) > proto.MaxAgentAccess {
+	if len(a.Add) > proto.MaxAgentAccess || len(a.Remove) > proto.MaxAgentAccess || len(a.Temp) > proto.MaxAgentAccess {
 		return nil, proto.Errf(proto.ErrTooLarge, "too many channels")
 	}
 	var res proto.AgentAccessRes
 	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
-		cur := s.agentAccess[u.ID]
-		next := map[uint64]bool{}
-		for c := range cur {
-			next[c] = true
+		now := s.now()
+		cur := map[uint64]int64{}
+		for c, exp := range s.agentAccess[u.ID] {
+			if exp == 0 || exp > now {
+				cur[c] = exp
+			}
 		}
+		next := maps.Clone(cur)
 		for _, c := range a.Remove {
 			delete(next, c)
 		}
-		for _, c := range a.Add {
+		check := func(c uint64) error {
 			kind, ok := s.kinds[c]
 			if !ok || kind == proto.ChanAgentDM || !(kind == proto.ChanPublic || s.members[c][u.ID]) {
-				return nil, proto.Errf(proto.ErrNotFound, "no such channel")
+				return proto.Errf(proto.ErrNotFound, "no such channel")
 			}
-			next[c] = true
+			return nil
+		}
+		for _, c := range a.Add {
+			if err := check(c); err != nil {
+				return nil, err
+			}
+			next[c] = 0
+		}
+		for _, c := range a.Temp {
+			if err := check(c); err != nil {
+				return nil, err
+			}
+			if exp, ok := next[c]; !ok || exp != 0 {
+				next[c] = now + proto.AgentGrantTTL.Milliseconds()
+			}
 		}
 		if len(next) > proto.MaxAgentAccess {
 			return nil, proto.Errf(proto.ErrTooLarge, "an agent may read at most 256 channels")
 		}
 		res.Chans = make([]uint64, 0, len(next))
-		for c := range next {
+		for c, exp := range next {
 			res.Chans = append(res.Chans, c)
+			if exp != 0 {
+				if res.Expires == nil {
+					res.Expires = map[uint64]int64{}
+				}
+				res.Expires[c] = exp
+			}
 		}
 		slices.Sort(res.Chans)
-		if len(next) == len(cur) && !slices.ContainsFunc(res.Chans, func(c uint64) bool { return !cur[c] }) {
+		if maps.Equal(next, cur) && len(cur) == len(s.agentAccess[u.ID]) {
 			return nil, nil
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM agent_access WHERE owner = ?`, u.ID); err != nil {
 			return nil, err
 		}
 		for _, c := range res.Chans {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO agent_access (owner, chan) VALUES (?, ?)`, u.ID, c); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO agent_access (owner, chan, expires) VALUES (?, ?, ?)`, u.ID, c, next[c]); err != nil {
 				return nil, err
 			}
 		}
-		ev, err := appendEvent(ctx, tx, proto.KAgentAccess, 0, u.ID, u.ID, s.now(), res)
+		ev, err := appendEvent(ctx, tx, proto.KAgentAccess, 0, u.ID, u.ID, now, res)
 		return []proto.Event{ev}, err
 	})
 	return res, err
@@ -597,17 +676,14 @@ func (s *Server) agentEph(sess *session, e proto.Ephemeral) {
 	if len(e.Text) > proto.MaxAgentPreview || !sanitize.Valid(e.Text) || len(e.Enc) > proto.MaxAgentEnc || (e.Text != "" && e.Enc != nil) {
 		return
 	}
-	var e2e bool
-	if s.st.db.QueryRow(`SELECT e2e FROM channels WHERE id = ?`, e.Chan).Scan(&e2e) != nil {
-		return
-	}
-	if e2e && e.Text != "" || !e2e && e.Enc != nil {
-		return
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !takeBucket(&sess.agentBucket, time.Now(), agentEphBurst, proto.AgentEphRate) {
+		return
+	}
 	u := sess.user.ID
-	if !s.members[e.Chan][u] || !s.agentSeesLocked(sess, e.Chan) || !takeBucket(&sess.agentBucket, time.Now(), agentEphBurst, proto.AgentEphRate) {
+	e2e := s.chanE2E[e.Chan]
+	if !s.members[e.Chan][u] || !s.agentSeesLocked(sess, e.Chan) || e2e && e.Text != "" || !e2e && e.Enc != nil {
 		return
 	}
 	out := proto.Ephemeral{Kind: proto.EphAgent, Chan: e.Chan, Thread: e.Thread, User: u, Agent: s.agentHandleLocked(sess),
@@ -622,4 +698,76 @@ func (s *Server) agentEph(sess *session, e proto.Ephemeral) {
 		}
 		t.pushLive(outFrame{t: proto.TEphemeral, payload: payload})
 	}
+}
+
+// keyIsAgent reports whether the key with fingerprint fp is an agent key.
+func keyIsAgent(ctx context.Context, q querier, fp string) bool {
+	var a bool
+	q.QueryRowContext(ctx, `SELECT agent FROM keys WHERE fp = ?`, fp).Scan(&a)
+	return a
+}
+
+// agentKeys are the keys owner's agent logs in with (at most one).
+func agentKeys(ctx context.Context, q querier, owner uint64) ([][]byte, error) {
+	rows, err := q.QueryContext(ctx, `SELECT pubkey FROM keys WHERE user = ? AND agent = 1`, owner)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out [][]byte
+	for rows.Next() {
+		var k []byte
+		if err := rows.Scan(&k); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+// opAgentKey gives the caller's active agent its own SSH key, replacing any
+// earlier one. The key is never the owner: it logs in only as the agent.
+func (s *Server) opAgentKey(ctx context.Context, u proto.User, a proto.AgentKeyArgs) (any, error) {
+	pk, err := ssh.ParsePublicKey(a.Pubkey)
+	if err != nil || !identity.AllowedKeyType(pk.Type()) {
+		return nil, badRequest("not an accepted SSH public key")
+	}
+	fp := identity.Fingerprint(pk)
+	_, err = s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
+		if _, err := activeAgent(ctx, tx, u.ID); errors.Is(err, sql.ErrNoRows) {
+			return nil, proto.Errf(proto.ErrNotFound, "register an agent first")
+		} else if err != nil {
+			return nil, err
+		}
+		var owner uint64
+		var agent bool
+		err := tx.QueryRowContext(ctx, `SELECT user, agent FROM keys WHERE fp = ?`, fp).Scan(&owner, &agent)
+		switch {
+		case err == nil && owner == u.ID && agent:
+			return nil, nil
+		case err == nil:
+			return nil, proto.Errf(proto.ErrConflict, "this key is already registered")
+		case !errors.Is(err, sql.ErrNoRows):
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM keys WHERE user = ? AND agent = 1`, u.ID); err != nil {
+			return nil, err
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO keys (fp, user, pubkey, created, agent) VALUES (?, ?, ?, ?, 1)`,
+			fp, u.ID, pk.Marshal(), s.now())
+		return nil, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	// Sessions that logged in with the owner's key as the agent go: from now
+	// on the agent is its key.
+	s.mu.Lock()
+	for sess := range s.sessions {
+		if sess.agent != nil && sess.user.ID == u.ID && !bytes.Equal(sess.loginKey, pk.Marshal()) {
+			sess.revoke()
+		}
+	}
+	s.mu.Unlock()
+	return proto.Empty{}, nil
 }

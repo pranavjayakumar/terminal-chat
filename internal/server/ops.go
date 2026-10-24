@@ -54,7 +54,7 @@ var writeOps = map[string]bool{
 	proto.OpHookCreate: true, proto.OpHookDelete: true, proto.OpHookList: true,
 	proto.OpDeviceRegister: true, proto.OpDeviceRevoke: true, proto.OpKeyRotate: true,
 	proto.OpKeyShare:      true,
-	proto.OpAgentRegister: true, proto.OpAgentUpdate: true, proto.OpAgentRetire: true, proto.OpAgentAccess: true, proto.OpAgentDM: true,
+	proto.OpAgentRegister: true, proto.OpAgentUpdate: true, proto.OpAgentRetire: true, proto.OpAgentAccess: true, proto.OpAgentDM: true, proto.OpAgentKey: true,
 }
 
 // e2eOps exist only in sessions that negotiated proto.CapE2E.
@@ -170,6 +170,8 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 		return withArgs(args, func(a proto.AgentAccessArgs) (any, error) { return s.opAgentAccess(ctx, u, a) })
 	case proto.OpAgentDM:
 		return s.opAgentDM(ctx, sess)
+	case proto.OpAgentKey:
+		return withArgs(args, func(a proto.AgentKeyArgs) (any, error) { return s.opAgentKey(ctx, u, a) })
 	case proto.OpInviteCreate:
 		return withArgs(args, func(a proto.InviteCreateArgs) (any, error) { return s.opInviteCreate(ctx, u, a) })
 	case proto.OpInviteList:
@@ -181,7 +183,7 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 	case proto.OpUserDisable:
 		return withArgs(args, func(a proto.UserArgs) (any, error) { return s.opUserDisable(ctx, u, a) })
 	case proto.OpDeviceRegister:
-		return withArgs(args, func(a proto.DeviceRegisterArgs) (any, error) { return s.opDeviceRegister(ctx, u, a) })
+		return withArgs(args, func(a proto.DeviceRegisterArgs) (any, error) { return s.opDeviceRegister(ctx, sess, a) })
 	case proto.OpDeviceRevoke:
 		return withArgs(args, func(a proto.DeviceRevokeArgs) (any, error) { return s.opDeviceRevoke(ctx, u, a) })
 	case proto.OpDevicesList:
@@ -697,14 +699,18 @@ func (s *Server) opRead(ctx context.Context, u proto.User, a proto.ReadArgs) (an
 // createChannel inserts a channel whose members all join at the chan.new seq.
 func createChannel(ctx context.Context, tx *sql.Tx, now int64, actor uint64, name, kind, topic string, members []uint64, e2e bool) (proto.Channel, proto.Event, error) {
 	var dmkey any
+	dbName := name
 	switch kind {
 	case proto.ChanDM:
 		dmkey = dmKey(members)
 	case proto.ChanAgentDM:
+		// Agent DMs have no name, but a unique one in the database keeps the
+		// previous releases' channels_name index buildable (rollback).
 		dmkey = agentDMKey(actor)
+		dbName = agentDMKey(actor)
 	}
 	r, err := tx.ExecContext(ctx, `INSERT INTO channels (name, kind, topic, created, dmkey, e2e, creator) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		name, kind, topic, now, dmkey, e2e, actor)
+		dbName, kind, topic, now, dmkey, e2e, actor)
 	if err != nil {
 		return proto.Channel{}, proto.Event{}, err
 	}

@@ -2,7 +2,9 @@ package server
 
 import (
 	"crypto/rand"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/skailama/tc/internal/identity"
 	"github.com/skailama/tc/internal/proto"
@@ -37,7 +39,7 @@ func (ts *testServer) connectAgent(t *testing.T, owner *tclient, handle string) 
 		return nil, b.Code
 	}
 	var w proto.Welcome
-	if f.Type != proto.TWelcome || f.Decode(&w) != nil || w.Agent == nil || w.Agent.Handle != handle {
+	if f.Type != proto.TWelcome || f.Decode(&w) != nil || w.Agent == nil {
 		t.Fatalf("agent WELCOME: %#x %+v", f.Type, w.Agent)
 	}
 	codec.SetMaxFrame(proto.MaxFrame)
@@ -53,6 +55,11 @@ func (ts *testServer) connectAgent(t *testing.T, owner *tclient, handle string) 
 		}
 	}()
 	return c, ""
+}
+
+// connectAgentWelcome is connectAgent; the WELCOME's handle may differ.
+func (ts *testServer) connectAgentWelcome(t *testing.T, owner *tclient, handle string) (*tclient, string) {
+	return ts.connectAgent(t, owner, handle)
 }
 
 func (c *tclient) agentEvent(handle string) proto.Agent {
@@ -184,5 +191,102 @@ func TestVia(t *testing.T) {
 		if m.Body == "from claude" && m.Via != proto.ViaMCP {
 			t.Fatalf("stored via %q", m.Via)
 		}
+	}
+}
+
+// An agent key logs in only as the agent: never as its owner, whatever
+// HELLO says, and once it exists the owner's key can't log in as the agent.
+func TestAgentKey(t *testing.T) {
+	ts := startServer(t, "tcp")
+	alice := ts.registerCaps(t, "alice", true, agentCaps)
+	snap, _ := alice.syncFresh()
+	gen := generalID(t, snap)
+	alice.ok(proto.OpAgentRegister, proto.AgentRegisterArgs{Handle: "rocky"}, nil)
+	key := newKey(t)
+	alice.ok(proto.OpAgentKey, proto.AgentKeyArgs{Pubkey: key.PublicKey().Marshal()}, nil)
+	alice.fail(proto.OpAgentKey, proto.AgentKeyArgs{Pubkey: alice.signer.PublicKey().Marshal()}, proto.ErrConflict)
+
+	// Plain HELLO with the agent key: still the agent.
+	c, bye := ts.connectCaps(t, key, "", "", agentCaps)
+	if bye != "" || c.welcome.Agent == nil || c.welcome.Agent.Handle != "rocky" {
+		t.Fatalf("agent key plain login: bye %q agent %+v", bye, c.welcome.Agent)
+	}
+	c.syncFresh()
+	c.fail(proto.OpInviteCreate, proto.InviteCreateArgs{}, proto.ErrForbidden)
+	c.fail(proto.OpRemindCreate, proto.RemindCreateArgs{At: 1, Text: "x"}, proto.ErrForbidden)
+	c.fail(proto.OpAgentKey, proto.AgentKeyArgs{Pubkey: newKey(t).PublicKey().Marshal()}, proto.ErrForbidden)
+	if _, bye := ts.connectCaps(t, key, "", "", nil); bye != proto.ByeProtocolError {
+		t.Fatalf("agent key without cap agent1: BYE %q", bye)
+	}
+	if _, bye := ts.connectAgent(t, alice, "rocky"); bye != proto.ByeAuthFailed {
+		t.Fatalf("owner key as agent once the agent has a key: BYE %q", bye)
+	}
+
+	// Pins are approvals-adjacent too; edits only of agent messages.
+	alice.ok(proto.OpAgentAccess, proto.AgentAccessArgs{Add: []uint64{gen}}, nil)
+	human := alice.send(gen, "mine")
+	c.fail(proto.OpPin, proto.MsgArgs{Msg: human.Msg}, proto.ErrForbidden)
+	c.fail(proto.OpEdit, proto.EditArgs{Msg: human.Msg, Body: "not mine"}, proto.ErrForbidden)
+
+	// Retire: the key, the grants and the session all go.
+	alice.ok(proto.OpAgentRetire, proto.Empty{}, nil)
+	alice.ok(proto.OpAgentRegister, proto.AgentRegisterArgs{Handle: "sunny"}, nil)
+	var acc proto.AgentAccessRes
+	alice.ok(proto.OpAgentAccess, proto.AgentAccessArgs{}, &acc)
+	if len(acc.Chans) != 0 {
+		t.Fatalf("the new agent inherited grants %v", acc.Chans)
+	}
+	if _, bye := ts.connectCaps(t, key, "", "", agentCaps); bye == "" {
+		t.Fatal("the retired agent's key still logs in")
+	}
+}
+
+// A renamed agent whose program was off still logs in under its old
+// handle, and WELCOME tells it the current one.
+func TestAgentLoginOldHandle(t *testing.T) {
+	ts := startServer(t, "tcp")
+	alice := ts.registerCaps(t, "alice", true, agentCaps)
+	alice.syncFresh()
+	alice.ok(proto.OpAgentRegister, proto.AgentRegisterArgs{Handle: "rocky"}, nil)
+	alice.ok(proto.OpAgentUpdate, proto.AgentUpdateArgs{Handle: "rex"}, nil)
+	c, bye := ts.connectAgentWelcome(t, alice, "rocky")
+	if bye != "" || c.welcome.Agent.Handle != "rex" {
+		t.Fatalf("old handle login: bye %q welcome %+v", bye, c.welcome.Agent)
+	}
+}
+
+// Temporary grants (calls by mention) end after AgentGrantTTL; a grant
+// until removed stays.
+func TestAgentTempGrant(t *testing.T) {
+	now := time.Now()
+	var mu sync.Mutex
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	ts := startServerCfg(t, "tcp", Config{Now: clock})
+	alice := ts.registerCaps(t, "alice", true, agentCaps)
+	snap, _ := alice.syncFresh()
+	gen := generalID(t, snap)
+	alice.ok(proto.OpAgentRegister, proto.AgentRegisterArgs{Handle: "rocky"}, nil)
+	var r proto.AgentAccessRes
+	alice.ok(proto.OpAgentAccess, proto.AgentAccessArgs{Temp: []uint64{gen}}, &r)
+	if len(r.Chans) != 1 || r.Expires[gen] == 0 {
+		t.Fatalf("temp grant %+v", r)
+	}
+	agent, _ := ts.connectAgent(t, alice, "rocky")
+	agent.syncFresh()
+	agent.ok(proto.OpHistory, proto.HistoryArgs{Chan: gen, Limit: 10}, nil)
+	mu.Lock()
+	now = now.Add(proto.AgentGrantTTL + time.Minute)
+	mu.Unlock()
+	agent.fail(proto.OpHistory, proto.HistoryArgs{Chan: gen, Limit: 10}, proto.ErrForbidden)
+	r = proto.AgentAccessRes{}
+	alice.ok(proto.OpAgentAccess, proto.AgentAccessArgs{}, &r)
+	if len(r.Chans) != 0 {
+		t.Fatalf("expired grant still listed %+v", r)
+	}
+	alice.ok(proto.OpAgentAccess, proto.AgentAccessArgs{Add: []uint64{gen}}, nil)
+	r = proto.AgentAccessRes{}
+	alice.ok(proto.OpAgentAccess, proto.AgentAccessArgs{Temp: []uint64{gen}}, &r)
+	if r.Expires[gen] != 0 {
+		t.Fatal("a temporary grant shortened a lasting one")
 	}
 }

@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS channels (
 	created INTEGER NOT NULL,
 	dmkey TEXT UNIQUE
 );
-CREATE UNIQUE INDEX IF NOT EXISTS channels_name2 ON channels(name) WHERE kind IN ('public', 'private');
+CREATE UNIQUE INDEX IF NOT EXISTS channels_name ON channels(name) WHERE kind != 'dm';
 -- Membership intervals: visibility of an event depends on membership at its seq.
 CREATE TABLE IF NOT EXISTS membership (
 	chan INTEGER NOT NULL,
@@ -355,6 +355,9 @@ func getChannel(ctx context.Context, q querier, id uint64) (proto.Channel, error
 		Scan(&c.ID, &c.Name, &c.Kind, &c.Topic, &c.Created, &c.E2E, &c.Epoch, &c.Creator, &c.Legacy)
 	if err != nil {
 		return c, err
+	}
+	if c.Kind == proto.ChanAgentDM {
+		c.Name = ""
 	}
 	if c.Members, err = currentMembers(ctx, q, id); err != nil {
 		return c, err

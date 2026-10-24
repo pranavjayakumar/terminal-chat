@@ -30,7 +30,7 @@ func signedSize(v proto.Signed) int { return len(v.B) + len(v.Sig) }
 
 // userKeys returns the wire-encoded SSH keys registered for u.
 func userKeys(ctx context.Context, q querier, u uint64) ([][]byte, error) {
-	rows, err := q.QueryContext(ctx, `SELECT pubkey FROM keys WHERE user = ? ORDER BY created`, u)
+	rows, err := q.QueryContext(ctx, `SELECT pubkey FROM keys WHERE user = ? AND agent = 0 ORDER BY created`, u)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +90,25 @@ func (s *Server) verifyEndorse(se proto.Signed, c identity.DeviceCert, keys [][]
 	return badRequest("endorsement does not verify under any of your registered SSH keys")
 }
 
-func (s *Server) opDeviceRegister(ctx context.Context, u proto.User, a proto.DeviceRegisterArgs) (any, error) {
+// verifyAgentEndorse checks an agent device's endorsement: one of the
+// owner's own keys vouches for the cert's (agent) key.
+func (s *Server) verifyAgentEndorse(se proto.Signed, c identity.DeviceCert, keys [][]byte) error {
+	sid := s.sid()
+	for _, k := range keys {
+		e, err := identity.Signed(se).VerifyAgentEndorse(sid, k)
+		if err != nil {
+			continue
+		}
+		if e.User != c.User || !bytes.Equal(e.AgentSSH, c.SSH) {
+			return badRequest("endorsement is not for this cert's key")
+		}
+		return nil
+	}
+	return badRequest("agent endorsement does not verify under any of your registered SSH keys")
+}
+
+func (s *Server) opDeviceRegister(ctx context.Context, sess *session, a proto.DeviceRegisterArgs) (any, error) {
+	u := sess.user
 	if signedSize(a.Cert) > proto.MaxSigned || (a.Endorse != nil && signedSize(*a.Endorse) > proto.MaxSigned) {
 		return nil, proto.Errf(proto.ErrTooLarge, "signed objects are limited to 4 KiB")
 	}
@@ -100,13 +118,25 @@ func (s *Server) opDeviceRegister(ctx context.Context, u proto.User, a proto.Dev
 	if err != nil {
 		return nil, err
 	}
-	c, err := s.verifyCert(a.Cert, u.ID, keys)
+	// An agent logged in with its own key certifies its device with that key
+	// alone, endorsed (if at all) as an agent key by one of the owner's (§15.1).
+	agentKey := sess.agent != nil && sess.agentKey
+	certKeys := keys
+	if agentKey {
+		certKeys = [][]byte{sess.loginKey}
+	}
+	c, err := s.verifyCert(a.Cert, u.ID, certKeys)
 	if err != nil {
 		return nil, err
 	}
 	var endorse []byte
 	if a.Endorse != nil {
-		if err := s.verifyEndorse(*a.Endorse, c, keys); err != nil {
+		if agentKey {
+			err = s.verifyAgentEndorse(*a.Endorse, c, keys)
+		} else {
+			err = s.verifyEndorse(*a.Endorse, c, keys)
+		}
+		if err != nil {
 			return nil, err
 		}
 		endorse = proto.MustRaw(*a.Endorse)
