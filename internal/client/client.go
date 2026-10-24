@@ -272,6 +272,7 @@ type Client struct {
 	agentName  string                            // our handle on an agent session (follows renames)
 	agents     map[uint64]proto.Agent            // owner → their agent, retired ones included
 	agentLive  map[agentKey]map[uint64]AgentLive // (chan, thread) → owner → live status
+	agentPres  map[uint64]bool                   // owner → last agent presence, kept for agents not cached yet
 	granting   map[uint64]bool                   // channels grantOnMention is adding
 	agentPend  map[agentKey]proto.Ephemeral      // SendAgentStatus's queue, latest per thread
 	agentOrder []agentKey
@@ -361,7 +362,7 @@ func Open(home string) (*Client, error) {
 		obChanged: make(chan struct{}), timing: defaultTiming,
 		e2eKick: make(chan struct{}, 1), keyNeeds: make(chan proto.Ephemeral, 32),
 		e2eSoft: map[uint64]string{}, needSent: map[uint64]time.Time{}, shared: map[shareKey]time.Time{},
-		agentName: cfg.Agent, agents: map[uint64]proto.Agent{}, agentLive: map[agentKey]map[uint64]AgentLive{},
+		agentName: cfg.Agent, agents: map[uint64]proto.Agent{}, agentLive: map[agentKey]map[uint64]AgentLive{}, agentPres: map[uint64]bool{},
 		granting: map[uint64]bool{}, agentPend: map[agentKey]proto.Ephemeral{},
 		autoTried: map[uint64]time.Time{}, owedTried: map[uint64]time.Time{}, poisonSeen: map[[2]uint64]time.Time{}, reopenBatch: reopenBatch, badCerts: map[[32]byte]struct{}{}, probed: map[uint64]uint32{},
 	}
