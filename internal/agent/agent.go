@@ -419,6 +419,9 @@ func (s *Supervisor) saveStatus() {
 	st := s.status
 	s.mu.Unlock()
 	st.Watches = s.Watches()
+	if s.queue != nil {
+		st.Grants = s.Grants()
+	}
 	if s.ledger != nil {
 		st.SpentUSD = s.ledger.Spent(s.Now())
 	}

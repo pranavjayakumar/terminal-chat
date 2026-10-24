@@ -491,14 +491,14 @@ func TestApprovals(t *testing.T) {
 	var card posted
 	h.waitFor("card", func() bool {
 		for _, p := range h.chat.posts() {
-			if strings.HasPrefix(p.body, "✋ @fizan approve: push branch agent/poll?") {
+			if strings.HasPrefix(p.body, "✋ Rocky wants to push branch agent/poll  ·  #") {
 				card = p
 				return true
 			}
 		}
 		return false
 	})
-	if card.thread != ask.ID || !strings.Contains(card.body, "tests pass") {
+	if card.thread != ask.ID || !strings.Contains(card.body, "\n> tests pass") || !strings.Contains(card.body, "\nwhy: fizan (your owner)") && !strings.Contains(card.body, "\nwhy: fizan asked in #general") {
 		t.Fatalf("card %+v", card)
 	}
 	cardID := h.cardID(card.body)
@@ -620,7 +620,7 @@ func TestAutoApprovePRsToday(t *testing.T) {
 	var card posted
 	h.waitFor("PR card", func() bool {
 		for _, p := range h.chat.posts() {
-			if strings.Contains(p.body, "open a draft PR: poll") {
+			if strings.Contains(p.body, "open a draft PR on tc: poll") {
 				card = p
 				return true
 			}
@@ -645,25 +645,25 @@ func TestAutoApprovePRsToday(t *testing.T) {
 	var auto, granted bool
 	for _, a := range acts {
 		auto = auto || strings.HasPrefix(a.Detail, "auto (♾️ today)")
-		granted = granted || strings.Contains(a.Detail, "approved for the rest of today")
+		granted = granted || strings.Contains(a.Detail, "draft PRs on tc ok for the rest of today")
 	}
 	if !auto || !granted {
 		t.Fatalf("activity %+v", acts)
 	}
 	// Tomorrow it's gone.
-	h.s.queue.update(func(q *queueState) { q.AutoPR = time.Now().Add(-24 * time.Hour).Format(time.DateOnly) })
-	if h.s.autoPR() {
+	h.s.queue.update(func(q *queueState) { q.Grants[0].Day = time.Now().Add(-24 * time.Hour).Format(time.DateOnly) })
+	if h.s.granted(KindPR, "tc") {
 		t.Fatal("yesterday's ♾️ still counts")
 	}
 	// The owner can stop it today.
-	h.s.queue.update(func(q *queueState) { q.AutoPR = time.Now().Format(time.DateOnly) })
+	h.s.queue.update(func(q *queueState) { q.Grants[0].Day = time.Now().Format(time.DateOnly) })
 	runs := len(h.run.requests())
 	h.chat.say(ownerID, agentDM, 0, "ok Stop auto-approving please", 0)
 	h.waitFor("stop reply", func() bool {
 		ps := h.chat.posts()
-		return strings.Contains(ps[len(ps)-1].body, "need your tap again")
+		return strings.Contains(ps[len(ps)-1].body, "needs your tap again")
 	})
-	if h.s.autoPR() || len(h.run.requests()) != runs {
+	if len(h.s.Grants()) != 0 || len(h.run.requests()) != runs {
 		t.Fatal("auto-approval not stopped, or the engine ran for it")
 	}
 }

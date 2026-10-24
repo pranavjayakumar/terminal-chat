@@ -376,6 +376,11 @@ func agentStatus(out io.Writer, tcHome string, now time.Time) error {
 		}
 	}
 	if running && err == nil {
+		for _, g := range st.Grants {
+			if g.Day == now.Format(time.DateOnly) {
+				fmt.Fprintf(out, "♾️ today: %s (stop: say \"%s\" in your agent DM)\n", sanitize.Line(agent.GrantText(g)), agent.StopAutoPhrase)
+			}
+		}
 		for _, w := range st.Watches {
 			fmt.Fprintf(out, "watching %s until %s: %s\n", sanitize.Line(w.Where), time.UnixMilli(w.Until).Local().Format("15:04"), sanitize.Line(w.About))
 		}

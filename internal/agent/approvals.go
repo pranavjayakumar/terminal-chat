@@ -10,24 +10,57 @@ import (
 	"time"
 
 	"github.com/skailama/tc/internal/client"
+	"github.com/skailama/tc/internal/mcp"
 	"github.com/skailama/tc/internal/sanitize"
 )
 
-// Approval cards: the agent posts "✋ approve: <action>?" in the thread
-// and waits for its owner to react ✅ or ❌ on it. The card carries a
-// random code so the supervisor can find its own message when it comes
-// back from the server.
+// Approval cards. The agent posts a card in the thread and waits for its
+// owner to react on it:
+//
+//	✋ Rocky wants to post in #general  ·  #k3f9a2b
+//	> the first three lines
+//	> of exactly what it will do
+//	why: bob asked in #general: "can you tell fahim…"
+//
+// ✅ yes, ❌ no; ✅ with ♾️ also grants the same kind of action on the
+// same target for the rest of the local day (a Grant). The code lets the
+// supervisor find its own card when it comes back from the server.
 
-// Reactions that answer a card. ♾️ next to ✅ also means "PRs are ok
-// for the rest of today".
+// Reactions that answer a card.
 var (
 	yesEmoji    = []string{"✅", "👍"}
 	noEmoji     = []string{"❌", "👎"}
 	alwaysEmoji = []string{"♾️", "♾"}
 )
 
-// StopAutoPhrase, in an owner's message, ends today's ♾️ auto-approval.
+// StopAutoPhrase, in an owner's message, ends every grant of today.
 const StopAutoPhrase = "stop auto-approving"
+
+// Kinds of actions a card asks about; a Grant covers one kind on one
+// target.
+const (
+	KindPost  = "post"  // post outside the asking thread; target: the channel
+	KindPR    = "pr"    // push and open a draft PR; target: the repo
+	KindIssue = "issue" // open an issue for someone else's ask; target: the repo
+	KindTool  = "tool"  // a tool call the rules didn't settle; target: the tool
+	KindAsk   = "ask"   // anything else the agent asks about; target: the action
+)
+
+// Grant is a ♾️ "don't ask again today" for one kind of action on one
+// target.
+type Grant struct {
+	Kind   string `json:"kind"`
+	Target string `json:"target"`
+	Day    string `json:"day"` // YYYY-MM-DD, local
+}
+
+// Approval is what a card asks for.
+type Approval struct {
+	Kind, Target string
+	Action       string // "post in #general"
+	Preview      string // exactly what will happen; the first lines are shown
+	Why          string // which ask it came from
+}
 
 type verdict struct{ yes, always bool }
 
@@ -39,12 +72,35 @@ type approval struct {
 }
 
 // CardBody is the text of an approval card.
-func CardBody(owner, action, detail, code string) string {
-	b := fmt.Sprintf("✋ @%s approve: %s? react ✅ / ❌  ·  %s", owner, oneLine(action, 200), code)
-	if d := strings.TrimSpace(detail); d != "" {
-		b += "\n" + short(sanitize.Text(d), 1500)
+func CardBody(agent string, ap Approval, code string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "✋ %s wants to %s  ·  %s", agentTitle(agent), oneLine(ap.Action, 200), code)
+	if p := strings.TrimSpace(sanitize.Text(ap.Preview)); p != "" {
+		lines := strings.Split(p, "\n")
+		more := len(lines) > 3
+		if more {
+			lines = lines[:3]
+		}
+		for i, l := range lines {
+			l = short(l, 200)
+			if more && i == 2 {
+				l += " …"
+			}
+			b.WriteString("\n> " + l)
+		}
 	}
-	return b
+	if w := oneLine(ap.Why, 300); w != "" {
+		b.WriteString("\nwhy: " + w)
+	}
+	return b.String()
+}
+
+// agentTitle is "rocky" as a name: "Rocky".
+func agentTitle(h string) string {
+	if h == "" {
+		return "Your agent"
+	}
+	return strings.ToUpper(h[:1]) + h[1:]
 }
 
 func oneLine(s string, n int) string {
@@ -57,13 +113,34 @@ func newCode() string {
 	return "#" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b[:]))
 }
 
-// askOwner posts an approval card in the run's thread and waits for the
-// owner's answer, the timeout (no), or ctx (no).
-func (s *Supervisor) askOwner(ctx context.Context, r *run, action, detail string) bool {
+// why says which ask a card came from.
+func (s *Supervisor) why(a Ask) string {
+	where := "a channel"
+	if cv, ok := s.Chat.Channel(a.Chan); ok {
+		where = mcp.ChanLabel(cv)
+	}
+	text := oneLine(a.Msg.Body, 80)
+	if text == "" {
+		return s.askerName(a) + " in " + where
+	}
+	return fmt.Sprintf("%s asked in %s: %q", s.askerName(a), where, text)
+}
+
+// askOwner asks the owner for ap: a grant of today answers at once;
+// otherwise a card goes up in the run's thread and the answer, the
+// timeout (no) or ctx (no) decides.
+func (s *Supervisor) askOwner(ctx context.Context, r *run, ap Approval) bool {
+	if ap.Why == "" {
+		ap.Why = s.why(r.ask)
+	}
+	if s.granted(ap.Kind, ap.Target) {
+		s.activity(r.ask, "approval", "auto (♾️ today): "+oneLine(ap.Action, 200), 0)
+		return true
+	}
 	code := newCode()
-	ap := &approval{code: code, ch: r.ask.Chan, th: r.ask.Thread, done: make(chan verdict, 1)}
+	pend := &approval{code: code, ch: r.ask.Chan, th: r.ask.Thread, done: make(chan verdict, 1)}
 	s.mu.Lock()
-	s.pending[code] = ap
+	s.pending[code] = pend
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
@@ -71,15 +148,15 @@ func (s *Supervisor) askOwner(ctx context.Context, r *run, action, detail string
 		s.mu.Unlock()
 	}()
 	owner := s.Chat.User(s.owner).Name
-	s.reply(r.ask.Chan, r.ask.Thread, CardBody(owner, action, detail, code))
+	s.reply(r.ask.Chan, r.ask.Thread, CardBody(s.handleNow(), ap, code))
 	r.live.setStatus("waiting for " + sanitize.Line(owner) + "'s ok…")
-	s.activity(r.ask, "approval", "asked: "+oneLine(action, 200), 0)
+	s.activity(r.ask, "approval", "asked: "+oneLine(ap.Action, 200), 0)
 
 	t := time.NewTimer(s.ApprovalTimeout)
 	defer t.Stop()
 	var v verdict
 	select {
-	case v = <-ap.done:
+	case v = <-pend.done:
 	case <-t.C:
 		s.reply(r.ask.Chan, r.ask.Thread, "⌛ no answer on "+code+", so I'm not doing it")
 	case <-ctx.Done():
@@ -88,18 +165,56 @@ func (s *Supervisor) askOwner(ctx context.Context, r *run, action, detail string
 	if v.yes {
 		said = "yes"
 	}
-	s.activity(r.ask, "approval", said+": "+oneLine(action, 200), 0)
+	s.activity(r.ask, "approval", said+": "+oneLine(ap.Action, 200), 0)
 	if v.yes && v.always {
-		today := s.Now().Format(time.DateOnly)
-		s.queue.update(func(q *queueState) { q.AutoPR = today })
-		s.activity(r.ask, "approval", "♾️ draft PRs approved for the rest of today (say \""+StopAutoPhrase+"\" to stop)", 0)
+		s.grant(ap.Kind, ap.Target)
+		s.activity(r.ask, "approval", "♾️ "+GrantText(Grant{Kind: ap.Kind, Target: ap.Target})+" ok for the rest of today (say \""+StopAutoPhrase+"\" to stop)", 0)
 	}
 	return v.yes
 }
 
-// autoPR reports whether the owner's ♾️ approves draft PRs today.
-func (s *Supervisor) autoPR() bool {
-	return s.queue.get().AutoPR == s.Now().Format(time.DateOnly)
+// GrantText says what a grant covers.
+func GrantText(g Grant) string {
+	switch g.Kind {
+	case KindPost:
+		return "posting in " + g.Target
+	case KindPR:
+		return "draft PRs on " + g.Target
+	case KindIssue:
+		return "issues on " + g.Target
+	case KindTool:
+		return "using " + g.Target
+	}
+	return g.Target
+}
+
+func (s *Supervisor) grant(kind, target string) {
+	today := s.Now().Format(time.DateOnly)
+	s.queue.update(func(q *queueState) {
+		q.Grants = slices.DeleteFunc(q.Grants, func(g Grant) bool { return g.Day != today || g.Kind == kind && g.Target == target })
+		q.Grants = append(q.Grants, Grant{Kind: kind, Target: target, Day: today})
+	})
+	s.saveStatus()
+}
+
+// granted reports whether a ♾️ of today covers kind on target.
+func (s *Supervisor) granted(kind, target string) bool {
+	today := s.Now().Format(time.DateOnly)
+	return slices.ContainsFunc(s.queue.get().Grants, func(g Grant) bool {
+		return g.Day == today && g.Kind == kind && g.Target == target
+	})
+}
+
+// Grants lists today's grants.
+func (s *Supervisor) Grants() []Grant {
+	today := s.Now().Format(time.DateOnly)
+	var out []Grant
+	for _, g := range s.queue.get().Grants {
+		if g.Day == today {
+			out = append(out, g)
+		}
+	}
+	return out
 }
 
 // stopAuto handles an owner's "stop auto-approving": true when the ask was
@@ -108,10 +223,11 @@ func (s *Supervisor) stopAuto(a Ask) bool {
 	if !a.Owner || !strings.Contains(strings.ToLower(a.Msg.Body), StopAutoPhrase) {
 		return false
 	}
-	was := s.autoPR()
-	s.queue.update(func(q *queueState) { q.AutoPR = "" })
+	was := len(s.Grants()) > 0
+	s.queue.update(func(q *queueState) { q.Grants = nil })
+	s.saveStatus()
 	if was {
-		s.reply(a.Chan, a.Thread, "ok, PRs need your tap again ✋")
+		s.reply(a.Chan, a.Thread, "ok, everything needs your tap again ✋")
 		s.activity(a, "approval", "auto-approval stopped", 0)
 	} else {
 		s.reply(a.Chan, a.Thread, "nothing was auto-approved, so we're good")
