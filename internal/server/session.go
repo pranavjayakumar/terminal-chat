@@ -60,6 +60,8 @@ type session struct {
 	agentCap    bool
 	agent       *proto.Agent
 	agentBucket bucket // EphAgent rate, under srv.mu
+	loginKey    []byte // the SSH key (wire) this session logged in with
+	agentKey    bool   // loginKey is an agent key (§15.1)
 	// Voice datagrams (huddle.go); dg is nil unless voice over QUIC.
 	dg           transport.DatagramConn
 	dgOut        chan dgItem
@@ -157,8 +159,12 @@ func (s *Server) handshake(ctx context.Context, sess *session) (proto.User, stri
 		if u.Disabled {
 			return proto.User{}, proto.ByeRevoked, ""
 		}
-		if h.Agent != "" {
-			if code, msg := s.agentLogin(ctx, sess, u, h.Agent); code != "" {
+		sess.loginKey = pk.Marshal()
+		byKey := keyIsAgent(ctx, s.st.db, fp)
+		sess.agentKey = byKey
+		if byKey || h.Agent != "" {
+			// An agent key is never its owner (§15.1).
+			if code, msg := s.agentLogin(ctx, sess, u, h.Agent, byKey); code != "" {
 				return proto.User{}, code, msg
 			}
 		}
@@ -288,6 +294,12 @@ func (s *Server) register(sess *session) bool {
 	defer s.mu.Unlock()
 	if s.disabled[sess.user.ID] {
 		return false
+	}
+	if sess.agent != nil {
+		// A retire that committed since agentLogin looked wins.
+		if a, ok := s.agents[sess.user.ID]; !ok || a.Created != sess.agent.Created {
+			return false
+		}
 	}
 	s.sessions[sess] = struct{}{}
 	if sess.agent != nil { // the agent being here isn't its owner being here

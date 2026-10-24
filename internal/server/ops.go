@@ -53,8 +53,8 @@ var writeOps = map[string]bool{
 	proto.OpInviteCreate: true, proto.OpInviteList: true, proto.OpInviteRevoke: true, proto.OpUserDisable: true, proto.OpUserUpdate: true,
 	proto.OpHookCreate: true, proto.OpHookDelete: true, proto.OpHookList: true,
 	proto.OpDeviceRegister: true, proto.OpDeviceRevoke: true, proto.OpKeyRotate: true,
-	proto.OpKeyShare: true,
-	proto.OpAgentRegister: true, proto.OpAgentUpdate: true, proto.OpAgentRetire: true, proto.OpAgentAccess: true, proto.OpAgentDM: true,
+	proto.OpKeyShare:      true,
+	proto.OpAgentRegister: true, proto.OpAgentUpdate: true, proto.OpAgentRetire: true, proto.OpAgentAccess: true, proto.OpAgentDM: true, proto.OpAgentKey: true,
 }
 
 // e2eOps exist only in sessions that negotiated proto.CapE2E.
@@ -170,6 +170,8 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 		return withArgs(args, func(a proto.AgentAccessArgs) (any, error) { return s.opAgentAccess(ctx, u, a) })
 	case proto.OpAgentDM:
 		return s.opAgentDM(ctx, sess)
+	case proto.OpAgentKey:
+		return withArgs(args, func(a proto.AgentKeyArgs) (any, error) { return s.opAgentKey(ctx, u, a) })
 	case proto.OpInviteCreate:
 		return withArgs(args, func(a proto.InviteCreateArgs) (any, error) { return s.opInviteCreate(ctx, u, a) })
 	case proto.OpInviteList:
@@ -181,7 +183,7 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 	case proto.OpUserDisable:
 		return withArgs(args, func(a proto.UserArgs) (any, error) { return s.opUserDisable(ctx, u, a) })
 	case proto.OpDeviceRegister:
-		return withArgs(args, func(a proto.DeviceRegisterArgs) (any, error) { return s.opDeviceRegister(ctx, u, a) })
+		return withArgs(args, func(a proto.DeviceRegisterArgs) (any, error) { return s.opDeviceRegister(ctx, sess, a) })
 	case proto.OpDeviceRevoke:
 		return withArgs(args, func(a proto.DeviceRevokeArgs) (any, error) { return s.opDeviceRevoke(ctx, u, a) })
 	case proto.OpDevicesList:
@@ -281,6 +283,12 @@ func (s *Server) send(ctx context.Context, sess *session, u proto.User, a proto.
 	} else if err := validBody(a.Body); err != nil {
 		return nil, err
 	}
+	if !proto.ValidVia(a.Via) {
+		return nil, badRequest("invalid via")
+	}
+	if sess == nil || !sess.agentCap {
+		a.Via = ""
+	}
 	sid := s.sid()
 	var res proto.SendRes
 	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
@@ -359,7 +367,7 @@ func (s *Server) send(ctx context.Context, sess *session, u proto.User, a proto.
 		}
 		now := s.now()
 		m := proto.Message{Chan: a.Chan, Author: u.ID, Body: a.Body, Thread: a.Thread, Time: now, Enc: a.Enc, Mid: mid,
-			Agent: s.agentHandleLocked(sess)}
+			Agent: s.agentHandleLocked(sess), Via: a.Via}
 		ev, err := appendEvent(ctx, tx, proto.KMsgNew, a.Chan, u.ID, 0, now, m)
 		if err != nil {
 			return nil, err
@@ -368,8 +376,8 @@ func (s *Server) send(ctx context.Context, sess *session, u proto.User, a proto.
 		if err := patchEventData(ctx, tx, &ev, m); err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO messages (id, chan, author, body, thread, time, nonce, enc, mid, agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			m.ID, m.Chan, m.Author, m.Body, m.Thread, m.Time, a.Nonce, a.Enc, mid, m.Agent); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO messages (id, chan, author, body, thread, time, nonce, enc, mid, agent, via) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			m.ID, m.Chan, m.Author, m.Body, m.Thread, m.Time, a.Nonce, a.Enc, mid, m.Agent, m.Via); err != nil {
 			return nil, err
 		}
 		res.Msg = m.ID
@@ -691,14 +699,18 @@ func (s *Server) opRead(ctx context.Context, u proto.User, a proto.ReadArgs) (an
 // createChannel inserts a channel whose members all join at the chan.new seq.
 func createChannel(ctx context.Context, tx *sql.Tx, now int64, actor uint64, name, kind, topic string, members []uint64, e2e bool) (proto.Channel, proto.Event, error) {
 	var dmkey any
+	dbName := name
 	switch kind {
 	case proto.ChanDM:
 		dmkey = dmKey(members)
 	case proto.ChanAgentDM:
+		// Agent DMs have no name, but a unique one in the database keeps the
+		// previous releases' channels_name index buildable (rollback).
 		dmkey = agentDMKey(actor)
+		dbName = agentDMKey(actor)
 	}
 	r, err := tx.ExecContext(ctx, `INSERT INTO channels (name, kind, topic, created, dmkey, e2e, creator) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		name, kind, topic, now, dmkey, e2e, actor)
+		dbName, kind, topic, now, dmkey, e2e, actor)
 	if err != nil {
 		return proto.Channel{}, proto.Event{}, err
 	}

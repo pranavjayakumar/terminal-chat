@@ -284,7 +284,7 @@ func (c *Client) outboxMsgs(where string, args ...any) []Message {
 
 func (e outboxEntry) message(me uint64, agent string) Message {
 	return Message{
-		Message: proto.Message{Chan: e.chan_, Author: me, Body: e.body, Thread: e.thread, Time: e.time, Agent: agent},
+		Message: proto.Message{Chan: e.chan_, Author: me, Body: e.body, Thread: e.thread, Time: e.time, Agent: agent, Via: e.via},
 		Pending: e.failed == "", Failed: e.failed, Local: e.id,
 	}
 }

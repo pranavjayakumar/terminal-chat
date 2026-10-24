@@ -148,16 +148,16 @@ func (c *Client) Pins(ch uint64) []Message {
 	for rows.Next() {
 		var data []byte
 		var id, mch, author, thread, time, edited, sec sql.NullInt64
-		var body, reactions, agent sql.NullString
+		var body, reactions, agent, via sql.NullString
 		var deleted sql.NullBool
-		if err := rows.Scan(&data, &id, &mch, &author, &body, &thread, &time, &edited, &deleted, &reactions, &agent, &sec); err != nil {
+		if err := rows.Scan(&data, &id, &mch, &author, &body, &thread, &time, &edited, &deleted, &reactions, &agent, &via, &sec); err != nil {
 			break
 		}
 		var m proto.Message
 		switch {
 		case id.Valid:
 			m = proto.Message{ID: uint64(id.Int64), Chan: uint64(mch.Int64), Author: uint64(author.Int64), Body: body.String,
-				Thread: uint64(thread.Int64), Time: time.Int64, Edited: edited.Int64, Deleted: deleted.Bool, Agent: agent.String}
+				Thread: uint64(thread.Int64), Time: time.Int64, Edited: edited.Int64, Deleted: deleted.Bool, Agent: agent.String, Via: via.String}
 			if reactions.String != "" && reactions.String != "{}" {
 				_ = json.Unmarshal([]byte(reactions.String), &m.Reactions)
 			}

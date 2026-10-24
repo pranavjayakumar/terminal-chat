@@ -1,5 +1,7 @@
 package proto
 
+import "time"
+
 // Personal agents, cap agent1 (PROTOCOL.md §15). An agent is a device on its
 // owner's account that logs in with HELLO agent = its handle; the server
 // stamps Message.Agent from that session, so it can't be forged.
@@ -17,6 +19,7 @@ const (
 	OpAgentsList    = "agents.list"
 	OpAgentAccess   = "agent.access"
 	OpAgentDM       = "agent.dm"
+	OpAgentKey      = "agent.key"
 )
 
 // Agent events. KAgentUpdate carries an Agent that was registered, changed
@@ -76,7 +79,8 @@ func ValidAgentState(s string) bool {
 
 // ChanAgentDM is the kind of an owner's private chat with their own agent:
 // one per user, sole member the owner, readable only by the owner's sessions
-// (person and agent devices). Sent only to agent1 sessions.
+// (person and agent devices). Older clients list it as a channel of unknown
+// kind.
 const ChanAgentDM = "agent_dm"
 
 // Agent limits (PROTOCOL.md §15.6).
@@ -88,6 +92,16 @@ const (
 	// AgentEphRate is the most EphAgent frames per second per session.
 	AgentEphRate = 4
 )
+
+// ViaMCP marks a message an outside Claude session posted for its author
+// through tc mcp (Message.Via).
+const ViaMCP = "mcp"
+
+// MaxVia bounds Message.Via.
+const MaxVia = 16
+
+// ValidVia reports whether v may be a Message.Via: "" or a short name.
+func ValidVia(v string) bool { return v == "" || len(v) <= MaxVia && ValidName(v) }
 
 // ValidAgentHandle reports whether h may name a new agent: a ValidName that
 // isn't reserved. Uniqueness across user names and handles is the server's.
@@ -111,10 +125,12 @@ type AgentRegisterArgs struct {
 	Icon   string `msgpack:"icon,omitempty"`
 }
 
-// AgentUpdateArgs changes the caller's active agent; "" leaves a field as is.
+// AgentUpdateArgs changes the caller's active agent; "" leaves a field as
+// is, and ClearIcon removes the icon.
 type AgentUpdateArgs struct {
-	Handle string `msgpack:"handle,omitempty"`
-	Icon   string `msgpack:"icon,omitempty"`
+	Handle    string `msgpack:"handle,omitempty"`
+	Icon      string `msgpack:"icon,omitempty"`
+	ClearIcon bool   `msgpack:"clear_icon,omitempty"`
 }
 
 type AgentRes struct {
@@ -127,13 +143,27 @@ type AgentsRes struct {
 }
 
 // AgentAccessArgs edits the channels the caller's agent sessions may see
-// besides the agent DM. Empty args just read the list.
+// besides the agent DM. Add grants until removed; Temp grants for
+// AgentGrantTTL (a channel already granted keeps its grant). Empty args just
+// read the list.
 type AgentAccessArgs struct {
 	Add    []uint64 `msgpack:"add,omitempty"`
 	Remove []uint64 `msgpack:"remove,omitempty"`
+	Temp   []uint64 `msgpack:"temp,omitempty"`
 }
 
-// AgentAccessRes is the access list after the change.
+// AgentAccessRes is the access list after the change; Expires holds the
+// end (Unix ms) of each temporary grant.
 type AgentAccessRes struct {
-	Chans []uint64 `msgpack:"chans"`
+	Chans   []uint64         `msgpack:"chans"`
+	Expires map[uint64]int64 `msgpack:"expires,omitempty"`
+}
+
+// AgentGrantTTL is how long a temporary grant (a call by mention) lasts.
+const AgentGrantTTL = 7 * 24 * time.Hour
+
+// AgentKeyArgs registers Pubkey (SSH wire format) as the caller's agent's
+// own key (§15.1): it logs in only as that agent, never as the owner.
+type AgentKeyArgs struct {
+	Pubkey []byte `msgpack:"pubkey"`
 }

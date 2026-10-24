@@ -24,10 +24,24 @@ func (c *Client) Send(ch uint64, body string, thread uint64) error {
 	return err
 }
 
+// SendVia is Send marked as posted through via (proto.ViaMCP: an outside
+// Claude session posting as me), shown next to my name (§15.3).
+func (c *Client) SendVia(ch uint64, body string, thread uint64, via string) error {
+	if !proto.ValidVia(via) {
+		return proto.Errf(proto.ErrBadRequest, "invalid via")
+	}
+	_, err := c.sendLocal(ch, body, thread, via)
+	return err
+}
+
 // SendLocal is Send that also returns the queued message's outbox id, so a
 // one-shot caller (tc send) can wait for exactly that message (FlushLocal)
 // instead of the whole outbox, which may hold rows rejected long ago.
 func (c *Client) SendLocal(ch uint64, body string, thread uint64) (int64, error) {
+	return c.sendLocal(ch, body, thread, "")
+}
+
+func (c *Client) sendLocal(ch uint64, body string, thread uint64, via string) (int64, error) {
 	if ch == 0 || body == "" {
 		return 0, errors.New("send: empty channel or body")
 	}
@@ -37,7 +51,7 @@ func (c *Client) SendLocal(ch uint64, body string, thread uint64) (int64, error)
 	if err := c.sendAllowed(ch); err != nil {
 		return 0, err
 	}
-	e := outboxEntry{nonce: make([]byte, 16), chan_: ch, thread: thread, body: body, time: time.Now().UnixMilli()}
+	e := outboxEntry{nonce: make([]byte, 16), chan_: ch, thread: thread, body: body, time: time.Now().UnixMilli(), via: via}
 	rand.Read(e.nonce)
 	if c.needsEnc(ch) {
 		// The server can't check encrypted text (§10): receivers would
@@ -51,8 +65,8 @@ func (c *Client) SendLocal(ch uint64, body string, thread uint64) (int64, error)
 		e.enc = c.sealOffline(e)
 	}
 	var id int64
-	if err := c.db.QueryRow(`INSERT INTO outbox (nonce, chan, thread, body, time, enc, encnonce) VALUES (?, ?, ?, ?, ?, ?, ?)
-		RETURNING id`, e.nonce, ch, thread, body, e.time, e.enc, e.encNonce).Scan(&id); err != nil {
+	if err := c.db.QueryRow(`INSERT INTO outbox (nonce, chan, thread, body, time, enc, encnonce, via) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		RETURNING id`, e.nonce, ch, thread, body, e.time, e.enc, e.encNonce, via).Scan(&id); err != nil {
 		return 0, fmt.Errorf("queueing message: %w", err)
 	}
 	c.outboxChanged(ch, nil)
@@ -182,7 +196,7 @@ func permanent(code string) bool {
 func (c *Client) sendEntry(ctx context.Context, s *session, e outboxEntry) error {
 	if !c.needsEnc(e.chan_) {
 		_, err := s.call(ctx, proto.OpSend,
-			proto.SendArgs{Chan: e.chan_, Body: e.body, Nonce: e.nonce, Thread: e.thread}, c.sentHook(e))
+			proto.SendArgs{Chan: e.chan_, Body: e.body, Nonce: e.nonce, Thread: e.thread, Via: e.sendVia(s)}, c.sentHook(e))
 		return err
 	}
 	if !s.e2e() {
@@ -225,7 +239,7 @@ func (c *Client) sendEntry(ctx context.Context, s *session, e outboxEntry) error
 			e.enc = enc
 		}
 		_, err := s.call(ctx, proto.OpSend,
-			proto.SendArgs{Chan: e.chan_, Nonce: e.nonce, Thread: e.thread, Enc: e.enc}, c.sentHook(e))
+			proto.SendArgs{Chan: e.chan_, Nonce: e.nonce, Thread: e.thread, Enc: e.enc, Via: e.sendVia(s)}, c.sentHook(e))
 		var pe *proto.Error
 		if attempt < 2 && errors.As(err, &pe) && pe.Code == proto.ErrStaleEpoch {
 			stale, e.enc = e.enc, nil
@@ -733,4 +747,12 @@ func (c *Client) ThreadHistory(ctx context.Context, ch, root, before uint64) (mo
 // OpenNotes opens my private notes (a DM with only me).
 func (c *Client) OpenNotes(ctx context.Context) (proto.Channel, error) {
 	return c.OpenDM(ctx, nil)
+}
+
+// sendVia is the entry's via for a server that keeps it (cap agent1).
+func (e outboxEntry) sendVia(s *session) string {
+	if !s.agent1() {
+		return ""
+	}
+	return e.via
 }

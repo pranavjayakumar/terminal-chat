@@ -285,6 +285,42 @@ func TestAgentEndToEnd(t *testing.T) {
 		t.Fatalf("agent retire: %v", err)
 	}
 
+	// Visitor posts (tc mcp) carry via, signed in the encrypted channel.
+	if err := alice.SendVia(gen, "posted by claude", 0, proto.ViaMCP); err != nil {
+		t.Fatal(err)
+	}
+	if err := alice.SendVia(sec.ID, "sealed by claude", 0, proto.ViaMCP); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "bob sees via", func() bool {
+		m1, ok1 := bob.msg(gen, "posted by claude")
+		m2, ok2 := bob.msg(sec.ID, "sealed by claude")
+		return ok1 && ok2 && m1.Via == proto.ViaMCP && m2.Via == proto.ViaMCP && m2.Sec == client.SecE2E
+	})
+
+	// The owner tells it a new name in the DM; the agent renames itself.
+	if _, err := agent.UpdateAgent(ctx, "bolt", "⚡"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "bob sees bolt", func() bool { ag, ok := bob.AgentOf(a); return ok && ag.Handle == "bolt" && ag.Icon == "⚡" })
+	if agent.AgentHandle() != "bolt" || agent.MentionNames()[0] != "bolt" {
+		t.Fatalf("agent handle after rename: %q", agent.AgentHandle())
+	}
+	if cfg, err := client.Open(agent.home); err == nil {
+		h := cfg.Config().Agent
+		cfg.Close()
+		if h != "bolt" {
+			t.Fatalf("config handle after rename: %q", h)
+		}
+	}
+	if err := agent.Send(sec.ID, "bolt here", 0); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "bob reads bolt", func() bool {
+		m, ok := bob.msg(sec.ID, "bolt here")
+		return ok && m.Agent == "bolt" && m.Sec == client.SecE2E
+	})
+
 	// The agent never makes its owner look online.
 	alice.cancel()
 	eventually(t, "alice offline for bob", func() bool { return bob.Presence(a).State == proto.PresOffline })
