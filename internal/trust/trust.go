@@ -181,6 +181,11 @@ const (
 	Endorsed How = "endorsed"
 	// Verified: confirmed out of band (/verify).
 	Verified How = "verified"
+	// Agent: the user's agent's own key, vouched for by an AgentEndorse
+	// under one of the user's other pinned keys (PROTOCOL §15.1). Its
+	// devices are the agent's; it never endorses keys or signs revokes, and
+	// no other reason ever turns into it or out of it.
+	Agent How = "agent"
 )
 
 // rank orders trust levels; re-pinning a key never lowers its level.
@@ -192,6 +197,8 @@ func (h How) rank() int {
 		return 2
 	case Verified:
 		return 3
+	case Agent:
+		return 2
 	}
 	return 0
 }
@@ -568,6 +575,9 @@ func (s *Store) PinKey(sid e2ecrypto.ServerID, user uint64, fp string, wire []by
 		err := tx.QueryRow(`SELECT how FROM pinned_keys WHERE server_id = ? AND user = ? AND fp = ?`,
 			sid[:], i64(user), fp).Scan(&cur)
 		if err == nil {
+			if cur == Agent || how == Agent {
+				return nil
+			}
 			if how.rank() > cur.rank() {
 				_, err = tx.Exec(`UPDATE pinned_keys SET how = ? WHERE server_id = ? AND user = ? AND fp = ?`,
 					how, sid[:], i64(user), fp)
@@ -584,9 +594,9 @@ func (s *Store) PinKey(sid e2ecrypto.ServerID, user uint64, fp string, wire []by
 		}
 		now := time.Now().UnixNano()
 		switch {
-		case n == 0 && how == Endorsed:
+		case n == 0 && (how == Endorsed || how == Agent):
 			return ErrNoAnchor
-		case n == 0 || how == Endorsed:
+		case n == 0 || how == Endorsed || how == Agent:
 			if _, err := tx.Exec(`INSERT INTO pinned_keys (server_id, user, fp, wire, how, first_seen)
 				VALUES (?, ?, ?, ?, ?, ?)`, sid[:], i64(user), fp, wire, how, now); err != nil {
 				return err
@@ -691,8 +701,8 @@ func (s *Store) VerifyKeys(sid e2ecrypto.ServerID, user uint64, fps []string, me
 				return ErrPinsChanged
 			}
 		}
-		if _, err := tx.Exec(`UPDATE pinned_keys SET how = ? WHERE server_id = ? AND user = ?`,
-			Verified, sid[:], i64(user)); err != nil {
+		if _, err := tx.Exec(`UPDATE pinned_keys SET how = ? WHERE server_id = ? AND user = ? AND how != ?`,
+			Verified, sid[:], i64(user), Agent); err != nil {
 			return err
 		}
 		_, err = tx.Exec(`INSERT INTO trust_audit (server_id, time, by, action, user, detail) VALUES (?, ?, ?, ?, ?, ?)`,

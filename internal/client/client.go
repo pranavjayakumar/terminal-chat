@@ -199,6 +199,9 @@ type Config struct {
 	// Agent is set in an agent's home: this client logs in as the user's
 	// agent with this handle (cap agent1).
 	Agent string `json:"agent,omitempty"`
+	// AgentEndorse (msgpack proto.Signed) is the owner's AgentEndorse for
+	// this agent's own key, sent with its device registration (§15.1).
+	AgentEndorse []byte `json:"agent_endorse,omitempty"`
 }
 
 // Client owns one user's connection and cache. All methods are safe for
