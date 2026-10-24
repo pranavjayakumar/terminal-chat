@@ -108,7 +108,9 @@ func (c Claude) Run(ctx context.Context, req Request, on func(Event)) (Result, e
 	}
 	cmd := exec.Command(bin, c.Args(req)...)
 	cmd.Dir = req.Dir
-	cmd.Env = append(engineEnv(os.Environ()), req.Env...)
+	// tc keeps the agent's memory; Claude Code's own auto-memory would
+	// be a second, unchecked one.
+	cmd.Env = append(append(engineEnv(os.Environ()), "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1"), req.Env...)
 	cmd.Stdin = strings.NewReader(req.Prompt)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var stderr bytes.Buffer

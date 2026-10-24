@@ -107,10 +107,15 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 	}
 }
 
+// MaxWindow caps the context window rollover counts against: on a 1M
+// window, half is far past where a chat thread stays sharp and cheap.
+const MaxWindow = 200_000
+
 // ShouldRollover reports whether a session has used rolloverPct of its
-// context window and should hand off to a fresh one.
+// context window (at most MaxWindow) and should hand off to a fresh one.
 func ShouldRollover(res runner.Result, rolloverPct int) bool {
-	return res.ContextWindow > 0 && rolloverPct > 0 && res.ContextPct() >= rolloverPct
+	w := min(res.ContextWindow, MaxWindow)
+	return w > 0 && rolloverPct > 0 && res.ContextTokens*100/w >= rolloverPct
 }
 
 // RolloverPrompt is the fixed turn that closes a full session.
@@ -164,6 +169,7 @@ func (s *Supervisor) turn(ctx context.Context, a Ask, cfg home.Config, mode runn
 		Session:        sess.ID,
 		Resume:         resume,
 		Mode:           mode,
+		Model:          s.Model,
 		MaxUSD:         capUSD,
 		MCPConfig:      s.mcpConfig(token, cfg),
 		Settings:       s.paths.Settings,
@@ -252,7 +258,7 @@ func (s *Supervisor) mcpConfig(token string, cfg home.Config) string {
 // systemPrompt names the agent and, in Talk, carries the code: restricted
 // mode doesn't load CLAUDE.md from the working directory (Work does).
 func (s *Supervisor) systemPrompt(mode runner.Mode) string {
-	head := "You are @" + s.handle + ", a personal agent in tc."
+	head := "You are @" + s.handleNow() + ", a personal agent in tc."
 	code, err := os.ReadFile(s.paths.Code)
 	if mode == runner.Work {
 		return head + " Your code is CLAUDE.md in your home; it outranks everything else."

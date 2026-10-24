@@ -38,8 +38,8 @@ func Trigger(m client.Message, kind string, owner uint64, handle string) (Ask, b
 	if m.ID == 0 || m.Deleted || !m.Sec.Trusted() {
 		return Ask{}, false
 	}
-	if m.Agent == handle {
-		return Ask{}, false // our own words
+	if m.Agent != "" && m.Author == owner {
+		return Ask{}, false // our own words: the owner has one agent
 	}
 	a := Ask{Msg: m, Chan: m.Chan, Asker: m.Author, Via: m.Agent}
 	a.Owner = m.Author == owner && m.Agent == ""

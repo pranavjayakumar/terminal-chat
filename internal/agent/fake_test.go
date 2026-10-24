@@ -49,6 +49,7 @@ type fakeChat struct {
 	live    []liveMsg
 	nextID  uint64
 	echo    bool // posted messages come back as our own msg.new
+	handle  string
 }
 
 func newFakeChat() *fakeChat {
@@ -132,9 +133,27 @@ func (f *fakeChat) AgentOf(user uint64) (proto.Agent, bool) {
 	}
 	return proto.Agent{}, false
 }
+func (f *fakeChat) UpdateAgent(_ context.Context, handle, icon string) (proto.Agent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if handle != "" {
+		f.handle = handle
+	}
+	return proto.Agent{Handle: f.AgentHandleLocked(), Icon: icon, Owner: ownerID}, nil
+}
+func (f *fakeChat) AgentHandleLocked() string {
+	if f.handle == "" {
+		return "rocky"
+	}
+	return f.handle
+}
 func (f *fakeChat) Updates() <-chan client.Update { return f.updates }
 func (f *fakeChat) Status() client.Status         { return client.Status{State: client.Online} }
-func (f *fakeChat) AgentHandle() string           { return "rocky" }
+func (f *fakeChat) AgentHandle() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.AgentHandleLocked()
+}
 func (f *fakeChat) OpenAgentDM(context.Context) (proto.Channel, error) {
 	return proto.Channel{ID: agentDM, Kind: proto.ChanAgentDM}, nil
 }
@@ -145,7 +164,7 @@ func (f *fakeChat) Send(ch uint64, body string, thread uint64) error {
 	var m client.Message
 	if echo {
 		f.nextID++
-		m = client.Message{Message: proto.Message{ID: f.nextID, Chan: ch, Author: ownerID, Thread: thread, Body: body, Agent: "rocky", Time: time.Now().UnixMilli()}}
+		m = client.Message{Message: proto.Message{ID: f.nextID, Chan: ch, Author: ownerID, Thread: thread, Body: body, Agent: f.AgentHandleLocked(), Time: time.Now().UnixMilli()}}
 		f.msgs = append(f.msgs, m)
 	}
 	f.mu.Unlock()

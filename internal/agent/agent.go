@@ -39,6 +39,7 @@ type Chat interface {
 	OpenAgentDM(ctx context.Context) (proto.Channel, error)
 	Send(ch uint64, body string, thread uint64) error
 	SendAgentStatus(ch, thread uint64, state, status, preview string) error
+	UpdateAgent(ctx context.Context, handle, icon string) (proto.Agent, error)
 }
 
 // Memory is the agent's memory store (memory.Store).
@@ -69,6 +70,7 @@ type Supervisor struct {
 	Work   Work
 	// TCBin is the tc binary the engine starts as its MCP server.
 	TCBin   string
+	Model   string // engine model; "" = the runner's default (sonnet)
 	Version string
 	Log     *slog.Logger
 	Now     func() time.Time
@@ -89,7 +91,6 @@ type Supervisor struct {
 
 	mu       sync.Mutex
 	owner    uint64
-	handle   string
 	runs     map[string]*run      // bridge token → run
 	threads  map[string][]Ask     // session key → asks waiting their turn
 	busy     map[string]bool      // session key → a run is going
@@ -151,9 +152,8 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	s.sem = make(chan struct{}, s.MaxRuns)
 	s.runs, s.threads, s.busy = map[string]*run{}, map[string][]Ask{}, map[string]bool{}
 	s.pending, s.branches = map[string]*approval{}, map[string]string{}
-	s.handle = s.Chat.AgentHandle()
 	s.owner = s.Chat.Me().ID
-	if s.handle == "" {
+	if s.handleNow() == "" {
 		return errors.New("this tc home isn't an agent's (no agent handle in its config.json)")
 	}
 
@@ -185,7 +185,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	defer func() {
 		s.setState("stopped")
 	}()
-	s.Log.Info("agent started", "handle", s.handle)
+	s.Log.Info("agent started", "handle", s.handleNow())
 
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
@@ -203,6 +203,9 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		}
 	}
 }
+
+// handleNow is the agent's handle; it follows renames.
+func (s *Supervisor) handleNow() string { return s.Chat.AgentHandle() }
 
 func (s *Supervisor) handleUpdate(ctx context.Context, u client.Update) {
 	st := s.Chat.Status()
@@ -225,12 +228,12 @@ func (s *Supervisor) handleUpdate(ctx context.Context, u client.Update) {
 		}
 	}
 	for _, m := range u.New {
-		if m.Agent == s.handle {
+		if m.Agent != "" && m.Author == s.owner {
 			s.noteOwnMessage(m)
 			continue
 		}
 		cv, _ := s.Chat.Channel(m.Chan)
-		if a, ok := Trigger(m, cv.Kind, s.owner, s.handle); ok {
+		if a, ok := Trigger(m, cv.Kind, s.owner, s.handleNow()); ok {
 			s.accept(ctx, a)
 		}
 	}
@@ -275,7 +278,7 @@ func (s *Supervisor) backlog() []Ask {
 				if x.Time < since {
 					continue
 				}
-				if a, ok := Trigger(x, cv.Kind, s.owner, s.handle); ok {
+				if a, ok := Trigger(x, cv.Kind, s.owner, s.handleNow()); ok {
 					out = append(out, a)
 				}
 			}

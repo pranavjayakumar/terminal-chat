@@ -316,7 +316,8 @@ func TestRollover(t *testing.T) {
 	if r := h.run.requests()[2]; r.Resume || r.Session == reqs[0].Session {
 		t.Fatalf("not fresh: %+v", r)
 	}
-	if !ShouldRollover(runner.Result{ContextTokens: 100, ContextWindow: 200}, 50) || ShouldRollover(runner.Result{ContextTokens: 99, ContextWindow: 200}, 50) || ShouldRollover(runner.Result{ContextTokens: 99}, 50) {
+	if !ShouldRollover(runner.Result{ContextTokens: 100, ContextWindow: 200}, 50) || ShouldRollover(runner.Result{ContextTokens: 99, ContextWindow: 200}, 50) || ShouldRollover(runner.Result{ContextTokens: 99}, 50) ||
+		!ShouldRollover(runner.Result{ContextTokens: 100_000, ContextWindow: 1_000_000}, 50) {
 		t.Fatal("ShouldRollover")
 	}
 }

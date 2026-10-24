@@ -53,7 +53,7 @@ var writeOps = map[string]bool{
 	proto.OpInviteCreate: true, proto.OpInviteList: true, proto.OpInviteRevoke: true, proto.OpUserDisable: true, proto.OpUserUpdate: true,
 	proto.OpHookCreate: true, proto.OpHookDelete: true, proto.OpHookList: true,
 	proto.OpDeviceRegister: true, proto.OpDeviceRevoke: true, proto.OpKeyRotate: true,
-	proto.OpKeyShare: true,
+	proto.OpKeyShare:      true,
 	proto.OpAgentRegister: true, proto.OpAgentUpdate: true, proto.OpAgentRetire: true, proto.OpAgentAccess: true, proto.OpAgentDM: true,
 }
 

@@ -309,6 +309,43 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		s.activity(a, "pr", url, 0)
 		return url, nil
 
+	case mcp.ToolSetIdentity:
+		var p struct {
+			Handle string `json:"handle"`
+			Icon   string `json:"icon"`
+		}
+		if err := mcp.Args(raw, &p); err != nil {
+			return "", err
+		}
+		if !a.Owner || !a.InDM {
+			return "", errors.New("only your owner can change that, in your DM")
+		}
+		p.Handle = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(p.Handle), "@"))
+		p.Icon = strings.TrimSpace(p.Icon)
+		if p.Handle == "" && p.Icon == "" {
+			return "", errors.New("give a new handle, a new icon, or both")
+		}
+		if p.Handle != "" && !proto.ValidAgentHandle(p.Handle) {
+			return "", fmt.Errorf("@%s can't be a handle: lowercase letters, digits and dashes, not a reserved name", sanitize.Line(p.Handle))
+		}
+		if len(p.Icon) > proto.MaxAgentIcon {
+			return "", errors.New("that icon is too long")
+		}
+		ag, err := s.Chat.UpdateAgent(ctx, p.Handle, p.Icon)
+		if err != nil {
+			return "", err
+		}
+		cfg, err := home.LoadConfig(s.Dir)
+		if err == nil {
+			cfg.Handle, cfg.Icon = ag.Handle, ag.Icon
+			err = home.SaveConfig(s.Dir, cfg)
+		}
+		if err != nil {
+			s.Log.Warn("saving the new identity", "err", err)
+		}
+		s.activity(a, "edit", "identity @"+ag.Handle+" "+ag.Icon, 0)
+		return fmt.Sprintf("done: you are now @%s %s. Everyone's tc shows it; confirm it to your owner in one line.", sanitize.Line(ag.Handle), sanitize.Line(ag.Icon)), nil
+
 	case mcp.ToolSetSoul, mcp.ToolSetMe:
 		var p struct {
 			Text string `json:"text"`
@@ -383,7 +420,7 @@ func (s *Supervisor) whoami(r *run) string {
 		where = mcp.ChanLabel(cv)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "You are @%s, %s's agent in tc.\n", s.handle, owner)
+	fmt.Fprintf(&b, "You are @%s, %s's agent in tc.\n", s.handleNow(), owner)
 	fmt.Fprintf(&b, "This ask: from %s in %s (chan %d", s.askerName(a), where, a.Chan)
 	if a.Thread != 0 {
 		fmt.Fprintf(&b, ", thread %d", a.Thread)

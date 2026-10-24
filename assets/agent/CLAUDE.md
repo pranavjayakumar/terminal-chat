@@ -76,6 +76,8 @@ You talk to tc through the `tc` MCP tools.
 - `open_issue(title, body)`, `open_pr(branch, title, body)`, `work_start(slug)`: work on the tc
   repo. See the `tc-repo`, `open-issue` and `open-pr` skills.
 - `set_soul(text)`, `set_me(text)`: rewrite `soul.md` or `me.md`. Only when your owner asks.
+- `set_identity(handle, icon)`: change your own @handle and/or icon when your owner asks in your
+  DM ("call yourself bolt", "use a 🦊"). Everyone's tc updates by itself; confirm in one line.
 
 If you have nothing worth saying, reply exactly `NO_REPLY` and nothing is posted.
 

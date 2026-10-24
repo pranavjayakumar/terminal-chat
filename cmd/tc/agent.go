@@ -104,7 +104,26 @@ func agentSetup(args []string, tcHome string, stdin io.Reader, out io.Writer) er
 		}
 	}
 	if have {
-		fmt.Fprintf(out, "You already have an agent: @%s %s. Setting it up on this computer.\n", sanitize.Line(a.Handle), sanitize.Line(a.Icon))
+		nh := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(*handle)), "@")
+		if nh == a.Handle {
+			nh = ""
+		}
+		ni := strings.TrimSpace(*icon)
+		if ni == a.Icon {
+			ni = ""
+		}
+		if nh != "" && !proto.ValidAgentHandle(nh) {
+			return fmt.Errorf("@%s can't be a handle: use lowercase letters, digits and dashes", sanitize.Line(nh))
+		}
+		if nh != "" || ni != "" {
+			old := a.Handle
+			if a, err = c.UpdateAgent(ctx, nh, ni); err != nil {
+				return fmt.Errorf("renaming @%s: %w", old, err)
+			}
+			fmt.Fprintf(out, "@%s is now @%s %s.\n", sanitize.Line(old), sanitize.Line(a.Handle), sanitize.Line(a.Icon))
+		} else {
+			fmt.Fprintf(out, "You already have an agent: @%s %s. Setting it up on this computer.\n", sanitize.Line(a.Handle), sanitize.Line(a.Icon))
+		}
 	} else {
 		if *handle == "" {
 			def := strings.ToLower(sanitize.Line(c.Me().Name)) + "-agent"
@@ -145,8 +164,13 @@ func agentSetup(args []string, tcHome string, stdin io.Reader, out io.Writer) er
 	if err := home.SaveConfig(dir, cfg); err != nil {
 		return err
 	}
-	if _, err := client.LoginAgent(ctx, tcHome, home.PathsFor(dir).DeviceHome, a.Handle); err != nil {
-		return fmt.Errorf("signing the agent in: %w", err)
+	// An agent device already signed in here keeps its device and keys;
+	// only a missing login or one under an old handle is redone.
+	dev := home.PathsFor(dir).DeviceHome
+	if !deviceLoggedIn(dev, a.Handle) {
+		if _, err := client.LoginAgent(ctx, tcHome, dev, a.Handle); err != nil {
+			return fmt.Errorf("signing the agent in: %w", err)
+		}
 	}
 	if _, err := c.OpenAgentDM(ctx); err != nil {
 		fmt.Fprintf(out, "(couldn't open your DM with @%s yet: %s)\n", sanitize.Line(a.Handle), sanitize.Line(err.Error()))
@@ -184,6 +208,15 @@ func sandboxMissing(mode home.Mode) string {
 		return ""
 	}
 	return "Work and Crew asks need bubblewrap for the sandbox: install it (apt install bubblewrap, dnf install bubblewrap), or switch the agent to Talk mode"
+}
+
+func deviceLoggedIn(dev, handle string) bool {
+	c, err := client.Open(dev)
+	if err != nil {
+		return false
+	}
+	defer c.Close()
+	return c.Config().Agent == handle
 }
 
 func ask(in *bufio.Reader, out io.Writer, q, def string) string {
@@ -258,7 +291,7 @@ func agentRun(ctx context.Context, tcHome string) error {
 	go c.Run(cctx)
 	s := &agent.Supervisor{
 		Dir: dir, Chat: c, Runner: runner.Claude{}, Memory: mem, Work: work.New(dir),
-		TCBin: exe, Version: version, Log: log,
+		TCBin: exe, Version: version, Log: log, Model: os.Getenv("TC_AGENT_MODEL"),
 	}
 	err = s.Run(cctx)
 	if err != nil {
