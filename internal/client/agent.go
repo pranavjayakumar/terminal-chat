@@ -267,18 +267,37 @@ func (c *Client) FetchAgents(ctx context.Context) ([]proto.Agent, error) {
 	if err := c.requireCap(proto.CapAgent, "agents"); err != nil {
 		return nil, err
 	}
+	c.agentsMu.Lock()
+	gen := c.agentGen
+	c.agentsMu.Unlock()
 	var r proto.AgentsRes
 	if err := c.call(ctx, proto.OpAgentsList, proto.Empty{}, &r, nil); err != nil {
 		return nil, err
 	}
-	c.replaceAgents(r.Agents)
+	c.replaceAgentsAt(r.Agents, gen)
 	return r.Agents, nil
 }
 
 func (c *Client) replaceAgents(agents []proto.Agent) {
 	c.agentsMu.Lock()
-	clear(c.agents)
+	gen := c.agentGen
+	c.agentsMu.Unlock()
+	c.replaceAgentsAt(agents, gen)
+}
+
+// replaceAgentsAt swaps in a list read when the cache was at gen. An
+// agent.update applied since then is newer than the list, so the list is
+// only merged in and never drops what that event added.
+func (c *Client) replaceAgentsAt(agents []proto.Agent, gen uint64) {
+	c.agentsMu.Lock()
+	stale := c.agentGen != gen
+	if !stale {
+		clear(c.agents)
+	}
 	for _, a := range agents {
+		if old, ok := c.agents[a.Owner]; stale && ok && (old.Handle != a.Handle || old.Retired != a.Retired) {
+			continue
+		}
 		c.putAgentLocked(a)
 	}
 	c.agentsMu.Unlock()
@@ -785,6 +804,7 @@ func (c *Client) applyAgentEvent(q dbtx, ev proto.Event, u *Update) {
 			return
 		}
 		c.agentsMu.Lock()
+		c.agentGen++
 		old, had := c.agents[a.Owner]
 		if had && old.Retired == 0 && a.Retired == 0 {
 			a.Online = old.Online // events never carry it
