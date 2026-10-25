@@ -101,6 +101,11 @@ func (c Claude) Run(ctx context.Context, req Request, on func(Event)) (Result, e
 	bin := c.Bin
 	if bin == "" {
 		bin = "claude"
+		if _, err := exec.LookPath(bin); err != nil {
+			if err := EnsurePath(ctx); err != nil {
+				return Result{}, err
+			}
+		}
 	}
 	grace := c.Grace
 	if grace <= 0 {

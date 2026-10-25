@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/skailama/tc/internal/agent"
@@ -52,15 +51,7 @@ func backgroundOn(ctx context.Context, out io.Writer, m background.Manager, home
 	if _, err := os.Stat(filepath.Join(home, "config.json")); err != nil {
 		return errors.New("not logged in here yet: run tc join <invite> (or tc login) first, then tc background on")
 	}
-	if _, err := background.OSSender(); err != nil {
-		return err
-	}
-	// launchd would create its stderr log following symlinks, with the
-	// default umask: make it ourselves first.
-	if f, err := os.OpenFile(filepath.Join(home, "background.err.log"), os.O_WRONLY|os.O_CREATE|syscall.O_NOFOLLOW, 0o600); err == nil {
-		f.Close()
-	}
-	if err := m.Install(ctx); err != nil {
+	if err := background.TurnOn(ctx, m, home); err != nil {
 		return err
 	}
 	running := waitFor(5*time.Second, func() bool { return background.Running(home) })

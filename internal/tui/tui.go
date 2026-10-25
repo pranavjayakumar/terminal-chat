@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/skailama/tc/internal/agent"
 	"github.com/skailama/tc/internal/agent/home"
+	"github.com/skailama/tc/internal/agent/runner"
 	"github.com/skailama/tc/internal/alert"
 	"github.com/skailama/tc/internal/background"
 	"github.com/skailama/tc/internal/client"
@@ -148,7 +150,10 @@ func Run(ctx context.Context, c *client.Client, version string) error {
 	}
 	o.AgentDir = home.Dir(c.Home())
 	o.AgentSetup = func(ctx context.Context, handle, icon string) error {
-		return setupAgentHome(ctx, c.Home(), c.Config().Addr, handle, icon)
+		if err := setupAgentHome(ctx, c.Home(), c.Config().Addr, handle, icon); err != nil {
+			return fmt.Errorf("setting up its home failed: %w · run tc agent setup", err)
+		}
+		return startAgentHost(ctx, c.Home())
 	}
 	if h := notify.DetectHerdr(env); h != nil {
 		o.Herdr = h
@@ -237,6 +242,22 @@ func awayAfter(v string) time.Duration {
 		return 0
 	}
 	return time.Duration(n * float64(time.Minute))
+}
+
+// startAgentHost turns on tc background, which runs the agent, and checks
+// that the Claude Code it runs on can be found.
+func startAgentHost(ctx context.Context, tcHome string) error {
+	if err := runner.EnsurePath(ctx); err != nil {
+		return err
+	}
+	m, err := background.Local(tcHome)
+	if err == nil {
+		err = background.TurnOn(ctx, m, tcHome)
+	}
+	if err != nil {
+		return fmt.Errorf("tc background, which runs it, didn't start: %w · run tc background on", err)
+	}
+	return nil
 }
 
 // setupAgentHome makes a registered agent's home on this computer, as `tc

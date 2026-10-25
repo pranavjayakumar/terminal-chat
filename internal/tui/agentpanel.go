@@ -989,7 +989,7 @@ func (m *Model) submitSetup() tea.Cmd {
 		}
 		if setup != nil {
 			if err := setup(ctx, a.Handle, a.Icon); err != nil {
-				return agentSetupMsg{a: a, err: fmt.Errorf("%s is registered, but its home: %w · run tc agent setup", a.Handle, err)}
+				return agentSetupMsg{a: a, err: fmt.Errorf("%s is registered, but %w", a.Handle, err)}
 			}
 		}
 		return agentSetupMsg{a: a}

@@ -304,3 +304,17 @@ func TestLogRotates(t *testing.T) {
 		t.Fatalf("rotation: %v %v %v", a, b, err)
 	}
 }
+
+func TestServiceKeepsLoginPath(t *testing.T) {
+	sv, err := NewService(ServiceSpec{GOOS: "darwin", Home: "/Users/jo/.config/tc", DefaultHome: true, Exe: "/Users/jo/.local/bin/tc", UserHome: "/Users/jo",
+		Getenv: env(map[string]string{"PATH": "/Users/jo/.local/bin:bin:/opt/homebrew/bin:/Users/jo/.local/bin:/usr/bin"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sv.Env["PATH"], "/Users/jo/.local/bin:/opt/homebrew/bin:/usr/bin"; got != want {
+		t.Fatalf("PATH = %q, want %q", got, want)
+	}
+	if !strings.Contains(string(sv.Content()), "<key>PATH</key>") {
+		t.Fatal("the plist doesn't set PATH")
+	}
+}
