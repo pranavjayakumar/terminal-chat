@@ -413,12 +413,20 @@ func (h *harness) waitFor(what string, cond func() bool) {
 // call makes a tool call as the engine of the run in progress would.
 func (h *harness) call(tool string, args any) mcp.BridgeRes {
 	h.t.Helper()
+	return h.callIn(0, tool, args)
+}
+
+// callIn calls tool as the run answering an ask in ch (0 = any run).
+func (h *harness) callIn(ch uint64, tool string, args any) mcp.BridgeRes {
+	h.t.Helper()
 	var token string
 	h.waitFor("a run", func() bool {
 		h.s.mu.Lock()
 		defer h.s.mu.Unlock()
-		for k := range h.s.runs {
-			token = k
+		for k, r := range h.s.runs {
+			if ch == 0 || r.ask.Chan == ch {
+				token = k
+			}
 		}
 		return token != ""
 	})

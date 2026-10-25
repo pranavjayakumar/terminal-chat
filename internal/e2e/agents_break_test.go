@@ -72,7 +72,7 @@ func TestAgents_BreakLiveStatusOutlivesAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, "agent sees #general", func() bool { _, ok := agent.Channel(gen); return ok })
-	eventually(t, "bob knows the agent", func() bool { a, ok := bob.AgentOf(alice.Me().ID); return ok && a.Online })
+	eventually(t, "bob knows the agent", func() bool { a, ok := bob.AgentOf(alice.Me().ID); return ok && a.Handle == "rocky" })
 	eventually(t, "bob sees the preview", func() bool {
 		if len(bob.AgentStatus(gen, 0)) == 1 {
 			return true
@@ -103,7 +103,7 @@ func TestAgents_BreakLiveStatusOutlivesRetire(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, "agent sees #general", func() bool { _, ok := agent.Channel(gen); return ok })
-	eventually(t, "bob knows the agent", func() bool { a, ok := bob.AgentOf(alice.Me().ID); return ok && a.Online })
+	eventually(t, "bob knows the agent", func() bool { a, ok := bob.AgentOf(alice.Me().ID); return ok && a.Handle == "rocky" })
 	eventually(t, "bob sees the status", func() bool {
 		if len(bob.AgentStatus(gen, 0)) == 1 {
 			return true

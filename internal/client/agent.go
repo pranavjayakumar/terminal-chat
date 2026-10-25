@@ -664,6 +664,7 @@ func (c *Client) agentEphemeral(e proto.Ephemeral) {
 	}
 	if e.Kind == proto.EphAgentPresence {
 		c.agentsMu.Lock()
+		c.agentPres[e.User] = e.State == proto.PresOnline // the agent's record may come after this
 		a, ok := c.agents[e.User]
 		if ok {
 			a.Online = e.State == proto.PresOnline
@@ -787,6 +788,8 @@ func (c *Client) applyAgentEvent(q dbtx, ev proto.Event, u *Update) {
 		old, had := c.agents[a.Owner]
 		if had && old.Retired == 0 && a.Retired == 0 {
 			a.Online = old.Online // events never carry it
+		} else if !had && a.Retired == 0 {
+			a.Online = c.agentPres[a.Owner]
 		}
 		c.putAgentLocked(a)
 		c.agentsMu.Unlock()
