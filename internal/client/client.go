@@ -273,6 +273,7 @@ type Client struct {
 	agents     map[uint64]proto.Agent            // owner → their agent, retired ones included
 	agentLive  map[agentKey]map[uint64]AgentLive // (chan, thread) → owner → live status
 	agentPres  map[uint64]bool                   // owner → last agent presence, kept for agents not cached yet
+	agentGen   uint64                            // bumped by every agent.update applied; a list fetched across one is stale
 	granting   map[uint64]bool                   // channels grantOnMention is adding
 	agentPend  map[agentKey]proto.Ephemeral      // SendAgentStatus's queue, latest per thread
 	agentOrder []agentKey
