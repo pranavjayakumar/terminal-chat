@@ -95,6 +95,11 @@ func NewService(s ServiceSpec) (Service, error) {
 		}
 		sv.Env[k] = v
 	}
+	// The service manager's PATH is bare (/usr/bin:/bin…): the agent it
+	// runs needs this login's, where claude, node, git and gh live.
+	if p := servicePath(s.Getenv("PATH")); p != "" {
+		sv.Env["PATH"] = p
+	}
 	switch s.GOOS {
 	case "darwin":
 		sv.Label = launchdLabel
@@ -120,6 +125,23 @@ func NewService(s ServiceSpec) (Service, error) {
 		return Service{}, fmt.Errorf("tc background needs macOS or Linux (this is %s)", s.GOOS)
 	}
 	return sv, nil
+}
+
+// servicePath keeps PATH's absolute entries, once each.
+func servicePath(path string) string {
+	if hasControl(path) {
+		return ""
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, d := range filepath.SplitList(path) {
+		if !filepath.IsAbs(d) || seen[d] {
+			continue
+		}
+		seen[d] = true
+		out = append(out, d)
+	}
+	return strings.Join(out, string(filepath.ListSeparator))
 }
 
 func hasControl(s string) bool {
@@ -310,6 +332,21 @@ func (m Manager) Install(ctx context.Context) error {
 		_, err := m.Run(ctx, "systemctl", "--user", "restart", m.unitName())
 		return err
 	}
+}
+
+// TurnOn installs and (re)starts the service for TC_HOME home, as `tc
+// background on` does. Running it again picks up this login's PATH and
+// binary.
+func TurnOn(ctx context.Context, m Manager, home string) error {
+	if _, err := OSSender(); err != nil {
+		return err
+	}
+	// launchd would create its stderr log following symlinks, with the
+	// default umask: make it ourselves first.
+	if f, err := os.OpenFile(filepath.Join(home, "background.err.log"), os.O_WRONLY|os.O_CREATE|syscall.O_NOFOLLOW, 0o600); err == nil {
+		f.Close()
+	}
+	return m.Install(ctx)
 }
 
 // Uninstall stops the service and removes its file. Nothing installed is

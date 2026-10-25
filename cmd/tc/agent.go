@@ -184,24 +184,22 @@ func agentSetup(args []string, tcHome string, stdin io.Reader, out io.Writer) er
 	if _, err := c.OpenAgentDM(ctx); err != nil {
 		fmt.Fprintf(out, "(couldn't open your DM with @%s yet: %s)\n", sanitize.Line(a.Handle), sanitize.Line(err.Error()))
 	}
-	if _, err := exec.LookPath("claude"); err != nil {
-		fmt.Fprintln(out, "Note: Claude Code (claude) isn't on your PATH. The agent runs on it with your Claude subscription:")
-		fmt.Fprintln(out, "  install it from https://claude.com/claude-code, then run claude once to sign in.")
+	if err := runner.EnsurePath(ctx); err != nil {
+		fmt.Fprintln(out, "Note: the agent runs on Claude Code with your Claude subscription, and", err.Error())
 	}
 	if moved {
 		fmt.Fprintln(out, "This computer is now the agent's home: it stops answering from the old one.")
 	}
 	fmt.Fprintf(out, "@%s lives on this computer and wakes when someone @mentions it or you DM it.\n", sanitize.Line(a.Handle))
 	m, err := background.Local(tcHome)
-	if err == nil && m.Installed() {
-		if err := m.Restart(ctx); err != nil {
-			fmt.Fprintln(out, "Restart tc background to start it: tc background on")
-		} else {
-			fmt.Fprintln(out, "tc background runs it from now on. Say hi in your agent DM.")
-		}
+	if err == nil {
+		err = background.TurnOn(ctx, m, tcHome)
+	}
+	if err != nil {
+		fmt.Fprintf(out, "tc background, which runs the agent, didn't start: %s\n", sanitize.Line(err.Error()))
+		fmt.Fprintln(out, "Start it with: tc background on")
 	} else {
-		fmt.Fprintln(out, "Turn on tc background on this computer: tc background on")
-		fmt.Fprintln(out, "It runs the agent, and lets it see channels where someone @mentions it while tc is closed.")
+		fmt.Fprintln(out, "tc background is on and runs it from now on. Say hi in your agent DM.")
 	}
 	return nil
 }
@@ -307,6 +305,9 @@ func agentRun(ctx context.Context, tcHome string) error {
 	}
 	if err := home.EnsureWith(dir, home.Options{ExtraDomains: serverHosts(c.Config().Addr)}); err != nil {
 		return err
+	}
+	if err := runner.EnsurePath(ctx); err != nil {
+		log.Warn("claude not found", "err", err, "path", os.Getenv("PATH"))
 	}
 	if msg := sandboxMissing(cfg.Mode); msg != "" {
 		log.Warn(msg)
