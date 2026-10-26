@@ -7,14 +7,17 @@ package voice
 #include <opus.h>
 
 // opus_*_ctl are variadic, which cgo can't call: wrap what we use.
-static int tc_enc_setup(OpusEncoder *e) {
+static int tc_enc_setup(OpusEncoder *e, int bitrate, int complexity, int loss) {
 	int err;
-	if ((err = opus_encoder_ctl(e, OPUS_SET_BITRATE(24000))) != OPUS_OK) return err;
+	if ((err = opus_encoder_ctl(e, OPUS_SET_BITRATE(bitrate))) != OPUS_OK) return err;
 	if ((err = opus_encoder_ctl(e, OPUS_SET_VBR(1))) != OPUS_OK) return err;
 	if ((err = opus_encoder_ctl(e, OPUS_SET_INBAND_FEC(1))) != OPUS_OK) return err;
-	if ((err = opus_encoder_ctl(e, OPUS_SET_PACKET_LOSS_PERC(10))) != OPUS_OK) return err;
-	if ((err = opus_encoder_ctl(e, OPUS_SET_COMPLEXITY(5))) != OPUS_OK) return err;
+	if ((err = opus_encoder_ctl(e, OPUS_SET_PACKET_LOSS_PERC(loss))) != OPUS_OK) return err;
+	if ((err = opus_encoder_ctl(e, OPUS_SET_COMPLEXITY(complexity))) != OPUS_OK) return err;
 	return opus_encoder_ctl(e, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
+}
+static int tc_enc_loss(OpusEncoder *e, int loss) {
+	return opus_encoder_ctl(e, OPUS_SET_PACKET_LOSS_PERC(loss));
 }
 */
 import "C"
@@ -26,7 +29,28 @@ import (
 	"unsafe"
 )
 
-type opusCodec struct{}
+// Encoder settings (docs/VOICE.md "Codec"). 32 kbit/s keeps Opus in
+// fullband with in-band FEC on; at 24 kbit/s FEC pushed it down to
+// super-wideband and took bits from the primary frame. Complexity 9 costs
+// well under a millisecond a frame (TestOpusQuality logs it).
+const (
+	opusBitrate    = 32000
+	opusComplexity = 9
+	// opusLossInit is the loss FEC protects against until the engine has
+	// measured some (setLoss).
+	opusLossInit = 5
+)
+
+// opusCodec is libopus; zero value = the settings above. The other fields
+// exist so tests can compare against older settings.
+type opusCodec struct{ bitrate, complexity, loss int }
+
+func (c opusCodec) settings() (bitrate, complexity, loss int) {
+	if c.bitrate == 0 {
+		return opusBitrate, opusComplexity, opusLossInit
+	}
+	return c.bitrate, c.complexity, c.loss
+}
 
 type opusEnc struct{ p *C.OpusEncoder }
 type opusDec struct{ p *C.OpusDecoder }
@@ -35,13 +59,14 @@ func opusErr(code C.int) error {
 	return fmt.Errorf("opus: %s", C.GoString(C.opus_strerror(code)))
 }
 
-func (opusCodec) NewEncoder() (Encoder, error) {
+func (c opusCodec) NewEncoder() (Encoder, error) {
+	br, cx, loss := c.settings()
 	var code C.int
 	p := C.opus_encoder_create(SampleRate, 1, C.OPUS_APPLICATION_VOIP, &code)
 	if code != C.OPUS_OK || p == nil {
 		return nil, opusErr(code)
 	}
-	if code = C.tc_enc_setup(p); code != C.OPUS_OK {
+	if code = C.tc_enc_setup(p, C.int(br), C.int(cx), C.int(loss)); code != C.OPUS_OK {
 		C.opus_encoder_destroy(p)
 		return nil, opusErr(code)
 	}
@@ -72,6 +97,33 @@ func (e *opusEnc) Encode(pcm []int16, out []byte) (int, error) {
 		return 0, opusErr(n)
 	}
 	return int(n), nil
+}
+
+// SetLoss tells FEC the packet loss to protect against, in percent (0
+// turns redundancy off: a clean link spends no bits on it).
+func (e *opusEnc) SetLoss(pct int) {
+	C.tc_enc_loss(e.p, C.int(max(0, min(100, pct))))
+	runtime.KeepAlive(e)
+}
+
+// packetBandwidth names the audio bandwidth an Opus packet was coded with.
+func packetBandwidth(p []byte) string {
+	if len(p) == 0 {
+		return "?"
+	}
+	switch C.opus_packet_get_bandwidth((*C.uchar)(unsafe.Pointer(&p[0]))) {
+	case C.OPUS_BANDWIDTH_NARROWBAND:
+		return "NB"
+	case C.OPUS_BANDWIDTH_MEDIUMBAND:
+		return "MB"
+	case C.OPUS_BANDWIDTH_WIDEBAND:
+		return "WB"
+	case C.OPUS_BANDWIDTH_SUPERWIDEBAND:
+		return "SWB"
+	case C.OPUS_BANDWIDTH_FULLBAND:
+		return "FB"
+	}
+	return "?"
 }
 
 func (d *opusDec) decode(data []byte, pcm []int16, fec C.int) (int, error) {

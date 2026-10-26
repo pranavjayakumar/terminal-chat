@@ -158,8 +158,8 @@ func TestEngineMixAndSpeaking(t *testing.T) {
 		}
 	}
 	f := r.Playout()
-	if f[0] != 32767 {
-		t.Fatalf("mix should clip to 32767, got %d", f[0])
+	if f[0] != limitCeil {
+		t.Fatalf("40000 should be limited to %d, got %d", limitCeil, f[0])
 	}
 	if sp := r.Speaking(); !sp[10] || !sp[20] || sp[30] {
 		t.Fatalf("speaking %v", sp)
