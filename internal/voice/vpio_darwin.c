@@ -16,7 +16,7 @@
 
 #include "vpio_darwin.h"
 
-extern void tcVPIOCallback(uintptr_t handle, int16_t *out, int16_t *in, uint32_t n);
+extern void tcVPIOCallback(uintptr_t handle, int16_t *out, uint32_t nout, int16_t *in, uint32_t nin);
 
 #define RING 32768            // ~680 ms of mic audio; a power of two, so (w + i) % RING survives uint32 wrap
 #define MAX_LAG (48000 / 10)  // drop mic backlog beyond 100 ms
@@ -69,9 +69,11 @@ static OSStatus render_cb(void *ref, AudioUnitRenderActionFlags *flags, const Au
 	uint32_t have = w - r;
 	if (have > frames) have = frames;
 	for (uint32_t i = 0; i < have; i++) v->in[i] = v->ring[(r + i) % RING];
-	memset(v->in + have, 0, (frames - have) * sizeof(int16_t));
 	atomic_store_explicit(&v->r, r + have, memory_order_release);
-	tcVPIOCallback(v->handle, out, v->in, frames);
+	// Only the samples the mic delivered: padding a short read with zeros
+	// would cut gaps into the voice whenever the input and output periods
+	// differ (a Bluetooth headset mic, a resampled device), heard as crackle.
+	tcVPIOCallback(v->handle, out, frames, v->in, have);
 	return noErr;
 }
 
@@ -85,7 +87,7 @@ void tc_vpio_close(tc_vpio *v) {
 	free(v);
 }
 
-tc_vpio *tc_vpio_open(uintptr_t handle, int32_t *status) {
+tc_vpio *tc_vpio_open(uintptr_t handle, int agc, int32_t *status) {
 	OSStatus st;
 	tc_vpio *v = calloc(1, sizeof *v);
 	if (!v) { *status = -1; return NULL; }
@@ -123,6 +125,12 @@ tc_vpio *tc_vpio_open(uintptr_t handle, int32_t *status) {
 	if ((st = AudioUnitSetProperty(v->au, kAudioOutputUnitProperty_SetInputCallback, kAudioUnitScope_Global, 1, &in, sizeof in)) != noErr) goto fail;
 	AURenderCallbackStruct out = {.inputProc = render_cb, .inputProcRefCon = v};
 	if ((st = AudioUnitSetProperty(v->au, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &out, sizeof out)) != noErr) goto fail;
+
+	// Apple's AGC pumps the level and dulls the voice; Opus and the far
+	// end's volume cope with a steady mic level better. Echo cancellation
+	// stays on. Best effort: an old unit without the property keeps AGC.
+	UInt32 agcOn = agc ? 1 : 0;
+	AudioUnitSetProperty(v->au, kAUVoiceIOProperty_VoiceProcessingEnableAGC, kAudioUnitScope_Global, 0, &agcOn, sizeof agcOn);
 
 #if defined(MAC_OS_VERSION_14_0) && MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_VERSION_14_0
 	// By default voice processing ducks every other app's audio hard while

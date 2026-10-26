@@ -10,7 +10,9 @@ import "C"
 
 import (
 	"fmt"
+	"os"
 	"runtime/cgo"
+	"strings"
 	"sync"
 	"unsafe"
 )
@@ -25,7 +27,12 @@ type vpio struct {
 func openVPIO(cb func(out, in []int16)) (Duplex, error) {
 	h := cgo.NewHandle(cb)
 	var st C.int32_t
-	v := C.tc_vpio_open(C.uintptr_t(h), &st)
+	// TC_VOICE_AGC=on brings back Apple's AGC (off by default: it dulls voice).
+	agc := C.int(0)
+	if strings.EqualFold(os.Getenv("TC_VOICE_AGC"), "on") {
+		agc = 1
+	}
+	v := C.tc_vpio_open(C.uintptr_t(h), agc, &st)
 	if v == nil {
 		h.Delete()
 		return nil, fmt.Errorf("voice processing unit: OSStatus %d", int32(st))
@@ -44,9 +51,9 @@ func (d *vpio) Close() error {
 }
 
 //export tcVPIOCallback
-func tcVPIOCallback(h C.uintptr_t, out, in *C.int16_t, n C.uint32_t) {
+func tcVPIOCallback(h C.uintptr_t, out *C.int16_t, nout C.uint32_t, in *C.int16_t, nin C.uint32_t) {
 	cb := cgo.Handle(h).Value().(func(out, in []int16))
-	o := unsafe.Slice((*int16)(unsafe.Pointer(out)), int(n))
-	i := unsafe.Slice((*int16)(unsafe.Pointer(in)), int(n))
+	o := unsafe.Slice((*int16)(unsafe.Pointer(out)), int(nout))
+	i := unsafe.Slice((*int16)(unsafe.Pointer(in)), int(nin))
 	cb(o, i)
 }
