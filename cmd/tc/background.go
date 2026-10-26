@@ -9,9 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/skailama/tc/internal/agent"
 	"github.com/skailama/tc/internal/alert"
 	"github.com/skailama/tc/internal/background"
 	"github.com/skailama/tc/internal/client"
@@ -51,15 +51,7 @@ func backgroundOn(ctx context.Context, out io.Writer, m background.Manager, home
 	if _, err := os.Stat(filepath.Join(home, "config.json")); err != nil {
 		return errors.New("not logged in here yet: run tc join <invite> (or tc login) first, then tc background on")
 	}
-	if _, err := background.OSSender(); err != nil {
-		return err
-	}
-	// launchd would create its stderr log following symlinks, with the
-	// default umask: make it ourselves first.
-	if f, err := os.OpenFile(filepath.Join(home, "background.err.log"), os.O_WRONLY|os.O_CREATE|syscall.O_NOFOLLOW, 0o600); err == nil {
-		f.Close()
-	}
-	if err := m.Install(ctx); err != nil {
+	if err := background.TurnOn(ctx, m, home); err != nil {
 		return err
 	}
 	running := waitFor(5*time.Second, func() bool { return background.Running(home) })
@@ -182,6 +174,21 @@ func backgroundRun(ctx context.Context, home string) error {
 	if !filepath.IsAbs(exe) {
 		exe, _ = os.Executable()
 	}
+	// The personal agent's supervisor runs beside the notifier, also while
+	// the chat window is open, and stops with it.
+	actx, stopAgent := context.WithCancel(ctx)
+	agentDone := make(chan struct{})
+	go func() {
+		defer close(agentDone)
+		background.Supervise(actx, background.Child{
+			Name: "agent", Path: exe, Args: []string{"agent", "run"},
+			Want: func() bool { return agent.HomeHere(home) }, Stdout: logw, Log: log,
+		})
+	}()
+	defer func() {
+		stopAgent()
+		<-agentDone
+	}()
 	err = background.Run(ctx, background.Config{Home: home, Version: version, Env: alert.OSEnv(), Log: log, Exe: exe})
 	if errors.Is(err, background.ErrBinaryChanged) {
 		return nil // the service manager starts the new binary

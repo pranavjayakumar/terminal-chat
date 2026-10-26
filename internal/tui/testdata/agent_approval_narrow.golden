@@ -1,0 +1,30 @@
+                                            
+ Thread #general                          ✕ 
+                                            
+ │ bob  20:41                               
+ │ can we get /poll? picking dinner         
+ │ took 43 messages                         
+ │ ↳ 2 replies                              
+                                            
+ ─────────────── 2 replies ──────────────── 
+                                            
+ │ alice                                    
+ │ @rocky add /poll to tc                   
+ │ 20:42 ✓                                  
+                                            
+ ┆ ▟▙ Rocky ⟡  20:42                        
+ ┆ Rocky wants to open a draft PR on t…     
+ ┆ ▏ plan for /poll, about 15 min and …     
+ ┆ ▏ proto poll op + vote event             
+ ┆ ▏ tests unit + e2e, then a draft PR      
+ ┆ why: alice asked in #general: "@roc…     
+ ┆ ▐ 1 open it ▌                            
+ ┆ ▐ 2 open, and don't ask again toda…▌     
+ ┆ ▐ 3 don't ▌                              
+ ┆ only you can answer · select it, th…     
+                                            
+ ╭─ reply ────────────────────────────────╮ 
+ │ reply in thread                        │ 
+ ╰──── ⌥K commands · ⌥⏎ newline · ⏎ send ─╯ 
+                                            
+  tc  #general            F1 keys   ● quic  

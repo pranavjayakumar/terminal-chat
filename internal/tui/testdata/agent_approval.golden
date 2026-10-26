@@ -1,0 +1,40 @@
+                        │                                                                                                                   
+  tc · 0 online         │  #general — team-wide chatter about everything that matte…   ⌕   ◉ 3    Thread #general                        ✕  
+                        │                                                                                                                   
+                        │   loading older messages…                                                                                         
+  ⌕ Jump to…        ⌥K  │                                                                                                                   
+                        │                                                                                                                   
+  Channels              │                                                                                                                   
+  # backend          3  │                                                                                                                   
+▎ # general             │                                                                                                                   
+  # secret          @1  │                                                                                                                   
+                        │                                                                                                                   
+  Direct                │                                                                         ──────────────── Today ─────────────────  
+  ◐ bob                 │                                                                                                                   
+   └ ◡◡ Juno 💤         │                                                                         │ bob  20:41                              
+                        │  ────────────────────────────── Today ──────────────────────────────    │ can we get /poll? picking dinner        
+                        │                                                                         │ took 43 messages                        
+                        │  │ bob  20:37                                                           │ ↳ 2 replies                             
+                        │  │ my manager replied to my 3-page proposal with "let's revisit       │                                           
+                        │  │ after Q4 👍"                                                       │ ────────────── 2 replies ───────────────  
+                        │                                                                       │                                           
+                        │  │ carol  20:38                                                       │ │ alice                                   
+                        │  │ @rocky what is he really saying?                                   │ │ @rocky add /poll to tc                  
+                        │                                                                         │ 20:42 ✓                                 
+                        │  ┆ ▟▙ Rocky ⟡ · Alice's agent  20:39                                                                              
+                        │  ┆ translation: no, but politely.                                       ┆ ▟▙ Rocky ⟡  20:42                       
+                        │  ┆ "revisit after Q4" is where proposals go to rest.                    ┆ Rocky wants to open a draft PR on…      
+                        │                                                                         ┆ ▏ plan for /poll, about 15 min an…      
+                        │  │ alice                                                                ┆ ▏ proto poll op + vote event            
+                        │  │ lol                                                                  ┆ ▏ tests unit + e2e, then a draft …      
+                        │  │ 20:40 ✓                                                              ┆ why: alice asked in #general: "@r…      
+                        │                                                                         ┆ ▐ 1 open it ▌                           
+                        │  │ bob  20:41                                                           ┆ ▐ 2 open, and don't ask again to…▌      
+                        │  │ can we get /poll? picking dinner took 43 messages                    ┆ ▐ 3 don't ▌                             
+                        │  │ ↳ 2 replies                                                          ┆ only you can answer · select it, …      
+                        │                                                                                                                   
+                        │  ╭─ #general ──────────────────────────────────────────────────────╮    ╭─ reply ──────────────────────────────╮  
+                        │  │ Esc closes the thread                                           │    │ reply in thread                      │  
+  ● alice offline    ⚙  │  ╰─────────────────────────────────────────────────────────────────╯    ╰── ⌥K commands · ⌥⏎ newline · ⏎ send ─╯  
+   └ ▟▙ Rocky           │                                                                                                                   
+  tc  #general                                                                                               F1 keys   ● quic   ◐ graphite  

@@ -178,9 +178,9 @@ func (m *Model) refreshHuddle() {
 func (m *Model) huddleEndedText(why error) string {
 	where := m.chanTitle(m.hud.last)
 	if errors.Is(why, client.ErrHuddleMoved) {
-		return "♪ " + where + " moved to your other device"
+		return m.icon(icHuddle) + " " + where + " moved to your other device"
 	}
-	s := "♪ " + where + " ended: " + why.Error()
+	s := m.icon(icHuddle) + " " + where + " ended: " + why.Error()
 	if m.status.State == client.Online && m.hud.last == m.active && m.al.Ring.Ch == 0 {
 		s += " · /huddle to rejoin"
 	}
@@ -216,7 +216,7 @@ func (m *Model) huddlesElsewhere() int {
 // ♪ and how many are in it ("" when none).
 func (m *Model) huddleMarker(ch uint64) string {
 	if n := m.hud.counts[ch]; n > 0 {
-		return "♪" + strconv.Itoa(n)
+		return m.icon(icHuddle) + strconv.Itoa(n)
 	}
 	return ""
 }
@@ -433,14 +433,14 @@ func (m *Model) huddleHead(compact bool) (head, roster string) {
 		case h.here == 0:
 			return "", ""
 		case compact:
-			return fmt.Sprintf("♪%d", h.here), ""
+			return fmt.Sprintf("%s%d", m.icon(icHuddle), h.here), ""
 		}
-		return fmt.Sprintf("♪ %d in huddle — /huddle", h.here), ""
+		return fmt.Sprintf("%s %d in huddle — /huddle", m.icon(icHuddle), h.here), ""
 	}
 	var b strings.Builder
-	b.WriteString("♪ ")
+	b.WriteString(m.icon(icHuddle) + " ")
 	if h.talking {
-		b.WriteString(m.st.noticeErr.Render("●") + " ")
+		b.WriteString(m.st.noticeErr.Render(m.icon(icMic)) + " ")
 	}
 	if v, ok := m.chanView(h.cur); ok && v.E2E {
 		b.WriteString("🔒")

@@ -85,6 +85,23 @@ tc tail '#deploys'                           # stream a channel
 tc verify @priya                             # compare safety numbers
 ```
 
+## Icons
+
+tc draws its icons from **tc Symbols**, a tiny icon font it carries. Install it once on the computer
+your terminal runs on:
+
+```
+tc fonts install    # ~/Library/Fonts on macOS, ~/.local/share/fonts on Linux
+tc fonts test       # every icon next to its name and fallbacks: see if your terminal draws them
+tc fonts status     # installed, and up to date?
+tc fonts remove
+```
+
+A running terminal may need a restart to pick it up. `tc update` keeps an installed font current, and the
+installer offers it once on a desktop. Without the font (or over SSH, where fonts live on your own
+computer) tc uses plain Unicode icons; Settings › Appearance › Icons picks tc Symbols, Unicode or DOS
+yourself.
+
 ## Verifying teammates
 
 DMs and private channels are end-to-end encrypted. tc trusts a teammate's SSH key the first time it

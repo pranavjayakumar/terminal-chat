@@ -184,7 +184,7 @@ func (context0Err) Error() string { return "boom" }
 func TestSelectModeNav(t *testing.T) {
 	m := newTestModel(t, 80, 24)
 	run(m, m.handleKey(keyMsg("up")))
-	if v := checkView(t, m, "select"); !strings.Contains(v, "r retry · d discard · v view · y copy · Esc") {
+	if v := checkView(t, m, "select"); !strings.Contains(v, "r retry · d discard · v view · y copy · m menu · Esc") {
 		t.Fatalf("failed message should offer retry/discard:\n%s", v)
 	}
 	m.Update(tea.WindowSizeMsg{Width: 200, Height: 24}) // wide: the long form

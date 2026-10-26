@@ -38,7 +38,7 @@ func (s *Server) opChanAdd(ctx context.Context, u proto.User, a proto.ChanAddArg
 			return nil, errNotFound
 		}
 		switch {
-		case kind == proto.ChanDM:
+		case proto.IsDMKind(kind):
 			return nil, errForbidden
 		case join && kind != proto.ChanPublic:
 			return nil, errForbidden
@@ -120,7 +120,7 @@ func leaveTx(ctx context.Context, tx *sql.Tx, now int64, actor, ch, user uint64)
 
 func (s *Server) opChanLeave(ctx context.Context, u proto.User, a proto.ChanArgs) (any, error) {
 	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
-		if s.kinds[a.Chan] == proto.ChanDM {
+		if proto.IsDMKind(s.kinds[a.Chan]) {
 			return nil, errForbidden
 		}
 		if !s.members[a.Chan][u.ID] {
@@ -153,7 +153,7 @@ func (s *Server) opChanRemove(ctx context.Context, u proto.User, a proto.ChanAdd
 		switch {
 		case !ok:
 			return nil, errNotFound
-		case kind == proto.ChanDM:
+		case proto.IsDMKind(kind):
 			return nil, errForbidden
 		case kind == proto.ChanPublic:
 			return nil, badRequest("nobody can be removed from a public channel")

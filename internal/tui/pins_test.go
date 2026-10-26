@@ -100,10 +100,10 @@ func TestPinKeyTogglesSelected(t *testing.T) {
 	if v, _ := m.chanView(10); len(v.Pins) != 1 || v.Pins[0] != sel.ID {
 		t.Fatalf("channel pins %v, want [%d]", v.Pins, sel.ID)
 	}
-	if h := ansi.Strip(m.headerLine(80)); !strings.Contains(h, "📌 1") {
+	if h := ansi.Strip(m.headerLine(80)); !strings.Contains(h, "¶ 1") {
 		t.Fatalf("header lacks pin count: %q", h)
 	}
-	if v := ansi.Strip(checkView(t, m, "pinned")); !strings.Contains(v, "📌") {
+	if v := ansi.Strip(checkView(t, m, "pinned")); !strings.Contains(v, "¶") {
 		t.Fatalf("pinned message has no marker:\n%s", v)
 	}
 
@@ -114,7 +114,7 @@ func TestPinKeyTogglesSelected(t *testing.T) {
 		t.Fatalf("calls %v notice %q", f.calls, m.notice)
 	}
 	m.reloadChans()
-	if h := ansi.Strip(m.headerLine(80)); strings.Contains(h, "📌") {
+	if h := ansi.Strip(m.headerLine(80)); strings.Contains(h, "¶") {
 		t.Fatalf("header still shows pins: %q", h)
 	}
 }

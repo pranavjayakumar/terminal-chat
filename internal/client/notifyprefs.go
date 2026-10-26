@@ -243,7 +243,7 @@ func isCue(s string) bool {
 // it notifies like a mention.
 func (c *Client) InMyThread(m proto.Message) bool {
 	me := c.Me().ID
-	if m.Thread == 0 || m.Author == me {
+	if m.Thread == 0 || m.Author == me && m.Agent == c.AgentHandle() {
 		return false
 	}
 	var author, first uint64

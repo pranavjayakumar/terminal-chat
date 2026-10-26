@@ -130,6 +130,34 @@ func TestInputHintsNarrow(t *testing.T) {
 	}
 }
 
+// The agent panel's hints and key pills follow the keyboard too, on every
+// page and in every skin.
+func TestAgentPanelPCKeys(t *testing.T) {
+	for _, sk := range []string{"", `,"skin":"retro"`} {
+		for _, sz := range [][2]int{{40, 12}, {100, 34}} {
+			for row := range apRows {
+				m, _ := panelModel(t, sz[0], sz[1], sk)
+				m.kn = keyNames{pc: true}
+				for range row {
+					press(m, "down")
+				}
+				for _, step := range []string{"row", "enter"} {
+					if step == "enter" {
+						press(m, "enter")
+					}
+					plain := frameText(t, m, step)
+					if i := strings.IndexAny(plain, macKeySyms); i >= 0 {
+						t.Fatalf("%s %v %s on %s: Mac key symbol near %q\n%s", sk, sz, step, apRows[row], plain[max(i-20, 0):min(i+20, len(plain))], plain)
+					}
+					if sz[0] == 100 && sk == "" && step == "row" && apRows[row] == "Memory" && !strings.Contains(plain, "Enter browse") {
+						t.Errorf("memory hint not in words:\n%s", plain)
+					}
+				}
+			}
+		}
+	}
+}
+
 // The palette says Tab moves between tabs, in both spellings.
 func TestPaletteTabHint(t *testing.T) {
 	// PC: "Tab next tab" is too wide beside the tabs; the footer says it.

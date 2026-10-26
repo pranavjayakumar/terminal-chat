@@ -33,6 +33,36 @@ func mix(a, b rgb, p float64) rgb {
 	return rgb(ch(ar, br)<<16 | ch(ag, bg)<<8 | ch(ab, bb))
 }
 
+// chroma is how far c is from gray, 0–255.
+func (c rgb) chroma() float64 {
+	r, g, b := c.parts()
+	return max(r, g, b) - min(r, g, b)
+}
+
+// hsl is the color of hue h (degrees), saturation s and lightness l (0–1).
+func hsl(h, s, l float64) rgb {
+	c := (1 - math.Abs(2*l-1)) * s
+	x := c * (1 - math.Abs(math.Mod(h/60, 2)-1))
+	var r, g, b float64
+	switch {
+	case h < 60:
+		r, g = c, x
+	case h < 120:
+		r, g = x, c
+	case h < 180:
+		g, b = c, x
+	case h < 240:
+		g, b = x, c
+	case h < 300:
+		r, b = x, c
+	default:
+		r, b = c, x
+	}
+	m := l - c/2
+	ch := func(v float64) uint32 { return uint32(math.Round((v + m) * 255)) }
+	return rgb(ch(r)<<16 | ch(g)<<8 | ch(b))
+}
+
 // luminance is the WCAG relative luminance.
 func (c rgb) luminance() float64 {
 	lin := func(v float64) float64 {
@@ -89,6 +119,14 @@ type theme struct {
 	addBg, delBg, add, del, hunk rgb
 	nicks                        [8]rgb
 	light                        bool
+	// dialog, when set, recolors dialogs: QBasic's gray boxes on blue.
+	dialog *theme
+	// hot, when set, colors hotkey letters (the menu bar) where the accent
+	// doesn't pop: macintosh's accent is black.
+	hot rgb
+	// plainGround keeps the theme's own background in a skin that would
+	// tint a neutral one (graphite stays charcoal).
+	plainGround bool
 }
 
 // nick is the muted name color for a user id: stable across runs.
@@ -101,19 +139,38 @@ func (t *theme) nick(id uint64) rgb {
 const defaultTheme = "graphite"
 
 // themeOrder is how the palette and Settings list the built-in themes.
-var themeOrder = []string{"graphite", "sky", "mint", "rose", "lilac", "ember", "phosphor", "paper", "teletype", "macintosh"}
+var themeOrder = []string{"graphite", "sky", "mint", "rose", "lilac", "ember", "phosphor", "paper", "teletype", "macintosh",
+	"turbo", "norton", "qbasic", "night", "paper-retro"}
+
+// retroNicks reads on every dark retro blue: eight hues at least 22° apart.
+var retroNicks = [8]string{"#ffe14d", "#5ff0f0", "#ff9ce6", "#9ff07a", "#ffa860", "#ff8a8a", "#b8a8ff", "#6cf0b8"}
 
 var themes = buildThemes()
 
-func buildThemes() map[string]*theme {
-	type spec struct {
-		name, desc                                      string
-		bg, panel, element, line, fg, dim, faint        string
-		accent, accentFg, accentBg, info, ok, err, warn string
-		addBg, delBg, add, del, hunk                    string
-		nicks                                           [8]string
-		light                                           bool
+type themeSpec struct {
+	name, desc                                      string
+	bg, panel, element, line, fg, dim, faint        string
+	accent, accentFg, accentBg, info, ok, err, warn string
+	addBg, delBg, add, del, hunk                    string
+	nicks                                           [8]string
+	light                                           bool
+}
+
+func (s themeSpec) build() *theme {
+	t := &theme{name: s.name, desc: s.desc, light: s.light,
+		bg: hexColor(s.bg), panel: hexColor(s.panel), element: hexColor(s.element), line: hexColor(s.line),
+		fg: hexColor(s.fg), dim: hexColor(s.dim), faint: hexColor(s.faint),
+		accent: hexColor(s.accent), accentFg: hexColor(s.accentFg), accentBg: hexColor(s.accentBg),
+		info: hexColor(s.info), ok: hexColor(s.ok), err: hexColor(s.err), warn: hexColor(s.warn),
+		addBg: hexColor(s.addBg), delBg: hexColor(s.delBg), add: hexColor(s.add), del: hexColor(s.del), hunk: hexColor(s.hunk)}
+	for i, n := range s.nicks {
+		t.nicks[i] = hexColor(n)
 	}
+	return t
+}
+
+func buildThemes() map[string]*theme {
+	type spec = themeSpec
 	graphite := spec{name: "graphite", desc: "neutral grays, peach accent",
 		bg: "#0b0b0c", panel: "#141416", element: "#1c1c1f", line: "#2a2a2e", fg: "#ececec", dim: "#8b8b92", faint: "#5d5d64",
 		accent: "#fab283", accentFg: "#1a1208", accentBg: "#2a2018", info: "#7fb4f0", ok: "#7fd88f", err: "#e06c75", warn: "#e5c07b",
@@ -160,20 +217,44 @@ func buildThemes() map[string]*theme {
 			accent: "#111111", accentFg: "#fbfbfb", accentBg: "#e6e6e6", info: "#2a4fb5", ok: "#2e7d32", err: "#c62828", warn: "#8d6e00",
 			addBg: "#e3f1e3", delBg: "#f6e0e0", add: "#2e7d32", del: "#c62828", hunk: "#2a4fb5",
 			nicks: [8]string{"#b4441c", "#8a6100", "#3f6b12", "#146a4c", "#1f6f8b", "#3a52b0", "#7a3e9d", "#a3306b"}},
+		// DOS-era palettes, made for the Retro skin and fine in any.
+		{name: "turbo", desc: "Turbo Vision blue, yellow accent",
+			bg: "#10237a", panel: "#0c1b63", element: "#2a43a8", line: "#7d93e6", fg: "#f2f4ff", dim: "#b9c4f0", faint: "#8494d4",
+			accent: "#ffe14d", accentFg: "#10237a", accentBg: "#26389a", info: "#5ff0f0", ok: "#7cf08a", err: "#ff6e6e", warn: "#ffe14d",
+			addBg: "#163a6e", delBg: "#3a1f5e", add: "#7fd88f", del: "#e06c75", hunk: "#5ff0f0",
+			nicks: retroNicks},
+		{name: "norton", desc: "Norton Commander panels, cyan accent",
+			bg: "#0b2a8a", panel: "#082070", element: "#1d40a8", line: "#5f8ae0", fg: "#e6f6ff", dim: "#9fd0ee", faint: "#7398cc",
+			accent: "#55ffff", accentFg: "#000000", accentBg: "#14409e", info: "#ffff55", ok: "#55ff55", err: "#ff6b6b", warn: "#ffff55",
+			addBg: "#0f4a6e", delBg: "#3a1f5e", add: "#55ff55", del: "#ff7f7f", hunk: "#ffff55",
+			nicks: [8]string{"#55ffff", "#ffff55", "#55ff55", "#ff8af0", "#ffaa55", "#ff7f7f", "#b0b0ff", "#7fffbf"}},
+		{name: "qbasic", desc: "MS-DOS Edit blue, gray dialogs",
+			bg: "#0000a8", panel: "#000088", element: "#2020c8", line: "#6a6af0", fg: "#ffffff", dim: "#b4b4b4", faint: "#8484d8",
+			accent: "#c0c0c0", accentFg: "#000000", accentBg: "#1c1cb8", info: "#55ffff", ok: "#55ff55", err: "#ff6b6b", warn: "#ffff55",
+			addBg: "#00589a", delBg: "#58208a", add: "#55ff55", del: "#ff8080", hunk: "#55ffff",
+			nicks: [8]string{"#ffff55", "#55ffff", "#ff9ce6", "#55ff55", "#ffaa55", "#ff8a8a", "#c0b0ff", "#7fffbf"}},
+		{name: "night", desc: "near-black, yellow and cyan",
+			bg: "#0a0d18", panel: "#0f1322", element: "#1c2338", line: "#3c4870", fg: "#e8ecf8", dim: "#a2aacb", faint: "#6c7699",
+			accent: "#ffe14d", accentFg: "#0a0d18", accentBg: "#2a2812", info: "#5ff0f0", ok: "#7cf08a", err: "#ff6e6e", warn: "#ffb86c",
+			addBg: "#10261a", delBg: "#2a1513", add: "#7fd88f", del: "#e06c75", hunk: "#5ff0f0",
+			nicks: retroNicks},
+		{name: "paper-retro", desc: "Windows 3.1 gray, navy text", light: true,
+			bg: "#c0c0c0", panel: "#b4b4b4", element: "#a2a2a2", line: "#7a7a7a", fg: "#000050", dim: "#1c1c60", faint: "#46467a",
+			accent: "#0000c0", accentFg: "#ffffff", accentBg: "#a8a8d8", info: "#005a6e", ok: "#005c00", err: "#a00000", warn: "#6e5000",
+			addBg: "#a8d0a8", delBg: "#d8a8a8", add: "#005c00", del: "#a00000", hunk: "#00008b",
+			nicks: [8]string{"#8a0000", "#7a3a00", "#4e4e00", "#1e5a00", "#00583a", "#004e6e", "#3030b0", "#7a007a"}},
 	}
 	out := make(map[string]*theme, len(specs))
 	for _, s := range specs {
-		t := &theme{name: s.name, desc: s.desc, light: s.light,
-			bg: hexColor(s.bg), panel: hexColor(s.panel), element: hexColor(s.element), line: hexColor(s.line),
-			fg: hexColor(s.fg), dim: hexColor(s.dim), faint: hexColor(s.faint),
-			accent: hexColor(s.accent), accentFg: hexColor(s.accentFg), accentBg: hexColor(s.accentBg),
-			info: hexColor(s.info), ok: hexColor(s.ok), err: hexColor(s.err), warn: hexColor(s.warn),
-			addBg: hexColor(s.addBg), delBg: hexColor(s.delBg), add: hexColor(s.add), del: hexColor(s.del), hunk: hexColor(s.hunk)}
-		for i, n := range s.nicks {
-			t.nicks[i] = hexColor(n)
-		}
-		out[s.name] = t
+		out[s.name] = s.build()
 	}
+	out["macintosh"].hot = out["macintosh"].info
+	out["graphite"].plainGround = true
+	out["qbasic"].dialog = spec{name: "qbasic", desc: "dialogs", light: true,
+		bg: "#0000a8", panel: "#aaaaaa", element: "#c4c4c4", line: "#555555", fg: "#000000", dim: "#2a2a2a", faint: "#484848",
+		accent: "#0000a8", accentFg: "#ffffff", accentBg: "#c8c8e8", info: "#0000a8", ok: "#005c00", err: "#a00000", warn: "#5c4400",
+		addBg: "#a8d0a8", delBg: "#d8a8a8", add: "#005c00", del: "#a00000", hunk: "#00008b",
+		nicks: [8]string{"#7a0000", "#6a3200", "#424200", "#184a00", "#004a30", "#00405a", "#28289a", "#6a006a"}}.build()
 	return out
 }
 

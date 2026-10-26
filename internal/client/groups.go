@@ -56,7 +56,12 @@ func (c *Client) Groups() []proto.Group { return loadGroups(c.db) }
 
 // MentionNames are the names that @mention me: my own, then each group I'm
 // a member of. Lowercase names are compared case-insensitively.
-func (c *Client) MentionNames() []string { return mentionNames(c.db, c.Me()) }
+func (c *Client) MentionNames() []string {
+	if h := c.AgentHandle(); h != "" {
+		return []string{h} // an agent answers to its handle only
+	}
+	return mentionNames(c.db, c.Me())
+}
 
 func mentionNames(q dbtx, me proto.User) []string {
 	return MentionNamesOf(me, loadGroups(q))

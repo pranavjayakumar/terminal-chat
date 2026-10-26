@@ -555,6 +555,9 @@ func (m *Model) drawPicker(c *canvas, g geo) {
 		r.y1++
 	}
 	m.floatGutter(c, g, r)
+	if b.framed {
+		m.shade(c, r)
+	}
 	old := c.setClip(r)
 	defer c.setClip(old)
 	act := func(a string) string {
@@ -691,7 +694,7 @@ func (m *Model) pickSearch(c *canvas, x, y, w int, k float64, pbg rgb, act strin
 	if w < 4 {
 		return
 	}
-	c.put(x+1, y, "⌕", fgc(mix(bg, th.dim, k)).on(bg), "")
+	c.put(x+1, y, m.icon(icSearch), fgc(mix(bg, th.dim, k)).on(bg), "")
 	tx, room := x+3, w-4
 	q := m.emo.query
 	if q == "" {

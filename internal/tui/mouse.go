@@ -22,7 +22,7 @@ func (m *Model) hoverMsg() (string, int, bool) {
 		return "", 0, false
 	}
 	switch kind {
-	case "msg", "tb", "react", "addreact", "thread", "copy":
+	case "msg", "tb", "react", "addreact", "thread", "copy", "chanlink", "fold", "appr":
 	default:
 		return "", 0, false
 	}
@@ -38,15 +38,34 @@ func (m *Model) hoverMsg() (string, int, bool) {
 	return parts[0], i, true
 }
 
+// dragKind is the edge the mouse is dragging.
+type dragKind uint8
+
+const (
+	dragNone dragKind = iota
+	dragSidebar
+	dragThread
+)
+
 func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 	a := ""
 	if m.lastCanvas != nil {
 		a = m.lastCanvas.actionAt(msg.X, msg.Y)
 	}
+	if msg.Action == tea.MouseActionPress && m.skipIntro() {
+		return nil // a click during the intro only ends it
+	}
 	switch msg.Action {
 	case tea.MouseActionMotion:
-		if m.drag {
+		if m.drag != dragNone && msg.Button == tea.MouseButtonNone {
+			m.endDrag(msg.X, false) // the release went to another pane
+		}
+		switch m.drag {
+		case dragSidebar:
 			m.dragTo(msg.X)
+			return nil
+		case dragThread:
+			m.resizeThread(m.w-msg.X, false)
 			return nil
 		}
 		if a == m.hover {
@@ -59,14 +78,14 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 				m.emo.sel = n // one highlight for keys and pointer
 			}
 		}
-		return nil
-	case tea.MouseActionRelease:
-		if m.drag {
-			m.drag = false
-			if abs(float64(msg.X-m.dragX)) < 2 {
-				m.cycleSidebar()
+		if i, ok := strings.CutPrefix(a, "mm:"); ok && m.mode == modeMsgMenu {
+			if n, err := strconv.Atoi(i); err == nil && n >= 0 && n < len(m.mm.items) {
+				m.mm.sel = n
 			}
 		}
+		return nil
+	case tea.MouseActionRelease:
+		m.endDrag(msg.X, true)
 		return nil
 	}
 	switch msg.Button {
@@ -76,11 +95,29 @@ func (m *Model) mouse(msg tea.MouseMsg) tea.Cmd {
 	default:
 		return nil
 	}
-	if a == "sbresize" {
-		m.drag, m.dragX = true, msg.X
+	switch a {
+	case "sbresize":
+		m.drag, m.dragX = dragSidebar, msg.X
+		return nil
+	case "thrresize":
+		m.drag, m.dragX = dragThread, msg.X
 		return nil
 	}
 	return m.click(a)
+}
+
+// endDrag finishes a drag at x: a sidebar edge click (press and release
+// in place) cycles its size, a thread pane's new width is saved.
+func (m *Model) endDrag(x int, release bool) {
+	switch m.drag {
+	case dragSidebar:
+		if release && abs(float64(x-m.dragX)) < 2 {
+			m.cycleSidebar()
+		}
+	case dragThread:
+		m.savePrefs() // the width the drag left
+	}
+	m.drag = dragNone
 }
 
 // dragTo sizes the sidebar from where its edge is dragged.
@@ -158,6 +195,18 @@ func (m *Model) click(a string) tea.Cmd {
 		}
 		m.closePicker(true) // a click anywhere else closes it and still acts
 	}
+	menuRef := ""
+	if m.mode == modeMsgMenu {
+		switch kind {
+		case "mm":
+			i, _ := strconv.Atoi(rest)
+			return m.runMenuItem(i)
+		case "noop":
+			return nil
+		}
+		menuRef = m.mm.ref
+		m.closeMsgMenu() // like the picker: a click elsewhere closes it and still acts
+	}
 	switch kind {
 	case "":
 		return nil
@@ -187,6 +236,8 @@ func (m *Model) click(a string) tea.Cmd {
 	case "keys":
 		m.openHelp()
 		return nil
+	case "menu":
+		return m.menuAction(rest)
 	case "app":
 		return m.appAction(a)
 	case "status":
@@ -216,6 +267,12 @@ func (m *Model) click(a string) tea.Cmd {
 		return nil
 	case "setpage", "set":
 		return m.settingsClick(a)
+	case "ap":
+		return m.agentPanelClick(rest)
+	case "agent":
+		return m.agentRowClick(rest)
+	case "agentappr":
+		return m.openApproval()
 	case "thread":
 		if rest == "close" {
 			m.closeThread()
@@ -255,6 +312,18 @@ func (m *Model) click(a string) tea.Cmd {
 		arg = parts[2]
 	}
 	switch kind {
+	case "fold":
+		m.toggleFold(x.ID)
+		return nil
+	case "appr":
+		return m.answerApproval(x, arg)
+	case "chanlink":
+		id, err := strconv.ParseUint(arg, 10, 64)
+		if err != nil {
+			return nil
+		}
+		m.leaveSelect()
+		return m.openChannel(id)
 	case "msg":
 		if m.mode == modeSelect && m.focus() == p && p.sel == i {
 			m.leaveSelect()
@@ -287,6 +356,14 @@ func (m *Model) click(a string) tea.Cmd {
 			m.selectAt(p, i)
 			cmd, _ := m.selectKey(keyMsgRune('+'))
 			return cmd
+		case "more":
+			if menuRef != "" && findRef(p.msgs, menuRef) == i && m.mode == modeSelect && m.focus() == p {
+				return nil // its own ⋯ again: the click only closed the menu
+			}
+			m.selectAt(p, i)
+			if m.mode == modeSelect && m.focus() == p && p.sel == i {
+				m.openMsgMenu()
+			}
 		default:
 			m.selectAt(p, i)
 		}

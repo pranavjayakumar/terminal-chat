@@ -29,7 +29,8 @@ const (
 	modeHelp
 	modeSearch
 	modeConfirmDelete
-	modeEmoji // emojipick.go
+	modeEmoji   // emojipick.go
+	modeMsgMenu // msgmenu.go
 	modePanePick
 	modeSharePreview
 	modeActivity
@@ -39,6 +40,7 @@ const (
 	modeDevices // devices.go
 	modeDisable // disable.go
 	modeSettings
+	modeAgent // agentpanel.go
 )
 
 // pane is a scrollable message list: a channel (root 0) or a thread.
@@ -55,9 +57,22 @@ type pane struct {
 	memoLines               []prow
 	memoOwner               []int
 	memoBlocks              map[blockKey]*canvas // the blocks memoLines uses
+	memoLive                string               // the live agent rows it drew
+	memoBase                int                  // where they start in memoLines
+	memoLiveH               int                  // and how many rows they take
+	liveMarks               map[*canvas]liveMark // their animated glyphs (agentlive.go)
 }
 
 func (p *pane) open() bool { return p.ch != 0 }
+
+// keepView keeps a scrolled-up view still while the live agent rows at the
+// bottom grow or shrink to liveH rows.
+func (p *pane) keepView(liveH int) {
+	if p.scroll > 0 {
+		p.scroll = max(p.scroll+liveH-p.memoLiveH, 0)
+	}
+	p.memoLiveH = liveH
+}
 
 // Model is the Bubble Tea model.
 type Model struct {
@@ -117,6 +132,7 @@ type Model struct {
 	helpBack     bool // the keys sheet was opened from Settings: closing goes back there
 	view         viewer
 	emo          emojiPicker
+	mm           msgMenu
 
 	sw     switcher
 	search searchState
@@ -161,22 +177,28 @@ type Model struct {
 	noticeDim  bool   // the notice is a quiet hint
 	newRelease string // newer release tag, shown in the sidebar title
 
-	ui         uiPrefs    // look and feel, TC_HOME/ui.json (uiprefs.go)
-	fx         fxState    // animations (anim.go)
-	blocks     blockCache // drawn messages (msgview.go)
-	pal        palState   // command palette (palette.go)
-	set        setState   // settings dialog (settings.go)
-	boot       bool       // first run: the loading screen shows (boot.go)
-	noticeAt   time.Time  // when the notice appeared (its toast fades from it)
-	hover      string     // the action under the mouse pointer
-	drag       bool       // the sidebar edge is being dragged
+	ui         uiPrefs           // look and feel, TC_HOME/ui.json (uiprefs.go)
+	pack       string            // the icon pack in use, Auto resolved (icons.go)
+	fontHave   bool              // the icon font was installed when tc started
+	chanIDs    map[string]uint64 // channel names for #links (icons.go)
+	dst        *styles           // dialogs' styles when the theme recolors them (qbasic)
+	fx         fxState           // animations (anim.go)
+	blocks     blockCache        // drawn messages (msgview.go)
+	pal        palState          // command palette (palette.go)
+	set        setState          // settings dialog (settings.go)
+	boot       bool              // first run: the loading screen shows (boot.go)
+	noticeAt   time.Time         // when the notice appeared (its toast fades from it)
+	hover      string            // the action under the mouse pointer
+	drag       dragKind          // an edge being dragged (mouse.go)
 	dragX      int
+	clockRun   bool    // the menu bar clock's minute tick is scheduled
 	lastCanvas *canvas // the last frame, for clicks and the theme cross-fade
 	spare      *canvas // the frame before it, reused for the next
 	lastFrame  string
-	reuseFrame bool   // nothing changed since lastFrame (pointer motion)
-	blinkIdle  bool   // the cursor blink loop stopped after blinkFor without keys
-	sbForce    string // Ctrl-B's choice below sbIconsBelow columns, this session only
+	reuseFrame bool    // nothing changed since lastFrame (pointer motion)
+	blinkIdle  bool    // the cursor blink loop stopped after blinkFor without keys
+	sbForce    string  // Ctrl-B's choice below sbIconsBelow columns, this session only
+	ag         agentUI // personal agents (agent.go)
 }
 
 // ---- tea messages ----
@@ -226,7 +248,7 @@ const (
 // New builds the model and loads the cache.
 func New(ctx context.Context, c Backend, o Options) *Model {
 	ui := loadUIPrefs(o.UIPrefs)
-	th := themeNamed(ui.themeName())
+	th := skinNamed(ui.Skin).colors(themeNamed(ui.themeName()))
 	st := o.styles
 	switch {
 	case st == nil && o.Out != nil:
@@ -248,19 +270,27 @@ func New(ctx context.Context, c Backend, o Options) *Model {
 	m.fx.init()
 	// Tests (o.styles set) run without motion unless they ask for it.
 	m.fx.off = ui.NoMotion || (o.styles != nil && !o.motion)
+	m.fx.intro = m.introWanted()
 	m.r = renderer{st: st, name: func(id uint64) string { return m.users[id].Name },
 		bot: func(id uint64) bool { return m.users[id].Bot }}
+	if st.th.dialog != nil {
+		m.dst = newStyles(st.color, st.prof, st.th.dialog)
+	}
 	m.input = newInput(st)
 	m.line = newLine(st)
 	m.loadDrafts()
 	m.refreshPrefs()
 	m.reloadAll()
+	m.loadAgentHome()
 	if ch := m.defaultChannel(); ch != 0 {
 		m.openChannel(ch)
 	}
 	m.syncDraft()
 	m.applyCursorMode()
 	m.boot = len(m.chans) == 0 && m.status.State != client.Online
+	m.checkFont()
+	m.resolvePack()
+	m.iconsHint()
 	if ui.loadFailed {
 		m.setErr("", errors.New("ui.json can't be read: default look in use; a settings change rewrites it"))
 	}
@@ -296,7 +326,7 @@ func (m *Model) defaultChannelExcept(skip uint64) uint64 {
 
 // Init starts listening for client updates.
 func (m *Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.waitUpdate(), textarea.Blink, m.awayTick(), m.updateCheckCmd()}
+	cmds := []tea.Cmd{m.waitUpdate(), textarea.Blink, m.awayTick(), m.updateCheckCmd(), m.refreshFontCmd()}
 	if m.active != 0 && len(m.main.msgs) < 30 {
 		cmds = append(cmds, m.fetchHistory(m.active))
 	}
@@ -335,6 +365,7 @@ func (m *Model) reloadAll() {
 	m.status = m.c.Status()
 	m.reloadUsers()
 	m.reloadChans()
+	m.reloadAgents()
 	m.reloadPane(&m.main)
 	m.reloadPane(&m.thread)
 	m.reloadTyping()
@@ -374,6 +405,7 @@ func (m *Model) reloadChans() {
 		before[v.ID] = v
 	}
 	m.chans = m.c.Channels()
+	m.noteChanNames()
 	for _, v := range m.chans {
 		if b, ok := before[v.ID]; ok && v.Mention && v.Unread > b.Unread && !m.fx.off {
 			m.fx.pulse[v.ID] = m.now() // the mention badge pulses
@@ -410,6 +442,9 @@ func (m *Model) reloadChans() {
 			m.active = 0
 			m.main = pane{sel: -1}
 			m.closeThread()
+			if m.mode == modeSelect || m.mode == modeConfirmDelete || m.mode == modeMsgMenu {
+				m.mode = modeNormal // nothing left to act on
+			}
 			if ch := m.defaultChannel(); ch != 0 {
 				m.openChannel(ch)
 			}
@@ -496,8 +531,16 @@ func (m *Model) reloadPane(p *pane) {
 				break
 			}
 		}
+		kept := p.sel >= 0
 		if p.sel < 0 && len(p.msgs) > 0 {
 			p.sel = len(p.msgs) - 1
+		}
+		if m.mode == modeMsgMenu && p == m.focus() {
+			if kept {
+				m.fillMsgMenu() // it may have been sent, edited or deleted
+			} else {
+				m.closeMsgMenu() // its message is gone
+			}
 		}
 	}
 }
@@ -558,7 +601,7 @@ func (m *Model) openChannel(ch uint64) tea.Cmd {
 	m.main = pane{ch: ch, sel: -1}
 	m.closeThread()
 	m.closePicker(false)
-	if m.mode == modeSelect || m.mode == modeConfirmDelete {
+	if m.mode == modeSelect || m.mode == modeConfirmDelete || m.mode == modeMsgMenu {
 		m.mode = modeNormal
 	}
 	m.cancelEdit()
@@ -890,6 +933,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = tea.Batch(cmd, t)
 	}
 	m.endBoot()
+	m.startIntro()
+	m.stepIntro()
 	if shown := m.compShown(); shown != m.fx.compShown {
 		m.fx.compShown = shown
 		if shown {
@@ -899,11 +944,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if t := m.frameTick(); t != nil {
 		cmd = tea.Batch(cmd, t)
 	}
+	if t := m.clockTick(); t != nil {
+		cmd = tea.Batch(cmd, t)
+	}
 	return m, cmd
 }
 
 func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if cmd, ok := m.huddleMsg(msg); ok {
+		return m, cmd
+	}
+	if cmd, ok := m.agentMsg(msg); ok {
 		return m, cmd
 	}
 	switch msg.(type) {
@@ -920,6 +971,12 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fx.running = false
 		}
 		m.sampleMeters()
+		return m, nil
+	case clockMsg:
+		m.clockRun = false
+		return m, nil
+	case iconFontInstalledMsg:
+		m.iconFontInstalled(msg)
 		return m, nil
 	case noticeExpireMsg:
 		if msg.gen == m.noticeGen {
@@ -994,6 +1051,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.BlurMsg:
 		m.focused = false
 		m.hover = "" // the pointer left for another pane
+		if m.drag != dragNone {
+			m.endDrag(m.dragX, false)
+		}
 		return m, nil
 	case updateMsg:
 		if msg.Prefs || msg.Reset {
@@ -1149,6 +1209,16 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 		m.reloadChans()
 		cmds = append(cmds, m.openDefault())
 	}
+	if u.Agents || u.Channels || u.Users {
+		m.reloadAgents()
+		if u.Agents {
+			m.loadAgentHome()
+		}
+	}
+	for ch := range u.AgentStatus {
+		m.reloadLive(ch)
+	}
+	cmds = append(cmds, m.noteApprovals(u.New))
 	if u.Msgs[m.main.ch] {
 		m.reloadPane(&m.main)
 	}
@@ -1181,6 +1251,7 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 const blinkFor = 5 * time.Second
 
 func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
+	m.skipIntro() // a key ends the intro and still does its job
 	if m.blinkIdle && !m.fx.off {
 		m.blinkIdle = false
 		return tea.Batch(m.input.Cursor.BlinkCmd(), m.handleKey0(k))
@@ -1220,6 +1291,9 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 			return cmd
 		}
 	}
+	if m.threadKey(k, key) {
+		return nil
+	}
 
 	switch m.mode {
 	case modeSwitcher:
@@ -1243,6 +1317,8 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 		return m.disableKey(key)
 	case modeSettings:
 		return m.settingsKey(key)
+	case modeAgent:
+		return m.agentPanelKey(k)
 	case modeViewer:
 		if key == kSelCopy {
 			if m.view.copy != "" {
@@ -1272,6 +1348,8 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 		return nil
 	case modeEmoji:
 		return m.emojiKey(k)
+	case modeMsgMenu:
+		return m.msgMenuKey(k)
 	case modePanePick:
 		return m.panePickKey(key)
 	case modeSharePreview:
@@ -1296,6 +1374,8 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 		}
 	}
 	switch {
+	case key == kApproval:
+		return m.jumpToApproval()
 	case key == kTab && m.tabComplete():
 		return nil
 	case isSwitcher(key):
@@ -1316,6 +1396,8 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 	case key == kHelpAlt:
 		m.openHelp()
 		return nil
+	case menuKey(key) != "" && m.menuBarShown():
+		return m.menuAction(menuKey(key))
 	case key == kCtrlEnd || (key == kEnd && empty):
 		p := m.focus()
 		p.scroll = 0
@@ -1632,7 +1714,15 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 	if !ok {
 		return nil, false
 	}
-	mine := sel.Author == m.me.ID
+	if cmd, ok := m.approvalKey(key); ok {
+		return cmd, true
+	}
+	if (key == kEnter || key == " " || key == kSelUnfold) && m.ag.folds[sel.ID] != nil {
+		m.toggleFold(sel.ID)
+		m.ensureVisible(m.focus())
+		return nil, true
+	}
+	mine := m.ownMsg(sel)
 	switch key {
 	case kSelEdit:
 		if !mine || sel.ID == 0 || sel.Deleted {
@@ -1706,6 +1796,9 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 		}), true
 	case kSelView:
 		m.openViewer(sel)
+		return nil, true
+	case kSelMenu, kEnter:
+		m.openMsgMenu()
 		return nil, true
 	}
 	return nil, false
