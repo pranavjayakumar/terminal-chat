@@ -56,6 +56,14 @@ type session struct {
 	voice    bool     // both sides advertised proto.CapVoice
 	voiceTCP bool     // the client advertised proto.CapVoiceTCP too
 	passive  bool     // proto.CapPassive: no presence, typing or huddles
+	// agentCap: both sides advertised proto.CapAgent. agent is set on an
+	// agent session (HELLO agent, §15.1): it never counts as the user
+	// being online and sees only its DM and access list's messages.
+	agentCap    bool
+	agent       *proto.Agent
+	agentBucket bucket // EphAgent rate, under srv.mu
+	loginKey    []byte // the SSH key (wire) this session logged in with
+	agentKey    bool   // loginKey is an agent key (§15.1)
 	// Voice (huddle.go): dg is the QUIC datagram side, nil unless voice
 	// over QUIC; streamVoice: no datagrams, so voice rides the frame stream
 	// (§14.4), queued in vq behind chat. writing is when the writer
@@ -107,7 +115,8 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 	}
 	defer s.unregister(sess)
 	w := proto.Welcome{
-		Server: Version, Caps: append([]string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapVoice, proto.CapVoiceTCP}, s.inviteCaps()...), ServerID: s.st.serverID, User: user, Time: s.now(),
+		Server: Version, Caps: append([]string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapVoice, proto.CapVoiceTCP, proto.CapAgent}, s.inviteCaps()...), ServerID: s.st.serverID, User: user, Time: s.now(),
+		Agent: sess.agent,
 	}
 	if sess.passive {
 		w.Caps = append(w.Caps, proto.CapPassive)
@@ -146,6 +155,7 @@ func (s *Server) handshake(ctx context.Context, sess *session) (proto.User, stri
 	sess.voice = slices.Contains(h.Caps, proto.CapVoice)
 	sess.voiceTCP = sess.voice && slices.Contains(h.Caps, proto.CapVoiceTCP)
 	sess.passive = slices.Contains(h.Caps, proto.CapPassive)
+	sess.agentCap = slices.Contains(h.Caps, proto.CapAgent)
 	exp, err := sess.conn.Exporter()
 	if err != nil {
 		return proto.User{}, proto.ByeProtocolError, "no TLS exporter"
@@ -164,7 +174,19 @@ func (s *Server) handshake(ctx context.Context, sess *session) (proto.User, stri
 		if u.Disabled {
 			return proto.User{}, proto.ByeRevoked, ""
 		}
+		sess.loginKey = pk.Marshal()
+		byKey := keyIsAgent(ctx, s.st.db, fp)
+		sess.agentKey = byKey
+		if byKey || h.Agent != "" {
+			// An agent key is never its owner (§15.1).
+			if code, msg := s.agentLogin(ctx, sess, u, h.Agent, byKey); code != "" {
+				return proto.User{}, code, msg
+			}
+		}
 		return u, "", ""
+	}
+	if h.Agent != "" {
+		return proto.User{}, proto.ByeAuthFailed, "unknown key"
 	}
 	if h.Auth.Invite == "" {
 		return proto.User{}, proto.ByeAuthFailed, "unknown key"
@@ -242,7 +264,7 @@ func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp str
 			}
 			var n int
 			tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE name = ?`, a.Name).Scan(&n)
-			if n > 0 || groupNameTaken(ctx, tx, a.Name) {
+			if n > 0 || groupNameTaken(ctx, tx, a.Name) || agentHandleTaken(ctx, tx, a.Name) {
 				return nil, fail(proto.ByeNameTaken, "")
 			}
 			res, err := tx.ExecContext(ctx, `INSERT INTO users (name, admin, created, invited_by) VALUES (?, ?, ?, ?)`,
@@ -288,7 +310,17 @@ func (s *Server) register(sess *session) bool {
 	if s.disabled[sess.user.ID] {
 		return false
 	}
+	if sess.agent != nil {
+		// A retire that committed since agentLogin looked wins.
+		if a, ok := s.agents[sess.user.ID]; !ok || a.Created != sess.agent.Created {
+			return false
+		}
+	}
 	s.sessions[sess] = struct{}{}
+	if sess.agent != nil { // the agent being here isn't its owner being here
+		s.agentOnlineLocked(sess, 1)
+		return true
+	}
 	if sess.passive { // a background listener isn't the user being here
 		return true
 	}
@@ -310,6 +342,10 @@ func (s *Server) unregister(sess *session) {
 	}
 	delete(s.sessions, sess)
 	s.huddleGoneLocked(sess)
+	if sess.agent != nil {
+		s.agentOnlineLocked(sess, -1)
+		return
+	}
 	if sess.passive {
 		return
 	}
@@ -450,21 +486,18 @@ func (sess *session) writer() {
 		// Chat first: voice waits behind it, and is dropped if that made it
 		// late (writeVoice).
 		for _, f := range batch {
+			out := []outFrame{f}
 			if tamperEnabled {
-				for _, g := range sess.srv.tamper.out(sess.user.ID, f) {
-					if err := sess.codec.WriteRaw(g.t, g.payload); err != nil {
-						sess.conn.Close()
-						return
-					}
-				}
-				continue
+				out = sess.srv.tamper.out(sess.user.ID, f)
 			}
-			sess.writing.Store(time.Now().UnixNano())
-			err := sess.codec.WriteRaw(f.t, f.payload)
-			sess.writing.Store(0)
-			if err != nil {
-				sess.conn.Close()
-				return
+			for _, g := range out {
+				sess.writing.Store(time.Now().UnixNano())
+				err := sess.codec.WriteRaw(g.t, g.payload)
+				sess.writing.Store(0)
+				if err != nil {
+					sess.conn.Close()
+					return
+				}
 			}
 		}
 		if !sess.writeVoice(voice) {
@@ -591,6 +624,7 @@ func (sess *session) handleReq(ctx context.Context, r proto.Req) {
 			sess.synced = true
 			sess.goLive(res.Head)
 			sess.srv.sendPresence(sess)
+			sess.srv.sendAgentPresence(sess)
 			sess.srv.sendHuddles(sess)
 		}
 		return
@@ -618,11 +652,16 @@ func (s *Server) handleEphemeral(sess *session, e proto.Ephemeral) {
 		return
 	}
 	e.User = sess.user.ID
-	if e.Kind == proto.EphKeyNeed {
+	switch e.Kind {
+	case proto.EphKeyNeed:
 		s.keyNeed(sess, e)
 		return
+	case proto.EphAgent:
+		s.agentEph(sess, e)
+		return
 	}
-	if sess.passive { // listens only: no typing, and presence is the user's other sessions'
+	// Passive sessions only listen; an agent's presence is agent.presence.
+	if sess.passive || sess.agent != nil {
 		return
 	}
 	s.mu.Lock()
@@ -681,11 +720,14 @@ func (s *Server) sync(ctx context.Context, sess *session, args proto.Raw) (proto
 		return proto.SyncRes{Head: h, Reset: true}, s.sendSnapshot(ctx, tx, sess)
 	}
 	for since := a.Since; ; {
-		evs, err := visibleEvents(ctx, tx, u, since, h, replayPage, sess.e2e)
+		evs, err := visibleEvents(ctx, tx, u, since, h, replayPage, sess.e2e, sess.agentCap)
 		if err != nil {
 			return proto.SyncRes{}, err
 		}
 		for _, ev := range evs {
+			if proto.IsMsgKind(ev.Kind) && !s.agentSees(sess, ev.Chan) {
+				continue
+			}
 			payload, err := proto.Marshal(ev)
 			if err != nil {
 				return proto.SyncRes{}, err
@@ -720,7 +762,14 @@ func (s *Server) sendSnapshot(ctx context.Context, tx *sql.Tx, sess *session) er
 	if err != nil {
 		return err
 	}
-	if err := sess.pushSnapshot(proto.Snapshot{Users: users, Read: read, Groups: groups}); err != nil {
+	first := proto.Snapshot{Users: users, Read: read, Groups: groups}
+	if sess.agentCap {
+		if first.Agents, err = listAgents(ctx, tx); err != nil {
+			return err
+		}
+		s.markAgentsOnline(first.Agents)
+	}
+	if err := sess.pushSnapshot(first); err != nil {
 		return err
 	}
 	var cpart []proto.Channel
@@ -754,6 +803,9 @@ func (s *Server) sendSnapshot(ctx context.Context, tx *sql.Tx, sess *session) er
 	var part []proto.Message
 	size := 0
 	for _, c := range chans {
+		if !s.agentSees(sess, c.ID) {
+			continue
+		}
 		msgs, err := scanMessages(ctx, tx, `SELECT * FROM (SELECT `+msgCols+` FROM messages
 			WHERE chan = ? ORDER BY id DESC LIMIT ?) ORDER BY id`, c.ID, proto.SnapshotPerChan)
 		if err != nil {

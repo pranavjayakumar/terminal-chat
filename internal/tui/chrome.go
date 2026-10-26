@@ -142,7 +142,7 @@ func (m *Model) drawHuddleBar(c *canvas, g geo) {
 	}
 	limit := x0 + w - right
 	c.put(x0, y, "▎", fgc(th.info), "")
-	x := c.put(x0+2, y, "♪", fgc(th.info), "")
+	x := c.put(x0+2, y, m.icon(icHuddle), fgc(th.info), "")
 	if w >= 34 {
 		x = c.put(x+1, y, "huddle", fgb(th.fg), "")
 		if h.in && !h.joinedAt.IsZero() {
@@ -153,7 +153,13 @@ func (m *Model) drawHuddleBar(c *canvas, g geo) {
 	if h.in {
 		// our own voice: always shown, and whether it is going out
 		if w >= 50 {
-			x = c.put(x+2, y, "you", fgc(th.fg), "") + 1
+			x += 2
+			// the icon's room is kept while muted, so no meter shifts on a toggle
+			if h.talking {
+				c.put(x, y, m.icon(icTalking), fgc(m.talkPulse()), "")
+			}
+			x += strWidth(m.icon(icTalking)) + 1
+			x = c.put(x, y, "you", fgc(th.fg), "") + 1
 			mc := th.info
 			if h.talking {
 				mc = th.accent
@@ -161,11 +167,12 @@ func (m *Model) drawHuddleBar(c *canvas, g geo) {
 			x = c.put(x, y, m.meter(m.me.ID, meMeterN, h.talking), fgc(mc), "")
 		}
 		if h.talking {
-			c.put(x+1, y, "● live", fgb(th.accent), "") // we are broadcasting: never cut
+			c.put(x+1, y, m.icon(icMic)+" live", fgb(th.accent), "") // we are broadcasting: never cut
 		} else {
-			c.put(x+1, y, "⊘ muted", fgc(th.faint), "")
+			c.put(x+1, y, m.icon(icMuted)+" muted", fgc(th.faint), "")
 		}
-		x += 1 + strWidth("⊘ muted") // the same width either way, so nobody's meter shifts on a toggle
+		// the same width either way, so nobody's meter shifts on a toggle
+		x += 1 + max(strWidth(m.icon(icMuted)+" muted"), strWidth(m.icon(icMic)+" live"))
 	}
 	x += 2
 	who := h.hereWho
@@ -183,6 +190,9 @@ func (m *Model) drawHuddleBar(c *canvas, g geo) {
 			name = fmt.Sprint(u)
 		}
 		need := strWidth(name) + 1 + otherMeterN/2 + 3
+		if talking {
+			need += strWidth(m.icon(icTalking)) + 1
+		}
 		if x+need > limit {
 			if rest := len(who) - i; x+3 <= limit && rest > 0 {
 				c.put(x, y, fmt.Sprintf("+%d", rest), fgc(th.faint), "")
@@ -192,6 +202,7 @@ func (m *Model) drawHuddleBar(c *canvas, g geo) {
 		st := fgc(th.dim)
 		if talking {
 			st = fgb(th.nick(u))
+			x = c.put(x, y, m.icon(icTalking), fgc(m.talkPulse()), "") + 1
 		}
 		x = c.put(x, y, name, st, "") + 1
 		mc := th.info
@@ -287,6 +298,16 @@ func (m *Model) drawToast(c *canvas, g geo) {
 }
 
 func absSin(x float64) float64 { return math.Abs(math.Sin(x)) }
+
+// talkPulse is the talking icon's color: it breathes between the accent
+// and info while someone speaks (the huddle's slow frame tick drives it).
+func (m *Model) talkPulse() rgb {
+	th := m.st.th
+	if m.fx.off {
+		return th.accent
+	}
+	return mix(th.info, th.accent, absSin(float64(m.now().UnixMilli())/1000*3))
+}
 
 // drawDialogNotice shows the notice row over a dialog's bottom edge, so an
 // error or confirmation from inside a dialog is never hidden by it.

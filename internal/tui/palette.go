@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/skailama/tc/internal/sanitize"
 )
 
 // The command palette (Option-K): the quick switcher's fuzzy jump list plus
@@ -25,12 +27,16 @@ type palItem struct {
 	icon   string
 	iconFg rgb
 	iconBg rgb // a swatch: drawn on its own background, selected or not
-	fg     rgb
-	sw     *switchItem
-	run    string // "/cmd args" to run, "/cmd " to type, or an app action
-	tabs   string // which tabs list it: letters a c p m s
-	score  int
-	order  int
+	// Colors that follow the theme are resolved when drawn, so a dialog
+	// recolored by its theme (qbasic) gets its own: info/faint icons, a
+	// person's name color, their presence dot.
+	iconTone   byte // 'i' info, 'f' faint
+	nick, pres uint64
+	sw         *switchItem
+	run        string // "/cmd args" to run, "/cmd " to type, or an app action
+	tabs       string // which tabs list it: letters a c p m s
+	score      int
+	order      int
 }
 
 type palState struct {
@@ -41,28 +47,33 @@ type palState struct {
 }
 
 func (m *Model) palCommands() []palItem {
-	th := m.st.th
 	out := []palItem{
-		{group: "Commands", label: "Settings", meta: "/settings", icon: "⚙", run: "app:settings", tabs: "ams"},
+		{group: "Commands", label: "Settings", meta: "/settings", icon: m.icon(icSettings), run: "app:settings", tabs: "ams"},
 		{group: "Commands", label: "Keyboard shortcuts", meta: "F1", icon: "⌨", run: "app:keys", tabs: "ams"},
 		{group: "Commands", label: "Toggle sidebar size", meta: "⌃B", icon: "◧", run: "app:sidebar", tabs: "am"},
 		{group: "Commands", label: "Change theme…", icon: "◐", run: "app:themes", tabs: "am"},
+		m.agentPalItem(),
+	}
+	if p, _, ok := m.waitingApproval(); ok {
+		out = append(out, palItem{group: "Commands", label: "Approval waiting · " + m.chanTitle(p.ch), desc: sanitize.Line(p.action) + "?", meta: "⌥O", icon: "✋", run: "app:approval", tabs: "am"})
+	}
+	out = append(out, []palItem{
 		{group: "Messages", label: "Activity", desc: "mentions, replies, reactions, DMs", meta: "⌥A", icon: "@", run: "/activity", tabs: "m"},
-		{group: "Messages", label: "Search", meta: "/search", icon: "⌕", run: "/search ", tabs: "m"},
-		{group: "Messages", label: "Insert emoji", desc: "picker; + reacts in select mode, :name completes", meta: "⌥E", icon: "☺", run: "app:emoji", tabs: "m"},
-		{group: "Messages", label: "Pinned messages", meta: "/pins", icon: "¶", run: "/pins", tabs: "m"},
+		{group: "Messages", label: "Search", meta: "/search", icon: m.icon(icSearch), run: "/search ", tabs: "m"},
+		{group: "Messages", label: "Insert emoji", desc: "picker; + reacts in select mode, :name completes", meta: "⌥E", icon: m.icon(icReact), run: "app:emoji", tabs: "m"},
+		{group: "Messages", label: "Pinned messages", meta: "/pins", icon: m.icon(icPin), run: "/pins", tabs: "m"},
 		{group: "Messages", label: "Remind me", meta: "/remind", icon: "⏰", run: "/remind ", tabs: "m"},
 		{group: "You", label: "Set away", meta: "/away", icon: "◑", run: "/away", tabs: "m"},
-		{group: "You", label: "Back from away", meta: "/back", icon: "●", run: "/back", tabs: "m"},
+		{group: "You", label: "Back from away", meta: "/back", icon: m.icon(icOnline), run: "/back", tabs: "m"},
 		{group: "You", label: "Do not disturb", meta: "/dnd", icon: "☾", run: "/dnd 2h", desc: "for 2 hours", tabs: "m"},
 		{group: "You", label: "Notifications", meta: "/notify", icon: "⚑", run: "app:settings:notifications", tabs: "ms"},
 		{group: "You", label: "Quit", meta: "⌃C ⌃C", icon: "✕", run: "/quit", tabs: "m"},
-	}
+	}...)
 	if m.thread.open() {
-		out = append(out, palItem{group: "Commands", label: "Close thread", meta: "esc", icon: "↳", run: "app:closethread", tabs: "am"})
+		out = append(out, palItem{group: "Commands", label: "Close thread", meta: "esc", icon: m.icon(icThread), run: "app:closethread", tabs: "am"})
 	}
 	if m.active != 0 {
-		hud := palItem{group: "Commands", label: "Join huddle here", meta: "/huddle", icon: "♪", iconFg: th.info, run: "/huddle", tabs: "am"}
+		hud := palItem{group: "Commands", label: "Join huddle here", meta: "/huddle", icon: m.icon(icHuddle), iconTone: 'i', run: "/huddle", tabs: "am"}
 		if m.hud.in {
 			hud.label, hud.meta, hud.run = "Leave huddle", "/leave-huddle", "/leave-huddle"
 		}
@@ -84,7 +95,7 @@ func (m *Model) palSettings() []palItem {
 		{group: "Settings", label: "Appearance", desc: "theme, density, sidebar", icon: "◐", run: "app:settings:appearance", tabs: "s"},
 		{group: "Settings", label: "Notifications", desc: "mentions, sounds, quiet hours", icon: "⚑", run: "app:settings:notifications", tabs: "s"},
 		{group: "Settings", label: "Keyboard shortcuts", meta: "F1", icon: "⌨", run: "app:keys", tabs: "s"},
-		{group: "Settings", label: "Account & devices", desc: "you, your devices", icon: "◆", run: "app:settings:account", tabs: "s"},
+		{group: "Settings", label: "Account & devices", desc: "you, your devices", icon: m.icon(icE2E), run: "app:settings:account", tabs: "s"},
 		{group: "Settings", label: "About", desc: "version, updates", icon: "ⓘ", run: "app:settings:about", tabs: "s"},
 	}
 	anim := "Animations: on"
@@ -97,10 +108,17 @@ func (m *Model) palSettings() []palItem {
 		layout = "Messages: split"
 	}
 	out = append(out, palItem{group: "Settings", label: layout, desc: "everyone on the left, or yours on the right", icon: "≡", run: "app:split", tabs: "s"})
+	for _, s := range skins {
+		it := palItem{group: "Skin", label: s.label, desc: "the chrome; any theme fits", icon: "▣", run: "app:skin:" + s.id, tabs: "as"}
+		if s == m.skin() {
+			it.meta = "✓ current"
+		}
+		out = append(out, it)
+	}
 	for _, id := range themeOrder {
 		t := themes[id]
 		it := palItem{group: "Theme", label: id, desc: t.desc, icon: "■", iconFg: t.accent, iconBg: t.bg, run: "theme:" + id, tabs: "as"}
-		if t == m.st.th {
+		if t.name == m.st.th.name {
 			it.meta = "✓ current"
 		}
 		out = append(out, it)
@@ -109,30 +127,31 @@ func (m *Model) palSettings() []palItem {
 }
 
 func (m *Model) palItems() []palItem {
-	th := m.st.th
 	var out []palItem
 	for _, s := range m.switchItems() {
 		s := s
-		it := palItem{sw: &s, label: strings.TrimSpace(s.label[2:]), fg: th.fg, tabs: "a"}
+		it := palItem{sw: &s, label: strings.TrimSpace(s.label[2:]), tabs: "a"}
 		switch {
 		case strings.HasPrefix(s.label, "# "):
-			it.group, it.icon, it.tabs = "Channels", "#", "ac"
+			it.group, it.icon, it.tabs = "Channels", m.icon(icChannel), "ac"
 			if v, ok := m.chanView(s.ch); ok {
 				if _, enc := m.e2e[v.ID]; enc || v.E2E {
-					it.icon, it.iconFg, it.desc = "◆", th.info, "encrypted"
+					it.icon, it.iconTone, it.desc = m.icon(icPrivate), 'i', "encrypted"
 				}
 			}
 		default:
-			it.group, it.icon, it.tabs = "People", "●", "ap"
-			it.iconFg = th.faint
+			it.group, it.icon, it.tabs = "People", m.icon(icOnline), "ap"
+			it.iconTone = 'f'
 			if s.user != 0 {
-				it.iconFg = m.presenceColor(s.user)
-				it.fg = th.nick(s.user)
+				it.pres, it.nick = s.user, s.user
 			} else {
 				it.icon = "◇"
 			}
 			if s.ch == 0 {
 				it.desc = "new direct message"
+			}
+			if a, ok := m.myAgent(); ok && s.ch != 0 && s.ch == m.ag.dm {
+				it.icon, it.iconTone, it.iconFg = agentFrame(parseAgentIcon(a.Icon), "", 0, false), 0, m.agentColor(a)
 			}
 		}
 		switch {
@@ -143,11 +162,35 @@ func (m *Model) palItems() []palItem {
 		}
 		out = append(out, it)
 	}
+	out = append(out, m.palAgents()...)
 	out = append(out, m.palCommands()...)
 	out = append(out, m.palSettings()...)
 	for i := range out {
 		out[i].order = i
 	}
+	return out
+}
+
+// palAgents are the agents in the People group: someone else's types
+// @handle into the composer; mine opens its DM (the switcher already lists
+// that DM once it exists).
+func (m *Model) palAgents() []palItem {
+	var out []palItem
+	for _, a := range m.ag.byOwner {
+		it := palItem{
+			group: "People", label: "@" + sanitize.Line(a.Handle), tabs: "ap",
+			icon: agentFrame(parseAgentIcon(a.Icon), "", 0, false), iconFg: m.agentColor(a),
+			desc: m.ownerName(a.Owner) + "'s agent", run: "app:mention:" + a.Handle,
+		}
+		if a.Owner == m.me.ID {
+			if m.ag.dm != 0 {
+				continue
+			}
+			it.desc, it.run = "your agent", "app:agentdm"
+		}
+		out = append(out, it)
+	}
+	slices.SortFunc(out, func(a, b palItem) int { return strings.Compare(a.label, b.label) })
 	return out
 }
 
@@ -307,6 +350,13 @@ func (m *Model) palRun(it palItem) tea.Cmd {
 			}
 		}
 		return nil
+	case strings.HasPrefix(run, "app:skin:"):
+		m.setSkin(strings.TrimPrefix(run, "app:skin:"))
+		m.pal.items = m.palItems()
+		sel := m.pal.sel
+		m.filterPalette()
+		m.pal.sel = min(sel, max(len(m.pal.shown)-1, 0))
+		return nil
 	case run == "app:split":
 		m.setSplit(!m.ui.Split)
 		m.pal.items = m.palItems()
@@ -329,6 +379,14 @@ func (m *Model) palRun(it palItem) tea.Cmd {
 // appAction runs an action named by a palette row, a click or a key.
 func (m *Model) appAction(run string) tea.Cmd {
 	switch {
+	case run == "app:agent":
+		return m.openAgentPanel()
+	case run == "app:agentdm":
+		return m.openAgentDM()
+	case strings.HasPrefix(run, "app:mention:"):
+		m.insertMention(strings.TrimPrefix(run, "app:mention:"))
+	case run == "app:approval":
+		return m.jumpToApproval()
 	case run == "app:settings":
 		m.openSettings("")
 	case strings.HasPrefix(run, "app:settings:"):
@@ -368,7 +426,7 @@ func (m *Model) drawPalette(c *canvas) {
 	w, h := r.x1-r.x0, r.y1-r.y0
 	in := 2
 	if w < 40 {
-		in = 0
+		in = m.inside(r).x0 - r.x0 // clear of the frame, if any
 	}
 	iw := w - 2*in
 	y := y0 + 3
@@ -377,7 +435,7 @@ func (m *Model) drawPalette(c *canvas) {
 	}
 	// search field
 	c.fill(x0+in, y, iw, 1, th.element, "")
-	c.put(x0+in+1, y, "⌕", fgc(th.faint), "")
+	c.put(x0+in+1, y, m.icon(icSearch), fgc(th.faint), "")
 	c.putANSI(x0+in+3, y, dropBidi(m.line.View()), iw-4, fgc(th.fg).on(th.element), "")
 	y += 2
 	// tabs
@@ -399,7 +457,7 @@ func (m *Model) drawPalette(c *canvas) {
 	}
 	y += 2
 	foot := y0 + h - 2
-	if h < 12 {
+	if h < 12 && !m.skin().framed {
 		foot = y0 + h - 1
 	}
 	rows := foot - 1 - y
@@ -481,7 +539,14 @@ func (m *Model) palRow(c *canvas, x, y, w, i int) {
 	e := x + 1
 	if it.icon != "" {
 		ic := it.iconFg
-		if ic == 0 {
+		switch {
+		case it.pres != 0:
+			ic = m.presenceColor(it.pres)
+		case it.iconTone == 'i':
+			ic = th.info
+		case it.iconTone == 'f':
+			ic = th.faint
+		case ic == 0:
 			ic = th.dim
 		}
 		st := pick(ic)
@@ -491,9 +556,9 @@ func (m *Model) palRow(c *canvas, x, y, w, i int) {
 		c.put(e, y, it.icon, st, act)
 		e += 3
 	}
-	fg := it.fg
-	if fg == 0 {
-		fg = th.fg
+	fg := th.fg
+	if it.nick != 0 {
+		fg = th.nick(it.nick)
 	}
 	metaW := strWidth(it.meta)
 	room := w - (e - x) - metaW - 3

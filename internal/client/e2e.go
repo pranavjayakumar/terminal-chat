@@ -533,7 +533,11 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 	if len(mySSH) > 0 {
 		if pk, err := ssh.ParsePublicKey(mySSH); err == nil {
 			fp := ssh.FingerprintSHA256(pk)
-			if err := ts.PinKey(sid, me, fp, mySSH, trust.Verified); errors.Is(err, trust.ErrKeyChanged) {
+			how := trust.Verified
+			if c.IsAgentSession() && c.cfg.AgentEndorse != nil {
+				how = trust.Agent // our key is the agent's, not our owner's
+			}
+			if err := ts.PinKey(sid, me, fp, mySSH, how); errors.Is(err, trust.ErrKeyChanged) {
 				// Our own key, so we know it's ours: no banner for it.
 				_ = ts.AcknowledgeKeyChange(sid, me, fp)
 			}
@@ -597,19 +601,26 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 			wasActive = append(wasActive, pr.Dev)
 		}
 	}
+	// pins holds every pinned key; ownerPins leaves out agent keys, which
+	// certify the agent's devices but never endorse keys or sign revokes.
 	pins := map[uint64][][]byte{}
-	pinsOf := func(u uint64) [][]byte {
-		if p, ok := pins[u]; ok {
-			return p
+	ownPins := map[uint64][][]byte{}
+	loadPins := func(u uint64) {
+		if _, ok := pins[u]; ok {
+			return
 		}
 		ks, _ := ts.PinnedKeys(sid, u)
-		p := [][]byte{}
+		p, o := [][]byte{}, [][]byte{}
 		for _, k := range ks {
 			p = append(p, k.Wire)
+			if k.How != trust.Agent {
+				o = append(o, k.Wire)
+			}
 		}
-		pins[u] = p
-		return p
+		pins[u], ownPins[u] = p, o
 	}
+	pinsOf := func(u uint64) [][]byte { loadPins(u); return pins[u] }
+	ownerPins := func(u uint64) [][]byte { loadPins(u); return ownPins[u] }
 	pinned := func(u uint64, wire []byte) bool {
 		return slices.ContainsFunc(pinsOf(u), func(p []byte) bool { return bytes.Equal(p, wire) })
 	}
@@ -667,20 +678,44 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 			c.markBadCert(h)
 		}
 	}
+	agentSSH := map[string]bool{}
+	for _, e := range endorse {
+		if ae, err := identity.PeekAgentEndorse(e); err == nil {
+			agentSSH[string(ae.AgentSSH)] = true
+		}
+	}
 	for round := 0; round < 8; round++ {
 		progress := false
 		for _, e := range endorse {
+			if ae, err := identity.PeekAgentEndorse(e); err == nil {
+				if ae.ServerID != sid || pinned(ae.User, ae.AgentSSH) {
+					continue
+				}
+				for _, p := range ownerPins(ae.User) {
+					v, err := e.VerifyAgentEndorse(sid, p)
+					if err != nil || v.User != ae.User || !bytes.Equal(v.AgentSSH, ae.AgentSSH) {
+						continue
+					}
+					if fp, ok := fingerprint(ae.AgentSSH); ok && ts.PinKey(sid, ae.User, fp, ae.AgentSSH, trust.Agent) == nil {
+						pins[ae.User] = append(pins[ae.User], ae.AgentSSH)
+						progress, changed = true, true
+					}
+					break
+				}
+				continue
+			}
 			ke, err := identity.PeekKeyEndorse(e)
 			if err != nil || ke.ServerID != sid || pinned(ke.User, ke.NewSSH) {
 				continue
 			}
-			for _, p := range pinsOf(ke.User) {
+			for _, p := range ownerPins(ke.User) {
 				v, err := e.VerifyKeyEndorse(sid, p)
 				if err != nil || v.User != ke.User || !bytes.Equal(v.NewSSH, ke.NewSSH) {
 					continue
 				}
 				if fp, ok := fingerprint(ke.NewSSH); ok && ts.PinKey(sid, ke.User, fp, ke.NewSSH, trust.Endorsed) == nil {
 					pins[ke.User] = append(pins[ke.User], ke.NewSSH)
+					ownPins[ke.User] = append(ownPins[ke.User], ke.NewSSH)
 					progress, changed = true, true
 				}
 				break
@@ -696,10 +731,13 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 				done[i] = true
 				continue
 			}
-			if len(pinsOf(u)) == 0 {
+			// A key some endorsement calls an agent's is never a user's
+			// first (TOFU) key: it waits for the owner's key to vouch.
+			if len(pinsOf(u)) == 0 && !agentSSH[string(cr.dc.SSH)] {
 				fp, ok := fingerprint(cr.dc.SSH)
 				if ok && ts.PinKey(sid, u, fp, cr.dc.SSH, trust.TOFU) == nil {
 					pins[u] = append(pins[u], cr.dc.SSH)
+					ownPins[u] = append(ownPins[u], cr.dc.SSH)
 					put(cr)
 					done[i] = true
 					progress, changed = true, true
@@ -730,7 +768,7 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 	// be known before a revoke it signed is judged (step 12 security pass).
 	for pass := 0; pass < 2; pass++ {
 		for _, r := range revokes {
-			if c.applyRevoke(sid, r, pass == 1, pinsOf) {
+			if c.applyRevoke(sid, r, pass == 1, ownerPins) {
 				changed = true
 			}
 		}
@@ -779,8 +817,8 @@ func (c *Client) applyRevoke(sid e2ecrypto.ServerID, r seqRevoke, byDevice bool,
 	} else {
 		devs, _ := ts.Devices(sid, pr.User)
 		for _, o := range devs {
-			if o.ID == pr.Dev {
-				continue
+			if o.ID == pr.Dev || c.agentDevice(sid, o) {
+				continue // an agent's device never revokes its owner's
 			}
 			v, err := r.s.VerifyDeviceRevokeByDevice(sid, o.Ed25519[:])
 			if err != nil || v.User != pr.User || v.Dev != pr.Dev {

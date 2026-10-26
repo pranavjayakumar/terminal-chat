@@ -33,6 +33,7 @@ type setCtl struct {
 	pick       func(i int) tea.Cmd
 	themes     bool // the theme card grid
 	button     string
+	preview    bool // a row of icons in the pack in use (Icons)
 }
 
 func (m *Model) openSettings(page string) {
@@ -64,6 +65,15 @@ func (m *Model) setSplit(on bool) {
 	m.savePrefs()
 	m.main.ver++
 	m.thread.ver++
+}
+
+// setStartup picks whether the Retro skin opens with its intro.
+func (m *Model) setStartup(instant bool) {
+	m.ui.Startup = ""
+	if instant {
+		m.ui.Startup = startInstant
+	}
+	m.savePrefs()
 }
 
 func (m *Model) setCompact(on bool) {
@@ -130,14 +140,35 @@ func (m *Model) setCtls() []setCtl {
 	case "appearance":
 		cur := 0
 		for i, id := range themeOrder {
-			if themes[id] == m.st.th {
+			if id == m.st.th.name {
 				cur = i
 			}
 		}
+		skinOpts, skinCur := make([]string, len(skins)), 0
+		for i, s := range skins {
+			skinOpts[i] = s.label
+			if s == m.skin() {
+				skinCur = i
+			}
+		}
 		sb := map[string]int{sbIcons: 0, sbNormal: 1, sbWide: 2}[m.ui.sidebarMode()]
-		return []setCtl{
+		ctls := []setCtl{
+			// Theme comes first: Settings opens focused on it, so ←/→ try
+			// themes and never switch the skin by surprise.
 			{label: "Theme", sub: "←/→ or click to switch", themes: true, cur: cur, opts: themeOrder,
 				pick: func(i int) tea.Cmd { m.setTheme(themeOrder[i]); return nil }},
+			{label: "Skin", sub: "the chrome; retro: double lines, shadows, a menu bar", opts: skinOpts, cur: skinCur,
+				pick: func(i int) tea.Cmd { m.setSkin(skins[i].id); return nil }},
+			m.iconsCtl(),
+		}
+		if m.opt.Font.Install != nil && !m.fontInstalled() && !m.opt.SSH {
+			ctls = append(ctls, setCtl{label: "tc icons", sub: "a small font for sharper icons", button: "Install tc icons",
+				pick: func(int) tea.Cmd { return m.installIconFont() }})
+		}
+		ctls = append(ctls, []setCtl{
+			{label: "Underlines", sub: "wavy under @you, dotted under #channels", opts: []string{"Auto", "On", "Off"},
+				cur:  map[string]int{"": 0, "on": 1, "off": 2}[m.ui.Touches],
+				pick: func(i int) tea.Cmd { m.setTouches([]string{"", "on", "off"}[i]); return nil }},
 			{label: "Density", opts: []string{"Cozy", "Compact"}, cur: boolInt(m.ui.Compact),
 				pick: func(i int) tea.Cmd { m.setCompact(i == 1); return nil }},
 			{label: "Sidebar", sub: "or click its edge, or ⌃B", opts: []string{"Icons", "Normal", "Wide"}, cur: sb,
@@ -148,7 +179,12 @@ func (m *Model) setCtls() []setCtl {
 				pick: func(int) tea.Cmd { return nil }},
 			{label: "Animations", sub: "fades, pops, slides · off = instant", toggle: true, cur: boolInt(!m.fx.off),
 				pick: func(i int) tea.Cmd { m.setMotion(i == 1); return nil }},
+		}...)
+		if m.skin().intro != "" {
+			ctls = append(ctls, setCtl{label: "Startup", sub: "the short intro while tc connects", opts: []string{"Animated", "Instant"}, cur: boolInt(m.ui.Startup == startInstant),
+				pick: func(i int) tea.Cmd { m.setStartup(i == 1); return nil }})
 		}
+		return ctls
 	case "notifications":
 		p := m.al.Prefs
 		lvl := map[client.NotifyLevel]int{client.LevelAll: 0, client.LevelMentions: 1, client.LevelOff: 2}[p.Default]
@@ -331,7 +367,7 @@ func (m *Model) drawSettings(c *canvas) {
 	}
 	cx := r.x0 + navW + 5
 	if navW == 0 {
-		cx = r.x0 + 2
+		cx = m.inside(r).x0 + 2
 	}
 	cw := r.x1 - cx - 2
 	old := c.setClip(rect{cx - 2, top, cx + cw, r.y1 - 1}) // from the › focus mark
@@ -417,26 +453,28 @@ func (m *Model) drawSettings(c *canvas) {
 
 // themeRows is how many rows of cards the grid has at width w, and whether
 // they are the one-line compact kind.
-func themeGrid(w, room int) (cols, rows int, compact bool) {
+func themeGrid(n, w, room int) (cols, rows int, compact bool) {
 	cols = 5
 	for cols > 1 && cols*16 > w {
 		cols--
 	}
-	rows = (len(themeOrder) + cols - 1) / cols
-	return cols, rows, room < rows*6+14
+	rows = (n + cols - 1) / cols
+	return cols, rows, room < rows*6+26 // the cards and every other control fit
 }
 
 // ctlHeight is how many rows drawCtls gives a control.
 func ctlHeight(ctl setCtl, cw, room int) int {
 	switch {
 	case ctl.themes:
-		_, rows, compact := themeGrid(cw, room)
+		_, rows, compact := themeGrid(len(ctl.opts), cw, room)
 		if compact {
 			return rows*2 + 2
 		}
 		return rows*6 + 2
 	case ctl.toggle:
 		return 2
+	case ctl.preview:
+		return 4
 	}
 	return 3
 }
@@ -527,6 +565,10 @@ func (m *Model) drawCtls(c *canvas, cx, y, cw, bottom int) {
 				}
 				x = c.pill(x, y, " "+o+" ", st, "set:"+strconv.Itoa(row)+":"+strconv.Itoa(i)) + 1
 			}
+			if ctl.preview {
+				y++
+				m.drawIconPreview(c, cx, y, cw)
+			}
 			y += 2
 		}
 	}
@@ -536,11 +578,11 @@ func (m *Model) drawCtls(c *canvas, cx, y, cw, bottom int) {
 // after it.
 func (m *Model) drawThemeCards(c *canvas, x, y, w, room, row int) int {
 	th := m.st.th
-	cols, rows, compact := themeGrid(w, room)
+	cols, rows, compact := themeGrid(len(themeOrder), w, room)
 	for k, id := range themeOrder {
 		t := themes[id]
 		a := "set:" + strconv.Itoa(row) + ":" + strconv.Itoa(k)
-		cur := t == th
+		cur := t.name == th.name
 		mark := "  "
 		if cur {
 			mark = "✓ "

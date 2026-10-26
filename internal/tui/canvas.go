@@ -18,11 +18,13 @@ const (
 	aUnderline
 	aReverse
 	aMonoRev // reverse only when there is no color (selection under NO_COLOR)
+	aCurly   // underline styles (SGR 4:3, 4:4) in the cell's ul color
+	aDotted
 )
 
 // cstyle is a cell's look. A zero fg/bg flag keeps what is under it.
 type cstyle struct {
-	fg, bg       rgb
+	fg, bg, ul   rgb // ul: the underline's color with aCurly or aDotted
 	hasFg, hasBg bool
 	attr         attr
 }
@@ -33,6 +35,9 @@ func bgc(c rgb) cstyle              { return cstyle{bg: c, hasBg: true} }
 func (s cstyle) on(c rgb) cstyle    { s.bg, s.hasBg = c, true; return s }
 func (s cstyle) with(a attr) cstyle { s.attr |= a; return s }
 
+// under gives s a styled underline (aCurly or aDotted) in color c.
+func (s cstyle) under(a attr, c rgb) cstyle { s.attr |= a; s.ul = c; return s }
+
 // cell is one terminal cell. A wide grapheme fills its first cell and
 // leaves w == 0 in the next.
 type cell struct {
@@ -40,6 +45,7 @@ type cell struct {
 	w     uint8
 	fg    rgb
 	bg    rgb
+	ul    rgb // underline color, with aCurly or aDotted
 	attr  attr
 	act   uint16 // index into canvas.acts; 0 none
 	hover bool   // gets the hover tint when the pointer is over its action
@@ -199,6 +205,7 @@ func (c *canvas) style(cl *cell, st cstyle) {
 		cl.bg = st.bg
 	}
 	cl.attr = st.attr
+	cl.ul = st.ul
 }
 
 // fill paints a rectangle's background, clearing its text.
@@ -467,14 +474,31 @@ func (e *encoder) seq(c rgb, bg bool) string {
 	return k[0]
 }
 
+// underline is the SGR for a styled, colored underline: 4:3 curly or 4:4
+// dotted, then 58 for its color (truecolor or 256; 16 colors keep the
+// text's).
+func (e *encoder) underline(a attr, c rgb) string {
+	s := ";4:4"
+	if a&aCurly != 0 {
+		s = ";4:3"
+	}
+	switch e.prof {
+	case termenv.TrueColor:
+		s += ";58:2::" + strconv.Itoa(int(c>>16&0xff)) + ":" + strconv.Itoa(int(c>>8&0xff)) + ":" + strconv.Itoa(int(c&0xff))
+	case termenv.ANSI256:
+		s += ";58:5:" + strconv.Itoa(nearest256(c))
+	}
+	return s
+}
+
 // encode renders the canvas: h lines of exactly w cells, joined by "\n".
 // Without color, the theme's quiet colors become faint text.
 func (c *canvas) encode(e *encoder) string {
 	var b strings.Builder
 	b.Grow(c.w * c.h * 4)
 	type key struct {
-		fg, bg rgb
-		attr   attr
+		fg, bg, ul rgb
+		attr       attr
 	}
 	quiet := func(fg rgb) bool { return contrast(fg, c.th.bg) < 6 }
 	for y := 0; y < c.h; y++ {
@@ -488,12 +512,13 @@ func (c *canvas) encode(e *encoder) string {
 			if cl.w == 0 {
 				continue
 			}
-			k := key{cl.fg, cl.bg, cl.attr}
+			k := key{cl.fg, cl.bg, cl.ul, cl.attr}
 			if e.color && e.prof == termenv.ANSI && cl.attr&aMonoRev != 0 {
 				k.attr |= aReverse // 16 colors draw no backgrounds: reverse marks it
 			}
 			if !e.color {
 				k.fg, k.bg = 0, 0
+				k.attr &^= aCurly | aDotted
 				if cl.attr&aMonoRev != 0 {
 					k.attr |= aReverse
 				}
@@ -518,6 +543,9 @@ func (c *canvas) encode(e *encoder) string {
 					}
 					if s := e.seq(k.bg, true); s != "" {
 						b.WriteString(";" + s)
+					}
+					if k.attr&(aCurly|aDotted) != 0 {
+						b.WriteString(e.underline(k.attr, k.ul))
 					}
 				}
 				b.WriteByte('m')

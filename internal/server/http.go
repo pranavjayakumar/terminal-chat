@@ -140,7 +140,7 @@ func (s *Server) hookHandler() http.Handler {
 		} else {
 			rand.Read(nonce)
 		}
-		res, err := s.send(ctx, h.bot, proto.SendArgs{Chan: h.ch, Body: text, Nonce: nonce}, &h)
+		res, err := s.send(ctx, nil, h.bot, proto.SendArgs{Chan: h.ch, Body: text, Nonce: nonce}, &h)
 		if err != nil {
 			var pe *proto.Error
 			if !errors.As(err, &pe) {

@@ -245,7 +245,7 @@ func (m *Model) activityRow(it client.ActivityItem, w int, selected, fresh bool)
 	if fresh {
 		dot, styledDot = "•", m.st.dim.Render("•")
 	}
-	head := dot + activityMarker(it) + " "
+	head := dot + activityMarker(it, m.icon(icThread)) + " "
 	if selected {
 		var plain []string
 		for _, p := range parts {
@@ -259,12 +259,12 @@ func (m *Model) activityRow(it client.ActivityItem, w int, selected, fresh bool)
 	for _, p := range parts {
 		styled = append(styled, p.styled)
 	}
-	return fit(truncate(styledDot+activityMarker(it)+" "+strings.Join(styled, sep), w), w)
+	return fit(truncate(styledDot+activityMarker(it, m.icon(icThread))+" "+strings.Join(styled, sep), w), w)
 }
 
 // activityMarker is the two-cell reason for an item: @ mention, * highlight
 // word, ↳ reply, » direct message, the emoji for a reaction.
-func activityMarker(it client.ActivityItem) string {
+func activityMarker(it client.ActivityItem, thread string) string {
 	mark := "  "
 	switch it.Kind {
 	case client.ActMention:
@@ -272,7 +272,7 @@ func activityMarker(it client.ActivityItem) string {
 	case client.ActHighlight:
 		mark = "* "
 	case client.ActReply:
-		mark = "↳ "
+		mark = thread + " "
 	case client.ActDM:
 		mark = "» "
 	case client.ActReaction:

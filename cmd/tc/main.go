@@ -21,7 +21,7 @@ const usage = `tc — terminal team chat
   tc login tc://host:port#pin [--key path]
                              sign in on another computer with the same SSH key
   tc login                   show this computer's tc://host:port#pin
-  tc send <#chan|@user> [message...]   (reads stdin if no message)
+  tc send <#chan|@user|@your-agent> [message...]   (reads stdin if no message)
   tc send <#chan|@user> --file path[:start[-end]] [--context N] [message...]
   tc tail <#chan>            stream a channel
   tc notify [--to #chan|@user|@me] [--on-fail] -- <cmd...>
@@ -36,11 +36,20 @@ const usage = `tc — terminal team chat
   tc background on|off|status
                              notifications (mentions, DMs, huddle rings) while tc is closed;
                              starts at login; tc update restarts it
+  tc agent setup [--handle name] [--icon 🤖]
+                             make your personal agent (runs on this computer with Claude Code)
+  tc agent status|pause|resume|logs [-n N]
+                             what it's doing and spending; pause it; its activity log
+  tc agent run               run the agent here (tc background does this for you)
+  tc mcp                     MCP server for Claude Code: read allowed channels, post as you (marked ⇢)
+                             add it with: claude mcp add tc -- tc mcp
   tc users                   list everyone (admins also see who invited whom)
   tc users disable @user [--yes]
                              (admin) shut an account out for good, e.g. after a stolen SSH key
   tc server [--listen :7443] [--public host:port] [--data dir] [--member-invites=false]
   tc server invite [--uses N] [--ttl 72h] [--admin] [--key github:user] [--raw]
+  tc fonts install|status|test|remove
+                             tc's icon font, for sharper icons (Settings › Icons picks them)
   tc update [--check] [--voice]
                              install the latest release (or just check; --voice: the voice build)
   tc version
@@ -59,6 +68,8 @@ func main() {
 		err = cmdServer(args)
 	case "update":
 		err = cmdUpdate(args)
+	case "fonts":
+		err = cmdFonts(args, os.Stdout)
 	case "version", "--version", "-v":
 		if voice.Available() {
 			fmt.Println("tc", version, "(voice)")
@@ -69,6 +80,10 @@ func main() {
 		fmt.Print(usage)
 	default:
 		err = runClient(cmd, args)
+	}
+	var code exitCode
+	if errors.As(err, &code) {
+		os.Exit(int(code))
 	}
 	if errors.Is(err, errUsage) {
 		fmt.Fprint(os.Stderr, usage)

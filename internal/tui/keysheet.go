@@ -18,10 +18,10 @@ var keyGroups = []keyGroup{
 	{"Navigate", [][2]string{
 		{"⌥K", "command palette"}, {"⌥↑ ⌥↓", "previous / next channel"}, {"⌃P ⌃N", "previous / next channel"},
 		{"⌥⇧↑ ⌥⇧↓", "previous / next unread"}, {"⌥A", "activity"}, {"⌃B F2", "sidebar size"},
-		{"PgUp PgDn", "scroll history"}, {"End", "jump to newest"}, {"esc", "back out of anything"},
+		{"⌥[ ⌥]", "thread pane width"}, {"PgUp PgDn", "scroll history"}, {"End", "jump to newest"}, {"esc", "back out of anything"},
 	}},
 	{"Messages", [][2]string{
-		{"↑", "select (empty input)"}, {"r", "reply in thread"}, {"+", "react (emoji picker)"}, {"e", "edit yours"},
+		{"↑", "select (empty input)"}, {"m ⏎", "message menu"}, {"r", "reply in thread"}, {"+", "react (emoji picker)"}, {"e", "edit yours"},
 		{"d", "delete yours"}, {"y", "copy"}, {"p", "pin / unpin"}, {"v", "view full"}, {"r d", "failed: retry, discard"},
 	}},
 	{"Write", [][2]string{
@@ -33,6 +33,10 @@ var keyGroups = []keyGroup{
 	}},
 	{"App", [][2]string{
 		{"/settings", "settings"}, {"/search", "search"}, {"F1", "this sheet"}, {"⌃C ⌃C", "quit"},
+	}},
+	{"Agent", [][2]string{
+		{"⌥K Agent", "your agent's panel"}, {"⌥O", "jump to a waiting approval"}, {"1 2 3", "answer it (card selected)"},
+		{"⏎ o", "unfold a run's steps (selected)"}, {"p d L r", "panel: pause, DM, logs, re-read"},
 	}},
 }
 
@@ -53,12 +57,12 @@ func keySheetRows(w int) [][]sheetCell {
 		cols = 2
 	}
 	colW := w / cols
-	place := []int{0, 1, 2, 0, 2}
+	place := []int{0, 1, 2, 0, 2, 1}
 	if cols == 2 {
-		place = []int{0, 1, 1, 0, 0}
+		place = []int{0, 1, 1, 0, 0, 1}
 	}
 	if cols == 1 {
-		place = []int{0, 0, 0, 0, 0}
+		place = []int{0, 0, 0, 0, 0, 0}
 	}
 	colRows := make([][][]sheetCell, cols)
 	for gi, g := range keyGroups {

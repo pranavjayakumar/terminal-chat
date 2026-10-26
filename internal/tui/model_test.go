@@ -86,15 +86,15 @@ func checkView(t *testing.T, m *Model, step string) string {
 	pl := strings.Split(plain, "\n")
 	g := m.geo()
 	switch {
-	case m.overlayShown() || m.booting() || m.mode == modeViewer:
+	case m.overlayShown() || m.booting() || m.mode == modeViewer || m.introShown():
 		// a dialog or the loading screen covers the input
 	case g.inY >= 0 && g.boxed:
 		top, bot := -1, -1
 		for i, l := range pl {
-			if strings.Contains(l, "╭") {
+			if strings.ContainsAny(l, "╭╔") {
 				top = i
 			}
-			if strings.Contains(l, "╰") {
+			if strings.ContainsAny(l, "╰╚") {
 				bot = i
 			}
 		}
@@ -102,7 +102,7 @@ func checkView(t *testing.T, m *Model, step string) string {
 			t.Fatalf("%dx%d after %s: input box not visible\n%s", m.w, m.h, step, plain)
 		}
 	}
-	if m.mode == modeEmoji && m.w >= 30 && m.h >= 12 && !strings.Contains(plain, "⌕") {
+	if m.mode == modeEmoji && m.w >= 30 && m.h >= 12 && !strings.Contains(plain, m.icon(icSearch)) {
 		t.Fatalf("%dx%d after %s: emoji picker not visible\n%s", m.w, m.h, step, plain)
 	}
 	if strings.ContainsAny(plain, "\x1b\a‮") {

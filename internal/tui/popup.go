@@ -44,7 +44,7 @@ func (m *Model) popupRect(g geo) (r rect, n int, framed bool) {
 func (m *Model) popupCols(w, start, end int) (args, desc int) {
 	tw, hw, hints := 0, 0, false
 	for _, it := range m.comp.items[start:end] {
-		tw = max(tw, strWidth(it.text))
+		tw = max(tw, compTextW(it))
 		hw = max(hw, strWidth(it.hint))
 		hints = hints || it.hint != ""
 	}
@@ -78,6 +78,9 @@ func (m *Model) drawPopup(c *canvas, g geo) {
 		r.y1++
 	}
 	m.floatGutter(c, g, r)
+	if framed {
+		m.shade(c, r)
+	}
 	old := c.setClip(rect{r.x0, max(r.y0, 0), r.x1, r.y1})
 	defer c.setClip(old)
 	w := r.x1 - r.x0
@@ -143,7 +146,10 @@ func (m *Model) drawPopup(c *canvas, g geo) {
 			y++
 			continue
 		}
-		c.put(x0, y, cut(it.text, x0), pick(th.fg, aBold), act)
+		tx := c.put(x0, y, cut(it.text, x0), pick(th.fg, aBold), act)
+		if it.glyph != "" && tx+1+strWidth(it.glyph) <= limit {
+			c.put(tx+1, y, it.glyph, pick(it.glyphCol, 0), act)
+		}
 		switch {
 		case args > 0 && it.hint != "":
 			c.put(r.x0+args, y, cut(it.hint, r.x0+args), pick(th.dim, 0), act)
@@ -159,6 +165,15 @@ func (m *Model) drawPopup(c *canvas, g geo) {
 		}
 		y++
 	}
+}
+
+// compTextW is the width a row's completion takes, its agent glyph too.
+func compTextW(it compItem) int {
+	w := strWidth(it.text)
+	if it.glyph != "" {
+		w += 1 + strWidth(it.glyph)
+	}
+	return w
 }
 
 // floatGutter blanks the cell on each side of a floating panel, so text

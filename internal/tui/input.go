@@ -155,11 +155,19 @@ func (m *Model) selectFooter() string {
 		return "Esc leaves select mode"
 	}
 	var keys []string
+	if _, ok := parseApproval(sel); ok && sel.Author == m.me.ID && verdict(sel) == apprPending {
+		for _, ch := range apprChoices(parseApprovalAction(sel)) {
+			keys = append(keys, ch.key+" "+ch.short)
+		}
+	}
+	if m.ag.folds[sel.ID] != nil {
+		keys = append(keys, "o steps")
+	}
 	if sel.Failed != "" {
 		keys = []string{"r retry", "d discard", "v view", "y copy"}
 	} else {
 		live := sel.ID != 0 && !sel.Deleted
-		mine := sel.Author == m.me.ID
+		mine := m.ownMsg(sel)
 		if mine && live && sel.Sec.Trusted() {
 			keys = append(keys, "e edit")
 		}
@@ -176,6 +184,7 @@ func (m *Model) selectFooter() string {
 		}
 		keys = append(keys, "v view", "y copy")
 	}
+	keys = append(keys, "m menu")
 	full := strings.Join(keys, " · ") + " · Esc"
 	if strWidth(full) < m.dims().inputW {
 		return full
@@ -190,10 +199,12 @@ func (m *Model) selectFooter() string {
 
 func (m *Model) updatePlaceholder() {
 	switch {
-	case m.mode == modeSelect:
+	case m.mode == modeSelect || m.mode == modeMsgMenu:
 		m.input.Placeholder = m.selectFooter()
 	case m.thread.open():
 		m.input.Placeholder = "reply in thread"
+	case m.isAgentDM(m.active):
+		m.input.Placeholder = "tell " + m.chanTitle(m.active) + " anything…"
 	case m.active != 0:
 		m.input.Placeholder = "message " + m.chanTitle(m.active)
 	default:

@@ -29,8 +29,11 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
   cycle normal → wide → icons; clicking its right edge does the same, dragging it picks a size. Below 90
   columns it shrinks to icons, below 60 it is hidden; there `Ctrl-B` cycles icons → normal → hidden (40–59:
   icons ↔ hidden) for the session without changing the saved size. The size is kept in `TC_HOME/ui.json`.
-- Message column: centered, at most 86 columns. Threads open in a 44-column pane on the right (sliding in)
-  when there is room, full width otherwise; the input moves into the pane while it is open.
+- Message column: centered, at most 86 columns. Threads open in a pane on the right (sliding in)
+  when there is room, full width otherwise; the input moves into the pane while it is open. The pane is 44
+  columns by default; drag its left edge (the grip lights up on hover, like the sidebar's) or press `⌥[` /
+  `⌥]` to move the edge 4 columns left / right. It stays at least 32 wide and leaves the message column at
+  least 48; the width is kept in `ui.json` (`"thread_w"`). Below 94 free columns the thread is full width.
 - Status bar (bottom row): ` tc ` pill, the channel, then `F1 keys`, `◆ e2e` in encrypted channels, the
   connection (`● quic`/`● tcp`; the state when not online) and `◐ theme` (click: themes). No server name.
 - Header: channel name + topic (one line, truncated); `◉ N` members and `⌕` (palette) on the right. Status
@@ -40,8 +43,9 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
   Appearance › Messages: Split (or the palette's Settings tab) puts mine on the right against an accent
   bar instead (`"split"` in `ui.json`). Each theme has eight name colors of clearly different hues.
   Identity is the name only. Consecutive messages from the same author within 5 min omit
-  the name row. Day dividers (`──── Today ────`). Cozy density leaves a blank row between groups; compact
-  doesn't. A message draws at most 120 rows (code blocks 40) in the log; `v` shows all of it.
+  the name row. Day dividers (`──── Today ────`). Cozy density leaves exactly one blank row between groups
+  (a new author, or more than 5 min apart) and one above and below a day divider or the thread's `N replies`
+  divider, never two; none inside a group, code blocks and diffs included. Compact leaves none. A message draws at most 120 rows (code blocks 40) in the log; `v` shows all of it.
 - Pending (outbox) messages render dim; failed ones show `! failed — r to retry, d to discard`.
 - Edited: dim ` (edited)`. Deleted: dim italic `message deleted` (encrypted channels: `deleted (unverified)` until judged). In encrypted channels `(edited)` shows
   only for an edit the author signed, reactions only when signed by the reactor, and a delete the author
@@ -53,7 +57,8 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
   (`you, bob and 3 others reacted with :tada:`; five names at most).
 - Thread roots show `↳ N replies`; threads open in a right pane (or full width below 100 cols).
 - An empty channel shows a dim `no messages yet — say hi · F1 help · ⌥K channels & people` (shorter when the message pane is under 64 or 26 columns; in my notes `your notes — only you see them; /remind lands here`) once a history fetch said it is empty.
-- Typing line above the input (`bob is typing •··`); nothing when nobody is typing. Errors, rings and
+- Typing line right above the input, no blank row between (`bob is typing •··`); its row stays reserved when
+  nobody types, so the log never jumps. Errors, rings and
   lasting hints share that row; passing notices ("copied", "pinned") show as a toast pill there instead
   (fades in and out, click dismisses; on the right of the row while someone types or a ring shows, shortened
   if need be; in a narrow pane it covers the typing line while it lasts, and only a ring or our huddle sends
@@ -65,8 +70,87 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
   `join`. Meters are a braille line (one dot per sample, two per cell): yours rolls over 10 samples, others'
   over 4, on the animation tick while you are in the huddle. Voice reports who is talking, not how loud,
   so a meter moves while that person talks and lies on the floor otherwise.
-- Loading screen (logo, steps, progress) only on a first run with no local cache; a start with a cache
-  draws the chat at once.
+- Startup: a short logo intro while tc connects (see Skins › Intro).
+
+## Skins
+
+A skin is the chrome; a theme is the colors. They are independent: every skin works with every theme. A skin
+holds no colors of its own; everything it draws takes the theme's tokens (`internal/tui/skin.go`), so a new
+theme gets it for free. Settings › Appearance › Skin, the row under Theme (Settings opens on Theme, so ←/→ try themes and never
+switch the skin), or the palette's Settings tab, group Skin:
+
+- **Modern** (default): rounded boxes, flat panels, everything above.
+- **Retro** (Borland Turbo Vision, matching the mockup's `Look_borland`):
+  - double-line boxes `╔═╗║╚╝` for the input (one padding row under its text), the thread reply box, popups,
+    the emoji picker and dialogs (content stays inside the frame);
+  - a drop shadow 2 columns right and 1 row below every framed box: toward black on dark themes, a soft
+    toward-ink gray on light ones; it covers the desktop pattern, like the mockup's;
+  - a `░` desktop in the empty, non-clickable gutters beside the message column and around the thread pane,
+    the theme's line color 45% of the way from each cell's background (the mockup's), pushed further where
+    needed so it always stands at least 2:1 off what it sits on;
+  - a menu bar on row 0 (terminals of 16+ rows): ` ≡  Chat View Huddle Theme ? Help`, hotkey letters in a
+    popping color, the clock and `◉ N online` ending 5 columns from the right. ≡ opens the palette, Chat
+    (`⌥C`) its Channels tab, View (`⌥V`) its Settings tab, Huddle (`⌥H`) joins or leaves the open channel's
+    huddle, Theme (`⌥T`) the palette's themes, Help the keys sheet; each lights up under the pointer. When
+    room runs out the middle menus go first. It takes the blank row 0 of a roomy layout, so nothing moves;
+    a tight layout (under 30 rows) moves down a row. The clock wakes the screen once a minute while it
+    shows; nothing else redraws while idle.
+  - Surfaces are pulled apart from the theme's own tokens so frames, bars and shadows read on every theme:
+    panels at least 1.1:1 off the background, bars and selections 1.5:1, frames 3:1 off their panel, quiet
+    text kept readable on them, and a near-black background lifted toward its line color just until a
+    shadow shows (1.25:1). Turbo already meets all of these, so it is exactly the mockup's.
+  - A dark theme on a neutral near-black (sky, mint, rose, lilac, ember, phosphor) gets a deep colored
+    ground in its accent's hue, every hue at the same depth as turbo's navy, with panel, bars, frames and
+    the menu bar tinted to match; graphite keeps its charcoal (`plainGround` in the theme table).
+  - Per-theme overrides live in the theme table: qbasic's gray dialog colors also color the menu bar (DOS
+    menus); macintosh's hotkeys use its info blue, as its accent is black.
+- Choosing Retro switches to the **turbo** theme only if no theme was ever picked; a picked theme (even
+  graphite) stays. `ui.json` keeps `"skin"` and `"theme"`. A skin switch cross-fades the colors and swaps
+  the chrome halfway.
+- Adding a skin is one entry in `skins`: box glyphs, frame, shadow, pattern, menu bar, input padding, intro.
+
+### Intro
+
+Every start (both skins) opens with a short intro while tc connects: the tc logo in the theme's accent over
+`connecting…` (the connection error, if any, in its place). It holds at least 0.7 s and until the cache or
+the connection is ready, 1.2 s at most, then opens in 0.5 s: Retro shows the logo in a shadowed double-line
+dialog on its desktop and zooms a frame from the dialog to the whole screen with the UI inside; Modern shows
+it on a plain screen: the logo eases in (cubic, 0.3 s), and the opening fades it out and the chat in, each
+half smoothstepped so nothing jumps. Frames tick at ~30 fps only while something moves; a still hold just
+waits for its deadline. A key or a click ends it (the key still types). Settings ›
+Appearance › Startup: `Animated` · `Instant` (`"startup": "instant"`); Animations off is instant too. On a
+first run with no cache, the same logo screen stays until the first channels arrive.
+
+### Icons
+
+Every icon the UI draws for a role (channel, private, person, huddle, mic, muted, agent, e2e, search, pin,
+settings, react, reply, copy, more, thread, file, image, code, bell, away, online, notes, talking, edit, delete, and the
+tc mark) comes from one table, `internal/tui/icons.go`, in three packs:
+
+- **tc Symbols**: tc's own 27-icon font (`internal/iconfont`, generated from `assets/iconfont/icons.txt` by
+  `scripts/iconfont.py`), at U+E400–U+E41B: Private Use, in the gap Nerd Fonts leave between Weather (to
+  U+E3E3) and Seti-UI (from U+E5FA), so Nerd Font users still get these. Each glyph is one column, like
+  every Private Use character in our width function.
+- **Unicode** and **DOS**: plain characters every terminal has.
+- Settings › Appearance › Icons: `Auto` · `tc Symbols` · `Unicode` · `DOS`, with a live preview row
+  (`"icons"` in `ui.json`). Auto is tc Symbols when the font is installed on this machine, the terminal is
+  one known to find a glyph in another installed font (`TERM_PROGRAM` or `TERM`: iTerm2, Terminal.app,
+  Ghostty, WezTerm, kitty) and isn't inside a multiplexer (tmux, screen, herdr, zellij), we aren't over
+  SSH and the locale isn't CJK (ambiguous characters drawn wide); otherwise Unicode, or DOS with the Retro
+  skin. The font is looked for once at start (drawing never touches the disk), and an installed font older
+  than this build is refreshed then, quietly. When the font is missing (and not over SSH, where the row says
+  to install it on your own computer), an **Install tc icons** button installs it; the icons switch at the
+  next start, since a running terminal often can't draw a font installed after it started. Elsewhere (herdr,
+  Zed's or VS Code's terminal) the Private Use glyphs draw as boxes, so Auto stays Unicode; picking tc
+  Symbols by hand is always honored. Someone without the font, in a terminal that could show it, sees
+  "New: tc icons · Settings › Icons" once (`"icons_hint"`). Away is `◐` (DOS `◑`), so it
+  never looks like an offline `○` without color.
+- Touches: on terminals known to draw them (WezTerm, kitty, Ghostty, iTerm2; never inside tmux, screen or
+  herdr), `@you` mentions get a wavy accent underline and `#channel` links a dotted info one (SGR 4:3 / 4:4
+  with SGR 58). A `#name` is a link only when it names a channel that exists (the server's name rule; never
+  `#1234`, a hex color or a URL fragment); it is drawn in the info color and opens the channel on a click. Settings › Appearance › Underlines: `Auto` · `On` · `Off` (`"touches"`); never under
+  NO_COLOR. Code blocks show a code icon, diffs a file icon; whoever talks in a huddle gets a pulsing
+  talking icon.
 
 ## Rendering rules
 
@@ -75,8 +159,8 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
   truncation with `…`), inline `` `code` ``, `**bold**`, `_italic_`, URLs underlined. No headings, no tables.
 - `@me` mentions in the accent; a message that mentions me gets an accent bar and a faint accent tint, one
   that only contains a highlight word a warn-colored bar.
-- Themes: ten built in (graphite default, sky, mint, rose, lilac, ember, phosphor, and the light paper,
-  teletype, macintosh), picked in Settings, the palette or `/theme name`, kept in `TC_HOME/ui.json`. Name
+- Themes: fifteen built in, for any skin (graphite default, sky, mint, rose, lilac, ember, phosphor, the light paper,
+  teletype, macintosh, and the DOS-era turbo, norton, qbasic (gray dialogs), night and the light paper-retro), picked in Settings, the palette or `/theme name`, kept in `TC_HOME/ui.json`. Name
   colors are a stable hash of the user id into the theme's four muted name colors. Truecolor, degraded to
   256/16 colors by the terminal's profile; `NO_COLOR` drops colors (quiet text becomes faint, selections reverse).
 - Fenced blocks: the header row shows the info string (```` ```go ````; `code` without one) and `copy`. A
@@ -93,8 +177,8 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
 - 256-color terminals get each theme's surfaces on distinct grey steps; 16-color terminals keep their own
   background and mark selections in reverse. A selected message's bar becomes `▌`; a mention's bar is `┃`
   and a highlight word's `┇`, so they read without color too.
-- Mouse: click channels, messages (select), reactions, `☺+`, `↳ replies`, the hover toolbar (`☺ ↩ ⧉ ⋯`), emoji picker cells and tabs, huddle
-  join/leave, palette rows and tabs, settings controls, toasts, the theme in the status bar; the wheel
+- Mouse: click channels, messages (select), reactions, `☺+`, `↳ replies`, the hover toolbar (`☺ ↩ ⧉ ⋯`; `⋯` opens the message menu), emoji picker cells and tabs, huddle
+  join/leave, palette rows and tabs, settings controls, toasts, the theme in the status bar, the Retro menu bar; drag the sidebar or thread pane edge to size it; the wheel
   scrolls the pane under the pointer. A pointer move that changes nothing reuses the last frame.
 
 ## Keys
@@ -111,12 +195,24 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
 | `Alt-Shift-↑/↓` | previous / next unread channel |
 | `PgUp/PgDn`, mouse wheel | scroll history (fetches older via History at top) |
 | `↑` on empty input | select messages mode (↑/↓ moves selection) |
-| in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (emoji picker; typing filters, so `+ +1 Enter` and `+ :tada: Enter` still work), `y` copy body (OSC 52), `p` pin / unpin (notice "pinned" / "unpinned"), `Esc` leave |
+| in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (emoji picker; typing filters, so `+ +1 Enter` and `+ :tada: Enter` still work), `y` copy body (OSC 52), `p` pin / unpin (notice "pinned" / "unpinned"), `m` or `Enter` message menu (below), `Esc` leave |
 | `Esc` | close the completion popup / thread / palette / dialog / select mode; never quits |
 | `Ctrl-C` twice (the second while `press Ctrl-C again to quit` shows, 4 s), or `/quit` | quit |
 | `F1` or `/help` | keyboard sheet: Navigate, Messages, Write, Huddle, App, then every command (`?` is just text, so messages can start with it) |
 | `Ctrl-B`, `F2` | sidebar size: normal → wide → icons |
-| `/settings` (or `Ctrl-,` where the terminal reports it) | Settings: Appearance (theme, density, sidebar, animations), Notifications (runs `/notify`, `/sounds`, `/dnd`), Keys, Account & devices, About; `↑/↓` move, `←/→` change, `Enter` toggles, `Tab` next page |
+| `⌥[` / `⌥]` (thread pane open) | its edge 4 columns left (wider) / right (narrower), saved; macOS Option-as-text sends `“` `‘`, which count only on an empty input |
+| `/settings` (or `Ctrl-,` where the terminal reports it) | Settings: Appearance (skin, theme, density, sidebar, messages, animations, startup), Notifications (runs `/notify`, `/sounds`, `/dnd`), Keys, Account & devices, About; `↑/↓` move, `←/→` change, `Enter` toggles, `Tab` next page |
+
+**Message menu** (`⋯` on the hover toolbar, or `m` / `Enter` in select mode): a small floating panel by the
+button, in the skin's frame (Modern rounded, Retro double line with a shadow) with the icon pack's icons.
+Its rows run the select-mode keys and show them on the right: `↩ Reply in thread` (r), `☺ React` (+),
+`✎ Edit` (e, own), `⧉ Copy text` (y), `¶ Pin` / `Unpin` (p), `✕ Delete` (d, own, error color, still asks to
+confirm). Only rows that do something show: a deleted or unsent message gets `Copy text`, a failed one
+`Retry send` (r), `Copy text` and `Discard` (d). `↑/↓` move, `Enter` runs, the letters run directly, `Esc`,
+`m` or a click outside closes it (the click still acts), `⋯` again closes it; any other key closes it and
+does what it does in select mode (`v`, `Option-K`, `PgUp`); the pointer lights a row and a
+click runs it. It sits right-aligned under the button, above it when there is no room below; when neither
+side holds every row, the roomier side gets a shorter menu that scrolls. It works in the thread pane too.
 
 ## Slash commands
 
@@ -136,8 +232,9 @@ Unknown command → inline error, input kept.
 While the input is a bare `/command` (no space yet) a popup of up to 6 rows lists the
 matching commands (prefix matches first, then substring; an exact name first) with their argument hint and a
 dim one-line description; more matches scroll (`↑`/`↓` marks at the right). An `@` or `#` word at the cursor
-does the same for people (this channel's members first, then everyone else, then user groups like
-`@oncall`) and channels (joined ones first); a name equal to what was typed always comes first (my own name too, so `as @alice said` sends on Enter). For
+does the same for people (this channel's members first, then everyone else, then agents as `@rocky ▟▙`
+with a dim `Fizan's agent` or `your agent` (a prefix match on a handle still beats a person who only
+contains the letters), then user groups like `@oncall`) and channels (joined ones first); a name equal to what was typed always comes first (my own name too, so `as @alice said` sends on Enter). For
 `@`/`#` a substring match needs two letters and never comes from digits alone, so `fixed in #12` isn't offered `#release-12`. The popup is an
 opaque floating panel on the input's left edge, one blank row above it (that row keeps showing notices and
 typing), at most 72 columns and never wider than the column: a rounded frame with the kind (`Commands`,
@@ -357,6 +454,81 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
 - A delivered reminder is my own message, which never notifies, with one exception: a message of mine in my
   notes that starts with `⏰ ` notifies (`⏰ Reminder`, the text) unless I'm looking at the notes, and
   counts as unread (`@` badge) until read.
+
+## Agents
+
+Personal agents (v0.6.0, PROTOCOL.md §15). An agent is one more teammate in the room: a glyph, a `⟡` badge
+and one status row. Code: `internal/tui/agent.go` (icons, state), `agentlive.go` (status rows, folded runs),
+`approval.go`, `agentchrome.go` (sidebar, DM header, palette), `agentpanel.go` + `agentpanel_draw.go`.
+
+- **Identity.** A message with `Message.Agent` set draws `<icon> Rocky ⟡ · Fizan's agent  hh:mm` on the
+  first message of a group and a dashed `┆` bar where people get `│`; icon, name and bar take the agent's
+  color. Below 50 columns the badge drops `· Fizan's agent`. An agent's messages never group with its
+  owner's, and my agent's messages are not "mine" (no edit, no split side): `Message.FromAgent()` decides.
+  Name, icon and color are the author's agent now (`AgentOf`), so a rename shows on old messages too; a
+  retired agent keeps the handle its message carries. A reply starting `✓ ` (a milestone) gets its `✓` in
+  the ok color. A message an outside Claude session posted for someone (`Via == "mcp"`, `tc mcp`) shows a
+  faint `⇢` before their name (or before the time, for mine on the right) and doesn't group with their own.
+- **Icon and color** live in `proto.Agent.Icon`: `"<preset>"` or `"<preset>:<n>"`, n the theme name color
+  0–7 the owner picked (no color: a hash of the handle). Presets: pebble, orb, spark, owl, hive, moon,
+  meter, kite, each with idle / thinking / working / done / asleep frames (1–2 cells). Anything else in
+  the field shows as a static glyph. Timings: thinking 280 ms frames with a 1.12 s breath, working
+  110 ms, streaming 220 ms (working frames), done flashes twice in the ok color (0.29 s each), asleep
+  1.6 s at half strength (kept readable on its background). The frame tick runs only while a glyph on
+  screen moves (the breath in 140 ms steps), never for an asleep agent or while the terminal is unfocused;
+  Animations off shows still frames.
+- **Live reply.** `Update.AgentStatus` reloads the channel's live statuses (`AgentThreads` +
+  `AgentStatus`); each live agent gets a row at the bottom of the channel (top level) or of the open
+  thread: `<icon> Rocky is thinking…`, then its status line (`is reading the thread…`), then
+  `is writing…  live · not saved` with the preview streaming dim and italic behind a faint `┆` (its last
+  10 rows). Asleep says `is asleep 💤`, an error `is stuck: <why>` in the error color. The row goes as
+  soon as a message from that agent newer than its last status lands (or after done's flash). Narrow panes
+  truncate it from the right. Scrolled up, the view stays put while the rows grow and shrink.
+- **Work runs** (a run with 3+ distinct working steps; never my agent in Talk mode) fold under the reply
+  as `▸ 5 steps · 2m 41s · $0.42` (cost only for my agent, from its audit log); a click, or `o` / ⏎ / space
+  on the selected reply, unfolds the steps.
+  What tc saw of the run is kept for this session only.
+- **Sidebar.** Agents sit under their owner's DM row as `└ <icon> Name` (asleep: faint name, half-strength
+  glyph, `💤`); mine sits under the "you" row (taking the roomy layout's blank row, or moving "you" up
+  one). Its glyph moves with whatever it is doing anywhere. My agent's row: a click opens our DM, a click
+  on its glyph (or on the row while the DM is open) opens the panel; it shows the DM's unread count, or `✋`
+  while an approval waits (a click then opens that card). Someone else's agent: a click puts `@handle ` in
+  the input. The agent DM is never listed as a channel.
+- **Agent DM** (`ChanAgentDM`): header `<icon> Rocky · your agent · only you see this chat`, with the mode
+  on the right (click: the panel), or `✋ waiting in #chan` while an approval waits; the input box says
+  `only you` and `tell Rocky anything…`. The palette lists it as `@ Rocky (your agent)`, with its icon.
+  The palette's People group lists every other agent too (`@juno · Bob's agent`): picking one types
+  `@juno ` into the composer; my agent without a DM yet opens it. The agent speaks
+  first (the harness); tc only draws it. Without the DM yet, the panel's `d` creates it (`OpenAgentDM`).
+- **Approvals.** The harness posts `✋ @owner approve: <action>? react ✅ / ❌  ·  #code` + detail and waits
+  for the owner's ✅ / ❌. tc draws the detail, then `<action>?  1 yes  2 yes, ok today  3 no` (`PRs ok today`
+  when the action names a PR) and `only you can answer · keys 1–3`; everyone else sees `waiting for Fizan`.
+  Keys 1–3 answer only a card selected on purpose (select mode, where the footer reads `1 yes · 2 PRs ok
+  today · 3 no`); digits typed in the composer are always text. `⌥O` (or the palette's `Approval waiting ·
+  #chan` row) opens the newest waiting card and selects it. A click on a choice answers too. 1 reacts ✅,
+  2 reacts ✅ then ♾️ (the harness reads the ✅ as yes), 3 reacts ❌; a toast says what was answered. Only a verified card from my own agent takes an answer. Answered, it collapses to
+  `✓ Fizan said yes · <action>?` (`✗ … said no`); a card the harness gave up on (`⌛ no answer on #code`)
+  reads `⌛ no answer`. A card that arrives while I look elsewhere notifies me once, as `Rocky needs your
+  ok`: it replaces the mention alert its `@owner` would raise. A card in a thread that isn't open counts
+  as elsewhere.
+- **Panel** (`⌥K` › Agent, the glyph in the sidebar, the mode in the DM header): one page, no tabs. State
+  (awake / working / paused / asleep, idle time, sleep-after, on this or another computer), Spend today (`█` accent,
+  `░` faint, `$3.40 of $20  17%`), Asks today per person, the Mode radio (Talk / Work / Crew: `←/→`, `1–3`
+  or a click; `h`/`l` move it too), the note line, then Reads, Folders, Limits, Memory, Activity, Personality ("tell me in our
+  DM": opens the DM). `⏎` opens a row's page: Reads (channels it may read for anyone's asks, toggled on
+  the server with `agent.access`, plus "your DMs when you ask"), Folders (`a` adds a full path, `x`
+  removes after `y`), Limits (`←/→`: daily cap, per-run cap, asks per person, rollover %, sleep after), Memory
+  (`⏎` reads a note, `f` forgets one, `u` undoes today; both ask `y`), Activity (the audit log, newest
+  first). Keys `p` pause / resume, `d` open DM, `L` logs, `r` re-read, Esc back / close. A short terminal scrolls
+  the page to keep the focused row in view (`↑`/`↓` marks show more). Settings are the
+  agent home's `config.json` (`internal/agent/home`); spend, asks, status and the log come from its
+  `state/` files, written by the supervisor; nothing is read while drawing. On a computer that isn't the
+  agent's home (`agent.HomeHere`) the panel shows what the server knows and changes nothing.
+- **Setup.** With no agent the panel is the setup: handle (`@rocky`), the icon sheet, a color (auto or one
+  of the 8), a preview of the name row, `Set up Rocky`, and `or from a shell: tc agent setup`. It calls
+  `RegisterAgent`, then makes the agent home as `tc agent setup` does (`home.EnsureWith` with the server's
+  host, config with this machine's id, `client.LoginAgent` for its device unless it is signed in already);
+  `tc background` runs it. A refused handle shows the server's reason.
 
 ## Activity view
 

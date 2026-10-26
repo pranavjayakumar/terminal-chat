@@ -66,6 +66,9 @@ func (s *Server) opGroupSet(ctx context.Context, u proto.User, a proto.GroupSetA
 		if n > 0 {
 			return nil, proto.Errf(proto.ErrConflict, "a user is named "+a.Name)
 		}
+		if agentHandleTaken(ctx, tx, a.Name) {
+			return nil, proto.Errf(proto.ErrConflict, "an agent is named "+a.Name)
+		}
 		var old []byte
 		err := tx.QueryRowContext(ctx, `SELECT members FROM groups WHERE name = ?`, a.Name).Scan(&old)
 		exists := err == nil
