@@ -134,8 +134,11 @@ func (m *Model) drawSidebar(c *canvas, g geo) {
 	if mini {
 		c.put(sb/2-1, y, m.icon(icSearch), fgc(th.dim), "palette:")
 	} else {
-		c.put(2, y, m.icon(icSearch)+" Jump to…", fgc(th.dim), "palette:")
-		c.put(sb-4, y, "⌥K", fgc(th.faint), "palette:")
+		jump := m.icon(icSearch) + " Jump to…"
+		c.put(2, y, jump, fgc(th.dim), "palette:")
+		if k := m.kn.of("⌥K"); sb-2-strWidth(k) >= 2+strWidth(jump)+1 {
+			c.put(sb-2-strWidth(k), y, k, fgc(th.faint), "palette:")
+		}
 	}
 	y += step
 	meY := g.statusY - 1 - boolInt(g.roomy)

@@ -27,7 +27,8 @@ func keyMsg(s string) tea.KeyMsg {
 		"left": {Type: tea.KeyLeft}, "right": {Type: tea.KeyRight},
 		"f1": {Type: tea.KeyF1}, "f2": {Type: tea.KeyF2}, "end": {Type: tea.KeyEnd},
 		"ctrl+end": {Type: tea.KeyCtrlEnd}, "home": {Type: tea.KeyHome}, "ctrl+u": {Type: tea.KeyCtrlU}, "ctrl+a": {Type: tea.KeyCtrlA},
-		"alt+a": {Type: tea.KeyRunes, Runes: []rune{'a'}, Alt: true},
+		"alt+a": {Type: tea.KeyRunes, Runes: []rune{'a'}, Alt: true}, "alt+e": {Type: tea.KeyRunes, Runes: []rune{'e'}, Alt: true},
+		"alt+k": {Type: tea.KeyRunes, Runes: []rune{'k'}, Alt: true},
 	}
 	if k, ok := named[s]; ok {
 		if k.String() != s {
@@ -111,13 +112,17 @@ func checkView(t *testing.T, m *Model, step string) string {
 	return plain
 }
 
+// fitSteps walks most of the UI: typing, F1, the palette, select mode,
+// the emoji picker, sidebar sizes, channel moves.
+var fitSteps = []string{
+	"", "h", "i", "alt+enter", "x", "ctrl+j", "y", "ctrl+j", "z", "ctrl+j", "w", "ctrl+j", "v", "ctrl+j", "u", "ctrl+j", "t",
+	"enter", "?", "esc", "ctrl+k", "b", "e", "down", "esc", "pgup", "pgup", "pgup", "pgdown",
+	"up", "up", "up", "up", "+", "esc", "esc", "ctrl+b", "ctrl+b", "alt+down", "alt+up", "ctrl+n", "ctrl+p",
+	"alt+shift+down", "ctrl+c", "a",
+}
+
 func TestViewFitsAllSizes(t *testing.T) {
-	steps := []string{
-		"", "h", "i", "alt+enter", "x", "ctrl+j", "y", "ctrl+j", "z", "ctrl+j", "w", "ctrl+j", "v", "ctrl+j", "u", "ctrl+j", "t",
-		"enter", "?", "esc", "ctrl+k", "b", "e", "down", "esc", "pgup", "pgup", "pgup", "pgdown",
-		"up", "up", "up", "up", "+", "esc", "esc", "ctrl+b", "ctrl+b", "alt+down", "alt+up", "ctrl+n", "ctrl+p",
-		"alt+shift+down", "ctrl+c", "a",
-	}
+	steps := fitSteps
 	for _, sz := range [][2]int{{40, 12}, {80, 24}, {200, 60}, {69, 20}, {100, 30}, {20, 6}} {
 		m := newTestModel(t, sz[0], sz[1])
 		for _, s := range steps {
@@ -449,7 +454,7 @@ func TestCtrlCArmExpires(t *testing.T) {
 			t.Fatal("a Ctrl-C after the notice expired quit")
 		}
 	}
-	if !strings.Contains(m.notice, "Ctrl-C again") {
+	if !strings.Contains(m.notice, "⌃C again") {
 		t.Fatalf("notice = %q, want the Ctrl-C hint again", m.notice)
 	}
 	now = now.Add(time.Second)

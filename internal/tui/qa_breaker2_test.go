@@ -80,11 +80,11 @@ func TestCtrlCArmOutlivesClearedHint_Break(t *testing.T) {
 		t.Fatalf("setup: not editing (%d)", m.editing)
 	}
 	m.handleKey(keyMsg("ctrl+c"))
-	if m.notice != ctrlCHint {
+	if m.notice != m.kn.of(ctrlCHint) {
 		t.Fatalf("setup: notice %q", m.notice)
 	}
 	m.Update(openChanMsg{ch: 20}) // e.g. a /dm typed earlier answers now
-	if m.notice == ctrlCHint {
+	if m.notice == m.kn.of(ctrlCHint) {
 		t.Skip("hint still up")
 	}
 	now = now.Add(time.Second)

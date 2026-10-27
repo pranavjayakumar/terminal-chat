@@ -98,9 +98,10 @@ func (m *Model) drawPopup(c *canvas, g geo) {
 		if cp.kind == ':' {
 			hint = " ↑↓ move · ⇥/⏎ insert · esc "
 		}
+		hint = m.kn.of(hint)
 		if w >= strWidth(hint)+4 {
 			c.put(r.x1-2-strWidth(hint), r.y1-1, hint, fgc(th.faint), "noop")
-		} else if short := " ↑↓ ⇥ ⏎ esc "; w >= strWidth(short)+4 {
+		} else if short := m.kn.of(" ↑↓ ⇥ ⏎ esc "); w >= strWidth(short)+4 {
 			c.put(r.x1-2-strWidth(short), r.y1-1, short, fgc(th.faint), "noop")
 		}
 		c.tag(r.x0, r.y0, w, r.y1-r.y0, "noop", false, true)
