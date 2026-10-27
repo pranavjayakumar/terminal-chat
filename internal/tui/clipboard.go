@@ -51,7 +51,11 @@ const extCopyTimeout = 2 * time.Second
 // and stderr stay nil (os/exec then uses /dev/null, nothing to wait for) and
 // WaitDelay bounds the rest.
 func defaultExtCopy(ctx context.Context, text string) error {
-	ctx, cancel := context.WithTimeout(ctx, extCopyTimeout)
+	return extCopyWithin(ctx, text, extCopyTimeout)
+}
+
+func extCopyWithin(ctx context.Context, text string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	for _, t := range [][]string{{"pbcopy"}, {"wl-copy"}, {"xclip", "-selection", "clipboard"}, {"xsel", "-ib"}} {
 		path, err := exec.LookPath(t[0])

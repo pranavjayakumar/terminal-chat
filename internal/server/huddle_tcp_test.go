@@ -51,6 +51,24 @@ func (v *vclient) voiceFrames(d time.Duration) [][]byte {
 	}
 }
 
+// nextVoice waits up to d for the next VOICE frame (nil: none came).
+func (v *vclient) nextVoice(d time.Duration) []byte {
+	deadline := time.After(d)
+	for {
+		select {
+		case f, ok := <-v.frames:
+			if !ok {
+				return nil
+			}
+			if f.Type == proto.TVoice {
+				return f.Payload
+			}
+		case <-deadline:
+			return nil
+		}
+	}
+}
+
 func TestHuddleStreamRelay(t *testing.T) {
 	ts := startServer(t, "tcp")
 	if !slices.Contains(ts.tcpVoiceClient(t, "probe").welcome.Caps, proto.CapVoiceTCP) {
@@ -65,29 +83,25 @@ func TestHuddleStreamRelay(t *testing.T) {
 	b.rosterIs(g, a.user.ID, b.user.ID)
 	a.rosterIs(g, a.user.ID, b.user.ID)
 
+	// Relay correctness, not the drop policy (TestStreamVoice* cover that):
+	// lift the lateness bounds a stalled writer on a loaded -race run would
+	// trip, and send each frame once the previous one arrived so the queue
+	// never overflows. Then every frame must arrive, unchanged and in order.
+	ts.hud.maxAge, ts.hud.stall = time.Hour, time.Hour
 	const n = 30
-	var sent [][]byte
 	for i := range n {
 		f := a.frame(uint32(i), fmt.Sprintf("opus-%03d", i))
-		sent = append(sent, f)
 		a.sendVoice(f)
-		pace(i)
-	}
-	got := b.voiceFrames(300 * time.Millisecond)
-	// Voice on the stream may drop a frame that waited too long (a loaded
-	// -race run can stall the writer); what arrives is unchanged and in order.
-	if len(got) < n-3 {
-		t.Fatalf("bo got %d of %d frames", len(got), n)
-	}
-	j := 0
-	for i := range got {
-		for j < n && !bytes.Equal(got[i], sent[j]) {
-			j++
+		got := b.nextVoice(10 * time.Second)
+		if got == nil {
+			t.Fatalf("bo never got frame %d", i)
 		}
-		if j == n {
-			t.Fatalf("frame %d changed or out of order", i)
+		if !bytes.Equal(got, f) {
+			t.Fatalf("frame %d changed or out of order: %q", i, got)
 		}
-		j++
+	}
+	if extra := b.voiceFrames(100 * time.Millisecond); len(extra) != 0 {
+		t.Fatalf("bo got %d extra frames", len(extra))
 	}
 	if back := a.voiceFrames(100 * time.Millisecond); len(back) != 0 {
 		t.Fatalf("sender got %d of its own frames back", len(back))

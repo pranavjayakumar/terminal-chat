@@ -176,31 +176,45 @@ func TestBellBackend(t *testing.T) {
 	}
 }
 
-func TestTimeoutAndBusyDrop(t *testing.T) {
-	log := fakeBin(t, "herdr", "[ \"$3\" = one ] && exec sleep 10\nexit 0\n")
+// While one notification runs, the next is dropped, and Notify never waits
+// for the tool. No wall-clock bounds: "one" blocks until the test releases
+// it, so returning at all proves Notify did not wait, and "two" is dropped
+// however slowly the machine forks.
+func TestBusyDrop(t *testing.T) {
+	release := filepath.Join(t.TempDir(), "release")
+	log := fakeBin(t, "herdr", "[ \"$3\" = one ] && while [ ! -e '"+release+"' ]; do sleep 0.05; done\nexit 0\n")
 	n := newWith(t, map[string]string{"HERDR_ENV": "1"})
-	n.timeout = 300 * time.Millisecond
-	start := time.Now()
 	if !n.Notify("one", "") {
 		t.Fatal("first dropped")
-	}
-	if time.Since(start) > 100*time.Millisecond {
-		t.Fatal("Notify blocked")
 	}
 	if n.Notify("two", "") {
 		t.Fatal("second should be dropped while the first runs")
 	}
-	n.Wait()
-	if d := time.Since(start); d > 3*time.Second {
-		t.Fatalf("timeout not enforced: %v", d)
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
 	}
-	n.timeout = slowExec
+	n.Wait()
 	if !n.Notify("three", "") {
 		t.Fatal("not accepted after the first finished")
 	}
 	n.Wait()
 	if got := readArgv(t, log); got[2] != "three" {
 		t.Fatalf("argv %q", got)
+	}
+}
+
+// A hung tool is killed at the timeout, long before it would exit itself.
+func TestTimeoutEnforced(t *testing.T) {
+	fakeBin(t, "herdr", "exec sleep 60\n")
+	n := newWith(t, map[string]string{"HERDR_ENV": "1"})
+	n.timeout = 300 * time.Millisecond
+	start := time.Now()
+	if !n.Notify("one", "") {
+		t.Fatal("dropped")
+	}
+	n.Wait()
+	if d := time.Since(start); d > 30*time.Second {
+		t.Fatalf("timeout not enforced: %v", d)
 	}
 }
 
