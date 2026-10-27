@@ -6,3 +6,4 @@ dev-data/
 .DS_Store
 .claude/worktrees/
 /dist/
+/tc
