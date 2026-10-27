@@ -3,9 +3,83 @@ package background
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 )
+
+// A group-writable directory (or binary) lets every member of the group
+// swap the binary, unless the group is one we trust.
+func TestSafeExeGroupWritable(t *testing.T) {
+	uid := os.Getuid()
+	if uid == 0 {
+		t.Skip("root owns everything")
+	}
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	shared := filepath.Join(base, "shared")
+	if err := os.Mkdir(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(shared, "tc")
+	if err := os.WriteFile(exe, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid := fi.Sys().(*syscall.Stat_t).Gid
+	// Only our test dir's group is judged: the real ancestors are
+	// whatever they are on this machine.
+	untrusted := func(g uint32) bool { return g != gid }
+	trusted := func(uint32) bool { return true }
+	// refused reports whether safeExe blamed p itself.
+	refused := func(p string, groupOK func(uint32) bool) bool {
+		err := safeExe(exe, uid, groupOK)
+		return err != nil && strings.Contains(err.Error(), p+" could be replaced")
+	}
+
+	if refused(shared, untrusted) || refused(exe, untrusted) {
+		t.Fatal("refused a 0755 dir and binary")
+	}
+	os.Chmod(shared, 0o775)
+	if !refused(shared, untrusted) {
+		t.Fatal("accepted a group-writable dir whose group isn't trusted")
+	}
+	if refused(shared, trusted) {
+		t.Fatal("refused a group-writable dir whose group is trusted")
+	}
+	os.Chmod(shared, 0o755)
+	os.Chmod(exe, 0o775)
+	if !refused(exe, untrusted) {
+		t.Fatal("accepted a group-writable binary whose group isn't trusted")
+	}
+	// World-writable is never fine, whatever the group.
+	os.Chmod(exe, 0o757)
+	if !refused(exe, trusted) {
+		t.Fatal("accepted a world-writable binary")
+	}
+}
+
+func TestTrustedGroup(t *testing.T) {
+	ok := trustedGroup(os.Getuid())
+	if !ok(0) {
+		t.Error("gid 0 (root/wheel) not trusted")
+	}
+	if ok(4000000123) {
+		t.Error("trusted a group that doesn't exist")
+	}
+	if runtime.GOOS == "darwin" {
+		// Homebrew's prefix is admin-writable; staff is every user.
+		if !ok(80) {
+			t.Error("admin (80) not trusted: Homebrew installs would be refused")
+		}
+		if ok(20) {
+			t.Error("staff (20) trusted: every local user is in it")
+		}
+	}
+}
 
 // The service never points at a binary another user could swap in.
 func TestSafeExe(t *testing.T) {
