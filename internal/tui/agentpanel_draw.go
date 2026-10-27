@@ -176,9 +176,11 @@ func (m *Model) drawPanelKeys(d *apDraw, y int) {
 	default:
 		hint = "↑↓ scroll · esc back"
 	}
+	hint = m.kn.of(hint)
 	x := d.x
 	for _, p := range pills {
-		w := strWidth(p[0]) + strWidth(p[1]) + 3
+		label := m.kn.of(p[0])
+		w := strWidth(label) + strWidth(p[1]) + 3
 		if x+w > d.x+d.w {
 			break
 		}
@@ -189,7 +191,7 @@ func (m *Model) drawPanelKeys(d *apDraw, y int) {
 		if p[0] == "^S" {
 			act = "ap:savenote"
 		}
-		e := c.put(x, y, " "+p[0]+" ", fgb(th.fg).on(th.element).with(aMonoRev), act)
+		e := c.put(x, y, " "+label+" ", fgb(th.fg).on(th.element).with(aMonoRev), act)
 		e = c.put(e, y, p[1]+" ", fgc(th.dim).on(th.element), act)
 		x = e + 2
 	}
@@ -350,6 +352,7 @@ func (m *Model) drawPanelMain(d *apDraw) {
 		v := vals[name]
 		hint := map[string]string{"Approvals": "←/→ change", "Icon": "⏎ change", "Schedules": "⏎ list · cancel", "Reads": "⏎ edit", "Folders": "⏎ edit", "Limits": "⏎ edit",
 			"Memory": "⏎ browse · forget · undo today", "Activity": "⏎ full log", "Personality": ""}[name]
+		hint = m.kn.of(hint)
 		vst := fgc(th.fg)
 		if name == "Personality" {
 			vst = fgc(th.dim).with(aItalic)

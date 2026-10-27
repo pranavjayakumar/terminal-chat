@@ -208,7 +208,7 @@ func (m *Model) updatePlaceholder() {
 	case m.active != 0:
 		m.input.Placeholder = "message " + m.chanTitle(m.active)
 	default:
-		m.input.Placeholder = "⌥K to open a channel"
+		m.input.Placeholder = m.kn.of("⌥K to open a channel")
 	}
 }
 
@@ -248,7 +248,7 @@ func (m *Model) submit() tea.Cmd {
 	}
 	p := m.focus()
 	if !p.open() {
-		m.setInfo("no channel open — ⌥K to pick one")
+		m.setInfo(m.kn.of("no channel open — ⌥K to pick one"))
 		return nil
 	}
 	if v, _ := m.chanView(p.ch); v.Removed {

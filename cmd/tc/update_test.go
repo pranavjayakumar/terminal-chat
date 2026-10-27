@@ -186,3 +186,53 @@ func TestUpdateUntrustedSignatureRefuses(t *testing.T) {
 		t.Fatalf("binary replaced: %q", b)
 	}
 }
+
+// An unknown signing key (an old build meeting a newer key) points at the
+// installer, which re-checks the signature; it never suggests skipping it.
+func TestUpdateUnknownSignerHint(t *testing.T) {
+	for _, voice := range []bool{false, true} {
+		srv := releasetest.New(t, "v0.3.0")
+		srv.Publish(t, "v0.3.0", map[string][]byte{"linux_amd64": []byte("NEW"), "tc-voice_linux_amd64": []byte("NEW")})
+		exe := fakeInstall(t)
+		src := srv.Source()
+		src.Voice = voice
+		src.Signers = releasetest.AllowedSigners(releasetest.NewKey(t).PublicKey())
+		err := runUpdate(context.Background(), &bytes.Buffer{}, src, exe, "v0.2.0", "linux", "amd64", updateReq{})
+		if !errors.Is(err, release.ErrSignature) || !errors.Is(err, release.ErrUnknownSigner) {
+			t.Fatalf("voice=%v: err = %v", voice, err)
+		}
+		msg := err.Error()
+		// exe isn't in ~/.local/bin, so the hint names its directory.
+		want := "curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/install.sh | TC_INSTALL_DIR=" + shellQuote(filepath.Dir(exe)) + " sh"
+		if voice {
+			want = strings.Replace(want, " sh", " TC_VOICE=1 sh", 1)
+		}
+		for _, s := range []string{"signed by an unknown key SHA256:", "not installing", "checks the signature", want} {
+			if !strings.Contains(msg, s) {
+				t.Errorf("voice=%v: %q missing from:\n%s", voice, s, msg)
+			}
+		}
+		if strings.Contains(strings.ToLower(msg), "skip") || strings.Contains(msg, "--no-verify") {
+			t.Errorf("voice=%v: the hint must not suggest skipping verification:\n%s", voice, msg)
+		}
+		if b, _ := os.ReadFile(exe); string(b) != "OLD" {
+			t.Fatalf("binary replaced: %q", b)
+		}
+	}
+}
+
+func TestUnknownSignerHintDir(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip(err)
+	}
+	if h := unknownSignerHint(false, filepath.Join(home, ".local", "bin")); !strings.HasSuffix(h, "install.sh | sh") {
+		t.Errorf("default dir: %q", h)
+	}
+	if h := unknownSignerHint(true, "/opt/my tools"); !strings.HasSuffix(h, "install.sh | TC_INSTALL_DIR='/opt/my tools' TC_VOICE=1 sh") {
+		t.Errorf("other dir: %q", h)
+	}
+	if h := unknownSignerHint(false, "/tmp/x\x1b[2Jy"); strings.Contains(h, "TC_INSTALL_DIR") || strings.Contains(h, "\x1b") {
+		t.Errorf("control characters: %q", h)
+	}
+}

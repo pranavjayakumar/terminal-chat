@@ -413,7 +413,7 @@ func (m *Model) huddleMsg(msg tea.Msg) (tea.Cmd, bool) {
 		// run), the huddle we left, then the talk help. A device note and
 		// the hint don't both fit in 80 columns, so then the hint follows
 		// as its own notice when the note's expires.
-		talkHelp := "hold ctrl+t to talk, tap for open mic (/talk, /mute)"
+		talkHelp := m.kn.of("hold ⌃T to talk, tap for open mic (/talk, /mute)")
 		// "" = the participation went away mid-refresh: unknown, no hint.
 		hint := m.hud.aec != "" && m.hud.aec != "system" && !m.hud.aecHinted
 		var parts []string

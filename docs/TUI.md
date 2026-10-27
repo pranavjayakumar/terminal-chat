@@ -183,6 +183,18 @@ tc mark) comes from one table, `internal/tui/icons.go`, in three packs:
 
 ## Keys
 
+**Key labels.** On macOS hints use the key symbols (`⌥K`, `⌃P`, `⌥⇧↑`, `⏎`, `⇥`); everywhere else
+they are words (`Alt+K`, `Ctrl+P`, `Alt+Shift+↑`, `Enter`, `Tab`; a pair like `⌥↑ ⌥↓` becomes
+`Alt+↑/↓`, while `⌃C ⌃C` stays `Ctrl+C Ctrl+C`). `TC_KEYS=mac|pc` overrides the OS (e.g. ssh from a
+Mac into Linux). The layout above shows the Mac form; with words the input box's bottom edge reads
+`Alt+K commands · Alt+Enter newline · Enter send`, drops `newline` when that doesn't fit (under 53
+columns of input box; `⌥⏎ newline` under 39 on a Mac), then `send` (under 33; 26 on a Mac),
+keeping `Alt+K commands` down to 26, and nothing below that. The sidebar's `⌥K` beside "Jump to…"
+is hidden in a sidebar too narrow for it; the palette's `⇥ next tab` beside the tabs is hidden when it
+would touch them (always with words: the palette's footer says `Tab next tab`). The emoji picker's
+bottom hint falls back to `←↑↓→ move · Tab category · esc` (its preview row already says
+`Enter insert`). Every binding works with Alt; no key is ⌘-only.
+
 | Key | Action |
 |---|---|
 | `Enter` | send (completes instead while the completion popup is open, unless the `@`/`#` word already equals the highlighted item) |
@@ -197,7 +209,7 @@ tc mark) comes from one table, `internal/tui/icons.go`, in three packs:
 | `↑` on empty input | select messages mode (↑/↓ moves selection) |
 | in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (emoji picker; typing filters, so `+ +1 Enter` and `+ :tada: Enter` still work), `y` copy body (OSC 52), `p` pin / unpin (notice "pinned" / "unpinned"), `m` or `Enter` message menu (below), `Esc` leave |
 | `Esc` | close the completion popup / thread / palette / dialog / select mode; never quits |
-| `Ctrl-C` twice (the second while `press Ctrl-C again to quit` shows, 4 s), or `/quit` | quit |
+| `Ctrl-C` twice (the second while `press ⌃C again to quit` (`Ctrl+C` off macOS) shows, 4 s), or `/quit` | quit |
 | `F1` or `/help` | keyboard sheet: Navigate, Messages, Write, Huddle, App, then every command (`?` is just text, so messages can start with it) |
 | `Ctrl-B`, `F2` | sidebar size: normal → wide → icons |
 | `⌥[` / `⌥]` (thread pane open) | its edge 4 columns left (wider) / right (narrower), saved; macOS Option-as-text sends `“` `‘`, which count only on an empty input |

@@ -550,7 +550,7 @@ func TestApprovalPingInUnopenedThread(t *testing.T) {
 // The keys sheet lists the agent keys.
 func TestKeySheetAgentKeys(t *testing.T) {
 	var all []string
-	for _, r := range keySheetRows(120) {
+	for _, r := range keySheetRows(120, keyNames{}) {
 		for _, c := range r {
 			all = append(all, c.text)
 		}

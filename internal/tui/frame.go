@@ -190,13 +190,13 @@ func (m *Model) viewPane(c *canvas, p *pane, key string, x, y, w, h, unread int)
 		return
 	}
 	if !p.open() {
-		msg := truncate("no channel — ⌥K to open one", w)
+		msg := truncate(m.kn.of("no channel — ⌥K to open one"), w)
 		c.put(x+(w-strWidth(msg))/2, y+h/2, msg, fgc(th.dim), "palette:")
 		return
 	}
 	rows, owner := m.paneLines(p, w)
 	if len(rows) == 0 && p == &m.main && !m.histBusy[p.ch] && m.histDone[p.ch] {
-		hint := "no messages yet — say hi · F1 help · ⌥K channels & people"
+		hint := m.kn.of("no messages yet — say hi · F1 help · ⌥K channels & people")
 		switch v, _ := m.chanView(p.ch); {
 		case v.Kind == proto.ChanDM && len(v.Members) == 1:
 			hint = "your notes — only you see them; /remind lands here"
@@ -596,12 +596,27 @@ func (m *Model) drawInput(c *canvas, g geo) {
 	} else if m.mode == modeSelect || m.mode == modeMsgMenu {
 		keys = [][3]string{{"esc", "back", ""}}
 	}
-	kw := 0
-	for i, k := range keys {
-		kw += strWidth(k[0]) + 1 + strWidth(k[1])
-		if i > 0 {
-			kw += 3
+	for i := range keys {
+		keys[i][0] = m.kn.of(keys[i][0])
+	}
+	width := func() int {
+		kw := 0
+		for i, k := range keys {
+			kw += strWidth(k[0]) + 1 + strWidth(k[1])
+			if i > 0 {
+				kw += 3
+			}
 		}
+		return kw
+	}
+	kw := width()
+	if len(keys) == 3 && kw+6 > w { // too narrow: the newline hint goes first
+		keys = [][3]string{keys[0], keys[2]}
+		kw = width()
+	}
+	if len(keys) == 2 && kw+6 > w { // then send; the palette leads to everything
+		keys = keys[:1]
+		kw = width()
 	}
 	if kw+6 <= w {
 		kx := x + w - 3 - kw
