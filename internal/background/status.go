@@ -19,7 +19,7 @@ type Status struct {
 	PID       int    `json:"pid"`
 	Version   string `json:"version"`
 	Started   int64  `json:"started"` // unix ms
-	State     string `json:"state"`   // offline, connecting, syncing, online, stopped, waiting
+	State     string `json:"state"`   // starting, offline, connecting, syncing, online, paused, waiting, stopped
 	Transport string `json:"transport,omitempty"`
 	Since     int64  `json:"since"` // unix ms of the last state change
 	Err       string `json:"err,omitempty"`
@@ -60,4 +60,17 @@ func writeStatus(home string, st Status) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), filepath.Join(home, StatusFile))
+}
+
+// Quiet reports whether home's notifier holds no connection to the cache:
+// it isn't running, it paused for a chat window, or it is waiting for a
+// login. Only meaningful while the caller holds the UI lock: then a waiting
+// notifier can't open a session without pausing first (Run marks itself
+// "starting" before it looks at the lock again).
+func Quiet(home string) bool {
+	if !Running(home) {
+		return true
+	}
+	st, err := ReadStatus(home)
+	return err == nil && (st.State == "paused" || st.State == "waiting")
 }

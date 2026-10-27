@@ -58,19 +58,25 @@ func osJoinEnv() joinEnv {
 
 // pausedLogin is client.Login with tc background paused: a login wipes the
 // cache for the new account, and a notifier still connected as the old one
-// must not write into it. Holding the UI lock makes it let go of its
-// connection (within a second); we wait for that before logging in.
+// must not write into it.
 func pausedLogin(ctx context.Context, home, invite, name, keyPath string) (proto.User, error) {
-	if background.Running(home) {
-		if release, err := background.HoldUI(home); err == nil {
-			defer release()
-			waitFor(5*time.Second, func() bool {
-				st, err := background.ReadStatus(home)
-				return err == nil && st.State == "paused" || !background.Running(home)
-			})
-		}
-	}
+	defer pauseBackground(home)()
 	return client.Login(ctx, home, invite, name, keyPath)
+}
+
+// pauseBackground holds the UI lock, which makes a running notifier let go
+// of its connection (within a second), and waits until it has. A notifier
+// waiting for a login holds no connection, so there is nothing to wait for.
+func pauseBackground(home string) (release func()) {
+	if !background.Running(home) {
+		return func() {}
+	}
+	release, err := background.HoldUI(home)
+	if err != nil {
+		return func() {}
+	}
+	waitFor(5*time.Second, func() bool { return background.Quiet(home) })
+	return release
 }
 
 // isTerminal reports whether f is a terminal; /dev/null is a character
