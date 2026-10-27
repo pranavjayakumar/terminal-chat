@@ -70,7 +70,8 @@ type Config struct {
 	RolloverPct   int     `json:"rollover_pct"`    // % of the context window
 	IdleMinutes   int     `json:"idle_minutes"`    // stop Claude after this long idle
 	// EngageMinutes keeps the agent in a thread after it replies: new
-	// messages there reach it without an @mention for this long (0 = off).
+	// messages there reach it without an @mention until nobody has written
+	// there for this long (0 = off).
 	EngageMinutes int `json:"engage_minutes"`
 	// Approvals is how often it asks first (default work_only).
 	Approvals   Approvals            `json:"approvals"`

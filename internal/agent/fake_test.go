@@ -383,6 +383,28 @@ func newHarness(t *testing.T, cfg home.Config, tweak func(*Supervisor)) *harness
 	return h
 }
 
+// restartHarness starts a new supervisor on old's home and chat, as after
+// a restart (old must be stopped).
+func restartHarness(t *testing.T, old *harness, tweak func(*Supervisor)) *harness {
+	t.Helper()
+	h := &harness{t: t, chat: old.chat, run: &fakeRunner{}, mem: &fakeMemory{}, done: make(chan error, 1)}
+	h.s = &Supervisor{Dir: old.s.Dir, Chat: h.chat, Runner: h.run, Memory: h.mem, TCBin: "/bin/tc", StatusEvery: 10 * time.Millisecond}
+	if tweak != nil {
+		tweak(h.s)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	h.cancel = cancel
+	go func() { h.done <- h.s.Run(ctx) }()
+	h.chat.updates <- client.Update{Status: true}
+	t.Cleanup(h.stop)
+	h.waitFor("supervisor up", func() bool {
+		h.s.mu.Lock()
+		defer h.s.mu.Unlock()
+		return h.s.status.State != "" && h.s.status.State != "starting"
+	})
+	return h
+}
+
 func (h *harness) stop() {
 	if h.cancel == nil {
 		return

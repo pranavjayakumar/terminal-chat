@@ -541,6 +541,14 @@ and one status row. Code: `internal/tui/agent.go` (icons, state), `agentlive.go`
   `RegisterAgent`, then makes the agent home as `tc agent setup` does (`home.EnsureWith` with the server's
   host, config with this machine's id, `client.LoginAgent` for its device unless it is signed in already);
   `tc background` runs it. A refused handle shows the server's reason.
+- **Follow-ups and quiet** (harness, `internal/agent/engage.go`; nothing in tc draws them). After an agent
+  replies in a thread (or a channel's top level), people's messages there reach it without an @mention
+  until nobody has written there for `engage_minutes` (default 10). "Be quiet for 5 min, then …" makes it
+  call `quiet`: until then only an @mention reaches it there (an answered mention ends the quiet,
+  `leave_thread` drops it); when it ends (checked on every update and each minute) it listens again and
+  gets one turn if it was told what to do then or someone wrote meanwhile. Quiets are kept in
+  `state/queue.json`, so a restart keeps them; one that ended more than 15 min (or `engage_minutes`) before
+  the agent came back just ends.
 
 ## Activity view
 

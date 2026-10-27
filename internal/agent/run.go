@@ -74,9 +74,17 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 	switch {
 	case a.Watch != nil:
 		prompt = s.watchNote(a.Watch) + "\n\n" + prompt
+	case a.Wake != nil:
+		prompt = s.wakeNote(a.Wake) + "\n\n" + prompt
 	case a.FollowUp:
 		prompt = FollowUpNote + "\n\n" + prompt
 	}
+	if !a.InDM && a.Watch == nil && cfg.EngageMinutes > 0 {
+		prompt += fmt.Sprintf(ListenNote, cfg.EngageMinutes)
+	}
+	s.mu.Lock()
+	delete(s.quieted, a.Key) // only this run's call counts
+	s.mu.Unlock()
 	res, err := s.turn(ctx, a, cfg, mode, sess, resume, prompt, kind)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -114,9 +122,13 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 		}
 	}
 	s.mu.Lock()
-	left := s.left[a.Key]
+	left, quieted := s.left[a.Key], s.quieted[a.Key]
 	delete(s.left, a.Key)
+	delete(s.quieted, a.Key)
 	s.mu.Unlock()
+	if replied && !quieted {
+		s.endQuiet(a.Key) // they talked to it again: the pause is over
+	}
 	if replied && !left && a.Watch == nil && !a.InDM {
 		s.engage(a.Key, time.Duration(cfg.EngageMinutes)*time.Minute)
 	}
