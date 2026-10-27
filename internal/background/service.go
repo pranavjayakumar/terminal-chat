@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -432,35 +433,69 @@ func Local(home string) (Manager, error) {
 
 // SafeExe refuses a binary another local user could replace: the service
 // would run it as us at every login (and every restart). The file and every
-// directory above it must be owned by us or root and not world-writable;
-// a sticky /tmp doesn't help, since once our file there is cleaned up
-// anyone can create the same path.
+// directory above it must be owned by us or root and writable by no one
+// else: not world-writable, and not group-writable unless the group is
+// root-equivalent (Homebrew's prefix is admin-writable on macOS) or our
+// own private group. A sticky /tmp doesn't help, since once our file there
+// is cleaned up anyone can create the same path.
 func SafeExe(exe string, uid int) error {
+	return safeExe(exe, uid, trustedGroup(uid))
+}
+
+func safeExe(exe string, uid int, groupOK func(gid uint32) bool) error {
 	bad := func(p string) error {
 		return fmt.Errorf("%s could be replaced by another user of this machine, so tc background won't run it at every login; install tc first (install.sh or brew), then run tc background on with that tc", p)
 	}
 	// A Homebrew bin/tc link: its target's directories count too.
 	if real, err := filepath.EvalSymlinks(exe); err == nil && real != exe {
-		if err := safePath(real, uid, bad); err != nil {
+		if err := safePath(real, uid, groupOK, bad); err != nil {
 			return err
 		}
 	}
-	return safePath(exe, uid, bad)
+	return safePath(exe, uid, groupOK, bad)
 }
 
-func safePath(exe string, uid int, bad func(string) error) error {
+func safePath(exe string, uid int, groupOK func(uint32) bool, bad func(string) error) error {
 	for p := exe; ; p = filepath.Dir(p) {
 		fi, err := os.Lstat(p)
 		if err != nil {
 			return fmt.Errorf("checking %s: %w", p, err)
 		}
 		st, ok := fi.Sys().(*syscall.Stat_t)
-		if !ok || (int(st.Uid) != uid && st.Uid != 0) || fi.Mode().Perm()&0o002 != 0 && fi.Mode()&os.ModeSymlink == 0 {
+		if !ok || (int(st.Uid) != uid && st.Uid != 0) {
+			return bad(p)
+		}
+		// A symlink's own mode bits mean nothing.
+		if perm := fi.Mode().Perm(); fi.Mode()&os.ModeSymlink == 0 &&
+			(perm&0o002 != 0 || perm&0o020 != 0 && !groupOK(st.Gid)) {
 			return bad(p)
 		}
 		if p == filepath.Dir(p) {
 			return nil
 		}
+	}
+}
+
+// rootGroups' members can become root anyway (sudo, or gid 0 itself).
+var rootGroups = map[string]bool{"root": true, "wheel": true, "admin": true, "sudo": true}
+
+// trustedGroup: may a directory writable by gid hold the binary we run?
+// Only if every member could already replace it: a root-equivalent group,
+// or uid's own user-private group (Debian-style umask 002 setups).
+func trustedGroup(uid int) func(gid uint32) bool {
+	return func(gid uint32) bool {
+		if gid == 0 {
+			return true
+		}
+		g, err := user.LookupGroupId(strconv.FormatUint(uint64(gid), 10))
+		if err != nil {
+			return false
+		}
+		if rootGroups[g.Name] {
+			return true
+		}
+		u, err := user.LookupId(strconv.Itoa(uid))
+		return err == nil && u.Gid == g.Gid && u.Username == g.Name
 	}
 }
 
