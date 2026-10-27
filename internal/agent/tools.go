@@ -426,8 +426,43 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		}
 		return "stopped watching " + mcp.ChanLabel(cv) + "; your owner got the summary", nil
 
+	case mcp.ToolQuiet:
+		var p struct {
+			Minutes int    `json:"minutes"`
+			Then    string `json:"then"`
+		}
+		if err := mcp.Args(raw, &p); err != nil {
+			return "", err
+		}
+		switch {
+		case a.InDM:
+			return "", errors.New("you answer everything your owner says in your DM; just don't reply until they write again")
+		case a.Watch != nil:
+			return "", errors.New("you're watching here for your owner; unwatch stops that")
+		case p.Minutes < 1 || p.Minutes > MaxQuietMinutes:
+			return "", fmt.Errorf("minutes: 1 to %d", MaxQuietMinutes)
+		}
+		then := oneLine(p.Then, 300)
+		s.startQuiet(a, p.Minutes, then)
+		s.activity(a, "quiet", fmt.Sprintf("%d min: %s", p.Minutes, then), 0)
+		var b strings.Builder
+		fmt.Fprintf(&b, "ok: quiet here for %d min; until then only an @mention reaches you here.", p.Minutes)
+		if then != "" {
+			b.WriteString(" When it ends you get a turn to do what you were asked.")
+		} else {
+			b.WriteString(" When it ends you get a turn only if someone wrote meanwhile.")
+		}
+		if r.cfg.EngageMinutes > 0 {
+			fmt.Fprintf(&b, " Then you listen here again for %d min.", r.cfg.EngageMinutes)
+		} else {
+			b.WriteString(" Then only an @mention reaches you here (follow-ups are off in your config).")
+		}
+		b.WriteString(" Confirm in a few words.")
+		return b.String(), nil
+
 	case mcp.ToolLeaveThread:
 		s.disengage(a.Key)
+		s.endQuiet(a.Key)
 		s.mu.Lock()
 		s.left[a.Key] = true
 		s.mu.Unlock()

@@ -30,6 +30,7 @@ const (
 	ToolUpdateMemory = "update_memory"
 	ToolForget       = "forget"
 	ToolUnwatch      = "unwatch"
+	ToolQuiet        = "quiet"
 )
 
 // ServerName is the MCP server's name in --mcp-config, so its tools are
@@ -107,6 +108,9 @@ var allTools = map[string]Tool{
 		prop{"handle", "string", "new handle without @: lowercase letters, digits, dashes (optional)", false},
 		prop{"icon", "string", "optional: an animated preset — pebble ▟▙, orb ◉, spark ✦, owl ◕◕, hive ⣿, moon ☾, meter ▃▅, kite ◆ — optionally with a name color like \"orb:3\" (0-7); or a single emoji (shown still)", false})},
 	ToolLeaveThread: {ToolLeaveThread, "Stop listening in this thread: new messages here reach you again only with an @mention.", schema()},
+	ToolQuiet: {ToolQuiet, "Stay quiet in this conversation for a while when someone asks (\"be quiet for 5 min, then ...\"): until then nothing here reaches you without an @mention. When it ends you listen here again, and you get a turn if you were told what to do then or someone wrote meanwhile. Use it instead of leave_thread when they want you back.", schema(
+		prop{"minutes", "integer", "how long, 1 to 120", true},
+		prop{"then", "string", "what to do when it ends, in their words (optional)", false})},
 	ToolUpdateMemory: {ToolUpdateMemory, "Your owner only: write a memory note (create or replace). note is a path like people/fahim.md, channels/general.md, facts/deploy.md or MEMORY.md, or a person's name.", schema(
 		prop{"note", "string", "the note's path, or a person's name", true},
 		prop{"text", "string", "the note's whole new text, under 2 KB", true})},
@@ -135,7 +139,7 @@ func pick(names ...string) []Tool {
 func AgentTools() []Tool {
 	tools := pick(ToolReadThread, ToolReadChannel, ToolSearch, ToolListChannels, ToolWhoami, ToolPostReply,
 		ToolStatus, ToolStream, ToolRemember, ToolRecall, ToolAskOwner, ToolApprove,
-		ToolOpenIssue, ToolOpenPR, ToolWorkStart, ToolSetSoul, ToolSetMe, ToolSetIdentity, ToolLeaveThread, ToolWatch, ToolUnwatch, ToolUpdateMemory, ToolForget)
+		ToolOpenIssue, ToolOpenPR, ToolWorkStart, ToolSetSoul, ToolSetMe, ToolSetIdentity, ToolLeaveThread, ToolQuiet, ToolWatch, ToolUnwatch, ToolUpdateMemory, ToolForget)
 	return append(tools, pick(extraAgentToolNames()...)...)
 }
 

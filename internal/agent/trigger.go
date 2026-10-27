@@ -26,6 +26,8 @@ type Ask struct {
 	FollowUp bool
 	// Watch is the owner's watch this follow-up falls under (watch.go).
 	Watch *Watch
+	// Wake is the quiet that just ended, for the run that wakes from it.
+	Wake *Quiet
 }
 
 // SessionKey names the session of a thread of ch.

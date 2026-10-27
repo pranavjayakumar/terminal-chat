@@ -184,6 +184,7 @@ type queueState struct {
 	Greeted   bool             `json:"greeted"`
 	LastDream string           `json:"last_dream,omitempty"` // YYYY-MM-DD
 	Grants    []Grant          `json:"grants,omitempty"`     // the owner's ♾️ of the day
+	Quiets    map[string]Quiet `json:"quiets,omitempty"`     // session key → a pause (engage.go)
 }
 
 type queue struct {

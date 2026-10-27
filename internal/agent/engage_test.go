@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"testing"
@@ -202,6 +203,240 @@ func TestHushedUntilReply(t *testing.T) {
 	for _, s := range []string{"No worries", "sure", "NOPE"} {
 		if hushedUntilReply(s) {
 			t.Errorf("%q should be released", s)
+		}
+	}
+}
+
+// The window runs from the last message the agent heard, not from its last
+// reply: a conversation that keeps going keeps it in (#161).
+func TestFollowUpWindowSlides(t *testing.T) {
+	clock := &fakeClock{t: time.Now()}
+	h := newHarness(t, cfgDefault(), func(s *Supervisor) { s.Now = clock.now })
+	h.run.reply = func(req runner.Request, on func(runner.Event)) (runner.Result, error) {
+		if strings.HasPrefix(req.Prompt, FollowUpNote) {
+			return runner.Result{Session: req.Session, Text: NoReply}, nil
+		}
+		return runner.Result{Session: req.Session, Text: "sure"}, nil
+	}
+	h.chat.say(bobID, general, 0, "@rocky hi", 0)
+	h.waitFor("engaged", func() bool { return h.s.Engaged(general, 0) })
+	clock.add(8 * time.Minute)
+	h.chat.say(carolID, general, 0, "lol", 0)
+	h.waitFor("follow-up", func() bool { return len(h.run.requests()) == 2 })
+	clock.add(8 * time.Minute) // 16 min after the reply, 8 after the last message
+	h.chat.say(bobID, general, 0, "rocky, still with us?", 0)
+	h.waitFor("second follow-up", func() bool { return len(h.run.requests()) == 3 })
+}
+
+func (s *Supervisor) busyKey(key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.busy[key]
+}
+
+// quietRun has the agent answer "be quiet" in thread root by calling quiet
+// with args, and waits for the run to end.
+func quietRun(t *testing.T, h *harness, root uint64, args map[string]any) {
+	t.Helper()
+	block := make(chan struct{})
+	h.run.reply = func(req runner.Request, on func(runner.Event)) (runner.Result, error) {
+		if strings.Contains(req.Prompt, "be quiet for a bit") && !strings.Contains(req.Prompt, quietOverMark) {
+			<-block
+			return runner.Result{Session: req.Session, Text: "ok, going quiet"}, nil
+		}
+		if strings.HasPrefix(req.Prompt, FollowUpNote) {
+			return runner.Result{Session: req.Session, Text: NoReply}, nil
+		}
+		return runner.Result{Session: req.Session, Text: "hey"}, nil
+	}
+	posts := len(h.chat.posts())
+	h.chat.say(ownerID, general, root, "@rocky be quiet for a bit, then say hey", 0)
+	if r := h.callIn(general, mcp.ToolQuiet, args); r.Error {
+		t.Fatal(r.Text)
+	}
+	close(block)
+	h.waitFor("ack", func() bool { return len(h.chat.posts()) == posts+1 })
+	h.waitFor("run over", func() bool { return !h.s.busyKey(SessionKey(general, root)) })
+}
+
+func TestQuietThenWake(t *testing.T) {
+	clock := &fakeClock{t: time.Now()}
+	h := newHarness(t, cfgDefault(), func(s *Supervisor) { s.Now = clock.now })
+	root := h.chat.say(bobID, general, 0, "deploy plan?", 0).ID
+	quietRun(t, h, root, map[string]any{"minutes": 5, "then": "say hey"})
+	runs := len(h.run.requests())
+
+	// Quiet: nothing reaches it without a mention, and the timer doesn't
+	// wake it early.
+	clock.add(2 * time.Minute)
+	h.chat.say(bobID, general, root, "anyone?", 0)
+	time.Sleep(50 * time.Millisecond)
+	h.s.wakeQuiets(context.Background())
+	time.Sleep(30 * time.Millisecond)
+	if n := len(h.run.requests()); n != runs {
+		t.Fatalf("%d runs during the quiet", n-runs)
+	}
+
+	// Over, even past the follow-up window the ack opened: it gets a turn
+	// with what it was asked to do and what it missed.
+	clock.add(9 * time.Minute)
+	h.s.wakeQuiets(context.Background())
+	h.waitFor("wake run", func() bool { return len(h.run.requests()) == runs+1 })
+	p := h.run.requests()[runs].Prompt
+	if !strings.Contains(p, quietOverMark) || !strings.Contains(p, "say hey") || !strings.Contains(p, "anyone?") {
+		t.Fatalf("wake prompt: %s", p)
+	}
+	h.waitFor("hey", func() bool { return len(h.chat.posts()) == 2 })
+	h.waitFor("listening again", func() bool { return h.s.Engaged(general, root) })
+	h.waitFor("run over", func() bool { return !h.s.busyKey(SessionKey(general, root)) })
+	h.s.wakeQuiets(context.Background())
+	h.chat.say(bobID, general, root, "cool", 0)
+	h.waitFor("follow-up", func() bool { return len(h.run.requests()) == runs+2 })
+	time.Sleep(50 * time.Millisecond)
+	if n := len(h.run.requests()); n != runs+2 {
+		t.Fatalf("woke twice: %d runs", n-runs)
+	}
+	if p := h.run.requests()[runs+1].Prompt; strings.Contains(p, quietOverMark) {
+		t.Fatalf("a plain follow-up carried the wake note: %s", p)
+	}
+}
+
+// A message that lands after the quiet ended but before the timer looked
+// is the wake: one run, carrying the wake note.
+func TestQuietWakeOnMessage(t *testing.T) {
+	clock := &fakeClock{t: time.Now()}
+	h := newHarness(t, cfgDefault(), func(s *Supervisor) { s.Now = clock.now })
+	root := h.chat.say(bobID, general, 0, "deploy plan?", 0).ID
+	quietRun(t, h, root, map[string]any{"minutes": 5})
+	runs := len(h.run.requests())
+	clock.add(5*time.Minute + time.Second)
+	h.chat.say(ownerID, general, root, "ok you can talk", 0)
+	h.waitFor("wake run", func() bool { return len(h.run.requests()) == runs+1 })
+	h.s.wakeQuiets(context.Background())
+	time.Sleep(50 * time.Millisecond)
+	if n := len(h.run.requests()); n != runs+1 {
+		t.Fatalf("%d runs for one message", n-runs)
+	}
+	if p := h.run.requests()[runs].Prompt; !strings.Contains(p, quietOverMark) || !strings.Contains(p, "ok you can talk") {
+		t.Fatalf("prompt: %s", p)
+	}
+}
+
+// Nothing to do and nobody spoke: no run, but it is listening again.
+func TestQuietEndsSilently(t *testing.T) {
+	clock := &fakeClock{t: time.Now()}
+	h := newHarness(t, cfgDefault(), func(s *Supervisor) { s.Now = clock.now })
+	root := h.chat.say(bobID, general, 0, "deploy plan?", 0).ID
+	quietRun(t, h, root, map[string]any{"minutes": 3})
+	runs := len(h.run.requests())
+	clock.add(4 * time.Minute)
+	h.s.wakeQuiets(context.Background())
+	time.Sleep(50 * time.Millisecond)
+	if n := len(h.run.requests()); n != runs || !h.s.Engaged(general, root) {
+		t.Fatalf("%d runs, engaged %v", n-runs, h.s.Engaged(general, root))
+	}
+}
+
+// A restart mid-quiet keeps it: the new supervisor stays quiet, then wakes.
+func TestQuietSurvivesRestart(t *testing.T) {
+	clock := &fakeClock{t: time.Now()}
+	h := newHarness(t, cfgDefault(), func(s *Supervisor) { s.Now = clock.now })
+	root := h.chat.say(bobID, general, 0, "deploy plan?", 0).ID
+	quietRun(t, h, root, map[string]any{"minutes": 5, "then": "say hey"})
+	h.stop()
+
+	h2 := restartHarness(t, h, func(s *Supervisor) { s.Now = clock.now })
+	clock.add(time.Minute)
+	h2.chat.say(bobID, general, root, "anyone?", 0)
+	time.Sleep(50 * time.Millisecond)
+	if n := len(h2.run.requests()); n != 0 {
+		t.Fatalf("%d runs during the quiet after a restart", n)
+	}
+	clock.add(5 * time.Minute)
+	h2.s.wakeQuiets(context.Background())
+	h2.waitFor("wake run", func() bool { return len(h2.run.requests()) == 1 })
+	if p := h2.run.requests()[0].Prompt; !strings.Contains(p, "say hey") {
+		t.Fatalf("prompt: %s", p)
+	}
+}
+
+// Down long past the end: the moment is gone, so no late wake.
+func TestQuietStaleAfterRestart(t *testing.T) {
+	clock := &fakeClock{t: time.Now()}
+	h := newHarness(t, cfgDefault(), func(s *Supervisor) { s.Now = clock.now })
+	root := h.chat.say(bobID, general, 0, "deploy plan?", 0).ID
+	quietRun(t, h, root, map[string]any{"minutes": 5, "then": "say hey"})
+	h.stop()
+	clock.add(3 * time.Hour)
+	h2 := restartHarness(t, h, func(s *Supervisor) { s.Now = clock.now })
+	h2.s.wakeQuiets(context.Background())
+	time.Sleep(50 * time.Millisecond)
+	if n := len(h2.run.requests()); n != 0 {
+		t.Fatalf("woke %d times, hours late", n)
+	}
+}
+
+// A mention that gets an answer ends the quiet; so does leave_thread.
+func TestQuietEndedByMentionOrLeave(t *testing.T) {
+	clock := &fakeClock{t: time.Now()}
+	h := newHarness(t, cfgDefault(), func(s *Supervisor) { s.Now = clock.now })
+	root := h.chat.say(bobID, general, 0, "deploy plan?", 0).ID
+	quietRun(t, h, root, map[string]any{"minutes": 30, "then": "say hey"})
+	runs := len(h.run.requests())
+	h.chat.say(ownerID, general, root, "@rocky actually, what's the cmd?", 0)
+	h.waitFor("mention answered", func() bool { return len(h.chat.posts()) == 2 })
+	h.waitFor("run over", func() bool { return !h.s.busyKey(SessionKey(general, root)) })
+	h.chat.say(bobID, general, root, "and staging?", 0)
+	h.waitFor("follow-up again", func() bool { return len(h.run.requests()) == runs+2 })
+	h.waitFor("run over", func() bool { return !h.s.busyKey(SessionKey(general, root)) })
+	clock.add(31 * time.Minute)
+	h.s.wakeQuiets(context.Background())
+	time.Sleep(50 * time.Millisecond)
+	if n := len(h.run.requests()); n != runs+2 {
+		t.Fatalf("woke after a mention ended the quiet: %d runs", n-runs)
+	}
+
+	// leave_thread: no wake either.
+	root2 := h.chat.say(bobID, general, 0, "other thing", 0).ID
+	quietRun(t, h, root2, map[string]any{"minutes": 5, "then": "say hey"})
+	runs = len(h.run.requests())
+	block := make(chan struct{})
+	h.run.reply = func(req runner.Request, on func(runner.Event)) (runner.Result, error) {
+		<-block
+		return runner.Result{Session: req.Session, Text: "bye"}, nil
+	}
+	h.chat.say(ownerID, general, root2, "@rocky never mind, bye", 0)
+	if r := h.callIn(general, mcp.ToolLeaveThread, map[string]string{}); r.Error {
+		t.Fatal(r.Text)
+	}
+	close(block)
+	h.waitFor("run over", func() bool {
+		return len(h.run.requests()) == runs+1 && !h.s.busyKey(SessionKey(general, root2))
+	})
+	clock.add(10 * time.Minute)
+	h.s.wakeQuiets(context.Background())
+	time.Sleep(50 * time.Millisecond)
+	if n := len(h.run.requests()); n != runs+1 {
+		t.Fatalf("woke after leave_thread: %d runs", n-runs)
+	}
+}
+
+func TestQuietRefusals(t *testing.T) {
+	h := newHarness(t, cfgDefault(), nil)
+	block := make(chan struct{})
+	h.run.reply = func(req runner.Request, on func(runner.Event)) (runner.Result, error) {
+		<-block
+		return runner.Result{Session: req.Session, Text: "ok"}, nil
+	}
+	defer close(block)
+	h.chat.say(ownerID, agentDM, 0, "be quiet for 5 min", 0)
+	if r := h.callIn(agentDM, mcp.ToolQuiet, map[string]any{"minutes": 5}); !r.Error {
+		t.Fatal("quiet in the agent DM")
+	}
+	h.chat.say(bobID, general, 0, "@rocky be quiet", 0)
+	for _, m := range []int{0, MaxQuietMinutes + 1} {
+		if r := h.callIn(general, mcp.ToolQuiet, map[string]any{"minutes": m}); !r.Error {
+			t.Fatalf("quiet for %d min", m)
 		}
 	}
 }

@@ -109,6 +109,8 @@ type Supervisor struct {
 	engaged  map[string]*engagement // session key → listening without a mention
 	left     map[string]bool        // session key → the run called leave_thread
 	watches  map[string]*Watch      // watch key → the owner's watch
+	quiets   map[string]*Quiet      // session key → a pause someone asked for (engage.go)
+	quieted  map[string]bool        // session key → the run called quiet
 	status   Status
 	lastRun  time.Time
 	online   bool
@@ -167,6 +169,8 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	s.runs, s.threads, s.busy = map[string]*run{}, map[string][]Ask{}, map[string]bool{}
 	s.pending, s.branches = map[string]*approval{}, map[string]string{}
 	s.engaged, s.left, s.watches = map[string]*engagement{}, map[string]bool{}, map[string]*Watch{}
+	s.quiets, s.quieted = map[string]*Quiet{}, map[string]bool{}
+	s.loadQuiets()
 	s.owner = s.Chat.Me().ID
 	if s.handleNow() == "" {
 		return errors.New("this tc home isn't an agent's (no agent handle in its config.json)")
@@ -269,6 +273,7 @@ func (s *Supervisor) handleUpdate(ctx context.Context, u client.Update) {
 	for ch := range u.Msgs {
 		s.checkApprovals(ch)
 	}
+	s.wakeQuiets(ctx)
 	if first {
 		s.startup(ctx)
 	}
@@ -334,6 +339,11 @@ func (s *Supervisor) accept(ctx context.Context, a Ask) {
 		s.activity(a, "stale", "asked while asleep", 0)
 		return
 	}
+	s.enqueue(ctx, a)
+}
+
+// enqueue puts a in line in its thread.
+func (s *Supervisor) enqueue(ctx context.Context, a Ask) {
 	s.mu.Lock()
 	s.threads[a.Key] = append(s.threads[a.Key], a)
 	start := !s.busy[a.Key]
@@ -378,6 +388,7 @@ func (s *Supervisor) drain(ctx context.Context, key string) {
 func (s *Supervisor) housekeeping(ctx context.Context) {
 	s.setState(s.idleState())
 	s.pruneEngaged()
+	s.wakeQuiets(ctx)
 	s.expireWatches()
 	s.maybeDream(ctx)
 }
