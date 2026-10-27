@@ -146,6 +146,9 @@ func Run(ctx context.Context, cfg Config) error {
 			}
 			return nil
 		}
+		// Before the next look at the UI lock: whoever reads "waiting"
+		// while holding it knows we will pause before opening the cache.
+		r.setErr("starting", nil)
 	}
 }
 
