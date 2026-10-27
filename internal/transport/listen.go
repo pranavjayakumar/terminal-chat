@@ -186,6 +186,11 @@ func (l *listener) acceptTCP() {
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
+		if tc, ok := raw.(*net.TCPConn); ok {
+			if rc, err := tc.SyscallConn(); err == nil {
+				_ = limitUnsent("", "", rc)
+			}
+		}
 		l.wg.Add(1)
 		go func() {
 			defer l.wg.Done()

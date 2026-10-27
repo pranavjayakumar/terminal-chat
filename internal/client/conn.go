@@ -47,6 +47,9 @@ type session struct {
 	rosterMark atomic.Int64
 	watchdog   *time.Timer // fails the session when nothing is received for recvTimeout
 	timedOut   atomic.Bool
+	// voiceIn carries VOICE frames (voice on the TCP fallback, §14.4) from
+	// the read loop to the huddle; full = drop.
+	voiceIn chan []byte
 
 	mu      sync.Mutex
 	nextID  uint32
@@ -81,7 +84,7 @@ type session struct {
 
 func newSession(conn transport.Conn, codec *proto.Codec, w proto.Welcome, recvTimeout time.Duration) *session {
 	s := &session{conn: conn, codec: codec, welcome: w, done: make(chan struct{}),
-		pending: map[uint32]pendingReq{}, syncing: true, devReady: make(chan struct{}),
+		pending: map[uint32]pendingReq{}, syncing: true, voiceIn: make(chan []byte, voiceInLen), devReady: make(chan struct{}),
 		devTried: make(chan struct{}), devRetry: make(chan chan error)}
 	s.lastSend.Store(time.Now().UnixNano())
 	// A timer rather than a polling goroutine: a blocked write must not be
@@ -217,7 +220,7 @@ func handshake(conn transport.Conn, codec *proto.Codec, signer ssh.Signer, invit
 	if err != nil {
 		return proto.Welcome{}, err
 	}
-	hello := proto.Hello{Client: clientName, Caps: []string{proto.CapE2E, proto.CapKeyHint, proto.CapVoice, proto.CapAgent},
+	hello := proto.Hello{Client: clientName, Caps: []string{proto.CapE2E, proto.CapKeyHint, proto.CapVoice, proto.CapVoiceTCP, proto.CapAgent},
 		Auth: proto.Auth{Pubkey: signer.PublicKey().Marshal(), Sig: sig, Invite: invite, Name: name}, Agent: agent}
 	if passive {
 		hello.Caps = append(hello.Caps, proto.CapPassive)
@@ -730,6 +733,16 @@ func (c *Client) readLoop(s *session) error {
 			s.lastSend.Store(time.Now().UnixNano())
 			if err != nil {
 				return err
+			}
+		case proto.TVoice:
+			// Only where voice rides the stream (§14.4), and never more than a
+			// datagram: a misbehaving server can't park megabytes here.
+			if len(f.Payload) > proto.MaxDatagram || !s.voiceTCP() {
+				break
+			}
+			select {
+			case s.voiceIn <- f.Payload:
+			default:
 			}
 		case proto.TBye:
 			var b proto.Bye

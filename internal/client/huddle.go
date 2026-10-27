@@ -56,6 +56,7 @@ type participation struct {
 	ch     uint64
 	src    uint32
 	sess   *session
+	tcp    bool // voice rides the TCP fallback's frame stream
 	vs     *voice.Session
 	keys   *huddleKeys // nil in plaintext channels
 	cancel context.CancelFunc
@@ -256,8 +257,15 @@ func (c *Client) JoinHuddle(ctx context.Context, ch uint64) error {
 	if !slices.Contains(s.welcome.Caps, proto.CapVoice) {
 		return ErrNoVoiceServer
 	}
-	dg, ok := transport.Datagrams(s.conn)
-	if !ok {
+	var dg transport.DatagramConn
+	qdg, udp := transport.Datagrams(s.conn)
+	switch {
+	case udp:
+		dg = qdg
+	case slices.Contains(s.welcome.Caps, proto.CapVoiceTCP):
+		// The TCP fallback (UDP blocked): voice rides the frame stream (§14.4).
+		dg = streamDG{s}
+	default:
 		return ErrNoUDP
 	}
 	cv, ok := c.Channel(ch)
@@ -309,7 +317,12 @@ func (c *Client) JoinHuddle(ctx context.Context, ch uint64) error {
 		return err
 	}
 	rctx, cancel := context.WithCancel(c.ctx)
-	cfg := voice.Config{Src: res.Src, Enc: enc, Send: nonBlocking(rctx, dg),
+	if !udp {
+		for len(s.voiceIn) > 0 { // an earlier participation's leftovers
+			<-s.voiceIn
+		}
+	}
+	cfg := voice.Config{Src: res.Src, Enc: enc, Send: nonBlocking(rctx, dg, !udp), Reliable: !udp,
 		Now: func() time.Time { return time.Now().Add(time.Duration(c.hud.skew.Load())) }}
 	if keys != nil {
 		cfg.Keys = keys
@@ -320,7 +333,7 @@ func (c *Client) JoinHuddle(ctx context.Context, ch uint64) error {
 		_ = s.fire(proto.OpHuddleLeave, struct{}{})
 		return err
 	}
-	p := &participation{ch: ch, src: res.Src, sess: s, vs: vs, keys: keys, cancel: cancel, started: time.Now()}
+	p := &participation{ch: ch, src: res.Src, sess: s, vs: vs, keys: keys, cancel: cancel, started: time.Now(), tcp: !udp}
 	// The roster with our src comes before the RES (§14.1); allow a little
 	// slack before calling ourselves dropped.
 	for i := 0; i < 20 && !c.rosterHas(ch, res.Src); i++ {
@@ -369,17 +382,40 @@ func (c *Client) JoinHuddle(ctx context.Context, ch uint64) error {
 	return nil
 }
 
-// sendQueue bounds frames waiting for the network: SendDatagram can block
-// while QUIC is congested, and the audio thread must never wait on it.
-const sendQueue = 16
+// Frames waiting for the network: SendDatagram can block while QUIC is
+// congested, and the audio thread must never wait on it. A frame that
+// waited too long is dropped rather than sent late. On the TCP fallback
+// both bounds are tighter: a stalled stream would otherwise turn queued
+// audio into delay.
+const (
+	sendQueue    = 16
+	sendMaxAge   = 200 * time.Millisecond
+	tcpSendQueue = 4
+	tcpSendAge   = 60 * time.Millisecond
+	// voiceInLen bounds VOICE frames read but not yet taken by the huddle.
+	voiceInLen = 32
+)
 
-func nonBlocking(ctx context.Context, dg transport.DatagramConn) func([]byte) error {
-	q := make(chan []byte, sendQueue)
+var errSendBusy = errors.New("voice: send queue full")
+
+type queued struct {
+	b  []byte
+	at time.Time
+}
+
+func nonBlocking(ctx context.Context, dg transport.DatagramConn, tcp bool) func([]byte) error {
+	n, age := sendQueue, sendMaxAge
+	if tcp {
+		n, age = tcpSendQueue, tcpSendAge
+	}
+	q := make(chan queued, n)
 	go func() {
 		for {
 			select {
-			case b := <-q:
-				_ = dg.SendDatagram(b)
+			case f := <-q:
+				if time.Since(f.at) <= age {
+					_ = dg.SendDatagram(f.b)
+				}
 			case <-ctx.Done():
 				return
 			}
@@ -387,11 +423,46 @@ func nonBlocking(ctx context.Context, dg transport.DatagramConn) func([]byte) er
 	}()
 	return func(b []byte) error {
 		select {
-		case q <- b:
+		case q <- queued{b, time.Now()}:
 			return nil
 		default:
-			return errors.New("voice: send queue full")
+			return errSendBusy
 		}
+	}
+}
+
+// streamDG carries voice frames on the session's frame stream (VOICE
+// frames, §14.4) when the connection fell back to TCP. Sending never
+// waits for the stream: a frame that would queue behind another write
+// (chat, or a write stuck on a full socket) is dropped, so chat keeps its
+// latency and voice its freshness.
+type streamDG struct{ s *session }
+
+func (d streamDG) SendDatagram(b []byte) error {
+	// Already queued in the kernel can't be dropped, only be late (macOS
+	// buffers ~100+ KB whatever we ask): skip this frame instead.
+	if transport.Backlogged(d.s.conn) {
+		return errSendBusy
+	}
+	ok, err := d.s.codec.TryWriteRaw(proto.TVoice, b)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errSendBusy
+	}
+	d.s.lastSend.Store(time.Now().UnixNano())
+	return nil
+}
+
+func (d streamDG) ReceiveDatagram(ctx context.Context) ([]byte, error) {
+	select {
+	case b := <-d.s.voiceIn:
+		return b, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-d.s.done:
+		return nil, ErrOffline
 	}
 }
 
@@ -583,6 +654,39 @@ func (c *Client) Speaking() map[uint64]bool {
 		return nil
 	}
 	return p.vs.Speaking()
+}
+
+// voiceTCP: voice may ride this session's stream (§14.4).
+func (s *session) voiceTCP() bool {
+	if _, udp := transport.Datagrams(s.conn); udp {
+		return false
+	}
+	return slices.Contains(s.welcome.Caps, proto.CapVoiceTCP) && slices.Contains(s.welcome.Caps, proto.CapVoice)
+}
+
+// HuddleStats describes our huddle's call quality for /huddle stats.
+type HuddleStats struct {
+	TCP      bool    // voice rides the TCP fallback
+	Kbps     float64 // our Opus bitrate while talking (0: not talked yet)
+	LossPct  float64 // recent loss on what we hear
+	FEC      int     // loss our FEC protects against, percent (-1: starting guess)
+	BufferMs int     // jitter buffer delay
+	Late     uint64  // frames dropped for coming too late
+}
+
+func (c *Client) HuddleStats() (HuddleStats, bool) {
+	c.hud.mu.Lock()
+	p := c.hud.cur
+	c.hud.mu.Unlock()
+	if p == nil {
+		return HuddleStats{}, false
+	}
+	st := p.vs.Stats()
+	h := HuddleStats{TCP: p.tcp, LossPct: st.LossPct, FEC: st.LossFEC, BufferMs: st.BufferMs, Late: st.Trimmed}
+	if st.Sent > 0 {
+		h.Kbps = float64(st.SentBytes*8) / (float64(st.Sent) * voice.FrameDur.Seconds()) / 1000
+	}
+	return h, true
 }
 
 // VoiceStats exposes the current engine's counters (tests, diagnostics).

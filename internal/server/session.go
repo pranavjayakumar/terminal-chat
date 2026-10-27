@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/skailama/tc/internal/identity"
@@ -49,11 +50,12 @@ type session struct {
 	wake    chan struct{}
 	done    chan struct{}
 
-	synced  bool
-	e2e     bool     // both sides advertised proto.CapE2E
-	byeKeys []string // Bye.Keys for a failed handshake (cap key_hint)
-	voice   bool     // both sides advertised proto.CapVoice
-	passive bool     // proto.CapPassive: no presence, typing or huddles
+	synced   bool
+	e2e      bool     // both sides advertised proto.CapE2E
+	byeKeys  []string // Bye.Keys for a failed handshake (cap key_hint)
+	voice    bool     // both sides advertised proto.CapVoice
+	voiceTCP bool     // the client advertised proto.CapVoiceTCP too
+	passive  bool     // proto.CapPassive: no presence, typing or huddles
 	// agentCap: both sides advertised proto.CapAgent. agent is set on an
 	// agent session (HELLO agent, §15.1): it never counts as the user
 	// being online and sees only its DM and access list's messages.
@@ -62,9 +64,19 @@ type session struct {
 	agentBucket bucket // EphAgent rate, under srv.mu
 	loginKey    []byte // the SSH key (wire) this session logged in with
 	agentKey    bool   // loginKey is an agent key (§15.1)
-	// Voice datagrams (huddle.go); dg is nil unless voice over QUIC.
-	dg           transport.DatagramConn
-	dgOut        chan dgItem
+	// Voice (huddle.go): dg is the QUIC datagram side, nil unless voice
+	// over QUIC; streamVoice: no datagrams, so voice rides the frame stream
+	// (§14.4), queued in vq behind chat. writing is when the writer
+	// started its current write (UnixNano, 0 = idle).
+	dg          transport.DatagramConn
+	streamVoice bool
+	dgOut       chan dgItem
+	vq          []voiceOut // under mu
+	writing     atomic.Int64
+	// checkVoiceStuck's state (readLoop's ticker only); unsent is
+	// transport.Unsent unless a test replaces it.
+	lastUnsent   int
+	unsent       func() (int, bool)
 	dgBucket     bucket // only the datagram reader goroutine touches it
 	lastTyping   map[uint64]time.Time
 	lastKeyNeed  map[uint64]time.Time // under srv.mu
@@ -103,7 +115,7 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 	}
 	defer s.unregister(sess)
 	w := proto.Welcome{
-		Server: Version, Caps: append([]string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapVoice, proto.CapAgent}, s.inviteCaps()...), ServerID: s.st.serverID, User: user, Time: s.now(),
+		Server: Version, Caps: append([]string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapVoice, proto.CapVoiceTCP, proto.CapAgent}, s.inviteCaps()...), ServerID: s.st.serverID, User: user, Time: s.now(),
 		Agent: sess.agent,
 	}
 	if sess.passive {
@@ -120,6 +132,8 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 		dctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		sess.startDatagrams(dctx, dg)
+	} else if sess.voiceTCP {
+		sess.startDatagrams(ctx, nil)
 	}
 	sess.readLoop(ctx)
 }
@@ -139,6 +153,7 @@ func (s *Server) handshake(ctx context.Context, sess *session) (proto.User, stri
 	}
 	sess.e2e = slices.Contains(h.Caps, proto.CapE2E)
 	sess.voice = slices.Contains(h.Caps, proto.CapVoice)
+	sess.voiceTCP = sess.voice && slices.Contains(h.Caps, proto.CapVoiceTCP)
 	sess.passive = slices.Contains(h.Caps, proto.CapPassive)
 	sess.agentCap = slices.Contains(h.Caps, proto.CapAgent)
 	exp, err := sess.conn.Exporter()
@@ -465,23 +480,29 @@ func (sess *session) writer() {
 		case <-sess.wake:
 		}
 		sess.mu.Lock()
-		batch := sess.queue
-		sess.queue, sess.queued = nil, 0
+		batch, voice := sess.queue, sess.vq
+		sess.queue, sess.queued, sess.vq = nil, 0, nil
 		sess.mu.Unlock()
+		// Chat first: voice waits behind it, and is dropped if that made it
+		// late (writeVoice).
 		for _, f := range batch {
+			out := []outFrame{f}
 			if tamperEnabled {
-				for _, g := range sess.srv.tamper.out(sess.user.ID, f) {
-					if err := sess.codec.WriteRaw(g.t, g.payload); err != nil {
-						sess.conn.Close()
-						return
-					}
+				out = sess.srv.tamper.out(sess.user.ID, f)
+			}
+			for _, g := range out {
+				sess.writing.Store(time.Now().UnixNano())
+				err := sess.codec.WriteRaw(g.t, g.payload)
+				sess.writing.Store(0)
+				if err != nil {
+					sess.conn.Close()
+					return
 				}
-				continue
 			}
-			if err := sess.codec.WriteRaw(f.t, f.payload); err != nil {
-				sess.conn.Close()
-				return
-			}
+		}
+		if !sess.writeVoice(voice) {
+			sess.conn.Close()
+			return
 		}
 	}
 }
@@ -506,6 +527,9 @@ func (sess *session) readLoop(ctx context.Context) {
 				if idle > idleTimeout {
 					sess.conn.CloseWithCode("idle")
 					return
+				}
+				if sess.streamVoice {
+					sess.checkVoiceStuck(time.Now())
 				}
 			}
 		}
@@ -537,6 +561,11 @@ func (sess *session) readLoop(ctx context.Context) {
 			var e proto.Ephemeral
 			if f.Decode(&e) == nil {
 				sess.srv.handleEphemeral(sess, e)
+			}
+		case proto.TVoice:
+			// Only where voice rides the stream (§14.4); relay checks the rest.
+			if sess.streamVoice {
+				sess.srv.relay(sess, f.Payload)
 			}
 		case proto.TBye:
 			return

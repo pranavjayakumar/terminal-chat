@@ -10,6 +10,11 @@ import (
 // CapVoice gates huddle ops, huddle ephemerals and datagrams.
 const CapVoice = "voice1"
 
+// CapVoiceTCP: voice frames may travel on the frame stream (frame type
+// VOICE) when the session has no datagrams, i.e. on the TLS-over-TCP
+// fallback (§14.4).
+const CapVoiceTCP = "voice_tcp"
+
 const (
 	OpHuddleJoin  = "huddle.join"
 	OpHuddleLeave = "huddle.leave"

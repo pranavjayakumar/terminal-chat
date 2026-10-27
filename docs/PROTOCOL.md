@@ -16,7 +16,7 @@ form of this document; if they disagree, that is a bug.
 | Transport | Port | Use |
 |---|---|---|
 | QUIC (UDP) | 7443 | Primary. ALPN `tc/1`. Client opens **one bidirectional stream** for frames. Voice (cap `voice1`, §14) uses QUIC datagrams on the same connection. |
-| TLS over TCP | 7443 | Fallback when UDP is blocked. ALPN `tc/1`. Same frames. |
+| TLS over TCP | 7443 | Fallback when UDP is blocked. ALPN `tc/1`. Same frames; voice (cap `voice_tcp`) as VOICE frames, §14.4. |
 | HTTPS (TLS over TCP) | 7443 | Webhooks only (§12). ALPN `http/1.1` on the same TCP listener. |
 
 Client dials both, giving QUIC a 300 ms head start, uses whichever finishes the
@@ -43,7 +43,8 @@ The server key never rotates in v1; rotating means re-issuing invites.
 
 - `length` counts `type` + `payload` bytes. 1 ≤ length ≤ 1 MiB (1,048,576).
   Before authentication the limit is 8 KiB. Over the limit → BYE `frame_too_large`.
-- Payload is a MessagePack map with **string keys**. Unknown keys MUST be ignored.
+- Payload is a MessagePack map with **string keys** (VOICE, 0x40, is the one exception: raw
+  bytes, §14.4). Unknown keys MUST be ignored.
   Decoders cap nesting depth (16) and container lengths by remaining bytes.
 - Unknown frame `type` values MUST be skipped, not fatal.
 
@@ -60,7 +61,7 @@ The server key never rotates in v1; rotating means re-issuing invites.
 | 0x22 | SNAPSHOT | S→C | `{users?: [User], chans?: [Channel], msgs?: [Message], read?: {chan: seq}, groups?: [Group], devs?, revoked?, keys?}` (one part; `groups` §8, `devs`/`revoked` §13.2, `keys` §13.6) |
 | 0x30 | PING | both | `{t: i64}` |
 | 0x31 | PONG | both | `{t: i64}` (echo) |
-| 0x40 | VOICE | both | reserved (a possible TCP voice fallback; voice is QUIC datagrams only, §14.3) |
+| 0x40 | VOICE | both | one voice datagram (§14.3 layout, raw bytes, **not** MessagePack) on a session without datagrams; cap `voice_tcp`, §14.4 |
 | 0x7F | BYE | both | `{code: str, msg: str, keys?: [str]}` then close (`keys`: §4.1 key hint) |
 
 Effective caps = intersection of HELLO and WELCOME caps. Protocol version is the ALPN.
@@ -1366,7 +1367,8 @@ whether or not their build can play audio (rosters are useful on their own).
 | `huddle.leave` | `{}` | `{}` |
 
 - **huddle.join** joins the channel's huddle, creating it if empty. Checks, in order: the
-  session isn't passive (`forbidden`, §4.3); the session is QUIC with datagrams negotiated (else `bad_request`, "voice needs UDP"); the channel
+  session isn't passive (`forbidden`, §4.3); the session can carry voice: QUIC with datagrams
+  negotiated, or `voice_tcp` in effect (§14.4) (else `bad_request`, "voice needs UDP"); the channel
   exists (`not_found`); the caller is a current member (`forbidden`). In an encrypted channel
   `dev` and `stream` are required (`bad_request`) and `dev` must be a registered, non-revoked
   device of the caller (`forbidden`); elsewhere both are ignored and not relayed. Joining
@@ -1414,7 +1416,8 @@ roster the sync brought: clients use this to tell "already running" (baseline, n
 ### 14.3 Datagrams
 
 Voice travels in QUIC datagrams (RFC 9221) on the session's QUIC connection; both peers enable
-datagram support. There is no voice over TLS-over-TCP (frame type 0x40 stays reserved).
+datagram support. A session without datagrams (TLS over TCP) carries the same bytes in VOICE
+frames instead (§14.4).
 Byte layout (integers big-endian):
 
 ```
@@ -1437,9 +1440,10 @@ off len field
   the header parses, `src` is the session's own, the kind is 0x02 in an encrypted channel and
   0x01 otherwise, the size is within limits and the session's token bucket (burst 100, refill
   60/s) has a token. Otherwise forward the **unchanged bytes** to every other participant of
-  that huddle (never back to the sender). Per receiving session at most 64 datagrams wait to
-  be sent; more are dropped, as are queued ones whose participation has ended. The server never
-  parses past byte 10.
+  that huddle (never back to the sender), as a datagram to a QUIC session and as a VOICE frame
+  to a `voice_tcp` session (§14.4), so QUIC and TCP participants hear each other. Per receiving
+  session at most 64 datagrams wait to be sent; more are dropped, as are queued ones whose
+  participation has ended. The server never parses past byte 10.
 - **Encrypted frames** (kind 0x02), with `K` the channel's epoch key for `epoch` (§13.3),
   `dev` and `stream` from the sender's `Part`:
 
@@ -1473,6 +1477,46 @@ off len field
   sliding replay window kept per `src` for the receiver's whole participation (roster changes
   don't reset it). The window advances only on frames that open.
 
+### 14.4 Voice on the frame stream (cap `voice_tcp`)
+
+When UDP is blocked the client falls back to TLS over TCP (§2) and has no datagrams. With cap
+`voice_tcp` in effect (both HELLO and WELCOME list it, and `voice1` is in effect too: `voice_tcp`
+without `voice1` is not in effect; servers advertise it unconditionally) voice uses VOICE frames
+on the session's stream whenever the session has **no datagrams negotiated**, whatever the
+transport (in practice TLS over TCP):
+
+```
+VOICE (0x40) payload = one datagram, byte for byte as in §14.3 (≤ 512 bytes)
+```
+
+- **Only on a session without datagrams.** A server relays VOICE frames only from a session
+  that negotiated `voice_tcp` and has no datagram support; it ignores them from any other
+  session (QUIC sessions use datagrams). Relay rules are exactly §14.3's (participation, own
+  `src`, kind, size, the same token bucket); the bytes are forwarded unchanged, so encryption
+  (§14.3) is the same end to end: the stream is only a carrier.
+- **Fan-out.** To a QUIC participant the server sends a datagram, to a stream participant a
+  VOICE frame: mixed huddles just work.
+- **Late, not lost.** TCP can't drop late audio, so every hop bounds it instead, and drops:
+  - Server, per stream session: at most 8 VOICE frames wait (the oldest are dropped first),
+    none is written more than 150 ms after it was queued, and none is queued while 64 KiB or more
+    of other output waits or a write has been blocked for 100 ms (full socket). Queued chat and
+    other frames are always written before queued voice. (Implementation advice, not wire
+    contract: tc sets `TCP_NOTSENT_LOWAT` = 8 KiB on TCP sockets, both ends, so a slow link
+    backs up into this queue rather than the kernel's, and both ends skip a voice frame while the
+    socket already holds more than a few KiB unsent: `TCP_INFO` notsent bytes on Linux, `SO_NWRITE`
+    on macOS, which ignores the low-water mark for writes.) A stream-voice session whose write (of
+    any frame) has been blocked for 10 s, the socket not draining between two 5 s checks, is
+    closed as `slow_consumer`: voice isn't counted in the 8 MiB cap (§9). These 8 frames are a second stage after the 64-datagram
+    relay queue of §14.3, which applies to stream receivers too.
+  - Client: a VOICE frame that would wait for the stream (another write in progress) is
+    dropped; at most 4 frames wait for the sender, none longer than 60 ms. Clients ignore
+    VOICE frames larger than 512 bytes or on a session where `voice_tcp` isn't in effect.
+  - Receivers' jitter buffers drop frames beyond their target + 80 ms instead of playing them
+    late (docs/VOICE.md "Jitter buffer").
+- VOICE frames count as frames received for liveness (§9); they are not REQs (no rate limit
+  but the datagram bucket, no RES).
+- Clients without `voice_tcp`, or talking to a server without it, behave as before: no voice on
+  TCP, `huddle.join` → `bad_request` "voice needs UDP". Old peers skip frame type 0x40 (§3).
 
 ## 15. Personal agents (cap `agent1`)
 
