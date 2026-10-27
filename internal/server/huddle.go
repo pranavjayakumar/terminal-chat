@@ -58,6 +58,9 @@ type huddles struct {
 	// client is PINGed every pingEvery and dropped from the huddle (not the
 	// connection) after deadAfter without any frame from it.
 	pingEvery, deadAfter time.Duration
+	// Stream voice's lateness bounds (voiceMaxAge, voiceStall); a test
+	// checking relay correctness rather than the drop policy lifts them.
+	maxAge, stall time.Duration
 }
 
 const (
@@ -67,7 +70,7 @@ const (
 
 func newHuddles() *huddles {
 	return &huddles{byChan: map[uint64]*huddle{}, bySess: map[*session]*participant{},
-		pingEvery: huddlePingEvery, deadAfter: huddleDeadAfter}
+		pingEvery: huddlePingEvery, deadAfter: huddleDeadAfter, maxAge: voiceMaxAge, stall: voiceStall}
 }
 
 // removeLocked ends p's participation and returns the huddle's channel.
@@ -563,7 +566,7 @@ func (sess *session) checkVoiceStuck(now time.Time) {
 // pushVoice queues a relayed frame for sess's writer; false = dropped.
 func (sess *session) pushVoice(it dgItem) bool {
 	now := time.Now()
-	if w := sess.writing.Load(); w != 0 && now.UnixNano()-w > int64(voiceStall) {
+	if w := sess.writing.Load(); w != 0 && now.UnixNano()-w > int64(sess.srv.hud.stall) {
 		return false
 	}
 	sess.mu.Lock()
@@ -604,7 +607,7 @@ func (sess *session) writeVoice(vq []voiceOut) bool {
 		hs.mu.RUnlock()
 		// The kernel's own backlog can't be dropped once written: skip
 		// voice while it is deep (macOS ignores TCP_NOTSENT_LOWAT for writes).
-		if !live || time.Since(v.at) > voiceMaxAge || transport.Backlogged(sess.conn) {
+		if !live || time.Since(v.at) > hs.maxAge || transport.Backlogged(sess.conn) {
 			hs.dropped.Add(1)
 			continue
 		}
