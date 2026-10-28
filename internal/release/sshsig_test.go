@@ -3,14 +3,19 @@ package release_test
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/ssh"
 
 	"github.com/skailama/tc/internal/release"
 	"github.com/skailama/tc/internal/release/releasetest"
@@ -171,4 +176,60 @@ func TestFetchPlaceholderKeyRefuses(t *testing.T) {
 func sha256hex(b []byte) string {
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
+}
+
+// skSigner is a FIDO "sk-ssh-ed25519@openssh.com" key in software, signing
+// the way a hardware token does (docs/DEPLOY.md recommends one for releases).
+type skSigner struct {
+	priv  ed25519.PrivateKey
+	pub   ssh.PublicKey
+	flags byte
+}
+
+const skApp = "ssh:"
+
+func newSKSigner(t *testing.T, flags byte) *skSigner {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := ssh.Marshal(struct {
+		Name, Key, App string
+	}{ssh.KeyAlgoSKED25519, string(pub), skApp})
+	pk, err := ssh.ParsePublicKey(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &skSigner{priv: priv, pub: pk, flags: flags}
+}
+
+func (s *skSigner) PublicKey() ssh.PublicKey { return s.pub }
+
+func (s *skSigner) Sign(_ io.Reader, data []byte) (*ssh.Signature, error) {
+	app := sha256.Sum256([]byte(skApp))
+	msg := sha256.Sum256(data)
+	const counter = 7
+	signed := append(append(app[:], s.flags, 0, 0, 0, counter), msg[:]...)
+	return &ssh.Signature{
+		Format: ssh.KeyAlgoSKED25519,
+		Blob:   ed25519.Sign(s.priv, signed),
+		Rest:   []byte{s.flags, 0, 0, 0, counter},
+	}, nil
+}
+
+func TestVerifySignatureHardwareKey(t *testing.T) {
+	key := newSKSigner(t, 0x01) // user present (touched)
+	signers := releasetest.AllowedSigners(key.PublicKey())
+	if !strings.Contains(signers, "sk-ssh-ed25519@openssh.com ") {
+		t.Fatalf("signers %q", signers)
+	}
+	if err := release.VerifySignature(signers, sums, releasetest.Sign(t, key, release.SigNamespace, sums)); err != nil {
+		t.Fatalf("sk-ssh-ed25519 signature rejected: %v", err)
+	}
+	// Signed without a touch: refused (no no-touch-required option).
+	untouched := newSKSigner(t, 0)
+	if err := release.VerifySignature(releasetest.AllowedSigners(untouched.PublicKey()), sums,
+		releasetest.Sign(t, untouched, release.SigNamespace, sums)); err == nil {
+		t.Fatal("sk signature without user presence accepted")
+	}
 }

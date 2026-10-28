@@ -129,6 +129,25 @@ func TestReplace(t *testing.T) {
 	}
 }
 
+// A group/world-writable old binary doesn't pass those bits on.
+func TestReplaceDropsGroupWorldWrite(t *testing.T) {
+	for _, c := range []struct{ old, want os.FileMode }{
+		{0o777, 0o755}, {0o775, 0o755}, {0o757, 0o755}, {0o700, 0o711}, {0o750, 0o751}, {0o644, 0o755},
+	} {
+		exe := filepath.Join(t.TempDir(), "tc")
+		if err := os.WriteFile(exe, []byte("old"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		os.Chmod(exe, c.old)
+		if err := release.Replace(exe, []byte("new")); err != nil {
+			t.Fatal(err)
+		}
+		if st, _ := os.Stat(exe); st.Mode().Perm() != c.want {
+			t.Errorf("old %o: new mode %o, want %o", c.old, st.Mode().Perm(), c.want)
+		}
+	}
+}
+
 func TestReplaceUnwritableDir(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		t.Skip("root can write anywhere")
