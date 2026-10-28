@@ -548,7 +548,21 @@ and one status row. Code: `internal/tui/agent.go` (icons, state), `agentlive.go`
   `leave_thread` drops it); when it ends (checked on every update and each minute) it listens again and
   gets one turn if it was told what to do then or someone wrote meanwhile. Quiets are kept in
   `state/queue.json`, so a restart keeps them; one that ended more than 15 min (or `engage_minutes`) before
-  the agent came back just ends.
+  the agent came back just ends. Follow-up runs count toward the asker's asks per person (past it they
+  stay silent), and only an @mention restarts the `MaxFollowUps` (20) count of a conversation.
+- **Others' asks** (harness, `internal/agent`; nothing in tc draws them). An ask by anyone but the owner:
+  runs in Talk from `<agent home>/guest` (only a link to the skills; files in the working directory are
+  readable without a prompt) and, in any mode, with deny rules for `memory/`, `state/`, `dream/` and
+  `me.md`: its memory is `recall`, which leaves private notes out. It never resumes the owner's engine
+  session of the same thread or reads its handoff (sessions, handoffs and frozen snapshots are kept per
+  owner / others). It reads a channel on the Reads list only when that channel is public and not encrypted
+  or the asker is in it; `search` without a channel searches each readable one. Its posts, reminders and
+  `ask_agent` questions may not @here / @channel / @all / @everyone or @ a group, and its reply has those
+  @ dropped. A ♾️ applies to the owner's own asks only (on a stranger's card it isn't kept) and, for a tool
+  call, to that exact call. Others share `guest_cap_usd` of the daily cap (config only; 0 = half), so they
+  can't spend the owner's headroom. A dream may lower a note's trust or make it private, never the
+  reverse, and may not copy private text into a public note or the index, or lower-trust text into a
+  higher-trust note.
 
 ## Activity view
 

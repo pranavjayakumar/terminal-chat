@@ -61,6 +61,8 @@ Merge what the daily logs taught you into notes:
   source: who said it (handles), and "Source: daily/YYYY-MM-DD.md" lines in the body for each fact
   trust: owner | other | web   (the lowest trust of what went into it)
   private: true                (only if any of it was marked private)
+  Never raise a note's trust or drop its private line, and never copy private lines into a note
+  without private: true: tc refuses the whole tidy-up if you do.
   modified: %sT00:00:00Z
   ---
 - Keep each note under 2 KB. Merge or drop stale things to make room.
