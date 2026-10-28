@@ -108,15 +108,19 @@ the local cache is therefore sensitive — rely on disk encryption, documented.
   nothing else (`ErrRecoveryChanged` if the server's chain or ours moved since). Accepting is allowed
   only (PROTOCOL §13.3 "Accepting an older chain") when the server serves, for some epoch A below our
   head, the very bundle we verified (a hash chain, so the whole chain up to A is ours), and above A
-  either nothing (**strict prefix**: we rewind to A and rotate at once to a fresh key for the current
-  members) or a branch that verifies in full on top of A and whose first rotator our newest verified
-  epoch still includes (another member's recovery: we rewind to A and follow it). Everything else is
-  refused: a forged or unverifiable branch, a branch started by someone the discarded epochs removed,
-  a chain sharing no epoch with ours, a chain still holding our head (the alarm has another cause),
-  two bundles for an epoch, or a device whose newest epoch excludes its user. `trust.RewindChain` is the
-  only way a pinned head moves down: in one transaction it checks the head and target are what was
-  shown, needs a channel alarm, drops the epochs above the target and moves the alarm to the audit log
-  as `rewind_chain` (with both hashes and who gets the key back). Only `verify.go`/`recover.go` call it
+  either nothing (**strict prefix**: we first get the server to commit our own fresh epoch A+1 on A
+  for exactly the previewed members, then pin it) or a branch that verifies in full on top of A and
+  whose first rotator our newest verified epoch still includes (another member's recovery: we pin
+  exactly the previewed epochs). The head never rests on A, whose roster may include members the
+  discarded epochs removed, so nothing the server serves between preview and pin can slip in.
+  Everything else is refused: an alarm that isn't a rollback or fork, a forged or unverifiable
+  branch, a branch started by someone the discarded epochs removed, a chain sharing no epoch with ours
+  (searched at most 1024 epochs down), a chain still holding our head, two bundles for an epoch, or a
+  device whose newest epoch excludes its user. `trust.RewindChain` is the only way a pinned head moves
+  down: in one transaction it checks the head and target are what was shown, needs a channel alarm,
+  replaces the epochs above the target with the given ones (at least one) and moves the alarm to the
+  audit log as `rewind_chain` (with the hashes and who gets a key back). The preview's "readded" list
+  covers every roster of the accepted epochs, not only the newest. Only `verify.go`/`recover.go` call it
   (a test checks). Messages judged invalid against a discarded epoch are judged again (their enc names
   the bundle, so those sealed under a discarded epoch stay invalid). **What this can't tell apart:** a
   server acting alone can drop epochs and present the verified chain cut short; a user who confirms

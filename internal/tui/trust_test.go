@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -561,7 +562,7 @@ func TestAlarmRecover(t *testing.T) {
 		}
 		v = ansi.Strip(checkView(t, m, "preview"))
 		if sz[1] >= 60 {
-			for _, want := range []string{"ends at epoch 2", "discards epoch 3", "@carol wasn't in epoch 3", "To accept: /alarm-recover @bob"} {
+			for _, want := range []string{"stops at epoch 2", "Discards epoch 3", "@carol wasn't in epoch 3", "To accept: /alarm-recover @bob"} {
 				if !strings.Contains(v, want) {
 					t.Errorf("%v preview misses %q:\n%s", sz, want, v)
 				}
@@ -594,14 +595,49 @@ func TestAlarmRecover(t *testing.T) {
 	f.tr.planErr = client.ErrNotRecoverable
 	run(m, m.applyUpdate(client.Update{Channels: true}))
 	run(m, m.openChannel(20))
+	// A good preview first: a later refusal must drop it.
+	f.tr.planErr = nil
+	f.tr.plan = client.ChainRecovery{Head: 3, Ancestor: 2, Top: 3, Fork: true, Rotator: 1, Roster: []uint64{1, 2}}
 	runInput(t, m, "/alarm-recover")
-	if !m.noticeErr || !strings.Contains(m.notice, "can't accept") {
-		t.Fatalf("refusal notice %q", m.notice)
+	if m.mode != modeList || !strings.Contains(plain(m), "different epoch 3,") {
+		t.Fatalf("fork preview:\n%s", plain(m))
 	}
-	m.clearInput()
+	press(m, "esc")
+	f.tr.planErr = fmt.Errorf("%w: the server's epoch 3 doesn't verify", client.ErrNotRecoverable)
+	runInput(t, m, "/alarm-recover")
+	if v := ansi.Strip(checkView(t, m, "refusal")); m.mode != modeList || !strings.Contains(v, "can't accept") ||
+		!strings.Contains(v, "epoch 3 doesn't") {
+		t.Fatalf("refusal not shown:\n%s", v)
+	}
+	press(m, "esc")
 	runInput(t, m, "/alarm-recover @bob")
 	if len(f.tr.recovered) != 0 || !strings.Contains(m.notice, "preview first") {
 		t.Fatalf("refused plan confirmed: %v %q", f.tr.recovered, m.notice)
+	}
+
+	// Not a chain alarm: nothing to recover, no request.
+	m, f = newTestModelFake(t, 80, 24)
+	trustFake(f)
+	f.e2eSt[20] = client.E2EStatus{State: client.E2EAlarm, Detail: "epoch 2: bundle signature doesn't verify"}
+	f.tr.alarms = map[uint64]client.AlarmInfo{20: {Detail: "epoch 2: bundle signature doesn't verify"}}
+	run(m, m.applyUpdate(client.Update{Channels: true}))
+	run(m, m.openChannel(20))
+	runInput(t, m, "/alarm-recover")
+	if !m.noticeErr || !strings.Contains(m.notice, "only for a rollback or fork") || m.mode != modeNormal {
+		t.Fatalf("non-chain alarm: %q", m.notice)
+	}
+
+	// A preview arriving after switching channels doesn't take the screen.
+	m, f = newTestModelFake(t, 80, 24)
+	trustFake(f)
+	f.e2eSt[20] = client.E2EStatus{State: client.E2EAlarm, Detail: detail}
+	f.tr.alarms = map[uint64]client.AlarmInfo{20: {Detail: detail, Chain: true}}
+	run(m, m.applyUpdate(client.Update{Channels: true}))
+	run(m, m.openChannel(20))
+	m.active = 0
+	m.gotRecover(recoverMsg{ch: 20, plan: client.ChainRecovery{Chan: 20, Head: 3, Ancestor: 2, Top: 2}})
+	if m.mode != modeNormal || len(m.recoverPl) != 0 || !strings.Contains(m.notice, "ready") {
+		t.Fatalf("late preview: mode %v kept %v notice %q", m.mode, m.recoverPl, m.notice)
 	}
 }
 

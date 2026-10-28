@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -27,15 +28,25 @@ import (
 // this device verified, cut short (a strict prefix), or that prefix
 // extended by valid epochs whose first rotator this device still counts as
 // a member (another member's recovery); anything else stays an alarm.
+//
+// The pinned head never rests on the shared epoch: its roster may hold
+// members the discarded epochs removed, who could then rotate or post as
+// members. The rewind commits, in one trust transaction, together with
+// exactly the epochs the user was shown (fork) or with this device's own
+// fresh epoch for exactly the members shown, already accepted by the server
+// (prefix).
 
 var (
-	// ErrRecoveryChanged means the server's chain (or this device's) isn't
-	// what the confirmed preview showed any more.
+	// ErrRecoveryChanged means the server's chain (or this device's, or the
+	// members) isn't what the confirmed preview showed any more.
 	ErrRecoveryChanged = errors.New("the key chain changed since it was shown — preview again (/alarm-recover)")
 	// ErrNotRecoverable means the server's chain can't be accepted: it isn't
 	// a restore of the chain this device verified.
 	ErrNotRecoverable = errors.New("can't accept the server's chain")
 )
+
+// maxRewind bounds how far below the head the shared epoch is looked for.
+const maxRewind = 1024
 
 // ChainRecovery is what accepting the server's key chain for an encrypted
 // channel in alarm would do. RecoverChain does it only if a fresh look
@@ -47,18 +58,20 @@ type ChainRecovery struct {
 	Top      uint32 // the server's newest epoch
 	// Fork: the server has epochs Ancestor+1..Top that this device's chain
 	// doesn't (a member already recovered and rotated); Rotator made the
-	// first of them, and accepting follows them. Otherwise the server's
-	// chain is a strict prefix (Top == Ancestor) and this device starts a
-	// fresh key right after rewinding.
+	// first of them, and accepting follows exactly them. Otherwise the
+	// server's chain is a strict prefix (Top == Ancestor) and this device
+	// commits a fresh epoch Ancestor+1 for Roster.
 	Fork    bool
 	Rotator uint64
 	// Roster gets the key afterwards: the server's newest epoch's (fork)
-	// or the members the fresh key goes to (prefix). Readded are in it but
-	// weren't in this device's newest verified epoch (e.g. removed after
-	// the backup was taken); Dropped the reverse.
+	// or the members the fresh key goes to (prefix). Readded held a key of
+	// an accepted epoch (any of them, for a fork) but weren't in this
+	// device's newest verified epoch (e.g. removed after the backup was
+	// taken); Dropped were in it and aren't in Roster.
 	Roster, Readded, Dropped []uint64
 
 	headHash, ancHash, topHash [32]byte
+	branch                     []trust.Epoch // fork: the verified epochs Ancestor+1..Top
 }
 
 // Discarded is how many epochs this device verified that accepting drops.
@@ -75,9 +88,9 @@ func refuse(format string, a ...any) error {
 	return fmt.Errorf("%w: %s", ErrNotRecoverable, fmt.Sprintf(format, a...))
 }
 
-// ChainRecoveryPlan looks at the server's key chain for ch, in alarm, and
-// says what accepting it would do, or (ErrNotRecoverable) why it can't be
-// accepted. It changes nothing. Online only.
+// ChainRecoveryPlan looks at the server's key chain for ch, in a rollback
+// or fork alarm, and says what accepting it would do, or (ErrNotRecoverable)
+// why it can't be accepted. It changes nothing. Online only.
 func (c *Client) ChainRecoveryPlan(ctx context.Context, ch uint64) (ChainRecovery, error) {
 	s, sid, err := c.e2eSession(ctx)
 	if err != nil {
@@ -89,100 +102,172 @@ func (c *Client) ChainRecoveryPlan(ctx context.Context, ch uint64) (ChainRecover
 }
 
 // RecoverChain accepts the server's key chain for ch as want (from
-// ChainRecoveryPlan, shown to the user) describes it: it rewinds the pinned
-// head to want.Ancestor (trust.RewindChain, which moves the alarm to the
-// audit log), then verifies the server's epochs above it (fork) or starts
-// a fresh epoch for the current members (prefix). If the chain isn't
-// exactly what want shows any more it does nothing (ErrRecoveryChanged).
+// ChainRecoveryPlan, shown to the user) describes it. Fork: the pinned head
+// moves to exactly the previewed epochs. Prefix: this device first commits
+// a fresh epoch on the shared one for exactly the previewed members (the
+// server refuses it if they changed), then pins it. Either way the head is
+// rewound and moved on in one transaction (trust.RewindChain, which moves
+// the alarm to the audit log). If anything isn't what want shows any more
+// it changes nothing (ErrRecoveryChanged).
 func (c *Client) RecoverChain(ctx context.Context, want ChainRecovery) error {
 	s, sid, err := c.e2eSession(ctx)
 	if err != nil {
 		return err
 	}
-	got, err := c.rewindTo(ctx, s, sid, want)
-	if err != nil || got.Fork {
-		return err
-	}
-	// The server caps rotations when nothing changed (§13.3): seconds, so
-	// wait them out rather than leave the old key in use.
 	for {
-		err = c.RotateKey(ctx, want.Chan)
+		err := c.recoverOnce(ctx, s, sid, want)
+		// The server caps rotations when nothing changed (§13.3): seconds,
+		// so wait them out (not holding e2eMu).
 		var pe *proto.Error
 		if !errors.As(err, &pe) || pe.Code != proto.ErrRateLimited {
-			break
+			return err
 		}
 		select {
 		case <-ctx.Done():
+			return err
 		case <-time.After(500 * time.Millisecond):
-			continue
 		}
-		break
 	}
-	if err != nil {
-		return fmt.Errorf("rewound to epoch %d (the channel works again on its key), but starting a fresh key failed: %w", got.Ancestor, err)
-	}
-	return nil
 }
 
-// rewindTo is RecoverChain up to (not including) the fresh key.
-func (c *Client) rewindTo(ctx context.Context, s *session, sid e2ecrypto.ServerID, want ChainRecovery) (ChainRecovery, error) {
+func (c *Client) recoverOnce(ctx context.Context, s *session, sid e2ecrypto.ServerID, want ChainRecovery) error {
 	c.e2eMu.Lock()
 	defer c.e2eMu.Unlock()
 	got, err := c.chainRecovery(ctx, s, sid, want.Chan)
 	if err != nil {
-		return got, err
+		return err
 	}
 	if !got.same(want) {
-		return got, ErrRecoveryChanged
+		return ErrRecoveryChanged
+	}
+	then := got.branch
+	if !got.Fork {
+		e, err := c.commitFresh(ctx, s, sid, got)
+		var pe *proto.Error
+		if errors.As(err, &pe) && pe.Code == proto.ErrStaleEpoch {
+			return ErrRecoveryChanged // the members or the server's chain moved
+		}
+		if err != nil {
+			return err
+		}
+		then = []trust.Epoch{e}
 	}
 	detail := fmt.Sprintf("accepted the server's chain: epochs %d–%d (head %x) discarded, back to epoch %d (%x)",
 		got.Ancestor+1, got.Head, got.headHash[:8], got.Ancestor, got.ancHash[:8])
+	last := then[len(then)-1]
 	if got.Fork {
 		detail += fmt.Sprintf("; following the server's epochs %d–%d (top %x, first by user %d)",
-			got.Ancestor+1, got.Top, got.topHash[:8], got.Rotator)
+			got.Ancestor+1, got.Top, last.Hash[:8], got.Rotator)
+	} else {
+		detail += fmt.Sprintf("; fresh epoch %d (%x) by this device", last.Epoch, last.Hash[:8])
 	}
 	if len(got.Readded) > 0 {
 		detail += fmt.Sprintf("; readded users %v", got.Readded)
 	}
 	from := trust.Head{Epoch: got.Head, Hash: got.headHash}
 	to := trust.Head{Epoch: got.Ancestor, Hash: got.ancHash}
-	if err := c.trust.RewindChain(sid, want.Chan, from, to, c.Me().ID, detail); err != nil {
+	if err := c.trust.RewindChain(sid, want.Chan, from, to, then, c.Me().ID, detail); err != nil {
 		if errors.Is(err, trust.ErrChainMoved) || errors.Is(err, trust.ErrNoAlarm) {
-			return got, ErrRecoveryChanged
+			return ErrRecoveryChanged
 		}
-		return got, err
+		return err
 	}
-	// Cached bundles above the new head are either the discarded epochs or
-	// unverified ones: fetch the server's afresh.
+	if !got.Fork {
+		_ = c.trust.PayRotation(sid, want.Chan, last.Boxed)
+	}
+	// Cached bundles above the shared epoch are the discarded epochs or
+	// ones now verified: sync fetches whatever comes next afresh.
 	c.db.Exec(`DELETE FROM epochs WHERE chan = ? AND epoch > ?`, want.Chan, got.Ancestor)
-	// Messages sealed under the epochs now accepted were judged against
-	// the discarded ones (another bundle of their epoch: invalid). Judge
-	// them again; the enc names its bundle, so ones sealed under a
-	// discarded epoch stay invalid.
+	c.db.Exec(`UPDATE chans SET epoch = ? WHERE id = ?`, last.Epoch, want.Chan)
+	// Messages sealed under the accepted epochs were judged against the
+	// discarded ones (another bundle of their epoch: invalid). Judge them
+	// again; the enc names its bundle, so ones sealed under a discarded
+	// epoch stay invalid.
 	above := binary.BigEndian.AppendUint32(nil, got.Ancestor)
 	c.db.Exec(`UPDATE msgs SET sec = ?, body = '' WHERE chan = ? AND sec = ? AND deleted = 0 AND enc IS NOT NULL
 		AND substr(enc, 2, 4) > ?`, SecWaiting, want.Chan, SecInvalid, above)
-	c.db.Exec(`UPDATE chans SET epoch = ? WHERE id = ? AND epoch > ?`, got.Top, want.Chan, got.Top)
 	c.mu.Lock()
 	delete(c.probed, want.Chan)
 	c.mu.Unlock()
-	defer func() {
-		c.kickE2E()
-		c.post(Update{Channels: true})
-	}()
-	c.fetchAhead(ctx, s, sid, want.Chan)
-	if cv, ok, err := getChan(c.db, want.Chan); err == nil && ok {
-		c.syncChannel(ctx, s, sid, cv)
+	c.kickE2E()
+	c.post(Update{Channels: true})
+	return nil
+}
+
+// commitFresh builds epoch r.Ancestor+1 on the shared epoch for r.Roster,
+// sealed to their verified devices, and has the server commit it. The
+// trust store isn't touched: the caller pins it with the rewind.
+func (c *Client) commitFresh(ctx context.Context, s *session, sid e2ecrypto.ServerID, r ChainRecovery) (trust.Epoch, error) {
+	me := s.myDevice()
+	if me == nil {
+		return trust.Epoch{}, errors.New("this device isn't registered yet")
 	}
-	if d, ok, _ := c.trust.Alarm(sid, want.Chan); ok {
-		return got, fmt.Errorf("rewound to epoch %d, but the server's chain then raised an alarm: %s", got.Ancestor, sanitize.Line(d))
+	anc, ok, err := c.trust.Epoch(sid, r.Chan, r.Ancestor)
+	if err != nil || !ok {
+		return trust.Epoch{}, fmt.Errorf("epoch %d isn't recorded: %v", r.Ancestor, err)
 	}
-	if got.Fork {
-		if h, _, _ := c.trust.ChainHead(sid, want.Chan); h.Epoch < got.Top {
-			return got, fmt.Errorf("rewound to epoch %d; the server's epochs up to %d aren't verified yet (they are retried)", got.Ancestor, got.Top)
+	if anc.Key == nil {
+		return trust.Epoch{}, refuse("this device has no key for epoch %d, so it can't start the next one", r.Ancestor)
+	}
+	c.verifyDevices(sid, s.sshPub, c.Me().ID)
+	p := identity.EpochParams{ServerID: sid, Chan: r.Chan, Epoch: r.Ancestor + 1, Time: time.Now().UnixMilli(),
+		Prev: anc.Hash, PrevK: anc.Key, Roster: slices.Clone(r.Roster)}
+	var unverified UnverifiedMembersError
+	for _, u := range p.Roster {
+		devs, err := c.trust.Devices(sid, u)
+		if err != nil {
+			return trust.Epoch{}, err
+		}
+		n := 0
+		for _, d := range devs {
+			if !d.Revoked {
+				p.Recipients = append(p.Recipients, identity.Recipient{Dev: d.ID, X25519: d.X25519})
+				n++
+			}
+		}
+		if n == 0 && c.hasUnverifiedDevice(sid, u) {
+			unverified.Users = append(unverified.Users, u)
+			unverified.Names = append(unverified.Names, "@"+sanitize.Line(c.User(u).Name))
 		}
 	}
-	return got, nil
+	if len(unverified.Users) > 0 {
+		return trust.Epoch{}, &unverified
+	}
+	k, err := e2ecrypto.NewEpochKey(rand.Reader)
+	if err != nil {
+		return trust.Epoch{}, err
+	}
+	p.K = k
+	b, err := identity.NewEpochBundle(rand.Reader, me, p)
+	if err != nil {
+		return trust.Epoch{}, fmt.Errorf("building epoch bundle: %w", err)
+	}
+	raw, err := s.call(ctx, proto.OpKeyRotate, proto.KeyRotateArgs{Chan: r.Chan, Bundle: proto.Signed(b)}, nil)
+	if err != nil {
+		return trust.Epoch{}, err
+	}
+	var res struct {
+		Seq uint64 `msgpack:"seq"`
+	}
+	_ = proto.Unmarshal(raw, &res)
+	eb, err := identity.PeekEpochBundle(b)
+	if err != nil {
+		return trust.Epoch{}, err
+	}
+	return epochOf(eb, b, res.Seq, &k), nil
+}
+
+// epochOf is what the trust store records for a verified bundle.
+func epochOf(eb identity.EpochBundle, b identity.Signed, seq uint64, k *e2ecrypto.Key) trust.Epoch {
+	e := trust.Epoch{Epoch: eb.Epoch, Hash: e2ecrypto.ChainHash(b.B), KC: eb.KC, Roster: eb.Roster, Key: k, Seq: seq}
+	if eb.Back != nil {
+		e.Back = eb.Back[:]
+	}
+	e.Boxed = make([]e2ecrypto.DevID, 0, len(eb.Boxes))
+	for _, bx := range eb.Boxes {
+		e.Boxed = append(e.Boxed, bx.Dev)
+	}
+	return e
 }
 
 // fetchServerBundles asks the server for ch's bundles from..to without
@@ -234,10 +319,14 @@ func (c *Client) chainRecovery(ctx context.Context, s *session, sid e2ecrypto.Se
 	if !slices.Contains(ch.Members, me) {
 		return r, ErrNotMember
 	}
-	if _, ok, err := c.trust.Alarm(sid, chID); err != nil {
+	if d, ok, err := c.trust.Alarm(sid, chID); err != nil {
 		return r, err
 	} else if !ok {
 		return r, ErrNoAlarm
+	} else if !chainAlarm(d) {
+		// Hard evidence (a forged bundle, a key sealed to a non-member)
+		// isn't what a restore leaves: never let it be accepted away.
+		return r, refuse("this alarm isn't a rollback or fork (/alarm explains it)")
 	}
 	head, ok, err := c.trust.ChainHead(sid, chID)
 	if err != nil {
@@ -260,9 +349,13 @@ func (c *Client) chainRecovery(ctx context.Context, s *session, sid e2ecrypto.Se
 	// matching chains below (each bundle commits to the previous).
 	server := map[uint32][]cachedBundle{}
 	const window = 32 // bundles ≤ 16 KiB: one answer never hits the size cap
-	for hi := head.Epoch + maxEpochAhead; hi >= 1 && r.Ancestor == 0; {
-		lo := uint32(1)
-		if hi > window {
+	floor := uint32(1)
+	if head.Epoch > maxRewind {
+		floor = head.Epoch - maxRewind
+	}
+	for hi := head.Epoch + maxEpochAhead; hi >= floor && r.Ancestor == 0; {
+		lo := floor
+		if hi >= floor+window {
 			lo = hi - window + 1
 		}
 		if err := c.fetchServerBundles(ctx, s, sid, chID, lo, hi, server); err != nil {
@@ -286,11 +379,11 @@ func (c *Client) chainRecovery(ctx context.Context, s *session, sid e2ecrypto.Se
 					break
 				}
 			}
-			if e == 1 {
+			if e == lo {
 				break
 			}
 		}
-		if lo == 1 {
+		if lo == floor {
 			break
 		}
 		hi = lo - 1
@@ -309,10 +402,15 @@ func (c *Client) chainRecovery(ctx context.Context, s *session, sid e2ecrypto.Se
 		return r, fmt.Errorf("epoch %d isn't recorded: %v", r.Ancestor, err)
 	}
 
+	keyHolders := map[uint64]bool{} // in a roster of an epoch accepting pins
 	if r.Top == r.Ancestor {
-		// A strict prefix: the fresh key goes to the members rosterNow
-		// will pick once the head is the ancestor.
+		// A strict prefix: the fresh epoch goes to the current members the
+		// shared epoch includes (what rosterNow picks; the server refuses
+		// a roster other than its members).
 		r.Roster = slices.DeleteFunc(c.liveMembers(ch), func(u uint64) bool { return !slices.Contains(anc.Roster, u) })
+		if !slices.Contains(r.Roster, me) {
+			return r, refuse("you aren't in epoch %d's roster on the server", r.Ancestor)
+		}
 	} else {
 		// The server's chain goes on past the ancestor with other epochs:
 		// they must verify exactly as if this device had never seen its
@@ -341,16 +439,24 @@ func (c *Client) chainRecovery(ctx context.Context, s *session, sid e2ecrypto.Se
 					return r, refuse("the server's epoch %d was made by someone epoch %d (the newest this device verified) doesn't include", e, head.Epoch)
 				}
 			}
-			prev = trust.Epoch{Epoch: e, Hash: e2ecrypto.ChainHash(bs[0].b.B), Roster: eb.Roster}
+			for _, u := range eb.Roster {
+				keyHolders[u] = true
+			}
+			prev = epochOf(eb, bs[0].b, bs[0].seq, openBox(sid, eb, s.myDevice()))
+			r.branch = append(r.branch, prev)
 		}
 		r.Roster = slices.Clone(prev.Roster)
 	}
 	slices.Sort(r.Roster)
 	for _, u := range r.Roster {
+		keyHolders[u] = true
+	}
+	for u := range keyHolders {
 		if !slices.Contains(headEp.Roster, u) {
 			r.Readded = append(r.Readded, u)
 		}
 	}
+	slices.Sort(r.Readded)
 	for _, u := range headEp.Roster {
 		if !slices.Contains(r.Roster, u) {
 			r.Dropped = append(r.Dropped, u)

@@ -267,7 +267,9 @@ func TestRestoreRecoverRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cplan.Fork || cplan.Ancestor != 3 || cplan.Top != 5 || len(cplan.Readded) != 0 ||
+	// bob held epoch 4's key on this branch, though he's out again at 5:
+	// the preview still names him.
+	if !cplan.Fork || cplan.Ancestor != 3 || cplan.Top != 5 || !slices.Equal(cplan.Readded, []uint64{bob.Me().ID}) ||
 		!slices.Equal(cplan.Roster, []uint64{alice.Me().ID, carol.Me().ID}) {
 		t.Fatalf("carol's second plan %+v", cplan)
 	}
@@ -298,7 +300,18 @@ func TestRestoreRefusesForkByRemovedMember(t *testing.T) {
 	ctx := ctxRestore(t)
 	env.afterBackup(t)
 	eventually(t, "carol's alarm", inAlarm(carol, ch))
+	eventually(t, "alice's alarm", inAlarm(alice, ch))
+	// alice previews the strict prefix; bob rotates before she confirms.
+	// What she confirmed is gone: nothing is applied (her device never
+	// rests on epoch 3, where bob counts as a member).
+	plan, err := alice.ChainRecoveryPlan(ctx, ch)
+	if err != nil || plan.Fork {
+		t.Fatalf("alice's plan %+v %v", plan, err)
+	}
 	rotateRetry(t, ctx, bob, ch)
+	if err := alice.RecoverChain(ctx, plan); !errors.Is(err, client.ErrNotRecoverable) {
+		t.Fatalf("recovering after bob's rotation: %v", err)
+	}
 	eventually(t, "bob at his epoch 4", bob.e2eAt(ch, 4))
 	for _, u := range []*user{alice, carol} {
 		before, _, _ := u.Trust().ChainHead(sid, ch)

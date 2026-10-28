@@ -961,12 +961,17 @@ acceptance, which it MUST refuse unless, fetching the server's bundles with
   epochs removed can author the branch); and
 - the user is in the roster of H.
 
-The user sees, before confirming, which epochs are discarded and who will
-hold the key afterwards that H's roster didn't include, and the client
-re-checks that the server shows exactly that when the user confirms. It then
-discards its epochs above A, makes A the head, and verifies the server's
-epochs above A as usual (branch) or rotates at once (strict prefix), so the
-channel moves to a fresh key with the current members.
+The alarm must be a rollback or fork (other alarms are evidence, not a
+restore), and A at most 1024 epochs below H. The user sees, before
+confirming, which epochs are discarded and everyone who holds a key of an
+accepted epoch that H's roster didn't include, and the client re-checks that
+the server shows exactly that when the user confirms. The head never rests
+on A, whose roster may include members the discarded epochs removed: for a
+branch the client pins exactly the previewed epochs A+1…top together with
+the rewind; for a strict prefix it first commits its own `key.rotate` for
+epoch A+1 on A with exactly the previewed roster (the server refuses it
+with `stale_epoch` if the members changed) and pins that epoch together with
+the rewind. Both are one trust-store transaction.
 
 The chain link is about the signed bundle, not its keys: a bundle that
 verifies and whose `prev` is the pinned head is accepted and becomes the
