@@ -78,7 +78,7 @@ install -d -o tc -g tc -m 700 /var/lib/tc
 # Save the address teammates will use (it goes into every invite):
 sudo -u tc tc server --data /var/lib/tc --public SERVER_IP:7443 & sleep 2; kill %1
 systemctl daemon-reload && systemctl enable --now tc
-journalctl -u tc -n 30                  # shows your admin invite (first run only)
+cat /var/lib/tc/first-invite.txt        # your admin invite (first run; 0600, never logged)
 ```
 
 Run the admin invite's one-liner (or `tc join '<code>'`) on your laptop.
