@@ -100,6 +100,32 @@ the local cache is therefore sensitive — rely on disk encryption, documented.
   raise time) to the `trust_audit` table with who cleared it and when — never a silent delete. Nothing
   in the sync code calls them (a test checks). Computed alarms (unconfirmed member) can't be cleared.
   Clearing the server-wide alarm says so ("server-wide — clears the alarm for all encrypted channels").
+- **Server restored from a backup** (issue #84). A restore loses every epoch committed after the
+  backup: each device that verified one is in a rollback alarm that `/alarm-clear` can't end (the next
+  pass raises it again), and an honest restore looks exactly like a server hiding a membership change.
+  `/alarm-recover` (`Client.ChainRecoveryPlan`) previews accepting the server's chain and changes
+  nothing; `/alarm-recover #name` (`Client.RecoverChain`) accepts exactly the previewed state and
+  nothing else (`ErrRecoveryChanged` if the server's chain or ours moved since). Accepting is allowed
+  only (PROTOCOL §13.3 "Accepting an older chain") when the server serves, for some epoch A below our
+  head, the very bundle we verified (a hash chain, so the whole chain up to A is ours), and above A
+  either nothing (**strict prefix**: we rewind to A and rotate at once to a fresh key for the current
+  members) or a branch that verifies in full on top of A and whose first rotator our newest verified
+  epoch still includes (another member's recovery: we rewind to A and follow it). Everything else is
+  refused: a forged or unverifiable branch, a branch started by someone the discarded epochs removed,
+  a chain sharing no epoch with ours, a chain still holding our head (the alarm has another cause),
+  two bundles for an epoch, or a device whose newest epoch excludes its user. `trust.RewindChain` is the
+  only way a pinned head moves down: in one transaction it checks the head and target are what was
+  shown, needs a channel alarm, drops the epochs above the target and moves the alarm to the audit log
+  as `rewind_chain` (with both hashes and who gets the key back). Only `verify.go`/`recover.go` call it
+  (a test checks). Messages judged invalid against a discarded epoch are judged again (their enc names
+  the bundle, so those sealed under a discarded epoch stay invalid). **What this can't tell apart:** a
+  server acting alone can drop epochs and present the verified chain cut short; a user who confirms
+  then undoes what those epochs did — most importantly a removal: the removed member is a member again
+  on the restored server and gets the fresh key. The preview names each such user ("⚠ @bob wasn't in
+  epoch 4 … gets the key again") and says to accept only after a known restore; `/remove` afterwards
+  re-applies the removal. A removed member colluding with the server can't author the branch others
+  follow (the first-rotator rule), and a server can't make anyone accept anything without a typed
+  confirmation after the preview.
 
 ## Rollout
 

@@ -172,6 +172,7 @@ type Model struct {
 	keyChg     map[uint64][]uint64 // e2e channel → members with an unacknowledged key change
 	hinted     map[uint64]bool     // channels that showed the "?" hint this run
 	verify     verifyState
+	recoverPl  map[uint64]client.ChainRecovery // e2e channel → the /alarm-recover preview shown (what confirming accepts)
 	devs       devicesState
 	dis        disableState
 	noticeDim  bool   // the notice is a quiet hint
@@ -1028,6 +1029,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.gotPanes(msg)
 	case verifyGHMsg:
 		m.gotVerifyGH(msg)
+		return m, nil
+	case recoverMsg:
+		m.gotRecover(msg)
 		return m, nil
 	case devicesMsg:
 		return m, m.gotDevices(msg)

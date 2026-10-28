@@ -33,6 +33,7 @@ var commandTable = []cmdSpec{
 	{name: "disable", args: "@user", desc: "admin: lock an account out for good (asks)", admin: true},
 	{name: "alarm", desc: "why this channel's encryption is in alarm"},
 	{name: "alarm-clear", args: "#name", desc: "clear it (type the name to confirm; audited)"},
+	{name: "alarm-recover", args: "[#name]", desc: "after a server restore: preview, then accept its older key chain (audited)"},
 	{name: "topic", args: "text", desc: "set the topic (--clear removes it; none: show it)"},
 	{name: "name", args: "Display Name", desc: "set your display name (--clear removes it; none: show it)"},
 	{name: "dm", args: "@a @b", desc: "direct message (@me: your notes, where reminders land)"},

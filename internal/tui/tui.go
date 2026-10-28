@@ -106,6 +106,10 @@ type Backend interface {
 	ConfirmGitHub(res client.GitHubCheck) error
 	Alarm(ch uint64) (client.AlarmInfo, bool)
 	ClearAlarm(ch uint64) error
+	// ChainRecoveryPlan previews, and RecoverChain does, accepting the
+	// server's older key chain after a restore (online).
+	ChainRecoveryPlan(ctx context.Context, ch uint64) (client.ChainRecovery, error)
+	RecoverChain(ctx context.Context, plan client.ChainRecovery) error
 	// Devices (devices.go): local list, refresh and revoke.
 	Devices(user uint64) []client.DeviceInfo
 	FindDevice(user uint64, prefix string) (client.DeviceInfo, error)

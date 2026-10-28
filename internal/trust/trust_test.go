@@ -1449,3 +1449,77 @@ func TestOweRotation(t *testing.T) {
 	}
 	check(sidA, 7, false)
 }
+
+// RewindChain is the only way down the chain: it needs an alarm, the exact
+// head and target the user was shown, and a target below the head; it
+// drops the epochs above the target, and moves the alarm to the audit log.
+func TestRewindChain(t *testing.T) {
+	s, home := newStore(t)
+	const ch = 9
+	var heads []Head
+	for e := uint32(1); e <= 3; e++ {
+		h := [32]byte{byte(e), 0x77}
+		if err := s.AdvanceEpoch(sidA, ch, Epoch{Epoch: e, Hash: h, Roster: []uint64{1, 2}}); err != nil {
+			t.Fatal(err)
+		}
+		heads = append(heads, Head{Epoch: e, Hash: h})
+	}
+	from, to := heads[2], heads[1]
+	if err := s.RewindChain(sidA, ch, from, to, 1, "x"); !errors.Is(err, ErrNoAlarm) {
+		t.Fatalf("rewind without an alarm: %v", err)
+	}
+	s.RaiseAlarm(sidA, ch, "rollback: the server shows epoch 2, this device verified 3")
+	bad := func(name string, from, to Head, want error) {
+		t.Helper()
+		if err := s.RewindChain(sidA, ch, from, to, 1, "x"); !errors.Is(err, want) {
+			t.Fatalf("%s: %v, want %v", name, err, want)
+		}
+		if h, _, _ := s.ChainHead(sidA, ch); h.Epoch != 3 {
+			t.Fatalf("%s moved the head to %d", name, h.Epoch)
+		}
+		if _, ok, _ := s.Alarm(sidA, ch); !ok {
+			t.Fatalf("%s cleared the alarm", name)
+		}
+	}
+	bad("upwards", from, Head{Epoch: 4}, ErrInvalid)
+	bad("to itself", from, from, ErrInvalid)
+	bad("to nothing", from, Head{}, ErrInvalid)
+	bad("stale head", heads[1], heads[0], ErrChainMoved)
+	bad("other head hash", Head{Epoch: 3, Hash: [32]byte{9}}, to, ErrChainMoved)
+	bad("other target hash", from, Head{Epoch: 2, Hash: [32]byte{9}}, ErrChainMoved)
+	if a, _ := s.Audit(sidA); len(a) != 0 {
+		t.Fatalf("refused rewinds audited: %+v", a)
+	}
+
+	if err := s.RewindChain(sidA, ch, from, to, 7, "accepted"); err != nil {
+		t.Fatal(err)
+	}
+	if h, _, _ := s.ChainHead(sidA, ch); h.Epoch != 2 || h.Hash != to.Hash || [16]byte(h.EH) != [16]byte(to.Hash[:16]) {
+		t.Fatalf("head %+v", h)
+	}
+	if _, ok, _ := s.Epoch(sidA, ch, 3); ok {
+		t.Fatal("discarded epoch kept")
+	}
+	if _, ok, _ := s.Epoch(sidA, ch, 2); !ok {
+		t.Fatal("target epoch dropped")
+	}
+	if _, ok, _ := s.Alarm(sidA, ch); ok {
+		t.Fatal("alarm kept")
+	}
+	// A new epoch 3 (the recovering rotation) now extends the head.
+	if err := s.AdvanceEpoch(sidA, ch, Epoch{Epoch: 3, Hash: [32]byte{0x33}, Roster: []uint64{1, 2}}); err != nil {
+		t.Fatal(err)
+	}
+	// Done once: the same rewind again finds another head.
+	s.RaiseAlarm(sidA, ch, "again")
+	if err := s.RewindChain(sidA, ch, from, to, 7, "accepted"); !errors.Is(err, ErrChainMoved) {
+		t.Fatalf("replayed rewind: %v", err)
+	}
+	s.Close()
+	s = open(t, home)
+	a, err := s.Audit(sidA)
+	if err != nil || len(a) != 1 || a[0].Action != "rewind_chain" || a[0].Chan != ch || a[0].By != 7 ||
+		!strings.Contains(a[0].Detail, "accepted") || !strings.Contains(a[0].Detail, "rollback") || a[0].Raised.IsZero() {
+		t.Fatalf("audit %+v %v", a, err)
+	}
+}

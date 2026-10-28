@@ -944,6 +944,30 @@ current epoch below the pinned head is an **alarm** for the channel: the
 head doesn't move and the alarm is kept in the trust store. A bundle whose
 rotator the client can't verify (yet) stops the walk without an alarm.
 
+**Accepting an older chain** (a server restored from a backup; no wire
+change). A restore loses the epochs committed after the backup, so a device
+that verified one sees its current epoch below the pinned head (and, once
+another member has recovered and rotated, a fork). Nothing moves the pinned
+head down by itself. A client MAY offer the user an explicit, audited
+acceptance, which it MUST refuse unless, fetching the server's bundles with
+`key.fetch` (one per epoch; two different ones for an epoch is a refusal):
+
+- some epoch A ≥ 1 below the pinned head H is served with exactly the bundle
+  the client verified for A (same ChainHash, hence the same chain up to A),
+  and A is the newest such epoch; and
+- either the server has no epoch above A (a **strict prefix**), or its
+  epochs A+1…top all verify by the rules above on top of the verified epoch
+  A, and the rotator of A+1 is in the roster of H (no one the discarded
+  epochs removed can author the branch); and
+- the user is in the roster of H.
+
+The user sees, before confirming, which epochs are discarded and who will
+hold the key afterwards that H's roster didn't include, and the client
+re-checks that the server shows exactly that when the user confirms. It then
+discards its epochs above A, makes A the head, and verifies the server's
+epochs above A as usual (branch) or rotates at once (strict prefix), so the
+channel moves to a fresh key with the current members.
+
 The chain link is about the signed bundle, not its keys: a bundle that
 verifies and whose `prev` is the pinned head is accepted and becomes the
 new head even if its box to this device is missing, fails to open or

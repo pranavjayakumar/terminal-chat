@@ -533,6 +533,10 @@ type AlarmInfo struct {
 	Since    time.Time // zero if not stored
 	Server   bool      // the server-wide alarm (it affects every encrypted channel)
 	Computed bool      // derived from the current state, not stored: clears by itself
+	// Chain: a rollback or fork, which a server restored from a backup
+	// also causes; clearing doesn't help while the server shows it, but
+	// accepting the server's chain may (ChainRecoveryPlan).
+	Chain bool
 }
 
 // Alarm explains ch's alarm; ok is false if it has none.
@@ -550,8 +554,15 @@ func (c *Client) Alarm(ch uint64) (AlarmInfo, bool) {
 	} else {
 		info.Computed = true
 	}
+	info.Chain = !info.Server && !info.Computed && chainAlarm(info.Detail)
 	info.Why = explainAlarm(info)
 	return info, true
+}
+
+// chainAlarm: the detail is about the shape of the chain (an epoch below
+// the pinned head, a second bundle for an epoch, one not chaining to it).
+func chainAlarm(d string) bool {
+	return strings.Contains(d, "rollback") || strings.Contains(d, "fork") || strings.Contains(d, "doesn't chain")
 }
 
 func explainAlarm(a AlarmInfo) string {
@@ -569,10 +580,11 @@ func explainAlarm(a AlarmInfo) string {
 			"never turns encryption off; nothing is sent in the clear."
 	case strings.Contains(d, "fork"):
 		return "The server showed two different key bundles for the same epoch. An honest server never does: it " +
-			"may be giving members different keys to split the channel."
+			"may be giving members different keys to split the channel. It also happens after a server restored " +
+			"from a backup, once another member accepted the older chain and started a new key."
 	case strings.Contains(d, "rollback"):
 		return "The server showed an older key epoch than this device already verified: it may be replaying old " +
-			"state, for example to hide a membership change."
+			"state, for example to hide a membership change. A server restored from a backup looks the same."
 	}
 	return "A key bundle from the server failed verification (bad signature, wrong rotator, key sealed to a " +
 		"non-member or revoked device). An honest server and honest members can't produce one."
