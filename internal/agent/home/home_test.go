@@ -233,7 +233,7 @@ func TestSettingsSandboxEscapes(t *testing.T) {
 		}
 	}
 	for _, want := range []string{"~/.claude", "~/.claude.json", "~/.zsh_history", "~/.bash_history", "~/.local/share", "~/.vault-token",
-		"~/.cargo/credentials", "~/.cargo/credentials.toml", "~/.terraform.d", "~/.pgpass", "~/.config", "~/.ssh", tcHome, p.State, p.DeviceHome} {
+		"~/.cargo/credentials", "~/.cargo/credentials.toml", "~/.terraform.d", "~/.pgpass", "~/.config", "~/.ssh", tcHome, p.State, p.DeviceHome, p.Memory, p.Dream, p.Me} {
 		if !contains(fsys.DenyRead, want) {
 			t.Errorf("sandbox may read %s", want)
 		}

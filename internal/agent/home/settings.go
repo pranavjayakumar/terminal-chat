@@ -168,7 +168,7 @@ func SettingsJSON(dir string, o Options) ([]byte, error) {
 	}
 	// TC_HOME (cache.db holds messages in the clear) wherever it is, and
 	// the agent's own private parts.
-	denyRead = append(denyRead, tcHome, p.DeviceHome, p.State, p.Memory, p.Me, p.Config)
+	denyRead = append(denyRead, tcHome, p.DeviceHome, p.State, p.Memory, p.Dream, p.Me, p.Config)
 	allowRead := []string{p.Worktrees, p.Repo, p.Skills, filepath.Dir(p.GoCache), p.ModProxy}
 	for _, r := range readOK {
 		allowRead = append(allowRead, "~/"+r)
