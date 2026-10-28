@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/skailama/tc/internal/agent/safegit"
 )
 
 // Claude runs Claude Code headless (`claude -p`) on the owner's
@@ -38,11 +40,15 @@ var workTools = []string{"Bash", "Read", "Edit", "Write", "Glob", "Grep", "TodoW
 // Args is the command line for req, without the binary.
 //
 // Not used on purpose: --bare (it reads only ANTHROPIC_API_KEY, never the
-// subscription login, and skips the memory hooks), and
-// --setting-sources (--restricted already drops user and project settings
-// in Talk; in Work the agent home is the project, so its own
-// .claude/settings.json is the project setting).
-func (c Claude) Args(req Request) []string {
+// subscription login, and skips the memory hooks). --restricted drops user
+// and project settings in Talk; Work loads no settings file at all
+// (--setting-sources with nothing): its working directory is the agent's
+// worktrees, which the agent can write, so a .claude/settings.json there
+// would be hooks the agent wrote, run outside the sandbox. Only --settings
+// (tc's file) applies.
+//
+// mcpConfig is the path of the --mcp-config file.
+func (c Claude) Args(req Request, mcpConfig string) []string {
 	model := req.Model
 	if model == "" {
 		model = "sonnet"
@@ -55,8 +61,8 @@ func (c Claude) Args(req Request) []string {
 		// the permission tool like everything else.
 		"--allowed-tools", "mcp__tc",
 	}
-	if req.MCPConfig != "" {
-		a = append(a, "--mcp-config", req.MCPConfig)
+	if mcpConfig != "" {
+		a = append(a, "--mcp-config", mcpConfig)
 	}
 	if req.Settings != "" {
 		a = append(a, "--settings", req.Settings)
@@ -69,7 +75,7 @@ func (c Claude) Args(req Request) []string {
 	}
 	switch req.Mode {
 	case Work:
-		a = append(a, "--setting-sources", "project",
+		a = append(a, "--setting-sources=",
 			"--tools", strings.Join(workTools, ","),
 			"--permission-mode", "acceptEdits")
 		for _, d := range req.AddDirs {
@@ -115,7 +121,16 @@ func (c Claude) Run(ctx context.Context, req Request, on func(Event)) (Result, e
 	if grace <= 0 {
 		grace = 5 * time.Second
 	}
-	cmd := exec.Command(bin, c.Args(req)...)
+	mcpPath := ""
+	if req.MCPConfig != "" {
+		p, err := writeMCPConfig(req.StateDir, req.MCPConfig)
+		if err != nil {
+			return Result{}, err
+		}
+		defer os.Remove(p)
+		mcpPath = p
+	}
+	cmd := exec.Command(bin, c.Args(req, mcpPath)...)
 	cmd.Dir = req.Dir
 	// tc keeps the agent's memory; Claude Code's own auto-memory would
 	// be a second, unchecked one.
@@ -162,6 +177,29 @@ func (c Claude) Run(ctx context.Context, req Request, on func(Event)) (Result, e
 	return res, nil
 }
 
+// writeMCPConfig writes the --mcp-config JSON to a fresh 0600 file in dir.
+func writeMCPConfig(dir, data string) (string, error) {
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	f, err := os.CreateTemp(dir, "mcp-*.json")
+	if err != nil {
+		return "", fmt.Errorf("writing the MCP config: %w", err)
+	}
+	_, err = f.WriteString(data)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(f.Name(), 0o600)
+	}
+	if err != nil {
+		_ = os.Remove(f.Name())
+		return "", fmt.Errorf("writing the MCP config: %w", err)
+	}
+	return f.Name(), nil
+}
+
 // engineEnv drops what the engine must not have: the owner's SSH agent
 // (it would let a shell sign in as the owner), credentials in the
 // environment (tc runs gh itself, outside the engine), an API key (the
@@ -170,8 +208,8 @@ func (c Claude) Run(ctx context.Context, req Request, on func(Event)) (Result, e
 func engineEnv(env []string) []string {
 	out := env[:0:0]
 	for _, kv := range env {
-		k, _, _ := strings.Cut(kv, "=")
-		if !keepEnv(k) {
+		k, v, _ := strings.Cut(kv, "=")
+		if !keepEnv(k, v) {
 			continue
 		}
 		out = append(out, kv)
@@ -179,20 +217,37 @@ func engineEnv(env []string) []string {
 	return out
 }
 
-func keepEnv(k string) bool {
+func keepEnv(k, v string) bool {
 	u := strings.ToUpper(k)
 	switch {
 	case u == "CLAUDE_CODE_OAUTH_TOKEN":
 		return true // the subscription login (claude setup-token)
 	case u == "CLAUDECODE", u == "CLAUDE_CODE_ENTRYPOINT", strings.HasPrefix(u, "HERDR_"),
 		u == "SSH_AUTH_SOCK", u == "SSH_AGENT_PID", u == "ANTHROPIC_API_KEY", u == "ANTHROPIC_AUTH_TOKEN",
-		strings.HasPrefix(u, "AWS_"), strings.HasPrefix(u, "GOOGLE_APPLICATION"), strings.HasPrefix(u, "AZURE_"),
-		strings.Contains(u, "TOKEN"), strings.Contains(u, "SECRET"), strings.Contains(u, "PASSWORD"),
-		strings.Contains(u, "PASSWD"), strings.HasSuffix(u, "_KEY"), strings.HasSuffix(u, "_API_KEY"),
-		strings.Contains(u, "CREDENTIAL"):
+		safegit.Secret(u), hasUserinfo(v):
 		return false
 	}
 	return true
+}
+
+// hasUserinfo reports whether v holds a URL with credentials in it
+// (postgres://user:pw@host, https://token@host), whatever the variable's
+// name.
+func hasUserinfo(v string) bool {
+	for _, f := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' || r == ';' }) {
+		i := strings.Index(f, "://")
+		if i <= 0 {
+			continue
+		}
+		rest := f[i+3:]
+		if j := strings.IndexAny(rest, "/?#"); j >= 0 {
+			rest = rest[:j]
+		}
+		if strings.Contains(rest, "@") {
+			return true
+		}
+	}
+	return false
 }
 
 func lastLine(s string) string {

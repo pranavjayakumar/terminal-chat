@@ -6,14 +6,17 @@ import (
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/skailama/tc/internal/agent/home"
+	"github.com/skailama/tc/internal/agent/work"
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/mcp"
+	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
 )
 
@@ -21,9 +24,13 @@ import (
 // owner to react on it:
 //
 //	✋ Rocky wants to post in #general  ·  #k3f9a2b
-//	> the first three lines
-//	> of exactly what it will do
 //	why: bob asked in #general: "can you tell fahim…"
+//	> exactly what it will do,
+//	> every line of it
+//
+// Nothing is cut: a preview too long for one message goes on in the next
+// ones ("#k3f9a2b (2/3)"), and the card then says how long it is and its
+// sha256, so the owner knows they saw all of it.
 //
 // ✅ yes, ❌ no; ✅ with ♾️ also grants the same kind of action on the
 // same target for the rest of the local day (a Grant). The code lets the
@@ -42,11 +49,12 @@ const StopAutoPhrase = "stop auto-approving"
 // Kinds of actions a card asks about; a Grant covers one kind on one
 // target.
 const (
-	KindPost  = "post"  // post outside the asking thread; target: the channel
-	KindPR    = "pr"    // push and open a draft PR; target: the repo
-	KindIssue = "issue" // open an issue for someone else's ask; target: the repo
-	KindTool  = "tool"  // a tool call the rules didn't settle; target: the tool
-	KindAsk   = "ask"   // anything else the agent asks about; target: the action
+	KindPost    = "post"     // someone else's post in another thread of the asking channel; target: the channel
+	KindPostOut = "post_out" // any post in a channel other than the ask's; target: the channel
+	KindPR      = "pr"       // push and open a draft PR; target: the repo ("tc .github" when it changes CI)
+	KindIssue   = "issue"    // open an issue; target: the repo
+	KindTool    = "tool"     // a tool call the rules didn't settle; target: the tool
+	KindAsk     = "ask"      // anything else the agent asks about; target: the action
 )
 
 // Grant is a ♾️ "don't ask again today" for one kind of action on one
@@ -74,28 +82,113 @@ type approval struct {
 	done   chan verdict
 }
 
-// CardBody is the text of an approval card.
+// CardMaxBytes is how much of a card goes in one message.
+const CardMaxBytes = proto.MaxBody - 1024
+
+// cardLineBytes is the longest quoted line; a longer preview line goes on
+// in the next quoted line.
+const cardLineBytes = 2000
+
+// CardBody is the text of an approval card, every part joined.
 func CardBody(agent string, ap Approval, code string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "✋ %s wants to %s  ·  %s", agentTitle(agent), oneLine(ap.Action, 200), code)
-	if p := strings.TrimSpace(sanitize.Text(ap.Preview)); p != "" {
-		lines := strings.Split(p, "\n")
-		more := len(lines) > 3
-		if more {
-			lines = lines[:3]
-		}
-		for i, l := range lines {
-			l = short(l, 200)
-			if more && i == 2 {
-				l += " …"
-			}
-			b.WriteString("\n> " + l)
-		}
-	}
+	return strings.Join(CardParts(agent, ap, code), "\n")
+}
+
+// CardParts is an approval card as the messages that carry it: the card,
+// then (for a preview over CardMaxBytes) its continuations. Nothing of the
+// preview is left out.
+func CardParts(agent string, ap Approval, code string) []string {
+	head := fmt.Sprintf("✋ %s wants to %s  ·  %s", agentTitle(agent), oneLine(ap.Action, 200), code)
 	if w := oneLine(ap.Why, 300); w != "" {
-		b.WriteString("\nwhy: " + w)
+		head += "\nwhy: " + w
+	}
+	p := strings.TrimSpace(sanitize.Text(ap.Preview))
+	if p == "" {
+		return []string{head}
+	}
+	var quoted []string
+	for _, l := range strings.Split(p, "\n") {
+		for len(l) > cardLineBytes {
+			cut := cardLineBytes
+			for cut > 0 && l[cut]&0xC0 == 0x80 {
+				cut--
+			}
+			quoted = append(quoted, "> "+l[:cut])
+			l = l[cut:]
+		}
+		quoted = append(quoted, "> "+l)
+	}
+	body := strings.Join(quoted, "\n")
+	if len(head)+1+len(body) <= CardMaxBytes {
+		return []string{head + "\n" + body}
+	}
+	// Room for the size line and the "(n/m)" headers is kept back.
+	var chunks [][]string
+	var cur []string
+	size := 0
+	for _, q := range quoted {
+		if size+len(q)+1 > CardMaxBytes-len(head)-200 && len(cur) > 0 {
+			chunks = append(chunks, cur)
+			cur, size = nil, 0
+		}
+		cur = append(cur, q)
+		size += len(q) + 1
+	}
+	chunks = append(chunks, cur)
+	sum := sha256.Sum256([]byte(p))
+	n := len(chunks)
+	out := make([]string, n)
+	for i, c := range chunks {
+		if i == 0 {
+			out[0] = fmt.Sprintf("%s\nfull: %d lines · %d bytes · sha256 %x · continued in the next %d messages\n%s",
+				head, strings.Count(p, "\n")+1, len(p), sum[:8], n-1, strings.Join(c, "\n"))
+			continue
+		}
+		out[i] = fmt.Sprintf("%s (%d/%d)\n%s", code, i+1, n, strings.Join(c, "\n"))
+	}
+	return out
+}
+
+// PRPreview is what a PR card shows: a warning first when it changes CI,
+// the exact commit, the diffstat against the base, then the title and the
+// whole body.
+func PRPreview(pr work.PR, title, body string) string {
+	var b strings.Builder
+	if len(pr.CI) > 0 {
+		fmt.Fprintf(&b, "⚠ CHANGES CI (.github/): %s\n", strings.Join(pr.CI, ", "))
+	}
+	fmt.Fprintf(&b, "branch %s · commit %s · base %s\n", pr.Branch, abbrev(pr.SHA), abbrev(pr.BaseSHA))
+	b.WriteString(strings.TrimRight(pr.Stat, "\n"))
+	b.WriteString("\nfiles: " + strings.Join(pr.Files, ", "))
+	b.WriteString("\ntitle: " + title)
+	if body = strings.TrimSpace(body); body != "" {
+		b.WriteString("\n\n" + body)
+	}
+	if d := strings.TrimRight(pr.Diff, "\n"); d != "" {
+		b.WriteString("\n\nthe whole diff:\n" + d)
 	}
 	return b.String()
+}
+
+func abbrev(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
+}
+
+// ToolPreview is a tool call's input as the card shows it: every argument,
+// as JSON, so control characters show as escapes.
+func ToolPreview(input json.RawMessage) string {
+	var v any
+	if json.Unmarshal(input, &v) != nil {
+		return string(input)
+	}
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return string(input)
+	}
+	return string(b)
 }
 
 // agentTitle is "rocky" as a name: "Rocky".
@@ -157,7 +250,9 @@ func (s *Supervisor) askOwner(ctx context.Context, r *run, ap Approval) bool {
 		s.mu.Unlock()
 	}()
 	owner := s.Chat.User(s.owner).Name
-	s.reply(r.ask.Chan, r.ask.Thread, CardBody(s.handleNow(), ap, code))
+	for _, part := range CardParts(s.handleNow(), ap, code) {
+		s.reply(r.ask.Chan, r.ask.Thread, part)
+	}
 	r.live.setStatus("waiting for " + sanitize.Line(owner) + "'s ok…")
 	s.activity(r.ask, "approval", "asked: "+oneLine(ap.Action, 200), 0)
 
@@ -186,10 +281,10 @@ func (s *Supervisor) askOwner(ctx context.Context, r *run, ap Approval) bool {
 }
 
 // NeedsApproval reports whether a kind of action asks the owner first at
-// an approvals level. work_only asks only about code going out (PRs,
-// pushes), issues, tool calls the rules didn't settle (shell writes
-// outside granted folders) and what the agent itself flags with
-// ask_owner; posting never asks.
+// an approvals level. work_only asks about code going out (PRs, pushes),
+// issues, posts in another channel than the ask's, tool calls the rules
+// didn't settle (shell writes outside granted folders) and what the agent
+// itself flags with ask_owner; posting in the asking channel never asks.
 func NeedsApproval(level home.Approvals, kind string) bool {
 	switch level {
 	case home.ApproveNever:
@@ -203,7 +298,7 @@ func NeedsApproval(level home.Approvals, kind string) bool {
 // GrantText says what a grant covers.
 func GrantText(g Grant) string {
 	switch g.Kind {
-	case KindPost:
+	case KindPost, KindPostOut:
 		return "posting in " + g.Target
 	case KindPR:
 		return "draft PRs on " + g.Target
