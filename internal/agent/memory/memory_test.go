@@ -740,3 +740,101 @@ func TestSlug(t *testing.T) {
 		t.Error("PersonPath")
 	}
 }
+
+// A dream may lower trust or add private, never the reverse: not on a note
+// it keeps, not by copying a source's text into a note that claims more.
+func TestDreamTrustMonotonic(t *testing.T) {
+	const (
+		otherFact   = "bob says the deploy key is in the wiki"
+		privateFact = "fizan is interviewing at another company"
+	)
+	note := func(trust, private, body string) string {
+		p := ""
+		if private != "" {
+			p = "private: true\n"
+		}
+		return "---\ntype: fact\nsource: x\ntrust: " + trust + "\n" + p + "modified: 2026-10-24T00:00:00Z\n---\n" + body + "\n"
+	}
+	tests := []struct {
+		name string
+		edit func(t *testing.T, dir string)
+	}{
+		{"raises trust", func(t *testing.T, dir string) {
+			_ = os.WriteFile(filepath.Join(dir, "facts", "bob.md"), []byte(note("owner", "", "bob claims things")), 0o600)
+		}},
+		{"clears private", func(t *testing.T, dir string) {
+			_ = os.WriteFile(filepath.Join(dir, "facts", "secret.md"), []byte(note("owner", "", "still a secret")), 0o600)
+		}},
+		{"other's fact under owner trust", func(t *testing.T, dir string) {
+			_ = os.WriteFile(filepath.Join(dir, "facts", "deploy.md"), []byte(note("owner", "", "The deploy: "+otherFact+".")), 0o600)
+		}},
+		{"private fact in a public note", func(t *testing.T, dir string) {
+			_ = os.WriteFile(filepath.Join(dir, "facts", "fizan.md"), []byte(note("owner", "", "Note: "+privateFact)), 0o600)
+		}},
+		{"private fact in the index", func(t *testing.T, dir string) {
+			idx := readFile(t, filepath.Join(dir, "MEMORY.md")) + "- [f0](facts/f0.md) — " + privateFact + "\n"
+			_ = os.WriteFile(filepath.Join(dir, "MEMORY.md"), []byte(idx), 0o600)
+		}},
+	}
+	seed := func(t *testing.T) *Store {
+		s, _ := newStore(t)
+		seedNotes(t, s, 8)
+		if err := s.Write(Note{Path: "facts/bob.md", Body: "bob claims things", Trust: TrustOther}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Write(Note{Path: "facts/secret.md", Body: "still a secret", Trust: TrustOwner, Private: true}); err != nil {
+			t.Fatal(err)
+		}
+		_ = s.Remember(Fact{Subject: "deploy", Text: otherFact, Trust: TrustOther, Source: "bob"})
+		_ = s.Remember(Fact{Subject: "fizan", Text: privateFact, Trust: TrustOwner, Source: "fizan", Private: true})
+		if err := s.Commit("seed"); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := seed(t)
+			d, err := s.PrepareDream()
+			if err != nil {
+				t.Fatal(err)
+			}
+			tt.edit(t, d.Dir)
+			if err := s.ValidateDream(d); !errors.Is(err, ErrDreamRejected) {
+				t.Fatalf("validate = %v", err)
+			}
+			_ = s.DiscardDream(d)
+		})
+	}
+	// The same facts merged the right way pass.
+	s := seed(t)
+	d, err := s.PrepareDream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(d.Dir, "facts", "deploy.md"), []byte(note("other", "", "Bob says: "+otherFact)), 0o600)
+	_ = os.WriteFile(filepath.Join(d.Dir, "facts", "fizan.md"), []byte(note("owner", "yes", privateFact)), 0o600)
+	_ = os.WriteFile(filepath.Join(d.Dir, "facts", "bob.md"), []byte(note("web", "", "bob claims things, per a page")), 0o600)
+	if err := s.ValidateDream(d); err != nil {
+		t.Fatalf("a correct merge was rejected: %v", err)
+	}
+	_ = s.DiscardDream(d)
+}
+
+// The owner's frozen snapshot never reaches a non-owner session, even one
+// that shares its session id.
+func TestHookSnapshotFrozenPerTrust(t *testing.T) {
+	s, _ := newStore(t)
+	_ = home.WriteMe(s.agentDir, "owner secret")
+	owner := map[string]string{EnvOwnerAsk: "1", EnvSessionKey: "t1"}
+	guest := map[string]string{EnvOwnerAsk: "0", EnvSessionKey: "t1"}
+	runHookT(t, s, "session-start", `{"session_id":"s1","source":"startup"}`, owner)
+	var got sessionStartOutput
+	out := runHookT(t, s, "session-start", `{"session_id":"s1","source":"compact"}`, guest)
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got.HookSpecificOutput.AdditionalContext, "owner secret") {
+		t.Fatal("a non-owner session got the owner's frozen snapshot")
+	}
+}

@@ -126,7 +126,13 @@ func (s *Store) hookSessionStart(in hookInput, stdout io.Writer, p Params) error
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("creating hook state: %w", err)
 	}
-	frozen := filepath.Join(dir, sessionFile(in.SessionID)+".snapshot")
+	// The owner's snapshot (me.md, private memory) is frozen apart from
+	// anyone else's: a session id reused for someone else's ask never gets it.
+	suffix := ".snapshot"
+	if p.OwnerAsk {
+		suffix = ".owner.snapshot"
+	}
+	frozen := filepath.Join(dir, sessionFile(in.SessionID)+suffix)
 	var snap string
 	if b, err := os.ReadFile(frozen); err == nil && in.SessionID != "" {
 		snap = string(b)

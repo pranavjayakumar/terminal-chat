@@ -28,6 +28,9 @@ type Paths struct {
 	Repo       string // repo/: the tc clone
 	Worktrees  string // worktrees/: one per piece of work
 	Dream      string // dream/: the memory worktree a dream run edits
+	// Guest is the working directory of Talk runs for anyone but the
+	// owner: nothing private in it, so reading it needs no prompt.
+	Guest string
 }
 
 // PathsFor returns the layout of the agent home at dir.
@@ -47,5 +50,6 @@ func PathsFor(dir string) Paths {
 		Repo:       j("repo"),
 		Worktrees:  j("worktrees"),
 		Dream:      j("dream"),
+		Guest:      j("guest"),
 	}
 }

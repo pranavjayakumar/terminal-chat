@@ -68,8 +68,9 @@ func TestEngagedThread(t *testing.T) {
 	if n := len(h.chat.lives()); n != livesBefore {
 		t.Fatalf("NO_REPLY broadcast %d statuses: %+v", n-livesBefore, h.chat.lives()[livesBefore:])
 	}
-	// It counts toward the daily spend, not toward carol's asks.
-	if h.s.ledger.Asks(carolID, clock.now()) != 0 || h.s.ledger.Spent(clock.now()) < 0.019 {
+	// It counts toward the daily spend and toward carol's asks: follow-ups
+	// cost like mentions do.
+	if h.s.ledger.Asks(carolID, clock.now()) != 1 || h.s.ledger.Spent(clock.now()) < 0.019 {
 		t.Fatalf("ledger asks %d spent %v", h.s.ledger.Asks(carolID, clock.now()), h.s.ledger.Spent(clock.now()))
 	}
 
@@ -159,7 +160,9 @@ func TestEngagementExpiresAndLeave(t *testing.T) {
 }
 
 func TestFollowUpCap(t *testing.T) {
-	h := newHarness(t, cfgDefault(), nil)
+	cfg := cfgDefault()
+	cfg.AsksPerPerson = 100
+	h := newHarness(t, cfg, nil)
 	h.run.reply = func(req runner.Request, on func(runner.Event)) (runner.Result, error) {
 		if strings.HasPrefix(req.Prompt, FollowUpNote) {
 			return runner.Result{Session: req.Session, Text: NoReply}, nil
@@ -176,8 +179,8 @@ func TestFollowUpCap(t *testing.T) {
 	if n := len(h.run.requests()); n != 1+MaxFollowUps {
 		t.Fatalf("%d runs", n)
 	}
-	if h.s.ledger.Asks(bobID, time.Now()) != 1 {
-		t.Fatalf("follow-ups counted as asks: %d", h.s.ledger.Asks(bobID, time.Now()))
+	if n := h.s.ledger.Asks(bobID, time.Now()); n != 1+MaxFollowUps {
+		t.Fatalf("follow-ups not counted as asks: %d", n)
 	}
 }
 

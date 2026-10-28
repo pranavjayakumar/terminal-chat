@@ -88,7 +88,9 @@ func (s *Store) ValidateDream(d *Dream) error {
 	if err != nil {
 		return err
 	}
+	changedSet := map[string]bool{}
 	for _, rel := range strings.Fields(changed) {
+		changedSet[rel] = true
 		k, err := kindOf(rel)
 		if err != nil || !(k == KindIndex || isNoteKind(k)) {
 			return fmt.Errorf("%w: it changed %s", ErrDreamRejected, rel)
@@ -110,6 +112,7 @@ func (s *Store) ValidateDream(d *Dream) error {
 	if err != nil {
 		return err
 	}
+	afterNotes := map[string]Note{}
 	for rel := range after {
 		if !strings.HasPrefix(rel, "note:") {
 			continue
@@ -127,6 +130,24 @@ func (s *Store) ValidateDream(d *Dream) error {
 		if !n.Trust.Valid() || n.Trust == TrustSelf {
 			return fmt.Errorf("%w: %s has no valid trust", ErrDreamRejected, path)
 		}
+		afterNotes[path] = n
+	}
+	baseNotes := map[string]Note{}
+	for rel := range before {
+		if path, ok := strings.CutPrefix(rel, "note:"); ok {
+			var text string
+			if changedSet[path] {
+				text, _ = s.gitIn(d.Dir, "show", d.Base+":"+path)
+			} else {
+				b, _ := os.ReadFile(filepath.Join(d.Dir, filepath.FromSlash(path)))
+				text = string(b)
+			}
+			k, _ := kindOf(path)
+			baseNotes[path] = parseNote(path, k, text)
+		}
+	}
+	if err := checkDreamTrust(baseNotes, afterNotes, changedSet, dailySources(d.Dir), string(idx)); err != nil {
+		return err
 	}
 	for _, kind := range []string{"note:", "index:"} {
 		total, removed := 0, 0
@@ -141,6 +162,124 @@ func (s *Store) ValidateDream(d *Dream) error {
 		}
 		if removed > 1 && removed*4 > total {
 			return fmt.Errorf("%w: it deleted %d of %d %s entries", ErrDreamRejected, removed, total, strings.TrimSuffix(kind, ":"))
+		}
+	}
+	return nil
+}
+
+// trustRank orders trust for the dream's monotonic rule: a note may only
+// keep or lower what its sources had.
+func trustRank(t Trust) int {
+	switch t {
+	case TrustOwner:
+		return 3
+	case TrustOther, TrustSelf:
+		return 2
+	}
+	return 1
+}
+
+// source is a line a dream may have merged: from a daily log or a note.
+type source struct {
+	text    string // normalized
+	rank    int
+	private bool
+}
+
+// minSourceLen keeps short, common lines out of the copy check.
+const minSourceLen = 24
+
+func normLine(s string) string { return strings.Join(strings.Fields(strings.ToLower(s)), " ") }
+
+// dailySources reads the facts in the dream worktree's daily logs (the
+// dream can't change them, so they are the base's).
+func dailySources(dir string) []source {
+	ents, _ := os.ReadDir(filepath.Join(dir, "daily"))
+	var out []source
+	for _, e := range ents {
+		b, err := os.ReadFile(filepath.Join(dir, "daily", e.Name()))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			m := dailyLineRe.FindStringSubmatch(line)
+			if m == nil {
+				continue
+			}
+			tags := strings.Fields(m[1])
+			src := source{rank: 1}
+			for _, t := range tags {
+				if t == "private" {
+					src.private = true
+				}
+			}
+			if len(tags) > 0 {
+				src.rank = trustRank(Trust(tags[0]))
+				if Trust(tags[0]) == TrustSelf && src.private {
+					src.rank = 3 // its own reply to its owner
+				}
+			}
+			_, fact, _ := strings.Cut(line[len(m[0]):], ": ")
+			if src.text = normLine(fact); len(src.text) >= minSourceLen {
+				out = append(out, src)
+			}
+		}
+	}
+	return out
+}
+
+// checkDreamTrust enforces that a dream never raises trust or clears
+// private: a note it kept may not gain trust or lose private, a new note
+// may not claim more trust than any source has, and no line copied from a
+// private source may land in a non-private note or the index, or from a
+// lower-trust source in a higher-trust note.
+func checkDreamTrust(base, after map[string]Note, changed map[string]bool, daily []source, index string) error {
+	srcs := daily
+	ceiling := 1
+	for _, s := range daily {
+		ceiling = max(ceiling, s.rank)
+	}
+	for _, n := range base {
+		r := trustRank(n.Trust)
+		ceiling = max(ceiling, r)
+		for _, line := range strings.Split(n.Body, "\n") {
+			l := normLine(line)
+			if len(l) >= minSourceLen && !strings.HasPrefix(l, "source:") {
+				srcs = append(srcs, source{text: l, rank: r, private: n.Private})
+			}
+		}
+	}
+	for path, n := range after {
+		if !changed[path] {
+			continue // as it was: only what the dream wrote is checked
+		}
+		if was, ok := base[path]; ok {
+			if trustRank(n.Trust) > trustRank(was.Trust) {
+				return fmt.Errorf("%w: %s raised trust %s → %s", ErrDreamRejected, path, was.Trust, n.Trust)
+			}
+			if was.Private && !n.Private {
+				return fmt.Errorf("%w: %s is no longer private", ErrDreamRejected, path)
+			}
+		} else if trustRank(n.Trust) > ceiling {
+			return fmt.Errorf("%w: %s claims trust %s no source has", ErrDreamRejected, path, n.Trust)
+		}
+		body := normLine(n.Body)
+		for _, s := range srcs {
+			if !strings.Contains(body, s.text) {
+				continue
+			}
+			if s.private && !n.Private {
+				return fmt.Errorf("%w: %s holds private text but isn't private", ErrDreamRejected, path)
+			}
+			if s.rank < trustRank(n.Trust) {
+				return fmt.Errorf("%w: %s holds lower-trust text under trust %s", ErrDreamRejected, path, n.Trust)
+			}
+		}
+	}
+	idx := normLine(index)
+	for _, s := range srcs {
+		if changed[indexFile] && s.private && strings.Contains(idx, s.text) {
+			return fmt.Errorf("%w: MEMORY.md holds private text", ErrDreamRejected)
 		}
 	}
 	return nil

@@ -303,6 +303,58 @@ func (s *Supervisor) checkMentions(text string) error {
 	return nil
 }
 
+var mentionAnyCase = regexp.MustCompile(`(?i)(?:^|[^a-z0-9_])@([a-z0-9][a-z0-9_.-]*)`)
+
+// isMass reports whether @name pings many people at once: a broadcast word
+// or a group.
+func (s *Supervisor) isMass(name string) bool {
+	name = strings.TrimRight(strings.ToLower(name), ".-")
+	if slices.Contains(broadcast, name) {
+		return true
+	}
+	gc, ok := s.Chat.(groupsChat)
+	return ok && slices.ContainsFunc(gc.Groups(), func(g proto.Group) bool { return g.Name == name })
+}
+
+// massMention returns the first @name in text that pings many people at
+// once, or "".
+func (s *Supervisor) massMention(text string) string {
+	for _, m := range mentionAnyCase.FindAllStringSubmatch(text, -1) {
+		if s.isMass(m[1]) {
+			return strings.ToLower(m[1])
+		}
+	}
+	return ""
+}
+
+// errMass refuses a post for someone other than the owner that would ping
+// a whole channel or group.
+func (s *Supervisor) errMass(text string) error {
+	if n := s.massMention(text); n != "" {
+		return fmt.Errorf("@%s pings everyone: only your owner can ask for that; write it without the @", sanitize.Line(n))
+	}
+	return nil
+}
+
+// defangBroadcast drops the @ of every mass mention in text, so a reply to
+// someone other than the owner can't ping a whole channel or group.
+func (s *Supervisor) defangBroadcast(text string) string {
+	for range 8 { // adjacent mentions ("@here@all") surface one pass at a time
+		out := mentionAnyCase.ReplaceAllStringFunc(text, func(m string) string {
+			i := strings.IndexByte(m, '@')
+			if !s.isMass(m[i+1:]) {
+				return m
+			}
+			return m[:i] + m[i+1:]
+		})
+		if out == text {
+			break
+		}
+		text = out
+	}
+	return text
+}
+
 // findUser finds a person by their exact tc name (any case, @ optional).
 // It never guesses: a near miss is an error that lists the close names.
 func (s *Supervisor) findUser(name string) (proto.User, error) {
@@ -480,6 +532,11 @@ func (s *Supervisor) remind(r *run, raw json.RawMessage) (string, error) {
 	if err := s.checkMentions(text); err != nil {
 		return "", err
 	}
+	if !a.Owner {
+		if err := s.errMass(text); err != nil {
+			return "", err
+		}
+	}
 	ch, th := a.Chan, a.Thread
 	cv, _ := s.Chat.Channel(ch)
 	person := u.Name
@@ -586,6 +643,11 @@ func (s *Supervisor) askAgent(ctx context.Context, r *run, raw json.RawMessage) 
 	question, err := cleanText(p.Question, 1500)
 	if err != nil {
 		return "", err
+	}
+	if !a.Owner {
+		if err := s.errMass(question); err != nil {
+			return "", err
+		}
 	}
 	ch, th := a.Chan, a.Thread
 	if p.Chan != "" {

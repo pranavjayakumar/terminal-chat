@@ -44,11 +44,11 @@ func TestOwnersAskToPostIsTheApproval(t *testing.T) {
 	}
 }
 
-func TestGrantsAreKindAndTarget(t *testing.T) {
+// A ♾️ is the owner's ok for their own asks: it never waves through
+// someone else's ask, and a tool grant covers only that exact call.
+func TestGrantsOwnerAsksExactTarget(t *testing.T) {
 	cfg := cfgDefault()
-	cfg.Mode = home.ModeCrew
 	cfg.Approvals = home.ApproveAlways
-	cfg.Access.Chans = []uint64{secret}
 	h := newHarness(t, cfg, nil)
 	block := make(chan struct{})
 	defer close(block)
@@ -56,20 +56,11 @@ func TestGrantsAreKindAndTarget(t *testing.T) {
 		<-block
 		return runner.Result{Session: req.Session, Text: NoReply}, nil
 	}
-	// Bob's ask in a thread of #general wants to post at the top of
-	// #general: a card, every time, until the owner says ♾️.
-	root := h.chat.say(carolID, general, 0, "deploy thread", 0)
-	h.chat.say(bobID, general, root.ID, "@rocky tell everyone the deploy is done", 0)
-	post := func(ch, text string) chan mcp.BridgeRes {
-		res := make(chan mcp.BridgeRes, 1)
-		go func() { res <- h.call(mcp.ToolPostReply, map[string]any{"chan": ch, "text": text}) }()
-		return res
-	}
-	card := func(sub string) uint64 {
+	card := func(seen int) uint64 {
 		var body string
-		h.waitFor("card "+sub, func() bool {
-			for _, p := range h.chat.posts() {
-				if strings.HasPrefix(p.body, "✋ Rocky wants to post in "+sub) && !strings.Contains(body, p.body) {
+		h.waitFor("card", func() bool {
+			for _, p := range h.chat.posts()[seen:] {
+				if strings.HasPrefix(p.body, "✋ ") {
 					body = p.body
 					return true
 				}
@@ -78,37 +69,75 @@ func TestGrantsAreKindAndTarget(t *testing.T) {
 		})
 		return h.cardID(body)
 	}
-	res := post("#general", "deploy is done 🎉")
-	id := card("#general")
+	async := func(ch uint64, tool string, args any) chan mcp.BridgeRes {
+		res := make(chan mcp.BridgeRes, 1)
+		go func() { res <- h.callIn(ch, tool, args) }()
+		return res
+	}
+
+	// Bob's ask: the owner's ♾️ on its card isn't kept, the next post
+	// asks again.
+	root := h.chat.say(carolID, general, 0, "deploy thread", 0)
+	h.chat.say(bobID, general, root.ID, "@rocky tell everyone the deploy is done", 0)
+	post := func(text string) chan mcp.BridgeRes {
+		return async(general, mcp.ToolPostReply, map[string]any{"chan": "#general", "text": text})
+	}
+	n := len(h.chat.posts())
+	res := post("deploy is done 🎉")
+	id := card(n)
 	h.chat.react(id, "♾️", ownerID)
 	h.chat.react(id, "✅", ownerID)
 	if r := <-res; r.Text != "posted" {
 		t.Fatalf("first post %+v", r)
 	}
-	if g := h.s.Grants(); len(g) != 1 || g[0].Kind != KindPost || g[0].Target != "#general" {
-		t.Fatalf("grants %+v", g)
+	if g := h.s.Grants(); len(g) != 0 {
+		t.Fatalf("a stranger's card left a grant: %+v", g)
 	}
-	// Same kind, same target: no card.
-	before := len(h.chat.posts())
-	if r := <-post("#general", "really done"); r.Text != "posted" {
+	n = len(h.chat.posts())
+	res = post("really done")
+	id = card(n)
+	h.chat.react(id, "✅", ownerID)
+	if r := <-res; r.Text != "posted" {
 		t.Fatalf("second post %+v", r)
 	}
-	if n := len(h.chat.posts()); n != before+1 {
-		t.Fatalf("asked again: %+v", h.chat.posts()[before:])
+
+	// The owner's ask: ♾️ on a shell call covers that exact call only.
+	h.chat.say(ownerID, agentDM, 0, "run the tests", 0)
+	approve := func(cmd string) chan mcp.BridgeRes {
+		return async(agentDM, mcp.ToolApprove, map[string]any{"tool_name": "Bash", "input": map[string]any{"command": cmd}})
 	}
-	// Another target: a card again.
-	res = post("#secret", "psst")
-	id = card("#secret")
+	n = len(h.chat.posts())
+	res = approve("go test ./...")
+	id = card(n)
+	h.chat.react(id, "♾️", ownerID)
+	h.chat.react(id, "✅", ownerID)
+	if r := <-res; !strings.Contains(r.Text, "allow") {
+		t.Fatalf("approve %+v", r)
+	}
+	g := h.s.Grants()
+	if len(g) != 1 || g[0].Kind != KindTool || g[0].Target != ToolTarget("Bash", []byte(`{"command":"go test ./..."}`)) {
+		t.Fatalf("grants %+v", g)
+	}
+	if GrantText(g[0]) != "that exact Bash call" {
+		t.Fatal(GrantText(g[0]))
+	}
+	n = len(h.chat.posts())
+	if r := <-approve("go test ./..."); !strings.Contains(r.Text, "allow") || len(h.chat.posts()) != n {
+		t.Fatalf("same call asked again: %+v %+v", r, h.chat.posts()[n:])
+	}
+	res = approve("rm -rf ~")
+	id = card(n)
 	h.chat.react(id, "❌", ownerID)
-	if r := <-res; !strings.Contains(r.Text, "said no") {
-		t.Fatalf("secret post %+v", r)
+	if r := <-res; !strings.Contains(r.Text, "deny") {
+		t.Fatalf("another call rode the grant: %+v", r)
 	}
-	st, err := ReadStatus(h.s.paths.State)
-	if err != nil || len(st.Grants) != 1 {
-		t.Fatalf("status grants %+v %v", st.Grants, err)
-	}
-	if GrantText(st.Grants[0]) != "posting in #general" {
-		t.Fatal(GrantText(st.Grants[0]))
+	// And the owner's grant never covers bob's ask.
+	n = len(h.chat.posts())
+	res = async(general, mcp.ToolApprove, map[string]any{"tool_name": "Bash", "input": map[string]any{"command": "go test ./..."}})
+	id = card(n)
+	h.chat.react(id, "❌", ownerID)
+	if r := <-res; !strings.Contains(r.Text, "deny") {
+		t.Fatalf("bob's ask rode the owner's grant: %+v", r)
 	}
 }
 
@@ -142,6 +171,7 @@ func TestWorkOnlyPostsWithoutAsking(t *testing.T) {
 		<-block
 		return runner.Result{Session: req.Session, Text: NoReply}, nil
 	}
+	h.chat.setMembers(secret, ownerID, bobID)
 	h.chat.say(bobID, general, 0, "@rocky tell #secret hi", 0)
 	if r := h.call(mcp.ToolPostReply, map[string]any{"chan": "#secret", "text": "hi from bob"}); r.Text != "posted" {
 		t.Fatalf("post %+v", r)

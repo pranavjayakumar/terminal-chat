@@ -170,3 +170,14 @@ func TestEngineEnv(t *testing.T) {
 		t.Fatalf("env %s", got)
 	}
 }
+
+func TestArgsDeny(t *testing.T) {
+	a := Claude{}.Args(Request{Mode: Talk, Deny: []string{"Read(//h/memory/**)", "Read(//h/me.md)"}, PermissionTool: "mcp__tc__approve"})
+	s := strings.Join(a, " ")
+	if !strings.Contains(s, "--disallowed-tools Read(//h/memory/**) Read(//h/me.md) --permission-prompt-tool") {
+		t.Fatalf("args %v", a)
+	}
+	if b := strings.Join(Claude{}.Args(Request{Mode: Talk}), " "); strings.Contains(b, "--disallowed-tools") {
+		t.Fatalf("args %v", b)
+	}
+}
