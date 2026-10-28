@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/skailama/tc/internal/proto"
+	"github.com/skailama/tc/internal/transport"
 )
 
 // fastClock makes every Now() call advance 1s, so rate limits never bite
@@ -89,11 +90,13 @@ func TestConcurrentSameNonce(t *testing.T) {
 }
 
 // Many connections that never start TLS must not stop a real user getting in.
+// (Tests all dial from 127.0.0.1, so the flood stays under the per-source
+// pre-auth cap; past it that source is refused, see transport TestPendingCap*.)
 func TestHalfOpenFloodDoesNotBlockLogin(t *testing.T) {
 	ts := startServer(t, "tcp")
 	alice := ts.register(t, "alice", true)
 	alice.conn.Close()
-	for range 60 {
+	for range transport.DefaultMaxPendingPerSource - 2 {
 		c, err := net.Dial("tcp", ts.addr)
 		if err != nil {
 			t.Fatal(err)

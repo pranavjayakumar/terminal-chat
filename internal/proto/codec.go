@@ -31,6 +31,9 @@ type Frame struct {
 // Decode unmarshals the frame payload into v.
 func (f Frame) Decode(v any) error { return Unmarshal(f.Payload, v) }
 
+// DecodeClient is Decode with the client item cap (MaxClientItems).
+func (f Frame) DecodeClient(v any) error { return UnmarshalLimit(f.Payload, v, MaxClientItems) }
+
 // Marshal encodes v as msgpack with compact ints.
 func Marshal(v any) ([]byte, error) {
 	var buf bytes.Buffer
@@ -45,8 +48,12 @@ func Marshal(v any) ([]byte, error) {
 }
 
 // Unmarshal decodes msgpack into v. Unknown map keys are ignored.
-func Unmarshal(b []byte, v any) error {
-	if err := checkMsgpack(b); err != nil {
+func Unmarshal(b []byte, v any) error { return UnmarshalLimit(b, v, MaxItems) }
+
+// UnmarshalLimit is Unmarshal with no array or map over maxItems items: the
+// server reads client frames with MaxClientItems.
+func UnmarshalLimit(b []byte, v any, maxItems int) error {
+	if err := checkMsgpack(b, maxItems); err != nil {
 		return fmt.Errorf("decoding payload: %w", err)
 	}
 	if err := msgpack.Unmarshal(b, v); err != nil {
