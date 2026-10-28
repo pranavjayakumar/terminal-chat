@@ -1,11 +1,15 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"sync"
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
+	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/identity"
 	"github.com/skailama/tc/internal/proto"
 )
@@ -203,8 +207,8 @@ func TestAgentKey(t *testing.T) {
 	gen := generalID(t, snap)
 	alice.ok(proto.OpAgentRegister, proto.AgentRegisterArgs{Handle: "rocky"}, nil)
 	key := newKey(t)
-	alice.ok(proto.OpAgentKey, proto.AgentKeyArgs{Pubkey: key.PublicKey().Marshal()}, nil)
-	alice.fail(proto.OpAgentKey, proto.AgentKeyArgs{Pubkey: alice.signer.PublicKey().Marshal()}, proto.ErrConflict)
+	alice.ok(proto.OpAgentKey, agentKeyArgs(ts, alice, key), nil)
+	alice.fail(proto.OpAgentKey, agentKeyArgs(ts, alice, alice.signer), proto.ErrConflict)
 
 	// Plain HELLO with the agent key: still the agent.
 	c, bye := ts.connectCaps(t, key, "", "", agentCaps)
@@ -214,7 +218,7 @@ func TestAgentKey(t *testing.T) {
 	c.syncFresh()
 	c.fail(proto.OpInviteCreate, proto.InviteCreateArgs{}, proto.ErrForbidden)
 	c.fail(proto.OpRemindCreate, proto.RemindCreateArgs{At: 1, Text: "x"}, proto.ErrForbidden)
-	c.fail(proto.OpAgentKey, proto.AgentKeyArgs{Pubkey: newKey(t).PublicKey().Marshal()}, proto.ErrForbidden)
+	c.fail(proto.OpAgentKey, agentKeyArgs(ts, alice, newKey(t)), proto.ErrForbidden)
 	if _, bye := ts.connectCaps(t, key, "", "", nil); bye != proto.ByeProtocolError {
 		t.Fatalf("agent key without cap agent1: BYE %q", bye)
 	}
@@ -288,5 +292,46 @@ func TestAgentTempGrant(t *testing.T) {
 	alice.ok(proto.OpAgentAccess, proto.AgentAccessArgs{Temp: []uint64{gen}}, &r)
 	if r.Expires[gen] != 0 {
 		t.Fatal("a temporary grant shortened a lasting one")
+	}
+}
+
+// agentKeyArgs is agent.key for key as owner's agent, with its proof.
+func agentKeyArgs(ts *testServer, owner *tclient, key ssh.Signer) proto.AgentKeyArgs {
+	proof, err := identity.SignAgentKey(key, ts.sid(), owner.user.ID)
+	if err != nil {
+		owner.t.Fatal(err)
+	}
+	return proto.AgentKeyArgs{Pubkey: key.PublicKey().Marshal(), Proof: proof}
+}
+
+// Registering someone else's public key (github.com/<user>.keys is public)
+// as your agent's key used to work, and then that person could never join:
+// their key logged in as your agent. agent.key needs proof of possession.
+func TestAgentKeyNeedsProof(t *testing.T) {
+	ts := startServer(t, "tcp")
+	alice := ts.registerCaps(t, "alice", true, agentCaps)
+	bob := ts.register(t, "bob", false)
+	alice.syncFresh()
+	alice.ok(proto.OpAgentRegister, proto.AgentRegisterArgs{Handle: "rocky"}, nil)
+	carol := newKey(t) // hasn't joined yet; her public key is public
+	pub := carol.PublicKey().Marshal()
+
+	alice.fail(proto.OpAgentKey, proto.AgentKeyArgs{Pubkey: pub}, proto.ErrBadRequest)
+	forged := agentKeyArgs(ts, alice, newKey(t)) // signed by another key
+	forged.Pubkey = pub
+	alice.fail(proto.OpAgentKey, forged, proto.ErrBadRequest)
+	other := agentKeyArgs(ts, bob, carol) // a real proof, but for bob
+	alice.fail(proto.OpAgentKey, other, proto.ErrBadRequest)
+	// A proof for another server doesn't do either.
+	var sid e2ecrypto.ServerID
+	sid[0] = 1
+	p, _ := identity.SignAgentKey(carol, sid, alice.user.ID)
+	alice.fail(proto.OpAgentKey, proto.AgentKeyArgs{Pubkey: pub, Proof: p}, proto.ErrBadRequest)
+
+	code, _ := ts.CreateInvite(context.Background(), false, 0)
+	inv, _ := proto.ParseInvite(code)
+	c, bye := ts.connectCaps(t, carol, inv.Token, "carol", agentCaps)
+	if bye != "" || c.welcome.Agent != nil {
+		t.Fatalf("carol's join: BYE %q agent %+v", bye, c.welcome.Agent)
 	}
 }

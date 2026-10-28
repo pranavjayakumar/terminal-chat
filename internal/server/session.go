@@ -823,7 +823,7 @@ func (s *Server) sync(ctx context.Context, sess *session, args proto.Raw) (proto
 			return proto.SyncRes{}, err
 		}
 		for _, ev := range evs {
-			if proto.IsMsgKind(ev.Kind) && !s.agentSees(sess, ev.Chan) {
+			if agentGatedKind(ev.Kind) && !s.agentSees(sess, ev.Chan) {
 				continue
 			}
 			payload, err := proto.Marshal(ev)

@@ -123,7 +123,15 @@ func LoginAgent(ctx context.Context, ownerHome, agentHome, handle string) (proto
 	if err != nil {
 		return proto.Agent{}, err
 	}
-	if err := owner.call(ctx, proto.OpAgentKey, proto.AgentKeyArgs{Pubkey: signer.PublicKey().Marshal()}, nil, nil); err != nil {
+	// The old key's devices go with it (the server allows the agent one).
+	if _, err := owner.RevokeAgentDevices(ctx, ssh.FingerprintSHA256(signer.PublicKey())); err != nil {
+		return proto.Agent{}, err
+	}
+	proof, err := identity.SignAgentKey(signer, sid, cfg.UserID)
+	if err != nil {
+		return proto.Agent{}, err
+	}
+	if err := owner.call(ctx, proto.OpAgentKey, proto.AgentKeyArgs{Pubkey: signer.PublicKey().Marshal(), Proof: proof}, nil, nil); err != nil {
 		return proto.Agent{}, fmt.Errorf("registering the agent's key: %w", err)
 	}
 	endorse, err := identity.NewAgentEndorse(ownerKey, sid, cfg.UserID, signer.PublicKey(), time.Now())
@@ -259,7 +267,13 @@ func (c *Client) RetireAgent(ctx context.Context) error {
 	if err == nil && r.Agent.Owner != 0 {
 		c.setAgent(r.Agent)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if _, err := c.RevokeAgentDevices(ctx, ""); err != nil {
+		return fmt.Errorf("retired, but its devices are still active: %w", err)
+	}
+	return nil
 }
 
 // FetchAgents loads every agent from the server into the cache.
@@ -899,4 +913,45 @@ func (c *Client) agentDevice(sid e2ecrypto.ServerID, d trust.Device) bool {
 func agentMsg(q dbtx, id uint64) bool {
 	var a string
 	return q.QueryRow(`SELECT agent FROM msgs WHERE id = ?`, id).Scan(&a) == nil && a != ""
+}
+
+// RevokeAgentDevices revokes this account's active devices certified by an
+// agent key (§15.1), with the owner's SSH key, and returns how many. An
+// agent's devices go with its key: retiring the agent or giving it a new
+// key would otherwise leave them holding channel keys, and the server
+// allows an agent only one active device. Devices of the agent key keepFP
+// (an SSH fingerprint; "" = none) stay. A server without e2e1 has none.
+func (c *Client) RevokeAgentDevices(ctx context.Context, keepFP string) (int, error) {
+	if c.requireCap(proto.CapE2E, "") != nil {
+		return 0, nil
+	}
+	sid, ok := c.cacheServerID()
+	if !ok {
+		return 0, nil
+	}
+	me := c.Me().ID
+	if err := c.RefreshDevices(ctx, me); err != nil {
+		return 0, err
+	}
+	keys, err := c.trust.PinnedKeys(sid, me)
+	if err != nil {
+		return 0, err
+	}
+	agentKey := map[string]bool{}
+	for _, k := range keys {
+		if k.How == trust.Agent {
+			agentKey[k.Fingerprint] = true
+		}
+	}
+	n := 0
+	for _, d := range c.Devices(me) {
+		if d.Revoked || !d.Verified || d.This || !agentKey[d.KeyFP] || d.KeyFP == keepFP {
+			continue
+		}
+		if _, err := c.RevokeDevice(ctx, d.ID, false); err != nil && !errors.Is(err, ErrAlreadyRevoked) {
+			return n, fmt.Errorf("revoking the agent's device %s: %w", d.Short(), err)
+		}
+		n++
+	}
+	return n, nil
 }
