@@ -216,7 +216,7 @@ func (m *Model) endorseKeyCommand(args []string) (tea.Cmd, error) {
 		m.list = listState{title: "this computer's SSH key", rows: []string{
 			mine,
 			"To trust it on another computer of yours: /endorse-key " + mine + " there.",
-			"To trust that computer's key here: /endorse-key <the key it shows>.",
+			"To trust that computer's key here: /endorse-key <the key it shows>. Copy it from that computer, never from a message.",
 		}}
 		m.mode = modeList
 		return nil, nil

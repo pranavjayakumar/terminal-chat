@@ -130,7 +130,7 @@ func TestMaliciousOwnKeyEndorsement(t *testing.T) {
 	if !slices.Contains(bob.KeyChangedMembers(dm), a) {
 		t.Fatal("bob's key-change gate for alice opened")
 	}
-	if err := alice.AcceptKeyChanges(a, []string{fpMal}, true); err == nil {
+	if err := alice.AcceptKeyChanges(a, []string{fpMal}, true); !errors.Is(err, client.ErrOwnKeyAccept) {
 		t.Fatal("alice accepted the server's key for herself on a prompt")
 	}
 	malDev := malDevice.dev(t, env.sid).ID

@@ -39,12 +39,21 @@ const maxUnverifiedPerUser = 64
 // keepUnverified reports whether an unverified object claiming (sid, user)
 // may be stored: it must name this server and the user must be under the cap.
 func keepUnverified(q dbtx, table string, sid []byte, user uint64) bool {
+	return keepUnverifiedMax(q, table, sid, user, maxUnverifiedPerUser)
+}
+
+// maxEndorsePerUser bounds cached endorsements per user: room for one per
+// device registration, every key.endorse an honest server keeps, and
+// agent endorsements, so honest ones are never crowded out.
+const maxEndorsePerUser = proto.MaxDeviceRegistrations + proto.MaxKeyEndorsements + 64
+
+func keepUnverifiedMax(q dbtx, table string, sid []byte, user uint64, max int) bool {
 	if cur, err := metaBytes(q, "server_id"); err == nil && len(cur) > 0 && !bytes.Equal(cur, sid) {
 		return false
 	}
 	var n int
 	q.QueryRow(`SELECT COUNT(*) FROM `+table+` WHERE user = ?`, user).Scan(&n)
-	return n < maxUnverifiedPerUser
+	return n < max
 }
 
 // storeDevice keeps a device.new / snapshot device. Malformed objects are dropped.
@@ -75,7 +84,7 @@ func storeEndorse(q dbtx, e proto.Signed) error {
 	} else {
 		return nil
 	}
-	if !keepUnverified(q, "device_endorse", sid[:], user) {
+	if !keepUnverifiedMax(q, "device_endorse", sid[:], user, maxEndorsePerUser) {
 		return nil
 	}
 	_, err := q.Exec(`INSERT OR IGNORE INTO device_endorse (endorse, user, new_ssh) VALUES (?, ?, ?)`,

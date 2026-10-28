@@ -32,6 +32,9 @@ import (
 var (
 	// ErrKeyTrusted: the key is already trusted on this device.
 	ErrKeyTrusted = errors.New("that key is already trusted here")
+	// ErrOwnKeyAccept: AcceptKeyChanges never trusts my own keys; they
+	// need EndorseKey from a computer holding a key I already trust.
+	ErrOwnKeyAccept = errors.New("your own keys are trusted by endorsing them from another computer of yours (tc devices endorse), never on a prompt")
 	// ErrKeyNotSeen: no device of mine has signed in with that key.
 	ErrKeyNotSeen = errors.New("no device of yours has signed in with that SSH key yet")
 )

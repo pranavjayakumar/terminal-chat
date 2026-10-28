@@ -101,7 +101,7 @@ func TestOwnKeyEndorsement(t *testing.T) {
 	if alice.verifiedDevices(sid, a) != 1 || len(alice.PendingKeys(a)) != 0 {
 		t.Fatal("alice's desktop trusts the laptop without an endorsement")
 	}
-	if err := alice.AcceptKeyChanges(a, []string{fpLaptop}, true); err == nil {
+	if err := alice.AcceptKeyChanges(a, []string{fpLaptop}, true); !errors.Is(err, client.ErrOwnKeyAccept) {
 		t.Fatal("accepted her own key on a prompt")
 	}
 

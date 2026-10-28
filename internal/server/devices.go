@@ -285,17 +285,17 @@ func (s *Server) opKeyEndorse(ctx context.Context, sess *session, a proto.KeyEnd
 	return res, err
 }
 
-// keyEndorsements returns the key.endorse endorsements of users (nil: all),
-// by user, in the order they were made.
-func keyEndorsements(ctx context.Context, q querier, users []uint64) (map[uint64][]proto.Signed, error) {
-	query := `SELECT user, endorse FROM key_endorse`
-	var args []any
+// keyEndorsements returns the key.endorse endorsements of users (nil: all)
+// with id > after, by user, in the order they were made.
+func keyEndorsements(ctx context.Context, q querier, users []uint64, after uint64) (map[uint64][]proto.Signed, error) {
+	query := `SELECT user, endorse FROM key_endorse WHERE user > ?`
+	args := []any{after}
 	if len(users) > 0 {
 		js, err := json.Marshal(users)
 		if err != nil {
 			return nil, err
 		}
-		query += ` WHERE user IN (SELECT value FROM json_each(?))`
+		query += ` AND user IN (SELECT value FROM json_each(?))`
 		args = append(args, string(js))
 	}
 	rows, err := q.QueryContext(ctx, query+` ORDER BY user, created, rowid`, args...)
@@ -557,7 +557,7 @@ func (s *Server) opDevicesList(ctx context.Context, a proto.DevicesListArgs) (an
 	if a.After > math.MaxInt64 || slices.ContainsFunc(a.Users, func(u uint64) bool { return u > math.MaxInt64 }) {
 		return nil, badRequest("user ids out of range")
 	}
-	ends, err := keyEndorsements(ctx, s.st.db, a.Users)
+	ends, err := keyEndorsements(ctx, s.st.db, a.Users, a.After)
 	if err != nil {
 		return nil, err
 	}
@@ -611,7 +611,7 @@ func (sess *session) snapshotDevices(ctx context.Context, tx *sql.Tx, out *frame
 	if perr != nil {
 		return perr
 	}
-	ends, err := keyEndorsements(ctx, tx, nil)
+	ends, err := keyEndorsements(ctx, tx, nil, 0)
 	if err != nil {
 		return err
 	}

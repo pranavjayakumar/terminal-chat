@@ -776,8 +776,10 @@ Server rules (honest case):
   `key.endorse` endorsement), possibly over several parts.
 - **Compatibility:** older clients ignore the `key.endorse` event kind and the
   snapshot's `endorse` field, but they already verify KeyEndorse chains in
-  `devices.list` (which they call for their own user on every connection, and
-  for everyone after a reset), so they come to trust an endorsed key too.
+  `devices.list`. They call it for their own user on every connection, so
+  they trust their own endorsed keys after reconnecting; for other users only
+  after a cache reset or a refresh of that user's devices (until then the key
+  stays a pending change there, as before).
 
 Clients store what they receive and decide trust locally: a cert counts only
 if it verifies under an SSH key pinned for its `user` (directly or via a

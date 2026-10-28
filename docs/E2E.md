@@ -192,9 +192,10 @@ What a malicious server can and cannot do today, and what closes each gap:
   login key). Why the server can't fake it: it would need a signature, by a key the client already
   pinned for that user, over this server's id, that user id and its key; endorsements by unpinned
   keys, self-endorsements, other users' keys, another server's id or a broken signature are ignored
-  (malicious-server test `TestMaliciousOwnKeyEndorsement`). A thief holding your SSH key could endorse
-  a key of theirs only if it were already a login key of your account, which takes an admin's add-key
-  invite. An endorsed key is as trusted as the key that endorsed it: `/verify` still upgrades TOFU.
+  (malicious-server test `TestMaliciousOwnKeyEndorsement`). With an honest server, a thief holding your SSH
+  key could endorse a key of theirs only if it were already a login key of your account, which takes an
+  admin's add-key invite (clients don't check that; with a colluding server a stolen key can endorse any
+  key, which gives nothing new: it can already sign device certs). An endorsed key is as trusted as the key that endorsed it: `/verify` still upgrades TOFU.
 - **Lost devices**: K lives only on devices. Losing every device of a user loses their encrypted
   history (no backup in v1); a new device gets new messages, and older history only from a member's
   backlinks (the history of every epoch whose K a remaining member holds).
