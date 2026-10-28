@@ -30,6 +30,7 @@ type hookGroup struct {
 }
 
 type settings struct {
+	Env         map[string]string      `json:"env,omitempty"`
 	Hooks       map[string][]hookGroup `json:"hooks,omitempty"`
 	Permissions permissions            `json:"permissions"`
 	Sandbox     *sandbox               `json:"sandbox,omitempty"`
@@ -101,11 +102,10 @@ var secretPaths = []string{
 }
 
 // readOK are home-relative paths the sandboxed shell may read although
-// they sit in the home folder: Go's module and build caches and its env
-// file. Reading them leaks nothing the public module proxy doesn't have.
+// they sit in the home folder: Go's env file. Its module and build caches
+// are its own (Paths.GoCache, GoModCache), never the owner's: a shell that
+// could write those could plant code the owner's next build runs.
 var readOK = []string{
-	"go/pkg/mod", "go/pkg/sumdb",
-	"Library/Caches/go-build", ".cache/go-build",
 	"Library/Application Support/go", ".config/go",
 }
 
@@ -178,7 +178,7 @@ func SettingsJSON(dir string, o Options) ([]byte, error) {
 	// TC_HOME (cache.db holds messages in the clear) wherever it is, and
 	// the agent's own private parts.
 	denyRead = append(denyRead, tcHome, p.DeviceHome, p.State, p.Memory, p.Me, p.Config)
-	allowRead := []string{p.Worktrees, p.Repo, p.Skills}
+	allowRead := []string{p.Worktrees, p.Repo, p.Skills, filepath.Dir(p.GoCache)}
 	for _, r := range readOK {
 		allowRead = append(allowRead, "~/"+r)
 	}
@@ -198,6 +198,12 @@ func SettingsJSON(dir string, o Options) ([]byte, error) {
 	}
 
 	s := settings{
+		Env: map[string]string{
+			"GOCACHE":     p.GoCache,
+			"GOMODCACHE":  p.GoModCache,
+			"GOTOOLCHAIN": "local",
+			"GOTELEMETRY": "off",
+		},
 		Hooks: map[string][]hookGroup{
 			"SessionStart": hook(HookSessionStart),
 			"Stop":         hook(HookStop),
@@ -215,14 +221,10 @@ func SettingsJSON(dir string, o Options) ([]byte, error) {
 				StrictAllowlist: true,
 			},
 			Filesystem: filesystem{
-				AllowRead: allowRead,
-				DenyRead:  denyRead,
-				AllowWrite: []string{
-					"~/Library/Caches/go-build",
-					"~/.cache/go-build",
-					"~/go/pkg/mod",
-				},
-				DenyWrite: denyWrite,
+				AllowRead:  allowRead,
+				DenyRead:   denyRead,
+				AllowWrite: []string{filepath.Dir(p.GoCache)},
+				DenyWrite:  denyWrite,
 			},
 		},
 	}

@@ -30,6 +30,9 @@ type Paths struct {
 	Repo          string // repo/: the tc clone
 	Worktrees     string // worktrees/: one per piece of work
 	Dream         string // dream/: the memory worktree a dream run edits
+	// GoCache and GoModCache are the sandboxed shell's own Go caches: the
+	// owner's would let it plant code the owner's next build runs.
+	GoCache, GoModCache string
 }
 
 // PathsFor returns the layout of the agent home at dir.
@@ -50,5 +53,7 @@ func PathsFor(dir string) Paths {
 		Repo:          j("repo"),
 		Worktrees:     j("worktrees"),
 		Dream:         j("dream"),
+		GoCache:       j("cache", "go-build"),
+		GoModCache:    j("cache", "gomod"),
 	}
 }

@@ -77,6 +77,8 @@ type Work struct {
 	BranchPrefix string // every work branch starts with this
 	// Author is the name and email on the commits tc makes for the agent.
 	AuthorName, AuthorEmail string
+	// GoModCache is the sandbox's module cache, which Prefetch fills.
+	GoModCache string
 }
 
 // New returns the Work for the agent home at agentDir.
@@ -91,6 +93,7 @@ func New(agentDir string) *Work {
 		BranchPrefix: "agent/",
 		AuthorName:   "tc agent",
 		AuthorEmail:  "agent@tc.invalid",
+		GoModCache:   p.GoModCache,
 	}
 }
 
@@ -209,17 +212,17 @@ func (w *Work) Worktree(ctx context.Context, slug string) (Worktree, error) {
 	return wt, nil
 }
 
-// Prefetch downloads the worktree's Go modules into the shared module
-// cache, outside the sandbox: the sandbox can reach proxy.golang.org but
-// not the storage it redirects large modules to. Reading go.mod runs no
-// code; the worktree is fresh from Base when this runs.
+// Prefetch downloads the worktree's Go modules into the sandbox's module
+// cache, from outside the sandbox: the sandbox can reach proxy.golang.org
+// but not the storage it redirects large modules to. Downloading runs no
+// code, and nothing outside the sandbox builds from that cache.
 func (w *Work) Prefetch(ctx context.Context, dir string) error {
-	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil || w.GoModCache == "" {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
-	_, err := w.exec(ctx, Cmd{Dir: dir, Name: "go", Args: []string{"mod", "download"}, Env: []string{"GOTOOLCHAIN=local"}})
+	_, err := w.exec(ctx, Cmd{Dir: dir, Name: "go", Args: []string{"mod", "download"}, Env: []string{"GOTOOLCHAIN=local", "GOMODCACHE=" + w.GoModCache}})
 	return err
 }
 

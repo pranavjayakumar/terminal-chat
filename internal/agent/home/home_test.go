@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -237,10 +238,15 @@ func TestSettingsSandboxEscapes(t *testing.T) {
 			t.Errorf("sandbox may read %s", want)
 		}
 	}
-	for _, want := range []string{p.Worktrees, p.Repo, p.Skills, "~/go/pkg/mod", "~/Library/Caches/go-build"} {
+	for _, want := range []string{p.Worktrees, p.Repo, p.Skills, filepath.Dir(p.GoCache)} {
 		if !contains(fsys.AllowRead, want) {
 			t.Errorf("sandbox can't read %s", want)
 		}
+	}
+	// Its Go caches are its own: the owner's build and module caches are
+	// code the owner's next build trusts.
+	if s.Env["GOCACHE"] != p.GoCache || s.Env["GOMODCACHE"] != p.GoModCache || !slices.Equal(fsys.AllowWrite, []string{filepath.Dir(p.GoCache)}) {
+		t.Errorf("go caches: env %v, allowWrite %v", s.Env, fsys.AllowWrite)
 	}
 	for _, bad := range []string{dir, p.Memory, p.State, tcHome, "~"} {
 		if contains(fsys.AllowRead, bad) {
