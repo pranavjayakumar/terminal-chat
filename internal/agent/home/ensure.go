@@ -24,6 +24,9 @@ type Options struct {
 	// ExtraDomains are added to the sandbox network allowlist (the tc server,
 	// owner-added hosts).
 	ExtraDomains []string
+	// GoRoot is a Go toolchain in the home folder the sandbox may read.
+	// Default: the go on PATH when it lives under UserHome.
+	GoRoot string
 }
 
 const ownedManifest = ".claude/tc-owned.json"
@@ -47,6 +50,10 @@ func EnsureWith(dir string, o Options) error {
 	for _, d := range []string{p.Root, filepath.Dir(p.Settings), p.Skills, p.DeviceHome, p.State, p.Worktrees} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return fmt.Errorf("creating %s: %w", d, err)
+		}
+		// MkdirAll keeps the mode of a folder that was already there.
+		if err := os.Chmod(d, 0o700); err != nil {
+			return fmt.Errorf("securing %s: %w", d, err)
 		}
 	}
 
@@ -107,6 +114,9 @@ func (o Options) withDefaults() (Options, error) {
 		}
 		o.UserHome = h
 	}
+	if o.GoRoot == "" {
+		o.GoRoot = goRootUnder(o.UserHome)
+	}
 	return o, nil
 }
 
@@ -137,6 +147,11 @@ func ownedFiles(dir string, o Options) (map[string][]byte, error) {
 		return nil, err
 	}
 	out[".claude/settings.json"] = settings
+	dream, err := DreamSettingsJSON(dir)
+	if err != nil {
+		return nil, err
+	}
+	out[".claude/dream-settings.json"] = dream
 	return out, nil
 }
 
@@ -172,7 +187,7 @@ func safeRel(rel string) bool {
 	if c != rel || path.IsAbs(c) || c == ".." || len(c) >= 3 && c[:3] == "../" {
 		return false
 	}
-	return c == "CLAUDE.md" || c == ".claude/settings.json" || (len(c) > len(".claude/skills/") && c[:len(".claude/skills/")] == ".claude/skills/")
+	return c == "CLAUDE.md" || c == ".claude/settings.json" || c == ".claude/dream-settings.json" || (len(c) > len(".claude/skills/") && c[:len(".claude/skills/")] == ".claude/skills/")
 }
 
 func writeIfChanged(p string, data []byte) error {

@@ -79,10 +79,10 @@ func TestParseSkipsSubagentText(t *testing.T) {
 }
 
 func TestArgsTalk(t *testing.T) {
-	a := Claude{}.Args(Request{Mode: Talk, Session: "s1", MaxUSD: 2, MCPConfig: "{}", Settings: "/h/.claude/settings.json", System: "code", PermissionTool: "mcp__tc__approve", AddDirs: []string{"/x"}})
+	a := Claude{}.Args(Request{Mode: Talk, Session: "s1", MaxUSD: 2, MCPConfig: "{}", Settings: "/h/.claude/settings.json", System: "code", PermissionTool: "mcp__tc__approve", AddDirs: []string{"/x"}}, "/h/state/mcp-1.json")
 	s := strings.Join(a, " ")
 	for _, want := range []string{"-p ", "--output-format stream-json", "--verbose", "--include-partial-messages", "--model sonnet",
-		"--strict-mcp-config", "--mcp-config {}", "--settings /h/.claude/settings.json", "--max-budget-usd 2.00",
+		"--strict-mcp-config", "--mcp-config /h/state/mcp-1.json", "--settings /h/.claude/settings.json", "--max-budget-usd 2.00",
 		"--restricted", "--tools Read,Glob,Grep", "--permission-prompt-tool mcp__tc__approve", "--session-id s1", "--append-system-prompt code"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in %s", want, s)
@@ -96,15 +96,44 @@ func TestArgsTalk(t *testing.T) {
 }
 
 func TestArgsWork(t *testing.T) {
-	a := Claude{}.Args(Request{Mode: Work, Session: "s1", Resume: true, AddDirs: []string{"/a", "/b"}})
+	a := Claude{}.Args(Request{Mode: Work, Session: "s1", Resume: true, AddDirs: []string{"/a", "/b"}}, "")
 	s := strings.Join(a, " ")
-	for _, want := range []string{"--tools Bash,", "--add-dir /a", "--add-dir /b", "--resume s1", "--permission-prompts none", "--setting-sources project"} {
+	for _, want := range []string{"--tools Bash,", "--add-dir /a", "--add-dir /b", "--resume s1", "--permission-prompts none"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in %s", want, s)
 		}
 	}
-	if strings.Contains(s, "--restricted") || strings.Contains(s, "--session-id") {
+	// No settings file from the (agent-writable) working directory: only --settings.
+	if !slices.Contains(a, "--setting-sources=") || strings.Contains(s, "--setting-sources project") {
+		t.Errorf("work loads project settings: %s", s)
+	}
+	if strings.Contains(s, "--restricted") || strings.Contains(s, "--session-id") || strings.Contains(s, "--mcp-config") {
 		t.Errorf("work args: %s", s)
+	}
+}
+
+// The MCP config carries the run's token and the owner's MCP secrets: it
+// goes in a 0600 file in the state folder, never on the command line, and
+// is gone after the run.
+func TestRunMCPConfigFile(t *testing.T) {
+	bin, dir := fakeClaude(t, `i=0; for a in "$@"; do if [ "$prev" = "--mcp-config" ]; then cp "$a" "$(dirname "$0")/mcp.copy"; ls -l "$a" | cut -c1-10 > "$(dirname "$0")/mode"; fi; prev="$a"; done; cat FIXTURE`)
+	state := t.TempDir()
+	secret := `{"mcpServers":{"tc":{"env":{"TC_AGENT_TOKEN":"tok-123"}}}}`
+	if _, err := (Claude{Bin: bin}).Run(context.Background(), Request{Dir: dir, MCPConfig: secret, StateDir: state}, nil); err != nil {
+		t.Fatal(err)
+	}
+	args, _ := os.ReadFile(filepath.Join(dir, "args"))
+	if strings.Contains(string(args), "tok-123") || !strings.Contains(string(args), state) {
+		t.Fatalf("args %s", args)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "mcp.copy")); string(b) != secret {
+		t.Fatalf("config %q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "mode")); strings.TrimSpace(string(b)) != "-rw-------" {
+		t.Fatalf("mode %q", b)
+	}
+	if ents, _ := os.ReadDir(state); len(ents) != 0 {
+		t.Fatalf("left behind: %v", ents)
 	}
 }
 
@@ -164,9 +193,12 @@ func TestRunCancelKillsGroup(t *testing.T) {
 func TestEngineEnv(t *testing.T) {
 	in := []string{"PATH=/bin", "HOME=/h", "SSH_AUTH_SOCK=/s", "SSH_AGENT_PID=1", "GH_TOKEN=x", "GITHUB_TOKEN=y",
 		"ANTHROPIC_API_KEY=k", "AWS_SECRET_ACCESS_KEY=a", "OPENAI_API_KEY=o", "DB_PASSWORD=p", "HERDR_PANE_ID=w1",
-		"CLAUDECODE=1", "CLAUDE_CODE_OAUTH_TOKEN=sub", "LANG=en", "TC_HOME=/t"}
+		"CLAUDECODE=1", "CLAUDE_CODE_OAUTH_TOKEN=sub", "LANG=en", "TC_HOME=/t",
+		"DATABASE_URL=postgres://u:p@db/x", "REDIS_URL=redis://localhost:6379", "SENTRY_DSN=https://k@o1.ingest.sentry.io/1",
+		"KUBECONFIG=/h/.kube/c", "BILLING_API_URL=https://svc:hunter2@billing.internal/v1", "MIRROR=https://tok@git.example.com/r",
+		"DOCS_URL=https://example.com/a@b", "NPM_CONFIG__AUTH=x", "PGPASSFILE=/h/.pgpass"}
 	got := strings.Join(engineEnv(in), " ")
-	if got != "PATH=/bin HOME=/h CLAUDE_CODE_OAUTH_TOKEN=sub LANG=en TC_HOME=/t" {
+	if got != "PATH=/bin HOME=/h CLAUDE_CODE_OAUTH_TOKEN=sub LANG=en TC_HOME=/t DOCS_URL=https://example.com/a@b" {
 		t.Fatalf("env %s", got)
 	}
 }

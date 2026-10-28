@@ -140,7 +140,8 @@ func TestSettingsJSON(t *testing.T) {
 			} `json:"hooks"`
 		} `json:"hooks"`
 		Permissions struct {
-			Deny []string `json:"deny"`
+			Deny       []string `json:"deny"`
+			BlockReads bool     `json:"blockReadsOutsideWorkingDirectories"`
 		} `json:"permissions"`
 		Sandbox struct {
 			Enabled                  bool `json:"enabled"`
@@ -151,6 +152,7 @@ func TestSettingsJSON(t *testing.T) {
 			Filesystem struct {
 				DenyRead  []string `json:"denyRead"`
 				AllowRead []string `json:"allowRead"`
+				DenyWrite []string `json:"denyWrite"`
 			} `json:"filesystem"`
 		} `json:"sandbox"`
 	}
@@ -189,12 +191,111 @@ func TestSettingsJSON(t *testing.T) {
 	if !s.Sandbox.Enabled || s.Sandbox.AllowUnsandboxedCommands {
 		t.Error("sandbox must be on with no escape hatch")
 	}
-	doms := strings.Join(s.Sandbox.Network.AllowedDomains, " ")
-	if !strings.Contains(doms, "github.com") || !strings.Contains(doms, "chat.example.com") {
-		t.Errorf("domains = %s", doms)
+	doms := s.Sandbox.Network.AllowedDomains
+	if strings.Join(doms, " ") != "proxy.golang.org sum.golang.org github.com chat.example.com" {
+		t.Errorf("domains = %v", doms)
 	}
-	if !contains(s.Sandbox.Filesystem.DenyRead, "~/.ssh") || !contains(s.Sandbox.Filesystem.DenyRead, "~/.config") || !contains(s.Sandbox.Filesystem.AllowRead, dir) {
-		t.Errorf("sandbox filesystem = %+v", s.Sandbox.Filesystem)
+	if !s.Permissions.BlockReads {
+		t.Error("reads outside the working directories aren't blocked")
+	}
+}
+
+// What a sandboxed shell (Work mode) or a file tool must never reach: the
+// owner's secrets, and anything tc's own unsandboxed git or code later
+// trusts (H4/H5 of the agent sandbox audit).
+func TestSettingsSandboxEscapes(t *testing.T) {
+	o := testOpts(t)
+	tcHome := t.TempDir() // a TC_HOME outside ~/.config
+	dir := filepath.Join(tcHome, "agent")
+	if err := EnsureWith(dir, o); err != nil {
+		t.Fatal(err)
+	}
+	p := PathsFor(dir)
+	if err := os.MkdirAll(filepath.Join(p.Worktrees, "poll"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tcHome, "cache.db"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b, err := SettingsJSON(dir, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s settings
+	if err := json.Unmarshal(b, &s); err != nil {
+		t.Fatal(err)
+	}
+	fsys := s.Sandbox.Filesystem
+	for _, want := range []string{p.Repo, p.Dream, "**/.git", filepath.Join(p.Worktrees, "poll", ".git"), p.Memory, p.State, filepath.Dir(p.Settings), p.Code} {
+		if !contains(fsys.DenyWrite, want) {
+			t.Errorf("sandbox may write %s", want)
+		}
+	}
+	for _, want := range []string{"~/.claude", "~/.claude.json", "~/.zsh_history", "~/.bash_history", "~/.local/share", "~/.vault-token",
+		"~/.cargo/credentials", "~/.cargo/credentials.toml", "~/.terraform.d", "~/.pgpass", "~/.config", "~/.ssh", tcHome, p.State, p.DeviceHome} {
+		if !contains(fsys.DenyRead, want) {
+			t.Errorf("sandbox may read %s", want)
+		}
+	}
+	for _, want := range []string{p.Worktrees, p.Repo, p.Skills, "~/go/pkg/mod", "~/Library/Caches/go-build"} {
+		if !contains(fsys.AllowRead, want) {
+			t.Errorf("sandbox can't read %s", want)
+		}
+	}
+	for _, bad := range []string{dir, p.Memory, p.State, tcHome, "~"} {
+		if contains(fsys.AllowRead, bad) {
+			t.Errorf("allowRead reopens %s", bad)
+		}
+	}
+	deny := strings.Join(s.Permissions.Deny, "\n")
+	abs := func(x string) string { return "/" + filepath.ToSlash(x) }
+	for _, want := range []string{
+		"Edit(" + abs(p.Repo) + "/**)", "Edit(" + abs(p.Dream) + "/**)", "Edit(**/.git)", "Edit(**/.git/**)",
+		"Read(~/.claude/**)", "Read(~/.claude.json)", "Read(~/.zsh_history)", "Read(**/.env)",
+		"Read(" + abs(filepath.Join(tcHome, "cache.db")) + ")", "Read(" + abs(p.State) + "/**)",
+	} {
+		if !strings.Contains(deny, want+"\n") && !strings.HasSuffix(deny, want) {
+			t.Errorf("deny rules missing %s", want)
+		}
+	}
+	if strings.Contains(deny, "Read("+abs(dir)+")") {
+		t.Error("deny rules block the agent home")
+	}
+	for _, d := range []string{"storage.googleapis.com", "*.githubusercontent.com", "api.github.com"} {
+		if contains(s.Sandbox.Network.AllowedDomains, d) {
+			t.Errorf("network allows %s", d)
+		}
+	}
+
+	ds, err := os.ReadFile(p.DreamSettings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dset settings
+	if err := json.Unmarshal(ds, &dset); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(dset.Permissions.Deny, "Edit("+abs(p.Dream)+"/.git)") || !contains(dset.Permissions.Deny, "Edit(**/.git/**)") || !dset.Permissions.BlockReadsOutsideWorkingDirectories {
+		t.Errorf("dream settings = %s", ds)
+	}
+	if contains(dset.Permissions.Deny, "Edit("+abs(p.Dream)+"/**)") {
+		t.Error("the dream can't edit its notes")
+	}
+}
+
+func TestEnsureTightensModes(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "agent")
+	p := PathsFor(dir)
+	if err := os.MkdirAll(p.State, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureWith(dir, testOpts(t)); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{p.Root, p.State, p.DeviceHome, p.Worktrees} {
+		if fi, err := os.Stat(d); err != nil || fi.Mode().Perm() != 0o700 {
+			t.Errorf("%s mode %v %v", d, fi.Mode().Perm(), err)
+		}
 	}
 }
 

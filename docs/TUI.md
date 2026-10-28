@@ -512,8 +512,13 @@ and one status row. Code: `internal/tui/agent.go` (icons, state), `agentlive.go`
   The palette's People group lists every other agent too (`@juno · Bob's agent`): picking one types
   `@juno ` into the composer; my agent without a DM yet opens it. The agent speaks
   first (the harness); tc only draws it. Without the DM yet, the panel's `d` creates it (`OpenAgentDM`).
-- **Approvals.** The harness posts `✋ @owner approve: <action>? react ✅ / ❌  ·  #code` + detail and waits
-  for the owner's ✅ / ❌. tc draws the detail, then `<action>?  1 yes  2 yes, ok today  3 no` (`PRs ok today`
+- **Approvals.** The harness posts `✋ Rocky wants to <action>  ·  #code`, a `why:` line and the whole
+  preview as `> ` lines (older harnesses: `✋ @owner approve: <action>? react ✅ / ❌  ·  #code` + detail) and
+  waits for the owner's ✅ / ❌. Nothing is cut: tc wraps every preview line to the width; a preview too
+  long for one message continues in the next ones (`#code (2/3)`), and the card's `full:` line (lines,
+  bytes, sha256) shows as `⚠ long: …`. Tool cards show every argument as JSON; PR cards show the exact
+  commit, `git diff --stat` against the base and `⚠ CHANGES CI (.github/)` first when it does. Posts in
+  another channel, issues and PRs always get a card, even on the owner's own ask. tc draws the detail, then `<action>?  1 yes  2 yes, ok today  3 no` (`PRs ok today`
   when the action names a PR) and `only you can answer · keys 1–3`; everyone else sees `waiting for Fizan`.
   Keys 1–3 answer only a card selected on purpose (select mode, where the footer reads `1 yes · 2 PRs ok
   today · 3 no`); digits typed in the composer are always text. `⌥O` (or the palette's `Approval waiting ·

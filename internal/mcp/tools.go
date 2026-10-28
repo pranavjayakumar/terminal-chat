@@ -93,7 +93,7 @@ var allTools = map[string]Tool{
 		prop{"detail", "string", "why, and anything they should know", false})},
 	ToolApprove: {ToolApprove, "Permission prompts: asks the owner whether a tool call may run.", json.RawMessage(
 		`{"type":"object","properties":{"tool_name":{"type":"string"},"input":{"type":"object"},"tool_use_id":{"type":"string"}},"required":["tool_name","input"]}`)},
-	ToolOpenIssue: {ToolOpenIssue, "Open a GitHub issue on the tc repo. Your owner's own asks open without a tap; others need their ok.", schema(
+	ToolOpenIssue: {ToolOpenIssue, "Open a GitHub issue on the tc repo. Your owner approves it on a card first (their own ask too).", schema(
 		prop{"title", "string", "issue title", true},
 		prop{"body", "string", "issue body (Markdown)", true})},
 	ToolOpenPR: {ToolOpenPR, "Push a work branch and open a DRAFT pull request from your owner's GitHub account, after their ok.", schema(

@@ -1,7 +1,6 @@
                                             
  Thread #general                          ✕ 
                                             
- │ bob  20:41                               
  │ can we get /poll? picking dinner         
  │ took 43 messages                         
  │ ↳ 2 replies                              
@@ -14,7 +13,8 @@
                                             
  ┆ ▟▙ Rocky ⟡  20:42                        
  ┆ Rocky wants to open a draft PR on t…     
- ┆ ▏ plan for /poll, about 15 min and …     
+ ┆ ▏ plan for /poll, about 15 min and ~     
+ ┆ ▏ $2:                                    
  ┆ ▏ proto poll op + vote event             
  ┆ ▏ tests unit + e2e, then a draft PR      
  ┆ why: alice asked in #general: "@roc…     

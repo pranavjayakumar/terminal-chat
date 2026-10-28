@@ -26,7 +26,7 @@ const (
 
 // Request is one turn.
 type Request struct {
-	Dir    string // working directory: the agent home
+	Dir    string // working directory: the agent home (Work: its worktrees folder)
 	Prompt string
 	// Session continues an earlier session when Resume is set; otherwise
 	// it names the new one (a UUID), so the caller knows the id before the
@@ -38,8 +38,11 @@ type Request struct {
 	MaxUSD  float64 // per-run spend cap; 0 = none
 	AddDirs []string
 	// MCPConfig is the --mcp-config JSON (the tc server plus any the owner
-	// added); only these servers load.
+	// added); only these servers load. It holds the run's token and the
+	// owner's MCP secrets, so it goes to the engine as a 0600 file in
+	// StateDir, never on the command line.
 	MCPConfig string
+	StateDir  string // where the MCP config file goes; "" = the OS temp dir
 	Settings  string // settings.json path (hooks, deny rules, sandbox)
 	// System is appended to the engine's system prompt (the code).
 	System string

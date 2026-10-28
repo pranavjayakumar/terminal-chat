@@ -264,6 +264,11 @@ func TestOwnerWorkMode(t *testing.T) {
 	if reqs[0].Mode != runner.Work || !strings.Contains(strings.Join(reqs[0].AddDirs, " "), "/src/tc") || !strings.Contains(strings.Join(reqs[0].Env, " "), memory.EnvOwnerAsk+"=1") {
 		t.Fatalf("owner request %+v", reqs[0])
 	}
+	// Work runs in worktrees/, never the agent home, and carries the code
+	// itself (no settings or CLAUDE.md is loaded from the working dir).
+	if p := home.PathsFor(h.s.Dir); reqs[0].Dir != p.Worktrees || reqs[0].StateDir != p.State {
+		t.Fatalf("owner request dir %q state %q", reqs[0].Dir, reqs[0].StateDir)
+	}
 	if reqs[1].Mode != runner.Talk || len(reqs[1].AddDirs) != 0 {
 		t.Fatalf("bob's request %+v", reqs[1])
 	}

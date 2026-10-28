@@ -80,7 +80,9 @@ func TestOwnersAskToPostElsewhereGetsACard(t *testing.T) {
 	}
 	h.chat.say(ownerID, agentDM, 0, "lets send fahim a message on general", 0)
 	res := make(chan mcp.BridgeRes, 1)
-	go func() { res <- h.call(mcp.ToolPostReply, map[string]any{"chan": "#general", "text": "hey fahim, fizan says hi"}) }()
+	go func() {
+		res <- h.call(mcp.ToolPostReply, map[string]any{"chan": "#general", "text": "hey fahim, fizan says hi"})
+	}()
 	var card posted
 	h.waitFor("card", func() bool {
 		for _, p := range h.chat.posts() {

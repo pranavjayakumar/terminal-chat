@@ -60,9 +60,11 @@ func (s *Supervisor) dream(ctx context.Context, cfg home.Config) {
 		Dir:    d.Dir,
 		Prompt: d.Prompt,
 		Mode:   runner.Edit,
-		System: s.identity(Ask{}),
-		MaxUSD: min(cfg.RunCapUSD, cfg.DailyCapUSD-s.ledger.Spent(s.Now())),
-		Env:    []string{"TC_AGENT_DREAM=1"},
+		// The dream can't touch the worktree's .git that tc's git reads next.
+		Settings: home.PathsFor(s.Dir).DreamSettings,
+		System:   s.identity(Ask{}),
+		MaxUSD:   min(cfg.RunCapUSD, cfg.DailyCapUSD-s.ledger.Spent(s.Now())),
+		Env:      []string{"TC_AGENT_DREAM=1"},
 	}, nil)
 	_ = s.ledger.Add(Spend{T: s.Now().UnixMilli(), USD: res.CostUSD, Kind: "dream"})
 	act := Activity{T: s.Now().UnixMilli(), What: "dream", USD: res.CostUSD}

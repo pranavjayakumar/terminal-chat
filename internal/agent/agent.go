@@ -158,6 +158,10 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	if err := os.MkdirAll(s.paths.State, 0o700); err != nil {
 		return err
 	}
+	// The tool socket lives here; MkdirAll keeps an older, looser mode.
+	if err := os.Chmod(s.paths.State, 0o700); err != nil {
+		return err
+	}
 	var err error
 	if s.sessions, err = openSessions(s.paths.State); err != nil {
 		return err
