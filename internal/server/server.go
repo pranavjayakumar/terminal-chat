@@ -52,15 +52,16 @@ type Server struct {
 
 	// mu serializes every write transaction together with its fan-out, so
 	// sessions observe events in seq order and sync can take an exact head.
-	mu       sync.Mutex
-	sessions map[*session]struct{}
-	members  map[uint64]map[uint64]bool // chan -> current members
-	kinds    map[uint64]string          // chan -> kind
-	online   map[uint64]int             // user -> live session count
-	presence map[uint64]proto.Ephemeral // user -> last presence
-	limits   map[uint64]*bucket         // sends
-	wlimits  map[uint64]*bucket         // other write ops
-	disabled map[uint64]bool
+	mu           sync.Mutex
+	sessions     map[*session]struct{}
+	members      map[uint64]map[uint64]bool // chan -> current members
+	kinds        map[uint64]string          // chan -> kind
+	online       map[uint64]int             // user -> live session count
+	userSessions map[uint64]int             // user -> every registered session (maxSessionsPerUser)
+	presence     map[uint64]proto.Ephemeral // user -> last presence
+	limits       map[uint64]*bucket         // sends
+	wlimits      map[uint64]*bucket         // other write ops
+	disabled     map[uint64]bool
 	// Agents (agents.go): owner → active agent, access list, agent DM,
 	// connected agent sessions; agent sessions' own rate buckets.
 	agents      map[uint64]proto.Agent
@@ -119,7 +120,7 @@ func New(cfg Config) (*Server, error) {
 		sessions: map[*session]struct{}{},
 		members:  map[uint64]map[uint64]bool{},
 		kinds:    map[uint64]string{},
-		online:   map[uint64]int{},
+		online:   map[uint64]int{}, userSessions: map[uint64]int{},
 		presence: map[uint64]proto.Ephemeral{},
 		limits:   map[uint64]*bucket{},
 		wlimits:  map[uint64]*bucket{},

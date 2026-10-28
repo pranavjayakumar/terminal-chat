@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/skailama/tc/internal/proto"
+	"github.com/skailama/tc/internal/transport"
 )
 
 // Events published between WELCOME and sync must not be delivered twice
@@ -180,5 +181,15 @@ func TestDisabledUserCannotAct(t *testing.T) {
 				t.Fatal("disabled user's send succeeded")
 			}
 		}
+	}
+}
+
+// Sessions that authenticated free their pre-auth slot (transport gate):
+// more live sessions from one address than the per-source pending cap is
+// normal (an office behind one NAT).
+func TestAuthenticatedConnsLeavePendingCap(t *testing.T) {
+	ts := startServer(t, "tcp")
+	for i := range transport.DefaultMaxPendingPerSource + 8 {
+		ts.register(t, fmt.Sprintf("u%d", i), false)
 	}
 }

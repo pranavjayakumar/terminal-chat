@@ -444,8 +444,8 @@ func (s *Server) opDevicesList(ctx context.Context, a proto.DevicesListArgs) (an
 	return res, nil
 }
 
-// snapshotDevices sends every device and revoke in parts (e2e1 sessions only).
-func (sess *session) snapshotDevices(ctx context.Context, tx *sql.Tx) error {
+// snapshotDevices collects every device and revoke in parts (e2e1 sessions only).
+func (sess *session) snapshotDevices(ctx context.Context, tx *sql.Tx, out *frames) error {
 	var part proto.Snapshot
 	size := 0
 	var perr error
@@ -454,7 +454,7 @@ func (sess *session) snapshotDevices(ctx context.Context, tx *sql.Tx) error {
 			sess.srv.log.Error("device revoke without a seq, omitted", "user", d.user)
 		}
 		if size+d.encSize > snapshotPart && size > 0 {
-			if perr = sess.pushSnapshot(part); perr != nil {
+			if perr = out.snapshot(part); perr != nil {
 				return false
 			}
 			part, size = proto.Snapshot{}, 0
@@ -474,7 +474,7 @@ func (sess *session) snapshotDevices(ctx context.Context, tx *sql.Tx) error {
 		return perr
 	}
 	if size > 0 {
-		return sess.pushSnapshot(part)
+		return out.snapshot(part)
 	}
 	return nil
 }

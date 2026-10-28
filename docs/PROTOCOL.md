@@ -45,7 +45,11 @@ The server key never rotates in v1; rotating means re-issuing invites.
   Before authentication the limit is 8 KiB. Over the limit → BYE `frame_too_large`.
 - Payload is a MessagePack map with **string keys** (VOICE, 0x40, is the one exception: raw
   bytes, §14.4). Unknown keys MUST be ignored.
-  Decoders cap nesting depth (16) and container lengths by remaining bytes.
+  Decoders cap nesting depth (16) and container lengths by remaining bytes, and the item
+  count of any one array or map (pairs, for a map): 65,536 in general, and 8,192 in frames
+  the server reads from clients (above every list limit a client may send, the largest
+  being `devices.list` `users`). A HELLO or REQ over it → BYE `protocol_error`; an
+  EPHEMERAL over it is dropped.
 - Unknown frame `type` values MUST be skipped, not fatal.
 
 ### Frame types
@@ -105,7 +109,11 @@ Auth = {pubkey: bin, sig: bin, invite?: str, name?: str}
 - Clients give a second computer the server as `tc://<host>:<port>#<pin>` (an invite code
   without the token): `tc login` with it sends a HELLO without `invite`.
 
-The handshake must complete within 30 s (hardware keys may wait for a touch).
+The server waits 20 s for HELLO after the TLS handshake (≤ 10 s), then BYE
+`handshake_timeout` (hardware keys may wait for a touch). Connections that haven't
+authenticated yet are capped: at most 32 per source (an IPv4 /24, an IPv6 /64) and 512 in
+all; beyond either, a TCP connection is closed before the TLS handshake and a QUIC one
+right after it (no BYE). A connection stops counting once HELLO verified.
 
 ### 4.1 Invites
 
@@ -219,8 +227,11 @@ Kinds:
 ### 4.2 BYE codes
 
 `auth_failed, invite_invalid, name_taken, key_exists, frame_too_large,
-handshake_timeout, protocol_error, slow_consumer, server_shutdown, revoked`.
+handshake_timeout, protocol_error, slow_consumer, server_shutdown, revoked,
+too_many_sessions`.
 (`key_exists` now only when a concurrent redemption registered the key first, §4.)
+`too_many_sessions`: the account already has 32 sessions (§9); clients reconnect later as
+after any other BYE (older clients do).
 
 ### 4.3 Passive sessions (cap `passive`)
 
@@ -518,6 +529,13 @@ All sizes are UTF-8 bytes.
 - `search.q` ≤ 256 B; only the first 8 terms are used.
 - Presence updates: at most 1/s per session, and only broadcast when state or status changes.
 - Each session's unsent output is capped at 8 MiB (sync output excluded); beyond that → BYE `slow_consumer`.
+- Sync output (§6) is paced by the client instead: the server produces it only while less
+  than 1 MiB of it waits unsent, and reads nothing else from that client meanwhile (requests,
+  PINGs and EPHEMERALs wait until the sync's RES). A client may take as long as it likes to
+  read a catch-up, but one frame write that sees no progress for 45 s during sync → BYE
+  `slow_consumer`.
+- At most 32 concurrent sessions per account (agent and passive sessions included); one more
+  → BYE `too_many_sessions` after authentication.
 - `huddle.join` takes from the shared write-op bucket; `huddle.leave` doesn't. Datagrams have
   their own per-session bucket (burst 100, refill 60/s). Voice limits (datagram size, relay queue,
   huddle sizes) are in §14.

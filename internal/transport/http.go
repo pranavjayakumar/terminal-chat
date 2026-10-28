@@ -21,6 +21,9 @@ type ListenOpts struct {
 	// HTTPCert is presented to HTTP clients instead of the tc certificate
 	// (see LoadOrCreateHTTPCert). Zero means the tc certificate.
 	HTTPCert tls.Certificate
+	// MaxPending and MaxPendingPerSource cap connections not yet
+	// authenticated (gate.go); 0 means the default.
+	MaxPending, MaxPendingPerSource int
 }
 
 // tcpConfig returns the TLS-over-TCP server config. With HTTP enabled, a
