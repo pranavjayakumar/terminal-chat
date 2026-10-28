@@ -432,7 +432,7 @@ func (s *Supervisor) schedule(ctx context.Context, r *run, raw json.RawMessage) 
 	ch, th := a.Chan, a.Thread
 	if cv.ID != a.Chan {
 		ch, th = cv.ID, 0
-		if !a.InDM && !s.askOwner(ctx, r, Approval{Kind: KindPost, Target: mcp.ChanLabel(cv), Action: "schedule a post in " + mcp.ChanLabel(cv) + " for " + at.Format("Mon 2 Jan 15:04"), Preview: text}) {
+		if !s.askOwner(ctx, r, Approval{Kind: KindPostOut, Target: mcp.ChanLabel(cv), Action: "schedule a post in " + mcp.ChanLabel(cv) + " for " + at.Format("Mon 2 Jan 15:04"), Preview: text}) {
 			return "your owner said no (or didn't answer): nothing scheduled", nil
 		}
 	}
@@ -598,7 +598,7 @@ func (s *Supervisor) askAgent(ctx context.Context, r *run, raw json.RawMessage) 
 		}
 		if cv.ID != a.Chan {
 			ch, th = cv.ID, 0
-			if !(a.Owner && a.InDM) && !s.askOwner(ctx, r, Approval{Kind: KindPost, Target: mcp.ChanLabel(cv), Action: "ask @" + handle + " in " + mcp.ChanLabel(cv), Preview: question}) {
+			if !s.askOwner(ctx, r, Approval{Kind: KindPostOut, Target: mcp.ChanLabel(cv), Action: "ask @" + handle + " in " + mcp.ChanLabel(cv), Preview: question}) {
 				return "your owner said no (or didn't answer): not asked", nil
 			}
 		}

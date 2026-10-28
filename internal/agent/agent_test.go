@@ -542,6 +542,36 @@ func TestApprovals(t *testing.T) {
 	}
 }
 
+// approveAll answers every approval card with the owner's ✅ until stop.
+func (h *harness) approveAll() (stop func()) {
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		seen := map[uint64]bool{}
+		for {
+			select {
+			case <-done:
+				return
+			case <-time.After(5 * time.Millisecond):
+			}
+			h.chat.mu.Lock()
+			var ids []uint64
+			for _, m := range h.chat.msgs {
+				if strings.HasPrefix(m.Body, "✋ ") && !seen[m.ID] {
+					seen[m.ID] = true
+					ids = append(ids, m.ID)
+				}
+			}
+			h.chat.mu.Unlock()
+			for _, id := range ids {
+				h.chat.react(id, "✅", ownerID)
+			}
+		}
+	}()
+	return func() { close(done); <-finished }
+}
+
 func (h *harness) cardID(body string) uint64 {
 	h.t.Helper()
 	var id uint64
@@ -583,21 +613,34 @@ func TestVerdict(t *testing.T) {
 }
 
 type fakeWork struct {
-	mu  sync.Mutex
-	prs []string
+	mu     sync.Mutex
+	prs    []string
+	issues []string
+	ci     []string // changed files under .github/ in the next PR
 }
 
 func (w *fakeWork) EnsureClone(context.Context) error { return nil }
 func (w *fakeWork) Worktree(_ context.Context, slug string) (work.Worktree, error) {
 	return work.Worktree{Dir: "/wt/" + slug, Branch: "agent/" + slug}, nil
 }
-func (w *fakeWork) OpenDraftPR(_ context.Context, dir, branch, title, body string) (string, error) {
+func (w *fakeWork) PreparePR(_ context.Context, dir, branch, message string) (work.PR, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.prs = append(w.prs, branch)
+	return work.PR{Dir: dir, Branch: branch, SHA: strings.Repeat("ab", 20), BaseSHA: strings.Repeat("cd", 20),
+		Stat: " poll.go | 3 +++\n 1 file changed, 3 insertions(+)\n", Files: append([]string{"poll.go"}, w.ci...), CI: w.ci}, nil
+}
+func (w *fakeWork) OpenDraftPR(_ context.Context, pr work.PR, title, body string) (string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.prs = append(w.prs, pr.Branch)
 	return "https://github.com/x/pull/" + strconv.Itoa(len(w.prs)), nil
 }
-func (w *fakeWork) OpenIssue(context.Context, string, string) (string, error) { return "", nil }
+func (w *fakeWork) OpenIssue(_ context.Context, title, _ string) (string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.issues = append(w.issues, title)
+	return "https://github.com/x/issues/" + strconv.Itoa(len(w.issues)), nil
+}
 
 func TestAutoApprovePRsToday(t *testing.T) {
 	cfg := cfgDefault()

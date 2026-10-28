@@ -740,3 +740,40 @@ func TestSlug(t *testing.T) {
 		t.Error("PersonPath")
 	}
 }
+
+// The dream run can write anything in its worktree, the .git pointer
+// included. A pointer to a repo it made, whose config runs a program, must
+// neither run nor be merged.
+func TestDreamPoisonedPointer(t *testing.T) {
+	s, _ := newStore(t)
+	seedNotes(t, s, 3)
+	d, err := s.PrepareDream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "pwned")
+	evil := filepath.Join(t.TempDir(), "evil.sh")
+	if err := os.WriteFile(evil, []byte("#!/bin/sh\necho ran >> "+marker+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fake := filepath.Join(d.Dir, "x")
+	gitOut(t, d.Dir, "init", "-q", fake)
+	cfg := filepath.Join(fake, ".git", "config")
+	b, _ := os.ReadFile(cfg)
+	b = append(b, []byte("[core]\n\tfsmonitor = "+evil+"\n\thooksPath = "+filepath.Dir(evil)+"\n")...)
+	if err := os.WriteFile(cfg, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d.Dir, ".git"), []byte("gitdir: "+filepath.Join(fake, ".git")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ApplyDream(d); err == nil {
+		t.Fatal("poisoned dream merged")
+	}
+	if b, err := os.ReadFile(marker); err == nil {
+		t.Fatalf("planted code ran: %s", b)
+	}
+	if err := s.Commit("after"); err != nil {
+		t.Errorf("memory broken after the dream: %v", err)
+	}
+}

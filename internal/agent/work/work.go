@@ -1,6 +1,13 @@
 // Package work runs an agent's code work on the tc repo: a clone in the agent
-// home, one git worktree per piece of work, tests, draft PRs and issues
-// through the owner's gh account.
+// home, one git worktree per piece of work, draft PRs and issues through the
+// owner's gh account.
+//
+// The agent edits its worktree from a sandboxed shell; everything here runs
+// outside the sandbox as the owner. So every git call goes through
+// internal/agent/safegit (no hooks, fsmonitor or credential helpers from
+// config, git dirs pinned, a worktree's .git pointer checked before use),
+// only the steps that talk to GitHub as the owner see gh's credentials, and
+// a push sends the exact commit the owner approved.
 package work
 
 import (
@@ -12,10 +19,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/skailama/tc/internal/agent/home"
+	"github.com/skailama/tc/internal/agent/safegit"
 )
 
 // DefaultRepo is the GitHub repo agents work on.
@@ -26,7 +35,10 @@ type Cmd struct {
 	Dir  string
 	Name string
 	Args []string
-	Env  []string // added to the current environment
+	Env  []string // added to the scrubbed environment
+	// Creds lets the command use the owner's GitHub login (gh's tokens).
+	// Without it the command gets no credentials at all.
+	Creds bool
 }
 
 func (c Cmd) String() string { return strings.TrimSpace(c.Name + " " + strings.Join(c.Args, " ")) }
@@ -43,7 +55,7 @@ type ExecRunner struct{}
 func (ExecRunner) Run(ctx context.Context, c Cmd) (string, error) {
 	cmd := exec.CommandContext(ctx, c.Name, c.Args...)
 	cmd.Dir = c.Dir
-	cmd.Env = append(os.Environ(), append([]string{"GIT_TERMINAL_PROMPT=0", "GH_PROMPT_DISABLED=1"}, c.Env...)...)
+	cmd.Env = append(safegit.Env(os.Environ(), c.Creds), c.Env...)
 	cmd.WaitDelay = 5 * time.Second
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
@@ -60,9 +72,11 @@ type Work struct {
 	Repo         string // owner/name on GitHub
 	RepoDir      string // the clone
 	WorktreesDir string // one folder per worktree
-	CloneURL     string // clone from here with git instead of `gh repo clone Repo`
+	CloneURL     string // clone, fetch and push here instead of https://github.com/Repo
 	Base         string // branch work starts from and PRs target
 	BranchPrefix string // every work branch starts with this
+	// Author is the name and email on the commits tc makes for the agent.
+	AuthorName, AuthorEmail string
 }
 
 // New returns the Work for the agent home at agentDir.
@@ -75,6 +89,8 @@ func New(agentDir string) *Work {
 		WorktreesDir: p.Worktrees,
 		Base:         "main",
 		BranchPrefix: "agent/",
+		AuthorName:   "tc agent",
+		AuthorEmail:  "agent@tc.invalid",
 	}
 }
 
@@ -84,42 +100,71 @@ type Worktree struct {
 	Branch string
 }
 
-var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
+var (
+	slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
+	shaRe  = regexp.MustCompile(`^[0-9a-f]{40,64}$`)
+)
 
 // ValidSlug reports whether slug can name a worktree and branch.
 func ValidSlug(slug string) bool { return slugRe.MatchString(slug) }
 
-func (w *Work) run(ctx context.Context, dir, name string, args ...string) (string, error) {
-	out, err := w.Runner.Run(ctx, Cmd{Dir: dir, Name: name, Args: args})
+func (w *Work) url() string {
+	if w.CloneURL != "" {
+		return w.CloneURL
+	}
+	return "https://github.com/" + w.Repo + ".git"
+}
+
+func (w *Work) exec(ctx context.Context, c Cmd) (string, error) {
+	out, err := w.Runner.Run(ctx, c)
 	if err != nil {
-		return out, fmt.Errorf("%s %s: %w: %s", name, firstArg(args), err, tail(out, 500))
+		return out, fmt.Errorf("%s %s: %w: %s", c.Name, subcommand(c), err, tail(out, 500))
 	}
 	return out, nil
 }
 
-func firstArg(a []string) string {
-	if len(a) == 0 {
-		return ""
+// git runs git on the repo or a worktree: gitDir and workTree pinned
+// (workTree "" for repo-wide commands), safegit's flags, and gh's credential
+// helper only when creds.
+func (w *Work) git(ctx context.Context, gitDir, workTree string, creds bool, args ...string) (string, error) {
+	a := []string{"--git-dir=" + gitDir}
+	if workTree != "" {
+		a = append(a, "--work-tree="+workTree)
 	}
-	if a[0] == "-C" && len(a) > 2 {
-		return a[2]
+	a = append(a, safegit.Flags...)
+	if creds {
+		a = append(a, safegit.GHCredential...)
 	}
-	return a[0]
+	a = append(a, "-c", "user.name="+w.AuthorName, "-c", "user.email="+w.AuthorEmail)
+	dir := workTree
+	if dir == "" {
+		dir = filepath.Dir(gitDir)
+	}
+	return w.exec(ctx, Cmd{Dir: dir, Name: "git", Args: append(a, args...), Creds: creds})
+}
+
+// subcommand is the git or gh subcommand in c, for errors.
+func subcommand(c Cmd) string {
+	for _, a := range c.Args {
+		if a == "-c" || strings.HasPrefix(a, "-") || strings.Contains(a, "=") {
+			continue
+		}
+		return a
+	}
+	return ""
 }
 
 // EnsureClone clones the repo into RepoDir when it is not there yet.
 func (w *Work) EnsureClone(ctx context.Context) error {
-	if _, err := os.Stat(filepath.Join(w.RepoDir, ".git")); err == nil {
-		return nil
+	if _, err := os.Lstat(filepath.Join(w.RepoDir, ".git")); err == nil {
+		_, err := safegit.RepoGitDir(w.RepoDir)
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(w.RepoDir), 0o700); err != nil {
 		return fmt.Errorf("creating repo parent: %w", err)
 	}
-	if w.CloneURL != "" {
-		_, err := w.run(ctx, "", "git", "clone", "-q", w.CloneURL, w.RepoDir)
-		return err
-	}
-	_, err := w.run(ctx, "", "gh", "repo", "clone", w.Repo, w.RepoDir, "--", "-q")
+	a := append(append(append([]string{}, safegit.Flags...), safegit.GHCredential...), "clone", "-q", "--no-tags", "--template=", "--", w.url(), w.RepoDir)
+	_, err := w.exec(ctx, Cmd{Dir: filepath.Dir(w.RepoDir), Name: "git", Args: a, Creds: true})
 	return err
 }
 
@@ -133,54 +178,49 @@ func (w *Work) Worktree(ctx context.Context, slug string) (Worktree, error) {
 	if err := w.EnsureClone(ctx); err != nil {
 		return Worktree{}, err
 	}
-	if _, err := os.Stat(filepath.Join(wt.Dir, ".git")); err == nil {
+	gitDir, err := safegit.RepoGitDir(w.RepoDir)
+	if err != nil {
+		return Worktree{}, err
+	}
+	if _, err := os.Lstat(filepath.Join(wt.Dir, ".git")); err == nil {
+		if _, err := safegit.WorktreeGitDir(w.RepoDir, wt.Dir); err != nil {
+			return Worktree{}, err
+		}
 		return wt, nil
 	}
-	if _, err := w.run(ctx, "", "git", "-C", w.RepoDir, "fetch", "-q", "origin"); err != nil {
+	if strings.HasPrefix(w.Base, "-") {
+		return Worktree{}, fmt.Errorf("bad base branch %q", w.Base)
+	}
+	if _, err := w.git(ctx, gitDir, "", true, "fetch", "-q", "--no-tags", "--", w.url(), "+refs/heads/"+w.Base+":refs/remotes/origin/"+w.Base); err != nil {
 		return Worktree{}, err
 	}
 	if err := os.MkdirAll(w.WorktreesDir, 0o700); err != nil {
 		return Worktree{}, fmt.Errorf("creating worktrees dir: %w", err)
 	}
-	_, _ = w.run(ctx, "", "git", "-C", w.RepoDir, "worktree", "prune")
-	if _, err := w.run(ctx, "", "git", "-C", w.RepoDir, "rev-parse", "--verify", "--quiet", "refs/heads/"+wt.Branch); err == nil {
-		_, err = w.run(ctx, "", "git", "-C", w.RepoDir, "worktree", "add", "-q", wt.Dir, wt.Branch)
+	_, _ = w.git(ctx, gitDir, "", false, "worktree", "prune")
+	if _, err := w.git(ctx, gitDir, "", false, "rev-parse", "--verify", "--quiet", "refs/heads/"+wt.Branch); err == nil {
+		if _, err := w.git(ctx, gitDir, "", false, "worktree", "add", "-q", wt.Dir, wt.Branch); err != nil {
+			return wt, err
+		}
+	} else if _, err := w.git(ctx, gitDir, "", false, "worktree", "add", "-q", "-b", wt.Branch, wt.Dir, "origin/"+w.Base); err != nil {
 		return wt, err
 	}
-	_, err := w.run(ctx, "", "git", "-C", w.RepoDir, "worktree", "add", "-q", "-b", wt.Branch, wt.Dir, "origin/"+w.Base)
-	return wt, err
+	_ = w.Prefetch(ctx, wt.Dir) // best effort: a missing module fails the agent's build, not the worktree
+	return wt, nil
 }
 
-// TestResult is the outcome of a test run.
-type TestResult struct {
-	Passed   bool
-	TimedOut bool
-	Duration time.Duration
-	Tail     string // the last lines of output
-}
-
-// TestTailBytes is how much test output a TestResult keeps.
-const TestTailBytes = 4000
-
-// RunTests runs `go test` on pkgs (default ./...) in dir with a timeout. A
-// failing or timed-out run is a result, not an error; the error is for
-// a cancelled context.
-func (w *Work) RunTests(ctx context.Context, dir string, timeout time.Duration, pkgs ...string) (TestResult, error) {
-	if len(pkgs) == 0 {
-		pkgs = []string{"./..."}
+// Prefetch downloads the worktree's Go modules into the shared module
+// cache, outside the sandbox: the sandbox can reach proxy.golang.org but
+// not the storage it redirects large modules to. Reading go.mod runs no
+// code; the worktree is fresh from Base when this runs.
+func (w *Work) Prefetch(ctx context.Context, dir string) error {
+	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
+		return nil
 	}
-	tctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
-	start := time.Now()
-	out, err := w.Runner.Run(tctx, Cmd{Dir: dir, Name: "go", Args: append([]string{"test"}, pkgs...), Env: []string{"GOTOOLCHAIN=local"}})
-	res := TestResult{Passed: err == nil, Duration: time.Since(start), Tail: tail(out, TestTailBytes)}
-	if ctx.Err() != nil {
-		return res, ctx.Err()
-	}
-	if errors.Is(err, context.DeadlineExceeded) || tctx.Err() != nil && err != nil {
-		res.TimedOut = true
-	}
-	return res, nil
+	_, err := w.exec(ctx, Cmd{Dir: dir, Name: "go", Args: []string{"mod", "download"}, Env: []string{"GOTOOLCHAIN=local"}})
+	return err
 }
 
 func tail(s string, n int) string {
@@ -207,20 +247,136 @@ func checkText(title, body string) error {
 	return nil
 }
 
-// OpenDraftPR pushes branch from dir to origin and opens a draft PR into
-// Base. Only work branches (BranchPrefix) can be pushed. Returns the PR URL.
-func (w *Work) OpenDraftPR(ctx context.Context, dir, branch, title, body string) (string, error) {
+func (w *Work) checkBranch(branch string) error {
+	if !strings.HasPrefix(branch, w.BranchPrefix) || !ValidSlug(strings.TrimPrefix(branch, w.BranchPrefix)) {
+		return fmt.Errorf("branch %q is not a work branch", branch)
+	}
+	return nil
+}
+
+// worktreeGitDir checks that dir is a worktree of ours on branch and
+// returns its git dir.
+func (w *Work) worktreeGitDir(ctx context.Context, dir, branch string) (string, error) {
+	if filepath.Dir(filepath.Clean(dir)) != filepath.Clean(w.WorktreesDir) {
+		return "", fmt.Errorf("%s is not one of the agent's worktrees", dir)
+	}
+	gitDir, err := safegit.WorktreeGitDir(w.RepoDir, dir)
+	if err != nil {
+		return "", err
+	}
+	head, err := w.git(ctx, gitDir, dir, false, "symbolic-ref", "-q", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(head) != "refs/heads/"+branch {
+		return "", fmt.Errorf("the worktree is on %s, not %s", strings.TrimSpace(head), branch)
+	}
+	return gitDir, nil
+}
+
+// PR is a branch ready to push: the exact commit, what it changes against
+// the base, and whether it touches CI.
+type PR struct {
+	Dir, Branch string
+	SHA         string // the commit that will be pushed
+	BaseSHA     string // merge base with origin/Base
+	Stat        string // git diff --stat BaseSHA..SHA
+	Files       []string
+	CI          []string // changed files under .github/
+}
+
+// PreparePR commits whatever the agent left uncommitted in the worktree
+// (its sandbox cannot write the repo's git dir, so tc commits for it, with
+// message as the commit message) and describes the result for the owner's
+// approval card.
+func (w *Work) PreparePR(ctx context.Context, dir, branch, message string) (PR, error) {
+	if err := w.checkBranch(branch); err != nil {
+		return PR{}, err
+	}
+	if err := checkText(message, ""); err != nil {
+		return PR{}, err
+	}
+	gitDir, err := w.worktreeGitDir(ctx, dir, branch)
+	if err != nil {
+		return PR{}, err
+	}
+	g := func(args ...string) (string, error) { return w.git(ctx, gitDir, dir, false, args...) }
+	st, err := g("status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=all")
+	if err != nil {
+		return PR{}, err
+	}
+	for _, rec := range strings.Split(st, "\x00") {
+		if len(rec) <= 3 {
+			continue
+		}
+		rel := rec[3:]
+		switch {
+		case strings.HasSuffix(rel, "/") || slices.Contains(strings.Split(rel, "/"), ".git"):
+			return PR{}, fmt.Errorf("%s is a git repository inside the worktree: refusing to commit it", rel)
+		case safegit.Linked(filepath.Join(dir, filepath.FromSlash(rel))):
+			return PR{}, fmt.Errorf("%s is a hard link to a file elsewhere: refusing to commit it", rel)
+		}
+	}
+	if _, err := g("add", "-A"); err != nil {
+		return PR{}, err
+	}
+	if _, err := g("diff", "--cached", "--quiet"); err != nil {
+		if _, err := g("commit", "-q", "--no-verify", "-m", message); err != nil {
+			return PR{}, err
+		}
+	}
+	sha, err := g("rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return PR{}, err
+	}
+	base, err := g("merge-base", "HEAD", "refs/remotes/origin/"+w.Base)
+	if err != nil {
+		return PR{}, err
+	}
+	pr := PR{Dir: dir, Branch: branch, SHA: strings.TrimSpace(sha), BaseSHA: strings.TrimSpace(base)}
+	if pr.SHA == pr.BaseSHA {
+		return PR{}, errors.New("nothing to push: the branch has no changes")
+	}
+	if pr.Stat, err = g("diff", "--no-color", "--no-ext-diff", "--no-textconv", "--stat=100", pr.BaseSHA, pr.SHA); err != nil {
+		return PR{}, err
+	}
+	names, err := g("diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", pr.BaseSHA, pr.SHA)
+	if err != nil {
+		return PR{}, err
+	}
+	for _, f := range strings.Split(names, "\x00") {
+		if f == "" {
+			continue
+		}
+		pr.Files = append(pr.Files, f)
+		if f == ".github" || strings.HasPrefix(f, ".github/") {
+			pr.CI = append(pr.CI, f)
+		}
+	}
+	return pr, nil
+}
+
+// OpenDraftPR pushes exactly pr.SHA to pr.Branch on GitHub and opens a
+// draft PR into Base. Returns the PR URL.
+func (w *Work) OpenDraftPR(ctx context.Context, pr PR, title, body string) (string, error) {
 	if err := checkText(title, body); err != nil {
 		return "", err
 	}
-	if !strings.HasPrefix(branch, w.BranchPrefix) || !ValidSlug(strings.TrimPrefix(branch, w.BranchPrefix)) {
-		return "", fmt.Errorf("branch %q is not a work branch", branch)
-	}
-	if _, err := w.run(ctx, dir, "git", "push", "-q", "-u", "origin", branch+":"+branch); err != nil {
+	if err := w.checkBranch(pr.Branch); err != nil {
 		return "", err
 	}
-	out, err := w.run(ctx, dir, "gh", "pr", "create", "--draft", "--repo="+w.Repo,
-		"--base="+w.Base, "--head="+branch, "--title="+title, "--body="+body)
+	if !shaRe.MatchString(pr.SHA) {
+		return "", fmt.Errorf("bad commit %q", pr.SHA)
+	}
+	gitDir, err := w.worktreeGitDir(ctx, pr.Dir, pr.Branch)
+	if err != nil {
+		return "", err
+	}
+	if _, err := w.git(ctx, gitDir, pr.Dir, true, "push", "-q", "--no-verify", "--", w.url(), pr.SHA+":refs/heads/"+pr.Branch); err != nil {
+		return "", err
+	}
+	out, err := w.exec(ctx, Cmd{Dir: os.TempDir(), Name: "gh", Creds: true, Args: []string{"pr", "create", "--draft", "--repo=" + w.Repo,
+		"--base=" + w.Base, "--head=" + pr.Branch, "--title=" + title, "--body=" + body}})
 	if err != nil {
 		return "", err
 	}
@@ -232,7 +388,7 @@ func (w *Work) OpenIssue(ctx context.Context, title, body string) (string, error
 	if err := checkText(title, body); err != nil {
 		return "", err
 	}
-	out, err := w.run(ctx, "", "gh", "issue", "create", "--repo="+w.Repo, "--title="+title, "--body="+body)
+	out, err := w.exec(ctx, Cmd{Dir: os.TempDir(), Name: "gh", Creds: true, Args: []string{"issue", "create", "--repo=" + w.Repo, "--title=" + title, "--body=" + body}})
 	if err != nil {
 		return "", err
 	}

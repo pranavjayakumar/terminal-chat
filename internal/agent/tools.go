@@ -142,12 +142,17 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		if p.Thread != 0 && !threadIn(s.Chat, p.Thread, cv.ID) {
 			return "", fmt.Errorf("no thread %d there", p.Thread)
 		}
-		// The owner's own ask to post somewhere is the approval; anyone
-		// else's post outside their thread needs the owner's ok.
+		// Another channel always gets a card (text the run read may be
+		// steering it there, even on the owner's ask); in the asking
+		// channel only someone else's post outside their thread does.
 		onAsk := cv.ID == a.Chan && (p.Thread == a.Thread || p.Where == "thread")
-		if !a.Owner && !onAsk {
+		kind := KindPost
+		if cv.ID != a.Chan {
+			kind = KindPostOut
+		}
+		if kind == KindPostOut || !a.Owner && !onAsk {
 			where := mcp.ChanLabel(cv)
-			if !s.askOwner(ctx, r, Approval{Kind: KindPost, Target: where, Action: "post in " + where, Preview: text}) {
+			if !s.askOwner(ctx, r, Approval{Kind: kind, Target: where, Action: "post in " + where, Preview: text}) {
 				return "your owner said no (or didn't answer): not posted", nil
 			}
 		}
@@ -252,7 +257,7 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		if s.Work == nil {
 			return "", errors.New("repo work isn't set up")
 		}
-		if !a.Owner && !s.askOwner(ctx, r, Approval{Kind: KindIssue, Target: "tc", Action: "open a GitHub issue: " + p.Title, Preview: p.Body}) {
+		if !s.askOwner(ctx, r, Approval{Kind: KindIssue, Target: "tc", Action: "open a GitHub issue: " + p.Title, Preview: "title: " + p.Title + "\n\n" + p.Body}) {
 			return "your owner said no (or didn't answer): no issue opened", nil
 		}
 		url, err := s.Work.OpenIssue(ctx, p.Title, p.Body)
@@ -312,10 +317,19 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		if dir == "" {
 			return "", fmt.Errorf("no worktree for branch %s: start it with work_start", sanitize.Line(p.Branch))
 		}
-		if !s.askOwner(ctx, r, Approval{Kind: KindPR, Target: "tc", Action: "open a draft PR on tc: " + p.Title, Preview: p.Body + "\n(branch " + p.Branch + ")"}) {
+		pr, err := s.Work.PreparePR(ctx, dir, p.Branch, p.Title)
+		if err != nil {
+			return "", err
+		}
+		target, action := "tc", "open a draft PR on tc: "+p.Title
+		if len(pr.CI) > 0 {
+			// A grant for plain PRs never covers one that changes CI.
+			target, action = "tc .github", "open a draft PR on tc that CHANGES CI (.github/): "+p.Title
+		}
+		if !s.askOwner(ctx, r, Approval{Kind: KindPR, Target: target, Action: action, Preview: PRPreview(pr, p.Title, p.Body)}) {
 			return "your owner said no (or didn't answer): nothing pushed", nil
 		}
-		url, err := s.Work.OpenDraftPR(ctx, dir, p.Branch, p.Title, p.Body)
+		url, err := s.Work.OpenDraftPR(ctx, pr, p.Title, p.Body)
 		if err != nil {
 			return "", err
 		}
@@ -617,8 +631,7 @@ func (s *Supervisor) approvePrompt(ctx context.Context, r *run, raw json.RawMess
 	if line := runner.StatusLine(p.Tool, input); line != "" {
 		what = strings.TrimSuffix(line, "…")
 	}
-	detail := short(string(p.Input), 600)
-	allow := s.askOwner(ctx, r, Approval{Kind: KindTool, Target: p.Tool, Action: what + " (" + p.Tool + ")", Preview: detail})
+	allow := s.askOwner(ctx, r, Approval{Kind: KindTool, Target: p.Tool, Action: what + " (" + p.Tool + ")", Preview: ToolPreview(p.Input)})
 	var out []byte
 	if allow {
 		if len(p.Input) == 0 {
