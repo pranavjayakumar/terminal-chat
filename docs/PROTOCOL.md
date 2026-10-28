@@ -554,9 +554,16 @@ All user-controlled text is **untrusted terminal input**. The server rejects
 (`bad_request`) any body, display name, topic, status or emoji that is invalid
 UTF-8 or contains control characters other than `\n` and `\t` in bodies (C0,
 DEL, C1, ESC). Display names, topics, status and emoji additionally reject bidi
-controls (U+202A–U+202E, U+2066–U+2069). Clients MUST still sanitize everything
-on render (`internal/sanitize`): defense in depth, so a buggy or old server can
-never drive a terminal.
+controls (U+202A–U+202E, U+2066–U+2069). Display names must also come through rendering
+unchanged (below), and not start or end with a space or be blank, so one person can't pose
+as another with invisible differences (`bad_request`; names set earlier stay, rendered
+cleaned). Clients MUST still sanitize everything on render (`internal/sanitize`): defense in
+depth, so a buggy or old server can never drive a terminal. Rendering drops controls, bidi
+controls and marks (U+200E/F, U+061C), private-use characters, format characters (Unicode
+Cf: zero-width space, word joiner, BOM, soft hyphen, tag characters…) except a zero-width
+joiner between emoji, a zero-width non-joiner between letters of a script that uses it
+(Arabic, Indic…) and tag characters in an emoji flag sequence, Hangul filler letters,
+variation selectors past one per character, and combining marks past 3 per character.
 
 ## 11. Versioning rules
 

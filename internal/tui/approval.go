@@ -70,7 +70,9 @@ func parseApproval(x client.Message) (approvalCard, bool) {
 	if old, ok := strings.CutPrefix(head, "@"); ok {
 		return parseOldApproval(old, rest)
 	}
-	who, what, ok := strings.Cut(head, " wants to ")
+	// Who asks is the authenticated sender (Message.agent), never the body's
+	// claim: an agent could otherwise word a card as another's.
+	_, what, ok := strings.Cut(head, " wants to ")
 	if !ok {
 		return approvalCard{}, false
 	}
@@ -82,7 +84,7 @@ func parseApproval(x client.Message) (approvalCard, bool) {
 	if !strings.HasPrefix(code, "#") || strings.ContainsAny(code, " \t") {
 		return approvalCard{}, false
 	}
-	c := approvalCard{agent: who, action: strings.TrimSpace(what[:j]), code: code}
+	c := approvalCard{agent: agentTitle(x.Agent), action: strings.TrimSpace(what[:j]), code: code}
 	if rest != "" {
 		for _, l := range strings.Split(rest, "\n") {
 			switch {
@@ -111,6 +113,14 @@ func parseOldApproval(head, detail string) (approvalCard, bool) {
 		return approvalCard{}, false
 	}
 	return approvalCard{owner: owner, action: strings.TrimSpace(rest[:i]), code: code, detail: detail}, true
+}
+
+// agentTitle is how cards name agent handle h ("rocky" -> "Rocky").
+func agentTitle(h string) string {
+	if h == "" {
+		return "Your agent"
+	}
+	return strings.ToUpper(h[:1]) + h[1:]
 }
 
 // title is the card's first line: who wants what.

@@ -13,7 +13,7 @@ Team chat that lives in your terminal (and your herdr panes). One small binary, 
 **Admin, once:** run a server on any machine your teammates can reach ([docs/DEPLOY.md](docs/DEPLOY.md)):
 
 ```sh
-tc server --public YOUR_IP:7443          # first run prints your own admin invite
+tc server --public YOUR_IP:7443          # first run: your admin invite (in DATA/first-invite.txt)
 tc server invite --uses 15 --ttl 24h     # one invite for the whole team
 ```
 

@@ -26,7 +26,8 @@ func TestDisplayName(t *testing.T) {
 	if noop.Seq != 0 {
 		t.Fatal("unchanged display produced an event")
 	}
-	for _, bad := range []string{"two\nlines", "\x1b[31mred", "rtl‮evil", strings.Repeat("x", proto.MaxDisplay+1)} {
+	for _, bad := range []string{"two\nlines", "\x1b[31mred", "rtl‮evil", strings.Repeat("x", proto.MaxDisplay+1),
+		"ad\u200bmin", "Alice\u2060", " Alice", "Alice ", "\u3164", "A" + strings.Repeat("\u0301", 8)} {
 		alice.fail(proto.OpUserUpdate, proto.UserUpdateArgs{Display: bad}, proto.ErrBadRequest)
 	}
 	// Survives a fresh sync.
