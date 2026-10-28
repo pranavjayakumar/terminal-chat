@@ -1,0 +1,8 @@
+# The release and install path: a change here can ship code to every user.
+# Enforced once the main ruleset requires review from Code Owners.
+/install.sh          @pranavjayakumar
+/Formula/            @pranavjayakumar
+/internal/release/   @pranavjayakumar
+/scripts/            @pranavjayakumar
+/.github/            @pranavjayakumar
+/Makefile            @pranavjayakumar

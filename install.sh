@@ -134,6 +134,33 @@ verify_sig() {
 	say "release signature OK"
 }
 
+# LEGACY_UNVERSIONED is the newest release whose checksums.txt may lack the
+# "version <tag>" line (release.LegacyUnversioned; a test checks).
+LEGACY_UNVERSIONED=v0.6.1
+
+# check_version_line dies unless the signed $1/checksums.txt is for $tag:
+# exactly one "version" line, equal to "version $tag". The signature covers
+# only the hashes, so without this an old signed checksums.txt (and its old
+# binaries) could be republished as a newer tag. Plain tags up to
+# LEGACY_UNVERSIONED were built before the line existed and may lack it.
+check_version_line() {
+	n=$(awk '$1 == "version" { n++ } END { print n + 0 }' "$1/checksums.txt")
+	exact=$(awk -v l="version $tag" '$0 == l { n++ } END { print n + 0 }' "$1/checksums.txt")
+	if [ "$n" = 1 ] && [ "$exact" = 1 ]; then
+		return 0
+	fi
+	[ "$n" = 0 ] || die "checksums.txt's version line doesn't match $tag; not installing"
+	awk -v t="$tag" -v c="$LEGACY_UNVERSIONED" 'BEGIN {
+		if (t !~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) exit 1
+		split(substr(t, 2), a, "."); split(substr(c, 2), b, ".")
+		for (i = 1; i <= 3; i++) {
+			if (a[i] + 0 < b[i] + 0) exit 0
+			if (a[i] + 0 > b[i] + 0) exit 1
+		}
+		exit 0
+	}' || die "checksums.txt for $tag has no \"version $tag\" line; not installing"
+}
+
 # get_asset downloads $1 into $tmp, checks it against checksums.txt and
 # unpacks the tc binary to $tmp/x/tc.
 get_asset() {
@@ -310,6 +337,7 @@ main() {
 	fetch -fsSL -o "$tmp/checksums.txt" "$base/download/$tag/checksums.txt" ||
 		die "can't download checksums.txt for $tag"
 	verify_sig "$tmp"
+	check_version_line "$tmp"
 	get_asset "$asset"
 	# A binary that can't start here (the voice build on a too-old glibc or
 	# musl) must not replace a working tc.

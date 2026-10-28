@@ -228,6 +228,44 @@ func ParseChecksums(b []byte) map[string]string {
 	return out
 }
 
+// LegacyUnversioned is the newest release whose checksums.txt may lack the
+// "version <tag>" line: every release up to it was built before the workflow
+// wrote one (v0.6.1 was already a draft then). Anything newer must carry it.
+const LegacyUnversioned = "v0.6.1"
+
+// ErrVersionLine means a signed checksums.txt isn't bound to the tag being
+// installed: an old signed file republished under a newer tag (a rollback).
+var ErrVersionLine = errors.New("checksums.txt is not for this release")
+
+var plainTagRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
+
+// CheckVersionLine checks that the signed checksums.txt names tag: exactly
+// one line whose first field is "version", and it is "version <tag>". The
+// signature alone covers only the hashes, so without this anyone who can
+// edit releases could serve an old, signed checksums.txt (and its old
+// binaries) as a newer tag. Plain tags up to LegacyUnversioned may lack
+// the line; nothing newer may.
+func CheckVersionLine(sums []byte, tag string) error {
+	n, exact := 0, 0
+	for _, line := range strings.Split(string(sums), "\n") {
+		if f := strings.Fields(line); len(f) > 0 && f[0] == "version" {
+			n++
+			if line == "version "+tag {
+				exact++
+			}
+		}
+	}
+	switch {
+	case n == 1 && exact == 1:
+		return nil
+	case n == 0 && plainTagRE.MatchString(tag) && !Newer(tag, LegacyUnversioned):
+		return nil
+	case n == 0:
+		return fmt.Errorf("%w: %s has no \"version %s\" line; not installing", ErrVersionLine, tag, tag)
+	}
+	return fmt.Errorf("%w: its version line doesn't match %s; not installing", ErrVersionLine, tag)
+}
+
 // ErrChecksum means a download didn't match checksums.txt.
 var ErrChecksum = errors.New("checksum mismatch")
 
@@ -255,6 +293,9 @@ func (s *Source) Fetch(ctx context.Context, tag, goos, goarch string) ([]byte, e
 	}
 	if err := VerifySignature(s.signers(), sums, sig); err != nil {
 		return nil, fmt.Errorf("checksums.txt for %s: %w; not installing", tag, err)
+	}
+	if err := CheckVersionLine(sums, tag); err != nil {
+		return nil, err
 	}
 	want, ok := ParseChecksums(sums)[asset]
 	if !ok {
@@ -383,7 +424,9 @@ func replace(exe string, bin []byte, afterClose func(tmp string)) error {
 	}
 	mode := os.FileMode(0o755)
 	if st, err := os.Stat(exe); err == nil {
-		mode = st.Mode().Perm() | 0o111
+		// Never hand the new binary group/world write, even if the old
+		// one had it: anyone in that group could then replace tc.
+		mode = (st.Mode().Perm() | 0o111) &^ 0o022
 	}
 	dir := filepath.Dir(exe)
 	tmp, err := os.CreateTemp(dir, ".tc-update-*")
