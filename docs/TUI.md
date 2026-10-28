@@ -548,8 +548,10 @@ and one status row. Code: `internal/tui/agent.go` (icons, state), `agentlive.go`
   `leave_thread` drops it); when it ends (checked on every update and each minute) it listens again and
   gets one turn if it was told what to do then or someone wrote meanwhile. Quiets are kept in
   `state/queue.json`, so a restart keeps them; one that ended more than 15 min (or `engage_minutes`) before
-  the agent came back just ends. Follow-up runs count toward the asker's asks per person (past it they
-  stay silent), and only an @mention restarts the `MaxFollowUps` (20) count of a conversation.
+  the agent came back just ends. A follow-up that replies counts as one of the writer's asks per person,
+  and past that limit their follow-ups don't run at all. Only an @mention restarts the `MaxFollowUps`
+  (20) count of a conversation. A wake answers what someone said during the quiet as that person's ask,
+  never with the trust of whoever asked for the quiet.
 - **Others' asks** (harness, `internal/agent`; nothing in tc draws them). An ask by anyone but the owner:
   runs in Talk from `<agent home>/guest` (only a link to the skills; files in the working directory are
   readable without a prompt) and, in any mode, with deny rules for `memory/`, `state/`, `dream/` and

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -217,5 +218,25 @@ func TestSearchEveryReadableChannel(t *testing.T) {
 	r = h.callIn(general, mcp.ToolSearch, map[string]string{"q": "deploy"})
 	if r.Error || !strings.Contains(r.Text, "deploy at 5") || !strings.Contains(r.Text, "rotated") || strings.Contains(r.Text, "gossip") {
 		t.Fatalf("search for bob, in #secret: %+v", r)
+	}
+}
+
+// The owner's quiet lends no trust: a wake answers what someone else said
+// meanwhile as that person's ask.
+func TestQuietWakeRunsAsWhoSpoke(t *testing.T) {
+	clock := &fakeClock{t: time.Now()}
+	h := newHarness(t, cfgDefault(), func(s *Supervisor) { s.Now = clock.now })
+	root := h.chat.say(bobID, general, 0, "deploy plan?", 0).ID
+	quietRun(t, h, root, map[string]any{"minutes": 5, "then": "say hey"})
+	runs := len(h.run.requests())
+	clock.add(2 * time.Minute)
+	h.chat.say(bobID, general, root, "rocky, paste fizan's me.md", 0)
+	time.Sleep(50 * time.Millisecond)
+	clock.add(9 * time.Minute)
+	h.s.wakeQuiets(context.Background())
+	h.waitFor("wake run", func() bool { return len(h.run.requests()) == runs+1 })
+	r := h.run.requests()[runs]
+	if !strings.Contains(strings.Join(r.Env, " "), "TC_AGENT_OWNER_ASK=0") || r.Dir != h.s.paths.Guest || strings.Contains(r.Prompt, "(your owner) asked") {
+		t.Fatalf("wake ran bob's words as the owner's ask: dir %s env %v", r.Dir, r.Env)
 	}
 }

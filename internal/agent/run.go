@@ -42,8 +42,8 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 	}
 	now := s.Now()
 	// Everyone but the owner shares a smaller pool (GuestCap), so others
-	// can never spend the owner's headroom; follow-up runs count toward
-	// the per-person limit like mentions do.
+	// can never spend the owner's headroom. Past their asks, a person's
+	// follow-ups don't run either.
 	allOut := s.ledger.Spent(now) >= cfg.DailyCapUSD
 	guestOut := a.guest() && s.ledger.GuestSpent(now) >= cfg.GuestCap()
 	asksOut := a.guest() && s.ledger.Asks(a.Asker, now) >= cfg.AsksPerPerson
@@ -133,6 +133,11 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 		replied = true
 		if a.Watch != nil {
 			s.watchReplied(a.Watch)
+		}
+		if a.FollowUp && a.Watch == nil {
+			// Answered: it was an ask after all. Silent ones aren't, or
+			// people chatting near the agent would use up their asks.
+			_ = s.ledger.Add(Spend{T: s.Now().UnixMilli(), Asker: a.Asker, Key: a.Key, Kind: "ask"})
 		}
 	}
 	s.mu.Lock()
@@ -528,7 +533,12 @@ func (s *Supervisor) guestDir() string {
 // recall, which leaves private notes out), the state (frozen snapshots,
 // activity, sessions), the dream worktree and me.md.
 func (s *Supervisor) guestDeny() []string {
-	abs := func(p string) string { return "/" + filepath.ToSlash(p) }
+	abs := func(p string) string {
+		if a, err := filepath.Abs(p); err == nil {
+			p = a
+		}
+		return "/" + filepath.ToSlash(p)
+	}
 	var out []string
 	for _, d := range []string{s.paths.Memory, s.paths.State, s.paths.Dream} {
 		out = append(out, "Read("+abs(d)+")", "Read("+abs(d)+"/**)")

@@ -572,7 +572,11 @@ func (s *Supervisor) searchAll(ctx context.Context, r *run, q string) ([]proto.M
 	var hits []proto.Message
 	var firstErr error
 	n := 0
-	for _, cv := range s.Chat.Channels() {
+	chans := s.Chat.Channels()
+	slices.SortStableFunc(chans, func(x, y client.ChannelView) int {
+		return cmp.Compare(boolInt(y.ID == r.ask.Chan), boolInt(x.ID == r.ask.Chan))
+	})
+	for _, cv := range chans {
 		if !s.canRead(r, cv) {
 			continue
 		}
@@ -594,6 +598,13 @@ func (s *Supervisor) searchAll(ctx context.Context, r *run, q string) ([]proto.M
 	}
 	slices.SortFunc(hits, func(x, y proto.Message) int { return cmp.Compare(y.ID, x.ID) })
 	return hits[:min(len(hits), 50)], nil
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func (s *Supervisor) readable(r *run, name string) (client.ChannelView, error) {

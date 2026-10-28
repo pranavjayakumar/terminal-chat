@@ -145,13 +145,13 @@ func (l *Ledger) GuestSpent(now time.Time) float64 {
 	return t
 }
 
-// Asks is how many runs user's asks and follow-ups started today.
+// Asks is how many asks user made today (a follow-up counts once it replied).
 func (l *Ledger) Asks(user uint64, now time.Time) int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	n := 0
 	for _, s := range l.rows {
-		if (s.Kind == "ask" || s.Kind == "followup") && s.Asker == user && sameDay(s.T, now) {
+		if s.Kind == "ask" && s.Asker == user && sameDay(s.T, now) {
 			n++
 		}
 	}

@@ -148,7 +148,8 @@ func (s *Store) ValidateDream(d *Dream) error {
 			baseNotes[path] = parseNote(path, k, text)
 		}
 	}
-	if err := checkDreamTrust(baseNotes, afterNotes, changedSet, dailySources(d.Dir), string(idx)); err != nil {
+	baseIdx, _ := s.gitIn(d.Dir, "show", d.Base+":"+indexFile)
+	if err := checkDreamTrust(baseNotes, afterNotes, changedSet, dailySources(d.Dir), baseIdx, string(idx)); err != nil {
 		return err
 	}
 	for _, kind := range []string{"note:", "index:"} {
@@ -193,6 +194,34 @@ const minSourceLen = 24
 
 func normLine(s string) string { return strings.Join(strings.Fields(strings.ToLower(s)), " ") }
 
+// sourceLine reports whether a normalized note line is content worth
+// tracking: long enough, and not a citation many notes share
+// ("- Source: daily/2026-10-27.md").
+func sourceLine(l string) bool {
+	if len(l) < minSourceLen {
+		return false
+	}
+	t := strings.TrimLeft(l, "-*•> ")
+	return !strings.HasPrefix(t, "source") && !strings.Contains(t, "daily/")
+}
+
+// newText is the normalized lines of text that weren't in was: only what
+// the dream wrote is checked, so a line that was already there (shared
+// before by two notes, say) never blocks a dream.
+func newText(text, was string) string {
+	old := map[string]bool{}
+	for _, l := range strings.Split(was, "\n") {
+		old[normLine(l)] = true
+	}
+	var out []string
+	for _, l := range strings.Split(text, "\n") {
+		if n := normLine(l); n != "" && !old[n] {
+			out = append(out, n)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
 // dailySources reads the facts in the dream worktree's daily logs (the
 // dream can't change them, so they are the base's).
 func dailySources(dir string) []source {
@@ -215,12 +244,12 @@ func dailySources(dir string) []source {
 					src.private = true
 				}
 			}
-			if len(tags) > 0 {
-				src.rank = trustRank(Trust(tags[0]))
-				if Trust(tags[0]) == TrustSelf && src.private {
-					src.rank = 3 // its own reply to its owner
-				}
+			if len(tags) == 0 || Trust(tags[0]) == TrustSelf {
+				// Its own replies quote notes and people alike: they are
+				// no source of their own.
+				continue
 			}
+			src.rank = trustRank(Trust(tags[0]))
 			_, fact, _ := strings.Cut(line[len(m[0]):], ": ")
 			if src.text = normLine(fact); len(src.text) >= minSourceLen {
 				out = append(out, src)
@@ -235,7 +264,7 @@ func dailySources(dir string) []source {
 // may not claim more trust than any source has, and no line copied from a
 // private source may land in a non-private note or the index, or from a
 // lower-trust source in a higher-trust note.
-func checkDreamTrust(base, after map[string]Note, changed map[string]bool, daily []source, index string) error {
+func checkDreamTrust(base, after map[string]Note, changed map[string]bool, daily []source, baseIndex, index string) error {
 	srcs := daily
 	ceiling := 1
 	for _, s := range daily {
@@ -246,7 +275,7 @@ func checkDreamTrust(base, after map[string]Note, changed map[string]bool, daily
 		ceiling = max(ceiling, r)
 		for _, line := range strings.Split(n.Body, "\n") {
 			l := normLine(line)
-			if len(l) >= minSourceLen && !strings.HasPrefix(l, "source:") {
+			if sourceLine(l) {
 				srcs = append(srcs, source{text: l, rank: r, private: n.Private})
 			}
 		}
@@ -265,7 +294,7 @@ func checkDreamTrust(base, after map[string]Note, changed map[string]bool, daily
 		} else if trustRank(n.Trust) > ceiling {
 			return fmt.Errorf("%w: %s claims trust %s no source has", ErrDreamRejected, path, n.Trust)
 		}
-		body := normLine(n.Body)
+		body := newText(n.Body, base[path].Body)
 		for _, s := range srcs {
 			if !strings.Contains(body, s.text) {
 				continue
@@ -278,7 +307,7 @@ func checkDreamTrust(base, after map[string]Note, changed map[string]bool, daily
 			}
 		}
 	}
-	idx := normLine(index)
+	idx := newText(index, baseIndex)
 	for _, s := range srcs {
 		if changed[indexFile] && s.private && strings.Contains(idx, s.text) {
 			return fmt.Errorf("%w: MEMORY.md holds private text", ErrDreamRejected)

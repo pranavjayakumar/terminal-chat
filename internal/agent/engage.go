@@ -258,7 +258,13 @@ func (s *Supervisor) wakeQuiets(ctx context.Context) {
 		if msg.ID == 0 || (q.Then == "" && !spoke) {
 			continue
 		}
-		s.enqueue(ctx, Ask{Msg: msg, Chan: q.Chan, Thread: q.Thread, Key: key, Asker: q.Asker, Owner: q.Owner,
+		// The run answers what was said meanwhile as whoever said it: the
+		// owner's quiet never lends their trust to someone else's words.
+		asker, owner := q.Asker, q.Owner
+		if spoke && msg.Author != q.Asker {
+			asker, owner = msg.Author, msg.Author == s.owner
+		}
+		s.enqueue(ctx, Ask{Msg: msg, Chan: q.Chan, Thread: q.Thread, Key: key, Asker: asker, Owner: owner,
 			FollowUp: true, Wake: q})
 	}
 }

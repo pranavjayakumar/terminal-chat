@@ -68,9 +68,8 @@ func TestEngagedThread(t *testing.T) {
 	if n := len(h.chat.lives()); n != livesBefore {
 		t.Fatalf("NO_REPLY broadcast %d statuses: %+v", n-livesBefore, h.chat.lives()[livesBefore:])
 	}
-	// It counts toward the daily spend and toward carol's asks: follow-ups
-	// cost like mentions do.
-	if h.s.ledger.Asks(carolID, clock.now()) != 1 || h.s.ledger.Spent(clock.now()) < 0.019 {
+	// It counts toward the daily spend, not toward carol's asks.
+	if h.s.ledger.Asks(carolID, clock.now()) != 0 || h.s.ledger.Spent(clock.now()) < 0.019 {
 		t.Fatalf("ledger asks %d spent %v", h.s.ledger.Asks(carolID, clock.now()), h.s.ledger.Spent(clock.now()))
 	}
 
@@ -179,8 +178,8 @@ func TestFollowUpCap(t *testing.T) {
 	if n := len(h.run.requests()); n != 1+MaxFollowUps {
 		t.Fatalf("%d runs", n)
 	}
-	if n := h.s.ledger.Asks(bobID, time.Now()); n != 1+MaxFollowUps {
-		t.Fatalf("follow-ups not counted as asks: %d", n)
+	if n := h.s.ledger.Asks(bobID, time.Now()); n != 1 {
+		t.Fatalf("silent follow-ups counted as asks: %d", n)
 	}
 }
 
