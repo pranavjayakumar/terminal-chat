@@ -175,6 +175,12 @@ func (c *Client) recoverOnce(ctx context.Context, s *session, sid e2ecrypto.Serv
 	if !got.Fork {
 		_ = c.trust.PayRotation(sid, want.Chan, last.Boxed)
 	}
+	// As syncChannel does for each epoch it verifies: messages sealed under
+	// the epoch before with a later id are invalid (a member a pinned epoch
+	// left out can't keep posting under the shared one).
+	for _, e := range then {
+		c.invalidateSuperseded(want.Chan, e.Epoch, e.Seq)
+	}
 	// Cached bundles above the shared epoch are the discarded epochs or
 	// ones now verified: sync fetches whatever comes next afresh.
 	c.db.Exec(`DELETE FROM epochs WHERE chan = ? AND epoch > ?`, want.Chan, got.Ancestor)
@@ -249,7 +255,12 @@ func (c *Client) commitFresh(ctx context.Context, s *session, sid e2ecrypto.Serv
 	var res struct {
 		Seq uint64 `msgpack:"seq"`
 	}
-	_ = proto.Unmarshal(raw, &res)
+	if err := proto.Unmarshal(raw, &res); err != nil || res.Seq == 0 {
+		// Without its seq the epoch can't supersede the shared one for
+		// messages (checkSealer). It is committed, so the next preview shows
+		// it as a fork of ours, which can be accepted.
+		return trust.Epoch{}, errors.New("the server committed the fresh epoch without a seq — preview again (/alarm-recover)")
+	}
 	eb, err := identity.PeekEpochBundle(b)
 	if err != nil {
 		return trust.Epoch{}, err
