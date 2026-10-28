@@ -756,9 +756,9 @@ func revokedBoxesQuery(n int) string {
 	return `SELECT COUNT(*) FROM devices WHERE dev IN (?` + strings.Repeat(`, ?`, n-1) + `) AND revoked IS NOT NULL`
 }
 
-// snapshotKeys sends the current bundle of every e2e channel in chans that
+// snapshotKeys collects the current bundle of every e2e channel in chans that
 // u belongs to (e2e1 sessions only).
-func (sess *session) snapshotKeys(ctx context.Context, tx *sql.Tx, chans []proto.Channel) error {
+func (sess *session) snapshotKeys(ctx context.Context, tx *sql.Tx, chans []proto.Channel, out *frames) error {
 	var part proto.Snapshot
 	size := 0
 	for _, c := range chans {
@@ -775,7 +775,7 @@ func (sess *session) snapshotKeys(ctx context.Context, tx *sql.Tx, chans []proto
 			return err
 		}
 		if size+len(raw) > snapshotPart && size > 0 {
-			if err := sess.pushSnapshot(part); err != nil {
+			if err := out.snapshot(part); err != nil {
 				return err
 			}
 			part, size = proto.Snapshot{}, 0
@@ -784,7 +784,7 @@ func (sess *session) snapshotKeys(ctx context.Context, tx *sql.Tx, chans []proto
 		size += len(raw)
 	}
 	if size > 0 {
-		return sess.pushSnapshot(part)
+		return out.snapshot(part)
 	}
 	return nil
 }

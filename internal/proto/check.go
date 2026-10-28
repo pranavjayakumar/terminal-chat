@@ -8,13 +8,28 @@ import (
 // MaxDepth is the deepest container nesting accepted in a payload.
 const MaxDepth = 16
 
-var errMalformed = errors.New("malformed msgpack")
+// Container item caps (PROTOCOL.md §3): a decoder allocates per declared item
+// (a nil array item becomes a whole zero struct), so a declared length is
+// bounded by more than the bytes left. MaxItems applies to every payload;
+// MaxClientItems, above every protocol limit on a list a client sends (the
+// largest is devices.list users, 4096, whose excess must still get a clean
+// bad_request), to what the server reads.
+const (
+	MaxItems       = 1 << 16
+	MaxClientItems = 8192
+)
+
+var (
+	errMalformed    = errors.New("malformed msgpack")
+	errTooManyItems = errors.New("msgpack container has too many items")
+)
 
 // checkMsgpack walks one msgpack value in b without allocating and verifies
 // that every declared length fits in the remaining bytes and nesting stays
-// within MaxDepth. The msgpack library preallocates from declared lengths, so
-// this must run before decoding untrusted input (PROTOCOL.md §3).
-func checkMsgpack(b []byte) error {
+// within MaxDepth, and that no array or map declares more than maxItems items
+// (pairs, for a map). The msgpack library preallocates from declared
+// lengths, so this must run before decoding untrusted input (PROTOCOL.md §3).
+func checkMsgpack(b []byte, maxItems int) error {
 	// pending[i] = items still to read in the container at depth i.
 	var pending [MaxDepth + 1]int
 	depth := 0
@@ -106,6 +121,13 @@ func checkMsgpack(b []byte) error {
 		}
 		p += skip
 
+		if c >= 0x80 && c <= 0x8f || c == 0xde || c == 0xdf {
+			if items/2 > maxItems {
+				return errTooManyItems
+			}
+		} else if items > maxItems {
+			return errTooManyItems
+		}
 		if items > 0 {
 			// Each item needs at least one byte.
 			if items > len(b)-p {

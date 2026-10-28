@@ -176,9 +176,11 @@ func (s *Server) PutChecksums(t testing.TB, tag string, sums []byte) {
 }
 
 // Publish adds a release: one tc_<os>_<arch>.tar.gz per bins entry (key
-// "os_arch", value the tc binary) and a matching, signed checksums.txt.
+// "os_arch", value the tc binary) and a matching, signed checksums.txt that
+// starts with "version <tag>", as release.yml writes it.
 func (s *Server) Publish(t testing.TB, tag string, bins map[string][]byte) {
 	var sums strings.Builder
+	fmt.Fprintf(&sums, "version %s\n", tag)
 	for osArch, bin := range bins {
 		name := "tc_" + osArch + ".tar.gz"
 		if strings.HasPrefix(osArch, "tc-voice_") { // the voice build's asset

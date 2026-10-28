@@ -11,9 +11,16 @@ import (
 
 type quicConn struct {
 	*quic.Stream
-	conn *quic.Conn
-	once sync.Once
-	err  error
+	conn    *quic.Conn
+	once    sync.Once
+	err     error
+	release func() // the listener's pending slot (gate.go), nil when dialed
+}
+
+func (c *quicConn) releasePending() {
+	if c.release != nil {
+		c.release()
+	}
 }
 
 func (c *quicConn) Kind() string         { return "quic" }
@@ -36,14 +43,24 @@ func (c *quicConn) datagramsOK() bool {
 }
 
 func (c *quicConn) CloseWithCode(code string) error {
-	c.once.Do(func() { c.err = c.conn.CloseWithError(0, code) })
+	c.once.Do(func() {
+		c.err = c.conn.CloseWithError(0, code)
+		c.releasePending()
+	})
 	return c.err
 }
 
 type tcpConn struct {
 	*tls.Conn
-	once sync.Once
-	err  error
+	once    sync.Once
+	err     error
+	release func() // the listener's pending slot (gate.go), nil when dialed
+}
+
+func (c *tcpConn) releasePending() {
+	if c.release != nil {
+		c.release()
+	}
 }
 
 func (c *tcpConn) Kind() string { return "tcp" }
@@ -57,6 +74,9 @@ func (c *tcpConn) Exporter() ([]byte, error) {
 func (c *tcpConn) CloseWithCode(string) error { return c.Close() }
 
 func (c *tcpConn) Close() error {
-	c.once.Do(func() { c.err = c.Conn.Close() })
+	c.once.Do(func() {
+		c.err = c.Conn.Close()
+		c.releasePending()
+	})
 	return c.err
 }

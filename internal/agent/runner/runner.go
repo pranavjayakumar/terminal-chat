@@ -37,6 +37,9 @@ type Request struct {
 	Model   string  // "" = sonnet
 	MaxUSD  float64 // per-run spend cap; 0 = none
 	AddDirs []string
+	// Deny are extra permission deny rules for this run only
+	// ("Read(//abs/path/**)"), on top of the settings file's.
+	Deny []string
 	// MCPConfig is the --mcp-config JSON (the tc server plus any the owner
 	// added); only these servers load.
 	MCPConfig string

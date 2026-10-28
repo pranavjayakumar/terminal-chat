@@ -543,8 +543,12 @@ type voiceOut struct {
 // PING: voice is skipped while the socket is backlogged), but a big frame
 // on a slow link that is still moving is left alone. Where the OS can't
 // report the backlog, the time alone decides.
-func (sess *session) checkVoiceStuck(now time.Time) {
-	if w := sess.writing.Load(); w == 0 || now.UnixNano()-w <= int64(voiceStuck) {
+func (sess *session) checkVoiceStuck(now time.Time) { sess.checkStuck(now, voiceStuck) }
+
+// checkStuck is checkVoiceStuck with a given limit; a syncing session uses
+// it with syncStuck, since its reader then reads nothing to time out on.
+func (sess *session) checkStuck(now time.Time, limit time.Duration) {
+	if w := sess.writing.Load(); w == 0 || now.UnixNano()-w <= int64(limit) {
 		sess.lastUnsent = -1
 		return
 	}

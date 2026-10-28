@@ -18,7 +18,7 @@ if [ -z "$dir" ]; then
 fi
 
 # One verified "<os>_<arch> <sha256>" line per build; nothing else is trusted.
-sums=$(cd "$root" && GOTOOLCHAIN=local go run ./internal/release/verifyrelease "$dir/checksums.txt" "$dir/checksums.txt.sig" --sums) || exit 1
+sums=$(cd "$root" && GOTOOLCHAIN=local go run ./internal/release/verifyrelease --tag "$tag" "$dir/checksums.txt" "$dir/checksums.txt.sig" --sums) || exit 1
 
 sum() {
   s=$(printf '%s\n' "$sums" | awk -v k="$1" '$1 == k { print $2 }')

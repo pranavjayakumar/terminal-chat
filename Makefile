@@ -30,7 +30,7 @@ test-malicious:
 # longer run. Crashers land in testdata/fuzz/ and then run as regression tests.
 FUZZTIME ?= 30s
 FUZZ := \
-	proto:FuzzDecode proto:FuzzDevices proto:FuzzKeyOps proto:FuzzParseLogin proto:FuzzParseDatagram voice:FuzzJitter \
+	proto:FuzzDecode proto:FuzzClientArgs proto:FuzzDevices proto:FuzzKeyOps proto:FuzzParseLogin proto:FuzzParseDatagram voice:FuzzJitter \
 	sanitize:FuzzSanitize notify:FuzzOSCSeq \
 	e2ecrypto:FuzzParseEnc e2ecrypto:FuzzDecrypt e2ecrypto:FuzzUnpad e2ecrypto:FuzzOpenBoxes \
 	identity:FuzzDeviceCert identity:FuzzKeyEndorse identity:FuzzDeviceRevoke identity:FuzzEpochBundle identity:FuzzInviteKey \
@@ -61,23 +61,48 @@ build-linux-arm64:
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOTOOLCHAIN=local go build -trimpath -ldflags "$(LDFLAGS)" -o bin/tc-linux-arm64 ./cmd/tc
 
 # Sign and publish the draft release the release workflow made for TAG
-# (docs/DEPLOY.md "Cutting a release"): download its assets, check them
-# against checksums.txt, sign checksums.txt with KEY (namespace tc-release),
-# check the signature exactly as tc update will (embedded AllowedSigners),
-# then upload checksums.txt.sig and publish.
+# (docs/DEPLOY.md "Cutting a release"). Before signing, fail closed unless:
+# checksums.txt carries exactly one "version TAG" line (rollback binding);
+# every tarball matches checksums.txt; and every tarball has a GitHub build
+# provenance attestation from release.yml run on refs/tags/TAG at the tag's
+# commit (so a draft whose files someone swapped is never signed). Then sign
+# checksums.txt with KEY (namespace tc-release), check it exactly as tc
+# update will, upload checksums.txt.sig and publish.
+REPO := pranavjayakumar/terminal-chat
 release-sign:
 	@printf '%s\n' "$(TAG)" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "usage: make release-sign TAG=vX.Y.Z KEY=~/.ssh/id_ed25519" >&2; exit 1; }
 	@test -n "$(KEY)" || { echo "usage: make release-sign TAG=vX.Y.Z KEY=~/.ssh/id_ed25519" >&2; exit 1; }
 	@set -eu; key='$(KEY)'; case "$$key" in "~/"*) key="$$HOME/$${key#"~/"}" ;; esac; \
+	commit=$$(gh api "repos/$(REPO)/commits/$(TAG)" --jq .sha); \
+	printf '%s\n' "$$commit" | grep -Eq '^[0-9a-f]{40}$$' || { echo "can't resolve $(TAG) on GitHub" >&2; exit 1; }; \
+	if local=$$(git rev-parse -q --verify "refs/tags/$(TAG)^{commit}"); then \
+		test "$$local" = "$$commit" || { echo "$(TAG) is $$commit on GitHub but $$local here: tag moved? not signing" >&2; exit 1; }; \
+	fi; \
+	onmain=$$(gh api "repos/$(REPO)/compare/main...$$commit" --jq .status); \
+	case "$$onmain" in behind | identical) ;; *) echo "$(TAG) ($$commit) is not on main ($$onmain): its release.yml may not be main's; not signing" >&2; exit 1 ;; esac; \
+	echo "--- $(TAG) is commit $$commit (on main):";git log -1 --format='%H %an %ad%n    %s' "$$commit" 2>/dev/null || echo "    (not in this clone: git fetch --tags to inspect it)"; \
 	d=$$(mktemp -d); trap 'rm -rf "$$d"' EXIT; \
-	gh release download "$(TAG)" --dir "$$d" --pattern '*.tar.gz' --pattern checksums.txt; \
-	(cd "$$d" && if command -v sha256sum >/dev/null; then sha256sum -c checksums.txt; else shasum -a 256 -c checksums.txt; fi); \
+	gh release download "$(TAG)" --repo "$(REPO)" --dir "$$d" --pattern '*.tar.gz' --pattern checksums.txt; \
+	n=$$(awk '$$1 == "version" { n++ } END { print n + 0 }' "$$d/checksums.txt"); \
+	test "$$n" = 1 && grep -qxF "version $(TAG)" "$$d/checksums.txt" || \
+		{ echo "checksums.txt must carry exactly one 'version $(TAG)' line (release.yml writes it); not signing" >&2; exit 1; }; \
+	awk '$$1 != "version"' "$$d/checksums.txt" > "$$d/sums.only"; \
+	(cd "$$d" && if command -v sha256sum >/dev/null; then sha256sum -c sums.only; else shasum -a 256 -c sums.only; fi); \
+	ls "$$d"/*.tar.gz >/dev/null; \
+	for f in "$$d"/*.tar.gz; do \
+		gh attestation verify "$$f" --repo "$(REPO)" \
+			--signer-workflow "$(REPO)/.github/workflows/release.yml" \
+			--source-ref "refs/tags/$(TAG)" --source-digest "$$commit" --signer-digest "$$commit" \
+			--deny-self-hosted-runners >/dev/null || \
+			{ echo "$$(basename "$$f"): no valid build provenance from release.yml at $(TAG) ($$commit); not signing" >&2; exit 1; }; \
+		echo "provenance OK: $$(basename "$$f")"; \
+	done; \
 	echo "--- signing checksums.txt for $(TAG):"; cat "$$d/checksums.txt"; \
 	ssh-keygen -Y sign -f "$$key" -n tc-release "$$d/checksums.txt"; \
-	GOTOOLCHAIN=local go run ./internal/release/verifyrelease "$$d/checksums.txt" "$$d/checksums.txt.sig" || \
+	GOTOOLCHAIN=local go run ./internal/release/verifyrelease --tag "$(TAG)" "$$d/checksums.txt" "$$d/checksums.txt.sig" || \
 		{ echo "not published: embed this key in internal/release/signers.go and install.sh first" >&2; exit 1; }; \
-	gh release upload "$(TAG)" "$$d/checksums.txt.sig" --clobber; \
-	gh release edit "$(TAG)" --draft=false --latest; \
+	gh release upload "$(TAG)" --repo "$(REPO)" "$$d/checksums.txt.sig" --clobber; \
+	gh release edit "$(TAG)" --repo "$(REPO)" --draft=false --latest; \
 	echo "published $(TAG)"; \
 	scripts/brew-formula.sh "$(TAG)" "$$d" && \
 	echo "Formula/tc.rb now points at $(TAG): commit it on a branch and open a PR (docs/DEPLOY.md, Homebrew)"

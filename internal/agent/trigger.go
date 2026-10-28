@@ -33,6 +33,21 @@ type Ask struct {
 // SessionKey names the session of a thread of ch.
 func SessionKey(ch, thread uint64) string { return fmt.Sprintf("c%d-t%d", ch, thread) }
 
+// EngineKey names the engine session (and its handoff) an ask runs in: one
+// per conversation and trust level. An owner's session holds me.md, private
+// memory and what the owner's tools returned, so nobody else's ask may
+// ever resume it; an owner's ask never resumes one a stranger steered.
+func (a Ask) EngineKey() string {
+	if a.Owner {
+		return a.Key + "-owner"
+	}
+	return a.Key + "-guest"
+}
+
+// guest reports whether a runs on the budget for others: anyone's ask but
+// the owner's, except follow-ups under the owner's own watch.
+func (a Ask) guest() bool { return !a.Owner && a.Watch == nil }
+
 // Trigger decides whether m is an ask for the agent handle owned by owner.
 // Only text that is what its author sent counts (plaintext channels and
 // verified encrypted messages): anything the server may have forged or

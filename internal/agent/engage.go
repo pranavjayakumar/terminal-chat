@@ -39,14 +39,19 @@ type engagement struct {
 }
 
 // engage keeps the agent in a thread for d from now; each reply opens a
-// fresh window.
-func (s *Supervisor) engage(key string, d time.Duration) {
+// fresh window. The follow-up count carries over unless reset (a direct
+// ask), so replying to follow-ups can't lift MaxFollowUps.
+func (s *Supervisor) engage(key string, d time.Duration, reset bool) {
 	if d <= 0 {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.engaged[key] = &engagement{until: s.Now().Add(d), d: d}
+	e := &engagement{until: s.Now().Add(d), d: d}
+	if old := s.engaged[key]; old != nil && !reset {
+		e.followUps = old.followUps
+	}
+	s.engaged[key] = e
 }
 
 func (s *Supervisor) disengage(key string) {
@@ -248,12 +253,18 @@ func (s *Supervisor) wakeQuiets(ctx context.Context) {
 		if now.Sub(time.UnixMilli(q.Until)) > max(quietGrace, time.Duration(cfg.EngageMinutes)*time.Minute) {
 			continue
 		}
-		s.engage(key, time.Duration(cfg.EngageMinutes)*time.Minute)
+		s.engage(key, time.Duration(cfg.EngageMinutes)*time.Minute, false)
 		msg, spoke := s.sinceQuiet(q)
 		if msg.ID == 0 || (q.Then == "" && !spoke) {
 			continue
 		}
-		s.enqueue(ctx, Ask{Msg: msg, Chan: q.Chan, Thread: q.Thread, Key: key, Asker: q.Asker, Owner: q.Owner,
+		// The run answers what was said meanwhile as whoever said it: the
+		// owner's quiet never lends their trust to someone else's words.
+		asker, owner := q.Asker, q.Owner
+		if spoke && msg.Author != q.Asker {
+			asker, owner = msg.Author, msg.Author == s.owner
+		}
+		s.enqueue(ctx, Ask{Msg: msg, Chan: q.Chan, Thread: q.Thread, Key: key, Asker: asker, Owner: owner,
 			FollowUp: true, Wake: q})
 	}
 }
