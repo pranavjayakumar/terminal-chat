@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -40,7 +41,13 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 		return
 	}
 	now := s.Now()
-	if a.FollowUp && (cfg.Paused || s.ledger.Spent(now) >= cfg.DailyCapUSD) {
+	// Everyone but the owner shares a smaller pool (GuestCap), so others
+	// can never spend the owner's headroom. Past their asks, a person's
+	// follow-ups don't run either.
+	allOut := s.ledger.Spent(now) >= cfg.DailyCapUSD
+	guestOut := a.guest() && s.ledger.GuestSpent(now) >= cfg.GuestCap()
+	asksOut := a.guest() && s.ledger.Asks(a.Asker, now) >= cfg.AsksPerPerson
+	if a.FollowUp && (cfg.Paused || allOut || guestOut || asksOut) {
 		return // a follow-up nobody asked for answers nothing when it can't run
 	}
 	switch {
@@ -48,11 +55,15 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 		s.reply(a.Chan, a.Thread, "I'm paused right now 💤")
 		s.activity(a, "refused", "paused", 0)
 		return
-	case s.ledger.Spent(now) >= cfg.DailyCapUSD:
+	case allOut:
 		s.reply(a.Chan, a.Thread, "out of juice for today 🪫 back tomorrow")
 		s.activity(a, "refused", "daily cap reached", 0)
 		return
-	case !a.Owner && !a.FollowUp && s.ledger.Asks(a.Asker, now) >= cfg.AsksPerPerson:
+	case guestOut:
+		s.reply(a.Chan, a.Thread, "I'm out of juice for others today 🪫 back tomorrow")
+		s.activity(a, "refused", "cap for others reached", 0)
+		return
+	case asksOut:
 		s.reply(a.Chan, a.Thread, fmt.Sprintf("that's your %d asks for today, try me tomorrow", cfg.AsksPerPerson))
 		s.activity(a, "refused", "asks per person reached", 0)
 		return
@@ -60,13 +71,16 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 	s.refreshHome()
 	mode := EffectiveMode(cfg.Mode, a)
 	kind := "ask"
-	if a.FollowUp {
-		kind = "followup" // only a run that answers counts as an ask
-	} else {
+	switch {
+	case a.Watch != nil:
+		kind = "watch" // the owner's watch: on the owner, not the writer
+	case a.FollowUp:
+		kind = "followup"
+	default:
 		s.activity(a, "ask", string(mode), 0)
 	}
 
-	sess, resume := s.sessions.get(a.Key)
+	sess, resume := s.sessions.get(a.EngineKey())
 	if !resume {
 		sess = Session{ID: newUUID()}
 	}
@@ -96,7 +110,7 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 		}
 		if resume && res.Session == "" {
 			// A session the engine lost (or another machine's): start over.
-			_ = s.sessions.drop(a.Key)
+			_ = s.sessions.drop(a.EngineKey())
 		}
 		s.reply(a.Chan, a.Thread, "something broke on my side, sorry: "+short(sanitize.Line(err.Error()), 200))
 		s.activity(a, "error", err.Error(), res.CostUSD)
@@ -111,13 +125,18 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 		s.activity(a, "error", res.Subtype, 0)
 	case text == "" || text == NoReply:
 	default:
+		if !a.Owner {
+			text = s.defangBroadcast(text) // nobody else pings a whole channel through me
+		}
 		s.reply(a.Chan, a.Thread, text)
 		s.activity(a, "reply", short(text, 120), res.CostUSD)
 		replied = true
 		if a.Watch != nil {
 			s.watchReplied(a.Watch)
 		}
-		if a.FollowUp {
+		if a.FollowUp && a.Watch == nil {
+			// Answered: it was an ask after all. Silent ones aren't, or
+			// people chatting near the agent would use up their asks.
 			_ = s.ledger.Add(Spend{T: s.Now().UnixMilli(), Asker: a.Asker, Key: a.Key, Kind: "ask"})
 		}
 	}
@@ -130,7 +149,9 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 		s.endQuiet(a.Key) // they talked to it again: the pause is over
 	}
 	if replied && !left && a.Watch == nil && !a.InDM {
-		s.engage(a.Key, time.Duration(cfg.EngageMinutes)*time.Minute)
+		// Only a direct ask restarts the follow-up count: replies to
+		// follow-ups keep it, so MaxFollowUps bounds the conversation.
+		s.engage(a.Key, time.Duration(cfg.EngageMinutes)*time.Minute, !a.FollowUp)
 	}
 	sess.Tokens, sess.Window = res.ContextTokens, res.ContextWindow
 	sess.Turns++
@@ -139,7 +160,7 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 	if res.Session != "" {
 		sess.ID = res.Session
 	}
-	_ = s.sessions.put(a.Key, sess)
+	_ = s.sessions.put(a.EngineKey(), sess)
 	if ShouldRollover(res, cfg.RolloverPct) {
 		s.rollover(ctx, a, cfg, sess)
 	}
@@ -175,19 +196,19 @@ func (s *Supervisor) rollover(ctx context.Context, a Ask, cfg home.Config, sess 
 	res, err := s.turn(ctx, a, cfg, runner.Talk, sess, true, RolloverPrompt, "rollover")
 	if err == nil && s.Memory != nil {
 		if text := strings.TrimSpace(res.Text); text != "" && text != NoReply && !res.IsError {
-			if err := s.Memory.WriteHandoff(a.Key, short(text, memory.HandoffMaxBytes-16)); err != nil {
+			if err := s.Memory.WriteHandoff(a.EngineKey(), short(text, memory.HandoffMaxBytes-16)); err != nil {
 				s.Log.Warn("writing handoff", "err", err)
 			}
 		}
 	}
-	_ = s.sessions.drop(a.Key)
+	_ = s.sessions.drop(a.EngineKey())
 	s.activity(a, "rollover", fmt.Sprintf("context %d%%", sess.Tokens*100/max(sess.Window, 1)), res.CostUSD)
 }
 
 // turn runs one engine turn with its live status and bookkeeping.
 func (s *Supervisor) turn(ctx context.Context, a Ask, cfg home.Config, mode runner.Mode, sess Session, resume bool, prompt, kind string) (runner.Result, error) {
 	token := newToken()
-	quiet := kind != "ask" && kind != "greet" && kind != "followup"
+	quiet := kind != "ask" && kind != "greet" && kind != "followup" && kind != "watch"
 	r := &run{ask: a, mode: mode, cfg: cfg, live: newLive(s.Chat, a.Chan, a.Thread, s.StatusEvery*time.Duration(s.MaxRuns), quiet)}
 	r.live.hold = a.FollowUp
 	s.mu.Lock()
@@ -204,13 +225,26 @@ func (s *Supervisor) turn(ctx context.Context, a Ask, cfg home.Config, mode runn
 	r.live.set(proto.AgentThinking, "thinking…", "")
 	defer r.live.close()
 
-	spent := s.ledger.Spent(s.Now())
-	capUSD := min(cfg.RunCapUSD, cfg.DailyCapUSD-spent)
+	now := s.Now()
+	capUSD := min(cfg.RunCapUSD, cfg.DailyCapUSD-s.ledger.Spent(now))
+	if a.guest() {
+		capUSD = min(capUSD, cfg.GuestCap()-s.ledger.GuestSpent(now))
+	}
 	if capUSD < 0.01 {
 		capUSD = 0.01
 	}
+	dir, deny := s.Dir, []string(nil)
+	if !a.Owner {
+		// Files in the working directory are readable without a prompt:
+		// someone else's ask must not start next to the owner's memory.
+		deny = s.guestDeny()
+		if mode != runner.Work {
+			dir = s.guestDir()
+		}
+	}
 	req := runner.Request{
-		Dir:            s.Dir,
+		Dir:            dir,
+		Deny:           deny,
 		Prompt:         prompt,
 		Session:        sess.ID,
 		Resume:         resume,
@@ -256,7 +290,7 @@ func (s *Supervisor) turn(ctx context.Context, a Ask, cfg home.Config, mode runn
 		status = "stuck"
 	}
 	r.live.set(proto.AgentDone, status, "")
-	if err2 := s.ledger.Add(Spend{T: s.Now().UnixMilli(), Asker: a.Asker, Key: a.Key, USD: res.CostUSD, Kind: kind}); err2 != nil {
+	if err2 := s.ledger.Add(Spend{T: s.Now().UnixMilli(), Asker: a.Asker, Key: a.Key, USD: res.CostUSD, Kind: kind, Guest: a.guest()}); err2 != nil {
 		s.Log.Warn("writing ledger", "err", err2)
 	}
 	return res, err
@@ -283,7 +317,7 @@ func (s *Supervisor) runEnv(a Ask, token string) []string {
 		}
 	}
 	return []string{
-		memory.EnvSessionKey + "=" + a.Key,
+		memory.EnvSessionKey + "=" + a.EngineKey(),
 		memory.EnvOwnerAsk + "=" + owner,
 		memory.EnvPeople + "=" + strings.Join(people, ","),
 		memory.EnvAsker + "=" + s.Chat.User(a.Asker).Name,
@@ -414,7 +448,7 @@ func (s *Supervisor) greet(ctx context.Context) {
 		}
 		sess.ID, sess.Turns, sess.Updated = res.Session, 1, s.Now().UnixMilli()
 		if sess.ID != "" {
-			_ = s.sessions.put(a.Key, sess)
+			_ = s.sessions.put(a.EngineKey(), sess)
 		}
 		s.activity(a, "greet", "", res.CostUSD)
 	}()
@@ -486,6 +520,39 @@ func newUUID() string {
 	b[8] = b[8]&0x3f | 0x80
 	h := hex.EncodeToString(b[:])
 	return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
+}
+
+// guestDir is the working directory of Talk runs for anyone but the owner,
+// created on first use. It holds only a link to the shipped skills.
+func (s *Supervisor) guestDir() string {
+	dir := s.paths.Guest
+	if err := os.MkdirAll(filepath.Join(dir, ".claude"), 0o700); err != nil {
+		s.Log.Warn("creating the guest folder", "err", err)
+		return dir
+	}
+	link := filepath.Join(dir, ".claude", "skills")
+	if _, err := os.Lstat(link); errors.Is(err, os.ErrNotExist) {
+		_ = os.Symlink(s.paths.Skills, link)
+	}
+	return dir
+}
+
+// guestDeny keeps a run for anyone but the owner out of the owner's private
+// files whatever its working directory: memory (reachable only through
+// recall, which leaves private notes out), the state (frozen snapshots,
+// activity, sessions), the dream worktree and me.md.
+func (s *Supervisor) guestDeny() []string {
+	abs := func(p string) string {
+		if a, err := filepath.Abs(p); err == nil {
+			p = a
+		}
+		return "/" + filepath.ToSlash(p)
+	}
+	var out []string
+	for _, d := range []string{s.paths.Memory, s.paths.State, s.paths.Dream} {
+		out = append(out, "Read("+abs(d)+")", "Read("+abs(d)+"/**)")
+	}
+	return append(out, "Read("+abs(s.paths.Me)+")")
 }
 
 // refreshHome runs Refresh when the tc binary changed since the last time

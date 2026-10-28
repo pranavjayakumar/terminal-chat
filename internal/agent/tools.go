@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -96,17 +97,20 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		if err := mcp.Args(raw, &p); err != nil {
 			return "", err
 		}
-		var ch uint64
+		var hits []proto.Message
 		if p.Chan != "" {
 			cv, err := s.readable(r, p.Chan)
 			if err != nil {
 				return "", err
 			}
-			ch = cv.ID
-		}
-		hits, err := s.Chat.Search(ctx, p.Q, ch)
-		if err != nil {
-			return "", err
+			if hits, err = s.Chat.Search(ctx, p.Q, cv.ID); err != nil {
+				return "", err
+			}
+		} else {
+			var err error
+			if hits, err = s.searchAll(ctx, r, p.Q); err != nil {
+				return "", err
+			}
 		}
 		hits = slices.DeleteFunc(hits, func(m proto.Message) bool {
 			cv, ok := s.Chat.Channel(m.Chan)
@@ -138,6 +142,11 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 		text := strings.TrimSpace(sanitize.StripANSI(p.Text))
 		if text == "" {
 			return "", errors.New("nothing to post")
+		}
+		if !a.Owner {
+			if err := s.errMass(text); err != nil {
+				return "", err
+			}
 		}
 		if p.Thread != 0 && !threadIn(s.Chat, p.Thread, cv.ID) {
 			return "", fmt.Errorf("no thread %d there", p.Thread)
@@ -545,8 +554,10 @@ func (s *Supervisor) tool(ctx context.Context, r *run, name string, raw json.Raw
 // canRead: the channel the ask came from; the agent DM for the owner;
 // for the owner's own asks anything the owner can read (DMs only when
 // allowed in the panel); for anyone else only the channels the owner
-// listed in the panel, never a DM. Channels the server granted because
-// someone called the agent there are not on that list.
+// listed in the panel, never a DM, and of those only public plaintext
+// channels or ones they are a member of themselves: the agent must not be
+// their way into a private or encrypted channel. Channels the server
+// granted because someone called the agent there are not on that list.
 func (s *Supervisor) canRead(r *run, cv client.ChannelView) bool {
 	a := r.ask
 	switch {
@@ -557,13 +568,57 @@ func (s *Supervisor) canRead(r *run, cv client.ChannelView) bool {
 	case !a.Owner && cv.Kind == proto.ChanDM:
 		return false
 	case slices.Contains(r.cfg.Access.Chans, cv.ID):
-		return true
+		return a.Owner || cv.Kind == proto.ChanPublic && !cv.E2E || slices.Contains(cv.Members, a.Asker)
 	case a.Owner && cv.Kind == proto.ChanDM:
 		return r.cfg.Access.DMs
 	case a.Owner:
 		return cv.Member
 	}
 	return false
+}
+
+// searchAllChans caps how many channels a search without chan looks in.
+const searchAllChans = 30
+
+// searchAll searches every channel this ask may read, one at a time: the
+// server serves agent sessions one channel per search.
+func (s *Supervisor) searchAll(ctx context.Context, r *run, q string) ([]proto.Message, error) {
+	var hits []proto.Message
+	var firstErr error
+	n := 0
+	chans := s.Chat.Channels()
+	slices.SortStableFunc(chans, func(x, y client.ChannelView) int {
+		return cmp.Compare(boolInt(y.ID == r.ask.Chan), boolInt(x.ID == r.ask.Chan))
+	})
+	for _, cv := range chans {
+		if !s.canRead(r, cv) {
+			continue
+		}
+		if n++; n > searchAllChans {
+			break
+		}
+		h, err := s.Chat.Search(ctx, q, cv.ID)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			firstErr = cmp.Or(firstErr, err)
+			continue
+		}
+		hits = append(hits, h...)
+	}
+	if len(hits) == 0 && firstErr != nil {
+		return nil, firstErr
+	}
+	slices.SortFunc(hits, func(x, y proto.Message) int { return cmp.Compare(y.ID, x.ID) })
+	return hits[:min(len(hits), 50)], nil
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func (s *Supervisor) readable(r *run, name string) (client.ChannelView, error) {
@@ -631,7 +686,7 @@ func (s *Supervisor) approvePrompt(ctx context.Context, r *run, raw json.RawMess
 	if line := runner.StatusLine(p.Tool, input); line != "" {
 		what = strings.TrimSuffix(line, "…")
 	}
-	allow := s.askOwner(ctx, r, Approval{Kind: KindTool, Target: p.Tool, Action: what + " (" + p.Tool + ")", Preview: ToolPreview(p.Input)})
+	allow := s.askOwner(ctx, r, Approval{Kind: KindTool, Target: ToolTarget(p.Tool, p.Input), Action: what + " (" + p.Tool + ")", Preview: ToolPreview(p.Input)})
 	var out []byte
 	if allow {
 		if len(p.Input) == 0 {

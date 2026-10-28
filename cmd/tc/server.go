@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -122,14 +123,86 @@ func cmdServer(args []string) error {
 		slog.Warn("invites point at localhost; pass --public host:port so teammates can connect")
 	}
 	if first, _ := firstRun(srv); first {
-		inv, err := srv.CreateInviteOpts(ctx, server.InviteOpts{Admin: true})
-		if err == nil {
-			fmt.Println("\nNo users yet. Admin invite for you (single use, 24 hours):")
-			printInvite(os.Stdout, inv, version)
-			fmt.Println("Then invite your team with: " + serverInviteHint(*data))
+		if err := firstRunInvite(ctx, srv, *data, os.Stdout, isTerminal(os.Stdout)); err != nil {
+			slog.Error("first-run admin invite", "err", err)
 		}
 	}
 	return srv.Serve(ctx, ln)
+}
+
+// firstInviteFile holds the first-run admin invite (0600, in the data dir).
+const firstInviteFile = "first-invite.txt"
+
+// firstRunInvite gives a server with no users an admin invite. It goes to a
+// 0600 file in the data dir, and to out only when out is a terminal: under
+// systemd stdout is the journal, which more people can read than the data
+// dir. While an admin invite made on the host is still open, a restart
+// mints none (each start used to print a new live one).
+func firstRunInvite(ctx context.Context, srv *server.Server, data string, out io.Writer, tty bool) error {
+	path := filepath.Join(data, firstInviteFile)
+	invs, err := srv.ListInvites(ctx)
+	if err != nil {
+		return err
+	}
+	open := slices.ContainsFunc(invs, func(i proto.InviteInfo) bool {
+		return i.Kind == proto.InviteKindAdmin && i.CreatedBy == 0 && i.UsesLeft > 0
+	})
+	if open {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Fprintf(out, "\nNo users yet, and an admin invite is still open. A new one: tc server invite --admin%s\n", dataFlag(data))
+			return nil
+		}
+		fmt.Fprintf(out, "\nNo users yet. Your admin invite is in %s\n", path)
+		if tty {
+			out.Write(b)
+		}
+		return nil
+	}
+	inv, err := srv.CreateInviteOpts(ctx, server.InviteOpts{Admin: true})
+	if err != nil {
+		return err
+	}
+	var b strings.Builder
+	b.WriteString("Admin invite for you (single use, 24 hours):\n")
+	printInvite(&b, inv, version)
+	b.WriteString("Then invite your team with: " + serverInviteHint(data) + "\n")
+	if err := writePrivate(path, []byte(b.String())); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "\nNo users yet. Your admin invite is in %s\n", path)
+	if tty {
+		io.WriteString(out, b.String())
+	}
+	return nil
+}
+
+func dataFlag(data string) string {
+	if data == defaultDataDir() {
+		return ""
+	}
+	return " --data " + shellQuote(data)
+}
+
+// writePrivate writes b to path, readable only by its owner.
+func writePrivate(path string, b []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // serverInviteCmd is a parsed `tc server invite`.

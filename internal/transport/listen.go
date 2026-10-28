@@ -50,6 +50,7 @@ type listener struct {
 	tlsConf *tls.Config
 	timeout time.Duration
 	http    *connListener // nil unless ListenOpts.HTTP
+	gate    *gate
 
 	conns     chan Conn
 	ctx       context.Context // cancelled on Close
@@ -101,6 +102,7 @@ func listenOnce(addr string, cert tls.Certificate, o listenOpts) (Listener, erro
 		tlsConf: tcpConf,
 		timeout: o.handshakeTimeout,
 		conns:   make(chan Conn),
+		gate:    newGate(o.MaxPending, o.MaxPendingPerSource),
 	}
 	l.ctx, l.cancel = context.WithCancel(context.Background())
 	if o.HTTP {
@@ -191,11 +193,17 @@ func (l *listener) acceptTCP() {
 				_ = limitUnsent("", "", rc)
 			}
 		}
+		release, ok := l.gate.admit(raw.RemoteAddr())
+		if !ok {
+			raw.Close() // before any TLS work
+			continue
+		}
 		l.wg.Add(1)
 		go func() {
 			defer l.wg.Done()
-			c, err := l.handshakeTCP(raw)
+			c, err := l.handshakeTCP(raw, release)
 			if err != nil {
+				release()
 				raw.Close()
 				return
 			}
@@ -206,7 +214,7 @@ func (l *listener) acceptTCP() {
 	}
 }
 
-func (l *listener) handshakeTCP(raw net.Conn) (Conn, error) {
+func (l *listener) handshakeTCP(raw net.Conn, release func()) (Conn, error) {
 	ctx, cancel := l.handshakeCtx()
 	defer cancel()
 	tc := tls.Server(raw, l.tlsConf)
@@ -215,10 +223,11 @@ func (l *listener) handshakeTCP(raw net.Conn) (Conn, error) {
 	}
 	switch p := tc.ConnectionState().NegotiatedProtocol; {
 	case p == proto.ALPN:
-		return &tcpConn{Conn: tc}, nil
+		return &tcpConn{Conn: tc, release: release}, nil
 	case l.http != nil && (p == ALPNHTTP || p == ""):
 		// No ALPN can't be a tc client (they always offer tc/1), and many
 		// HTTP clients don't send any.
+		release() // the HTTP server caps its own connections
 		l.http.deliver(tc)
 		return nil, nil
 	}
@@ -234,6 +243,11 @@ func (l *listener) acceptQUIC() {
 		if err != nil {
 			return // only fails once the listener is closed
 		}
+		release, ok := l.gate.admit(qc.RemoteAddr())
+		if !ok {
+			qc.CloseWithError(0, "busy")
+			continue
+		}
 		l.wg.Add(1)
 		go func() {
 			defer l.wg.Done()
@@ -243,10 +257,11 @@ func (l *listener) acceptQUIC() {
 			// clients always send HELLO first, so this doesn't deadlock.
 			st, err := qc.AcceptStream(ctx)
 			if err != nil {
+				release()
 				qc.CloseWithError(0, "handshake_timeout")
 				return
 			}
-			l.deliver(&quicConn{Stream: st, conn: qc})
+			l.deliver(&quicConn{Stream: st, conn: qc, release: release})
 		}()
 	}
 }

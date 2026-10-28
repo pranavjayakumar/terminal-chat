@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/skailama/tc/internal/transport"
 )
 
 // Unauthenticated HTTP traffic limits (PROTOCOL.md §12): a token bucket per
@@ -48,23 +50,7 @@ func newIPLimiter(now func() time.Time, burst, perSec float64, max int) *ipLimit
 }
 
 // ipKey groups IPv6 sources by /64, which one host typically controls.
-func ipKey(remoteAddr string) netip.Prefix {
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		host = remoteAddr
-	}
-	a, err := netip.ParseAddr(host)
-	if err != nil {
-		return netip.Prefix{}
-	}
-	a = a.Unmap()
-	bits := 32
-	if a.Is6() {
-		bits = 64
-	}
-	p, _ := a.Prefix(bits)
-	return p
-}
+func ipKey(remoteAddr string) netip.Prefix { return transport.SourcePrefix(remoteAddr) }
 
 // allow takes a token for remoteAddr's bucket, or reports how long until one
 // is available.

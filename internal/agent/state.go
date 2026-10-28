@@ -80,7 +80,9 @@ type Spend struct {
 	Asker uint64  `json:"asker,omitempty"`
 	Key   string  `json:"key,omitempty"`
 	USD   float64 `json:"usd"`
-	Kind  string  `json:"kind"` // ask, rollover, greet, dream
+	Kind  string  `json:"kind"` // ask, followup, watch, rollover, greet, dream
+	// Guest: on the budget for others (an ask by anyone but the owner).
+	Guest bool `json:"guest,omitempty"`
 }
 
 // Ledger is the spend log. Days are local days.
@@ -130,7 +132,20 @@ func (l *Ledger) Spent(now time.Time) float64 {
 	return t
 }
 
-// Asks is how many asks user made today.
+// GuestSpent is what today's runs for anyone but the owner cost.
+func (l *Ledger) GuestSpent(now time.Time) float64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var t float64
+	for _, s := range l.rows {
+		if s.Guest && sameDay(s.T, now) {
+			t += s.USD
+		}
+	}
+	return t
+}
+
+// Asks is how many asks user made today (a follow-up counts once it replied).
 func (l *Ledger) Asks(user uint64, now time.Time) int {
 	l.mu.Lock()
 	defer l.mu.Unlock()

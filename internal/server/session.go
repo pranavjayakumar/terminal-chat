@@ -18,15 +18,30 @@ import (
 )
 
 const (
-	handshakeTimeout = 30 * time.Second
+	// handshakeTimeout bounds the wait for HELLO. Not shorter: a hardware key
+	// may wait for a touch. The pre-auth caps (transport gate) are what
+	// stop unauthenticated connections piling up.
+	handshakeTimeout = 20 * time.Second
 	idleTimeout      = 45 * time.Second
 	typingInterval   = 3 * time.Second
-	replayPage       = 500
+	// replayPage events are read per query; at ~66 KiB per event at most,
+	// that bounds what one replay page holds in memory.
+	replayPage = 128
 	// maxQueueBytes caps a session's unsent frames. A client that keeps
 	// requesting without reading gets BYE slow_consumer instead of
 	// growing server memory.
 	maxQueueBytes = 8 << 20
+	// syncHighWater: sync output waits for the writer while this much is
+	// queued (pushSync), so a catch-up costs the server about twice this
+	// plus a page, however much there is to send and however slowly the
+	// client reads. syncStuck is how long one write may sit with the socket
+	// not draining, during sync, before the session is a slow consumer.
+	syncHighWater = 1 << 20
+	syncStuck     = idleTimeout
 	presenceEvery = time.Second
+	// maxSessionsPerUser bounds one account's concurrent sessions (devices,
+	// background listeners, tc send/tail, its agent).
+	maxSessionsPerUser = 32
 )
 
 type outFrame struct {
@@ -41,14 +56,20 @@ type session struct {
 	codec *proto.Codec
 	user  proto.User
 
-	mu      sync.Mutex
-	queue   []outFrame
-	queued  int        // bytes in queue (not yet taken by the writer)
-	pending []outFrame // live events buffered while sync replays (§6 step 1)
-	live    bool
-	closed  bool
-	wake    chan struct{}
-	done    chan struct{}
+	mu       sync.Mutex
+	queue    []outFrame
+	queued   int        // bytes in queue (not yet taken by the writer)
+	pending  []outFrame // live events buffered while sync replays (§6 step 1)
+	live     bool
+	closed   bool
+	wake     chan struct{}
+	done     chan struct{}
+	doneOnce sync.Once
+	// drained is signalled when the writer takes the queue, for pushSync.
+	drained chan struct{}
+	// syncing: the reader is inside sync, possibly waiting in pushSync, so
+	// it reads no PINGs; readLoop's ticker judges the writer instead.
+	syncing atomic.Bool
 
 	synced   bool
 	e2e      bool     // both sides advertised proto.CapE2E
@@ -88,7 +109,7 @@ type session struct {
 func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 	sess := &session{
 		srv: s, conn: conn, codec: proto.NewCodec(conn),
-		wake: make(chan struct{}, 1), done: make(chan struct{}),
+		wake: make(chan struct{}, 1), done: make(chan struct{}), drained: make(chan struct{}, 1),
 		lastTyping: map[uint64]time.Time{}, lastKeyNeed: map[uint64]time.Time{},
 	}
 	defer conn.Close()
@@ -106,11 +127,12 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 	}
 	sess.user = user
 	sess.codec.SetMaxFrame(proto.MaxFrame)
+	transport.Authenticated(conn) // no longer counts against the pre-auth caps
 
 	// Register before WELCOME so a concurrent user.disable can't miss us;
 	// frames queued meanwhile wait for the writer.
-	if !s.register(sess) {
-		sendBye(sess.codec, conn, proto.ByeRevoked, "")
+	if code := s.register(sess); code != "" {
+		sendBye(sess.codec, conn, code, "")
 		return
 	}
 	defer s.unregister(sess)
@@ -148,7 +170,7 @@ func (s *Server) handshake(ctx context.Context, sess *session) (proto.User, stri
 		return proto.User{}, proto.ByeProtocolError, "expected HELLO"
 	}
 	var h proto.Hello
-	if err := f.Decode(&h); err != nil {
+	if err := f.DecodeClient(&h); err != nil {
 		return proto.User{}, proto.ByeProtocolError, "bad HELLO"
 	}
 	sess.e2e = slices.Contains(h.Caps, proto.CapE2E)
@@ -304,25 +326,29 @@ func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp str
 	return user, "", ""
 }
 
-func (s *Server) register(sess *session) bool {
+func (s *Server) register(sess *session) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.disabled[sess.user.ID] {
-		return false
+		return proto.ByeRevoked
 	}
 	if sess.agent != nil {
 		// A retire that committed since agentLogin looked wins.
 		if a, ok := s.agents[sess.user.ID]; !ok || a.Created != sess.agent.Created {
-			return false
+			return proto.ByeRevoked
 		}
 	}
+	if s.userSessions[sess.user.ID] >= maxSessionsPerUser {
+		return proto.ByeTooManySessions
+	}
+	s.userSessions[sess.user.ID]++
 	s.sessions[sess] = struct{}{}
 	if sess.agent != nil { // the agent being here isn't its owner being here
 		s.agentOnlineLocked(sess, 1)
-		return true
+		return ""
 	}
 	if sess.passive { // a background listener isn't the user being here
-		return true
+		return ""
 	}
 	s.online[sess.user.ID]++
 	if s.online[sess.user.ID] == 1 {
@@ -330,7 +356,7 @@ func (s *Server) register(sess *session) bool {
 		s.presence[sess.user.ID] = p
 		s.ephemeralLocked(p, nil, sess)
 	}
-	return true
+	return ""
 }
 
 func (s *Server) unregister(sess *session) {
@@ -341,6 +367,9 @@ func (s *Server) unregister(sess *session) {
 		return
 	}
 	delete(s.sessions, sess)
+	if s.userSessions[sess.user.ID]--; s.userSessions[sess.user.ID] <= 0 {
+		delete(s.userSessions, sess.user.ID)
+	}
 	s.huddleGoneLocked(sess)
 	if sess.agent != nil {
 		s.agentOnlineLocked(sess, -1)
@@ -373,13 +402,39 @@ func (sess *session) push(f outFrame) {
 	sess.enqueueLocked(f)
 }
 
-// pushSync queues sync output (snapshot/replay). It is produced once per
-// connection and bounded by the database, so it bypasses the cap.
-func (sess *session) pushSync(f outFrame) {
+// errSessionClosed stops a sync whose session went away.
+var errSessionClosed = errors.New("session closed")
+
+// pushSync queues sync output (snapshot/replay), first waiting while more
+// than syncHighWater is queued: sync runs on the reader goroutine, so it
+// just slows to the client's pace. A client that stops reading altogether
+// is closed by readLoop's ticker (syncStuck). Callers must hold no
+// transaction: a waiting sync must not pin a pooled database connection.
+func (sess *session) pushSync(f outFrame) error {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	if !sess.closed {
-		sess.enqueueLocked(f)
+	for !sess.closed && sess.queued > 0 && sess.queued+len(f.payload) > syncHighWater {
+		sess.mu.Unlock()
+		t := time.NewTimer(time.Second) // a missed signal costs at most this
+		select {
+		case <-sess.drained:
+		case <-sess.done:
+		case <-t.C:
+		}
+		t.Stop()
+		sess.mu.Lock()
+	}
+	if sess.closed {
+		return errSessionClosed
+	}
+	sess.enqueueLocked(f)
+	return nil
+}
+
+func (sess *session) signalDrained() {
+	select {
+	case sess.drained <- struct{}{}:
+	default:
 	}
 }
 
@@ -414,6 +469,7 @@ func (sess *session) pushLive(f outFrame) {
 func (sess *session) slowLocked() {
 	sess.closed = true
 	sess.queue, sess.pending = nil, nil
+	sess.signalDrained()
 	go sendBye(sess.codec, sess.conn, proto.ByeSlowConsumer, "")
 }
 
@@ -444,13 +500,10 @@ func (sess *session) close() {
 	if !sess.closed {
 		sess.closed = true
 		sess.queue, sess.pending = nil, nil
+		sess.signalDrained()
 	}
 	sess.mu.Unlock()
-	select {
-	case <-sess.done:
-	default:
-		close(sess.done)
-	}
+	sess.doneOnce.Do(func() { close(sess.done) }) // the writer and unregister may race here
 }
 
 // bye sends BYE and closes. Safe to call with srv.mu held.
@@ -483,6 +536,7 @@ func (sess *session) writer() {
 		batch, voice := sess.queue, sess.vq
 		sess.queue, sess.queued, sess.vq = nil, 0, nil
 		sess.mu.Unlock()
+		sess.signalDrained()
 		// Chat first: voice waits behind it, and is dropped if that made it
 		// late (writeVoice).
 		for _, f := range batch {
@@ -495,16 +549,23 @@ func (sess *session) writer() {
 				err := sess.codec.WriteRaw(g.t, g.payload)
 				sess.writing.Store(0)
 				if err != nil {
-					sess.conn.Close()
+					sess.writerDone()
 					return
 				}
 			}
 		}
 		if !sess.writeVoice(voice) {
-			sess.conn.Close()
+			sess.writerDone()
 			return
 		}
 	}
+}
+
+// writerDone ends a session whose writes fail; close also releases a sync
+// waiting in pushSync, which reads nothing that would notice.
+func (sess *session) writerDone() {
+	sess.conn.Close()
+	sess.close()
 }
 
 // ---- inbound ----
@@ -524,11 +585,16 @@ func (sess *session) readLoop(ctx context.Context) {
 				sess.recvMu.Lock()
 				idle := time.Since(sess.lastRecv)
 				sess.recvMu.Unlock()
-				if idle > idleTimeout {
+				// A syncing reader reads nothing (its PINGs wait in the
+				// socket), so then the writer's progress is what counts.
+				syncing := sess.syncing.Load()
+				if idle > idleTimeout && !syncing {
 					sess.conn.CloseWithCode("idle")
 					return
 				}
-				if sess.streamVoice {
+				if syncing {
+					sess.checkStuck(time.Now(), syncStuck)
+				} else if sess.streamVoice {
 					sess.checkVoiceStuck(time.Now())
 				}
 			}
@@ -550,7 +616,7 @@ func (sess *session) readLoop(ctx context.Context) {
 		switch f.Type {
 		case proto.TReq:
 			var r proto.Req
-			if err := f.Decode(&r); err != nil {
+			if err := f.DecodeClient(&r); err != nil {
 				sess.bye(proto.ByeProtocolError, "bad REQ")
 				return
 			}
@@ -558,8 +624,7 @@ func (sess *session) readLoop(ctx context.Context) {
 		case proto.TPing:
 			sess.push(outFrame{t: proto.TPong, payload: f.Payload})
 		case proto.TEphemeral:
-			var e proto.Ephemeral
-			if f.Decode(&e) == nil {
+			if e, ok := decodeClientEphemeral(f); ok {
 				sess.srv.handleEphemeral(sess, e)
 			}
 		case proto.TVoice:
@@ -571,6 +636,30 @@ func (sess *session) readLoop(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// clientEphemeral is what a client may send in EPHEMERAL (§7, §13.7, §15.5).
+// Server-only fields (a huddle roster's parts, user, agent) aren't decoded
+// at all: a declared list of nil parts would allocate a Part per item.
+type clientEphemeral struct {
+	Kind   string `msgpack:"kind"`
+	Chan   uint64 `msgpack:"chan,omitempty"`
+	State  string `msgpack:"state,omitempty"`
+	Status string `msgpack:"status,omitempty"`
+	Epoch  uint32 `msgpack:"epoch,omitempty"`
+	Dev    []byte `msgpack:"dev,omitempty"`
+	Thread uint64 `msgpack:"thread,omitempty"`
+	Text   string `msgpack:"text,omitempty"`
+	Enc    []byte `msgpack:"enc,omitempty"`
+}
+
+func decodeClientEphemeral(f proto.Frame) (proto.Ephemeral, bool) {
+	var c clientEphemeral
+	if f.DecodeClient(&c) != nil {
+		return proto.Ephemeral{}, false
+	}
+	return proto.Ephemeral{Kind: c.Kind, Chan: c.Chan, State: c.State, Status: c.Status, Epoch: c.Epoch,
+		Dev: c.Dev, Thread: c.Thread, Text: c.Text, Enc: c.Enc}, true
 }
 
 func (sess *session) touch() {
@@ -618,7 +707,10 @@ func (sess *session) handleReq(ctx context.Context, r proto.Req) {
 			sess.respond(r.ID, nil, proto.Errf(proto.ErrBadRequest, "sync already done"))
 			return
 		}
+		sess.syncing.Store(true)
 		res, err := sess.srv.sync(ctx, sess, r.Args)
+		sess.touch() // PINGs that arrived meanwhile are still unread
+		sess.syncing.Store(false)
 		sess.respond(r.ID, res, err)
 		if err == nil {
 			sess.synced = true
@@ -717,10 +809,16 @@ func (s *Server) sync(ctx context.Context, sess *session, args proto.Raw) (proto
 	u := sess.user.ID
 	reset := a.Since == 0 || !bytes.Equal(a.ServerID, s.st.serverID) || a.Since > h || h-a.Since > proto.SnapshotGap
 	if reset {
-		return proto.SyncRes{Head: h, Reset: true}, s.sendSnapshot(ctx, tx, sess)
+		return proto.SyncRes{Head: h, Reset: true}, s.sendSnapshot(ctx, tx, sess, h)
 	}
+	tx.Rollback()
+	// Pages are read without the snapshot (pushSync may wait on the
+	// client, and must not pin a connection meanwhile). Events up to H are
+	// all committed and visibility is by seq, so each page is the same as
+	// at H, except text an edit or delete rewrote since (§6), which the
+	// buffered events after H redo anyway.
 	for since := a.Since; ; {
-		evs, err := visibleEvents(ctx, tx, u, since, h, replayPage, sess.e2e, sess.agentCap)
+		evs, err := visibleEvents(ctx, s.st.db, u, since, h, replayPage, sess.e2e, sess.agentCap)
 		if err != nil {
 			return proto.SyncRes{}, err
 		}
@@ -732,7 +830,9 @@ func (s *Server) sync(ctx context.Context, sess *session, args proto.Raw) (proto
 			if err != nil {
 				return proto.SyncRes{}, err
 			}
-			sess.pushSync(outFrame{t: proto.TEvent, payload: payload})
+			if err := sess.pushSync(outFrame{t: proto.TEvent, payload: payload}); err != nil {
+				return proto.SyncRes{}, err
+			}
 		}
 		if len(evs) < replayPage {
 			break
@@ -744,7 +844,26 @@ func (s *Server) sync(ctx context.Context, sess *session, args proto.Raw) (proto
 
 const snapshotPart = 512 << 10
 
-func (s *Server) sendSnapshot(ctx context.Context, tx *sql.Tx, sess *session) error {
+// frames collects snapshot parts while a read transaction is open; they
+// are pushed once it is closed.
+type frames []outFrame
+
+func (f *frames) snapshot(sn proto.Snapshot) error {
+	payload, err := proto.Marshal(sn)
+	if err != nil {
+		return err
+	}
+	*f = append(*f, outFrame{t: proto.TSnapshot, payload: payload})
+	return nil
+}
+
+// sendSnapshot sends the snapshot at head h. Everything but messages is
+// read in tx (the view at h) and is the size of the server, not of what
+// anyone posted; tx is closed before pushing. Messages, up to 50 per
+// channel of up to 64 KiB each, are read a channel at a time afterwards:
+// ids are seqs, so id ≤ h is the set at h, with edits and deletes since
+// already applied (the buffered events after h redo them).
+func (s *Server) sendSnapshot(ctx context.Context, tx *sql.Tx, sess *session, h uint64) error {
 	u := sess.user.ID
 	users, err := listUsers(ctx, tx)
 	if err != nil {
@@ -762,6 +881,7 @@ func (s *Server) sendSnapshot(ctx context.Context, tx *sql.Tx, sess *session) er
 	if err != nil {
 		return err
 	}
+	var out frames
 	first := proto.Snapshot{Users: users, Read: read, Groups: groups}
 	if sess.agentCap {
 		if first.Agents, err = listAgents(ctx, tx); err != nil {
@@ -769,7 +889,7 @@ func (s *Server) sendSnapshot(ctx context.Context, tx *sql.Tx, sess *session) er
 		}
 		s.markAgentsOnline(first.Agents)
 	}
-	if err := sess.pushSnapshot(first); err != nil {
+	if err := out.snapshot(first); err != nil {
 		return err
 	}
 	var cpart []proto.Channel
@@ -777,7 +897,7 @@ func (s *Server) sendSnapshot(ctx context.Context, tx *sql.Tx, sess *session) er
 	for _, c := range chans {
 		n := encodedSize(c)
 		if csize+n > snapshotPart && len(cpart) > 0 {
-			if err := sess.pushSnapshot(proto.Snapshot{Chans: cpart}); err != nil {
+			if err := out.snapshot(proto.Snapshot{Chans: cpart}); err != nil {
 				return err
 			}
 			cpart, csize = nil, 0
@@ -786,16 +906,23 @@ func (s *Server) sendSnapshot(ctx context.Context, tx *sql.Tx, sess *session) er
 		csize += n
 	}
 	if len(cpart) > 0 {
-		if err := sess.pushSnapshot(proto.Snapshot{Chans: cpart}); err != nil {
+		if err := out.snapshot(proto.Snapshot{Chans: cpart}); err != nil {
 			return err
 		}
 	}
 
 	if sess.e2e {
-		if err := sess.snapshotDevices(ctx, tx); err != nil {
+		if err := sess.snapshotDevices(ctx, tx, &out); err != nil {
 			return err
 		}
-		if err := sess.snapshotKeys(ctx, tx, chans); err != nil {
+		if err := sess.snapshotKeys(ctx, tx, chans, &out); err != nil {
+			return err
+		}
+	}
+	tx.Rollback()
+	for i, f := range out {
+		out[i] = outFrame{} // let pushed parts go
+		if err := sess.pushSync(f); err != nil {
 			return err
 		}
 	}
@@ -806,8 +933,7 @@ func (s *Server) sendSnapshot(ctx context.Context, tx *sql.Tx, sess *session) er
 		if !s.agentSees(sess, c.ID) {
 			continue
 		}
-		msgs, err := scanMessages(ctx, tx, `SELECT * FROM (SELECT `+msgCols+` FROM messages
-			WHERE chan = ? ORDER BY id DESC LIMIT ?) ORDER BY id`, c.ID, proto.SnapshotPerChan)
+		msgs, err := snapshotMessages(ctx, s.st.db, c.ID, h)
 		if err != nil {
 			return err
 		}
@@ -829,13 +955,24 @@ func (s *Server) sendSnapshot(ctx context.Context, tx *sql.Tx, sess *session) er
 	return nil
 }
 
+// snapshotMessages is channel ch's last SnapshotPerChan messages at head h,
+// read in one short transaction so each comes with its reactions.
+func snapshotMessages(ctx context.Context, db *sql.DB, ch, h uint64) ([]proto.Message, error) {
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	return scanMessages(ctx, tx, `SELECT * FROM (SELECT `+msgCols+` FROM messages
+		WHERE chan = ? AND id <= ? ORDER BY id DESC LIMIT ?) ORDER BY id`, ch, h, proto.SnapshotPerChan)
+}
+
 func (sess *session) pushSnapshot(sn proto.Snapshot) error {
 	payload, err := proto.Marshal(sn)
 	if err != nil {
 		return err
 	}
-	sess.pushSync(outFrame{t: proto.TSnapshot, payload: payload})
-	return nil
+	return sess.pushSync(outFrame{t: proto.TSnapshot, payload: payload})
 }
 
 // revoke stops all delivery to the session and closes it with BYE revoked.
@@ -844,6 +981,7 @@ func (sess *session) revoke() {
 	sess.mu.Lock()
 	sess.closed = true
 	sess.queue, sess.pending = nil, nil
+	sess.signalDrained()
 	sess.mu.Unlock()
 	sess.bye(proto.ByeRevoked, "")
 }

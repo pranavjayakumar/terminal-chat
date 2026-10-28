@@ -155,6 +155,10 @@ func SettingsJSON(dir string, o Options) ([]byte, error) {
 		"Edit("+abs(p.Repo)+"/**)",
 		"Edit("+abs(p.Dream)+")",
 		"Edit("+abs(p.Dream)+"/**)",
+		// guest/ is where others' Talk runs start: its .claude/skills link
+		// must not be repointed by a Work run.
+		"Edit("+abs(p.Guest)+")",
+		"Edit("+abs(p.Guest)+"/**)",
 		"Edit(**/.git)",
 		"Edit(**/.git/**)",
 	)
@@ -178,7 +182,7 @@ func SettingsJSON(dir string, o Options) ([]byte, error) {
 	}
 
 	denyWrite := []string{p.Code, p.Config, p.Soul, p.Me, filepath.Dir(p.Settings), p.Memory, p.State, p.DeviceHome,
-		p.Repo, p.Dream, p.ModProxy, "**/.git"}
+		p.Repo, p.Dream, p.ModProxy, p.Guest, "**/.git"}
 	// Linux skips glob write rules: name each worktree's .git too.
 	if ents, err := os.ReadDir(p.Worktrees); err == nil {
 		for _, e := range ents {

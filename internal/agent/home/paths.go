@@ -37,6 +37,9 @@ type Paths struct {
 	// (work_start); the sandbox reads it as its only GOPROXY and can't
 	// write it.
 	ModProxy string
+	// Guest is the working directory of Talk runs for anyone but the
+	// owner: nothing private in it, so reading it needs no prompt.
+	Guest string
 }
 
 // PathsFor returns the layout of the agent home at dir.
@@ -60,5 +63,6 @@ func PathsFor(dir string) Paths {
 		GoCache:       j("cache", "go-build"),
 		GoModCache:    j("cache", "gomod"),
 		ModProxy:      j("modproxy"),
+		Guest:         j("guest"),
 	}
 }

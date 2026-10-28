@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base32"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -232,7 +233,9 @@ func (s *Supervisor) askOwner(ctx context.Context, r *run, ap Approval) bool {
 		s.activity(r.ask, "approval", "not asked (approvals: "+string(r.cfg.Approvals)+"): "+oneLine(ap.Action, 200), 0)
 		return true
 	}
-	if s.granted(ap.Kind, ap.Target) {
+	// A ♾️ is the owner's ok for their own asks: someone else's ask always
+	// gets a card.
+	if r.ask.Owner && s.granted(ap.Kind, ap.Target) {
 		s.activity(r.ask, "approval", "auto (♾️ today): "+oneLine(ap.Action, 200), 0)
 		return true
 	}
@@ -267,7 +270,10 @@ func (s *Supervisor) askOwner(ctx context.Context, r *run, ap Approval) bool {
 		said = "yes"
 	}
 	s.activity(r.ask, "approval", said+": "+oneLine(ap.Action, 200), 0)
-	if v.yes && v.always {
+	if v.yes && v.always && !r.ask.Owner {
+		s.activity(r.ask, "approval", "♾️ not kept: it only covers your own asks", 0)
+	}
+	if v.yes && v.always && r.ask.Owner {
 		s.grant(ap.Kind, ap.Target)
 		s.activity(r.ask, "approval", "♾️ "+GrantText(Grant{Kind: ap.Kind, Target: ap.Target})+" ok for the rest of today (say \""+StopAutoPhrase+"\" to stop)", 0)
 	}
@@ -299,9 +305,17 @@ func GrantText(g Grant) string {
 	case KindIssue:
 		return "issues on " + g.Target
 	case KindTool:
-		return "using " + g.Target
+		tool, _, _ := strings.Cut(g.Target, " ")
+		return "that exact " + tool + " call"
 	}
 	return g.Target
+}
+
+// ToolTarget is a tool call's grant target: the tool and a digest of its
+// exact input, so a ♾️ never stretches to other calls of the same tool.
+func ToolTarget(tool string, input []byte) string {
+	sum := sha256.Sum256(input)
+	return tool + " " + hex.EncodeToString(sum[:8])
 }
 
 func (s *Supervisor) grant(kind, target string) {

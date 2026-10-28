@@ -5,11 +5,17 @@ import (
 	"database/sql"
 
 	"github.com/skailama/tc/internal/proto"
+	"github.com/skailama/tc/internal/sanitize"
 )
 
 func (s *Server) opUserUpdate(ctx context.Context, u proto.User, a proto.UserUpdateArgs) (any, error) {
 	if !validLine(a.Display, proto.MaxDisplay) {
 		return nil, badRequest("display name must be one line of at most 64 bytes")
+	}
+	// Names tell people apart: nothing invisible, stacked or padded that
+	// could make one look like another (PROTOCOL.md §10).
+	if !sanitize.ValidName(a.Display) {
+		return nil, badRequest("display name has invisible or stacked characters, or leading or trailing spaces")
 	}
 	var res proto.SeqRes
 	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {

@@ -113,6 +113,9 @@ const (
 	ByeSlowConsumer     = "slow_consumer"
 	ByeServerShutdown   = "server_shutdown"
 	ByeRevoked          = "revoked"
+	// ByeTooManySessions: the account already has maxSessionsPerUser sessions
+	// (§9). Older clients just reconnect later, like after any other BYE.
+	ByeTooManySessions = "too_many_sessions"
 )
 
 // Channel kinds.

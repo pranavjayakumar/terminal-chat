@@ -86,6 +86,10 @@ func (c Claude) Args(req Request, mcpConfig string) []string {
 	default:
 		a = append(a, "--restricted", "--tools", strings.Join(talkTools, ","))
 	}
+	if len(req.Deny) > 0 {
+		a = append(a, "--disallowed-tools")
+		a = append(a, req.Deny...)
+	}
 	if req.PermissionTool != "" {
 		a = append(a, "--permission-prompt-tool", req.PermissionTool)
 	} else {

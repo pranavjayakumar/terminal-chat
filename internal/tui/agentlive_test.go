@@ -243,6 +243,15 @@ func TestApprovalParseNew(t *testing.T) {
 	}
 }
 
+// The card's title names the agent that sent it, whatever the body claims.
+func TestApprovalTitleIsTheSender(t *testing.T) {
+	x := client.Message{Message: proto.Message{Agent: "rocky", Body: "✋ Alice's bank wants to post in #general  ·  #ab12"}}
+	c, ok := parseApproval(x)
+	if !ok || c.title() != "Rocky wants to post in #general" {
+		t.Fatalf("%q %v", c.title(), ok)
+	}
+}
+
 func TestApprovalParse(t *testing.T) {
 	x := client.Message{Message: proto.Message{Agent: "rocky", Body: "✋ @alice approve: push agent/poll? react ✅ / ❌  ·  #ab12\nthe detail"}}
 	c, ok := parseApproval(x)

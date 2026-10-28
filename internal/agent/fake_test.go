@@ -75,8 +75,25 @@ func (f *fakeChat) User(id uint64) proto.User {
 	defer f.mu.Unlock()
 	return f.users[id]
 }
-func (f *fakeChat) Channels() []client.ChannelView { return f.chans }
+func (f *fakeChat) Channels() []client.ChannelView {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]client.ChannelView(nil), f.chans...)
+}
+
+func (f *fakeChat) setMembers(ch uint64, users ...uint64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.chans {
+		if f.chans[i].ID == ch {
+			f.chans[i].Members = users
+		}
+	}
+}
+
 func (f *fakeChat) Channel(id uint64) (client.ChannelView, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, c := range f.chans {
 		if c.ID == id {
 			return c, true
@@ -117,6 +134,10 @@ func (f *fakeChat) Thread(root uint64) []client.Message {
 	return out
 }
 func (f *fakeChat) Search(_ context.Context, q string, ch uint64) ([]proto.Message, error) {
+	if ch == 0 {
+		// as the server answers an agent session (gateAgentOp)
+		return nil, proto.Errf(proto.ErrForbidden, "agents search one channel at a time")
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []proto.Message

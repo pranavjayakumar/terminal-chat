@@ -153,14 +153,14 @@ func TestAnswerMention(t *testing.T) {
 		t.Fatalf("posted %+v", p)
 	}
 	req := h.run.requests()[0]
-	if req.Mode != runner.Talk || req.Resume || req.Dir != h.s.Dir || req.MaxUSD != 2 || req.PermissionTool != mcp.PermissionTool {
+	if req.Mode != runner.Talk || req.Resume || req.Dir != h.s.paths.Guest || req.MaxUSD != 2 || req.PermissionTool != mcp.PermissionTool {
 		t.Fatalf("request %+v", req)
 	}
 	if !strings.Contains(req.Prompt, "bob (not your owner)") || !strings.Contains(req.Prompt, "is the deploy ok?") {
 		t.Fatalf("prompt %q", req.Prompt)
 	}
 	env := strings.Join(req.Env, "\n")
-	for _, want := range []string{memory.EnvSessionKey + "=" + SessionKey(general, 0), memory.EnvOwnerAsk + "=0", memory.EnvAsker + "=bob", memory.EnvPeople + "=bob"} {
+	for _, want := range []string{memory.EnvSessionKey + "=" + SessionKey(general, 0) + "-guest", memory.EnvOwnerAsk + "=0", memory.EnvAsker + "=bob", memory.EnvPeople + "=bob"} {
 		if !strings.Contains(env, want) {
 			t.Errorf("env missing %q: %s", want, env)
 		}
@@ -201,7 +201,7 @@ func TestAnswerMention(t *testing.T) {
 	var sess Session
 	h.waitFor("session saved", func() bool {
 		var ok bool
-		sess, ok = h.s.sessions.get(SessionKey(general, 0))
+		sess, ok = h.s.sessions.get(SessionKey(general, 0) + "-guest")
 		return ok
 	})
 	if sess.ID != req.Session || sess.Tokens != 5000 || sess.LastMsg != ask.ID {
@@ -279,7 +279,7 @@ func TestOwnerWorkMode(t *testing.T) {
 
 func TestBudget(t *testing.T) {
 	cfg := cfgDefault()
-	cfg.DailyCapUSD, cfg.RunCapUSD, cfg.AsksPerPerson = 1, 0.8, 2
+	cfg.DailyCapUSD, cfg.RunCapUSD, cfg.AsksPerPerson, cfg.GuestCapUSD = 1, 0.8, 2, 1
 	h := newHarness(t, cfg, nil)
 	h.run.reply = func(req runner.Request, on func(runner.Event)) (runner.Result, error) {
 		return runner.Result{Session: req.Session, Text: "ok", CostUSD: 0.3}, nil
@@ -327,7 +327,7 @@ func TestRollover(t *testing.T) {
 		return runner.Result{Session: req.Session, Text: "sure", CostUSD: 0.1, ContextTokens: 110000, ContextWindow: 200000}, nil
 	}
 	h.chat.say(ownerID, general, 0, "@rocky plan /poll", 0)
-	key := SessionKey(general, 0)
+	key := SessionKey(general, 0) + "-owner"
 	h.waitFor("handoff", func() bool {
 		h.mem.mu.Lock()
 		defer h.mem.mu.Unlock()
@@ -738,6 +738,12 @@ func TestToolAccess(t *testing.T) {
 	if r := h.callIn(general, mcp.ToolReadChannel, map[string]string{"chan": "13"}); !r.Error {
 		t.Fatalf("bob's ask read a DM: %s", r.Text)
 	}
+	// #secret is on the list but private and bob isn't in it: the agent
+	// is not his way in.
+	if r := h.callIn(general, mcp.ToolReadChannel, map[string]string{"chan": "#secret"}); !r.Error {
+		t.Fatalf("bob's ask read a private channel he isn't in: %s", r.Text)
+	}
+	h.chat.setMembers(secret, ownerID, bobID)
 	if r := h.callIn(general, mcp.ToolReadChannel, map[string]string{"chan": "#secret"}); r.Error {
 		t.Fatalf("allowed channel refused: %s", r.Text)
 	}

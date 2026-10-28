@@ -68,8 +68,12 @@ type Config struct {
 	DailyCapUSD   float64 `json:"daily_cap_usd"`
 	RunCapUSD     float64 `json:"run_cap_usd"`
 	AsksPerPerson int     `json:"asks_per_person"` // per person per day
-	RolloverPct   int     `json:"rollover_pct"`    // % of the context window
-	IdleMinutes   int     `json:"idle_minutes"`    // stop Claude after this long idle
+	// GuestCapUSD is the part of the daily cap everyone but the owner
+	// shares, so others can never spend the owner's headroom (0 = half of
+	// daily_cap_usd).
+	GuestCapUSD float64 `json:"guest_cap_usd,omitempty"`
+	RolloverPct int     `json:"rollover_pct"` // % of the context window
+	IdleMinutes int     `json:"idle_minutes"` // stop Claude after this long idle
 	// EngageMinutes keeps the agent in a thread after it replies: new
 	// messages there reach it without an @mention until nobody has written
 	// there for this long (0 = off).
@@ -108,6 +112,8 @@ func (c Config) Validate() error {
 		return errors.New("run_cap_usd must be above 0")
 	case c.RunCapUSD > c.DailyCapUSD:
 		return errors.New("run_cap_usd is above daily_cap_usd")
+	case c.GuestCapUSD < 0 || c.GuestCapUSD > c.DailyCapUSD:
+		return errors.New("guest_cap_usd must be 0..daily_cap_usd")
 	case c.AsksPerPerson < 1:
 		return errors.New("asks_per_person must be at least 1")
 	case c.RolloverPct < 10 || c.RolloverPct > 95:
@@ -125,6 +131,14 @@ func (c Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// GuestCap is what runs for anyone but the owner may spend per day.
+func (c Config) GuestCap() float64 {
+	if c.GuestCapUSD > 0 {
+		return c.GuestCapUSD
+	}
+	return c.DailyCapUSD / 2
 }
 
 // LoadConfig reads config.json from the agent home. A missing file gives the

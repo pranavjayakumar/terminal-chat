@@ -303,6 +303,85 @@ func (s *Supervisor) checkMentions(text string) error {
 	return nil
 }
 
+// massNames are the @names that ping many people at once: the broadcast
+// words and every group.
+func (s *Supervisor) massNames() []string {
+	names := append([]string(nil), broadcast...)
+	if gc, ok := s.Chat.(groupsChat); ok {
+		for _, g := range gc.Groups() {
+			names = append(names, g.Name)
+		}
+	}
+	return names
+}
+
+// massAt finds the '@' of the first mention of one of names in text, with
+// the same whole-word rule the clients use (client.Mentioned), or -1.
+func massAt(text string, names []string) (int, string) {
+	lb := asciiLower(text)
+	best, which := -1, ""
+	for _, n := range names {
+		pat := "@" + n
+		for i := 0; i < len(lb); {
+			j := strings.Index(lb[i:], pat)
+			if j < 0 {
+				break
+			}
+			j += i
+			end := j + len(pat)
+			if (j == 0 || !wordByte(lb[j-1])) && (end == len(lb) || !(wordByte(lb[end]) || lb[end] == '-')) {
+				if best < 0 || j < best {
+					best, which = j, n
+				}
+				break
+			}
+			i = j + 1
+		}
+	}
+	return best, which
+}
+
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
+}
+
+func wordByte(b byte) bool { return b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '_' }
+
+// errMass refuses a post for someone other than the owner that would ping
+// a whole channel or group.
+func (s *Supervisor) errMass(text string) error {
+	names := s.massNames()
+	n := ""
+	if _, n = massAt(text, names); n == "" && client.Mentioned(text, names) {
+		n = "everyone" // matched only after Unicode case folding
+	}
+	if n != "" {
+		return fmt.Errorf("@%s pings many people: only your owner can ask for that; write it without the @", sanitize.Line(n))
+	}
+	return nil
+}
+
+// defangBroadcast drops the @ of every mass mention in text, so a reply to
+// someone other than the owner can't ping a whole channel or group.
+func (s *Supervisor) defangBroadcast(text string) string {
+	names := s.massNames()
+	for client.Mentioned(text, names) {
+		i, _ := massAt(text, names)
+		if i < 0 {
+			// Only Unicode case folding makes it a mention: drop every @.
+			return strings.ReplaceAll(text, "@", "")
+		}
+		text = text[:i] + text[i+1:]
+	}
+	return text
+}
+
 // findUser finds a person by their exact tc name (any case, @ optional).
 // It never guesses: a near miss is an error that lists the close names.
 func (s *Supervisor) findUser(name string) (proto.User, error) {
@@ -480,6 +559,11 @@ func (s *Supervisor) remind(r *run, raw json.RawMessage) (string, error) {
 	if err := s.checkMentions(text); err != nil {
 		return "", err
 	}
+	if !a.Owner {
+		if err := s.errMass(text); err != nil {
+			return "", err
+		}
+	}
 	ch, th := a.Chan, a.Thread
 	cv, _ := s.Chat.Channel(ch)
 	person := u.Name
@@ -586,6 +670,11 @@ func (s *Supervisor) askAgent(ctx context.Context, r *run, raw json.RawMessage) 
 	question, err := cleanText(p.Question, 1500)
 	if err != nil {
 		return "", err
+	}
+	if !a.Owner {
+		if err := s.errMass(question); err != nil {
+			return "", err
+		}
 	}
 	ch, th := a.Chan, a.Thread
 	if p.Chan != "" {
