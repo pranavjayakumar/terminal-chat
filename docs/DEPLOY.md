@@ -136,18 +136,29 @@ allowed signers compiled into `internal/release/signers.go` and embedded in `ins
    `AllowedSigners` in `internal/release/signers.go` and `ALLOWED_SIGNERS='…'` in `install.sh`
    (`go test ./internal/release` checks they match), and merge to `main`. Builds that still
    hold `REPLACE_WITH_MAINTAINER_KEY` refuse to update, and such an `install.sh` refuses to install.
+   Use a **dedicated release signing key**, not the key you log in to servers or GitHub with
+   (see "Release signing keys" below).
 2. Tag a commit that is on `main`: `git tag v0.2.0 && git push origin v0.2.0`. The workflow
-   rejects anything but `vX.Y.Z` and commits not on `origin/main`, runs the tests, builds, and
-   creates a draft release with the tarballs and `checksums.txt`. There are eight tarballs:
+   rejects anything but `vX.Y.Z` and commits not on `origin/main`, runs the tests, builds,
+   attests every tarball's build provenance (`actions/attest-build-provenance`) and
+   creates a draft release with the tarballs and `checksums.txt`, whose first line is
+   `version v0.2.0`. There are eight tarballs:
    `tc_<os>_<arch>` (static, `CGO_ENABLED=0`) and the voice flavor `tc-voice_<os>_<arch>`
    (`-tags voice`, libopus 1.5.2 built from a checksummed xiph.org tarball and linked
    statically by `scripts/build-voice.sh` on native runners: macos-14 for both darwin arches,
    ubuntu-22.04 and ubuntu-22.04-arm for Linux, so Linux voice builds need glibc ≥ 2.35).
    One `checksums.txt` covers all eight, so one signature covers the voice builds too.
-3. `make release-sign TAG=v0.2.0 KEY=~/.ssh/id_ed25519` downloads the draft's assets, checks
-   them against `checksums.txt`, signs it (`ssh-keygen -Y sign -n tc-release`), checks the
-   signature exactly as `tc update` will, uploads `checksums.txt.sig` and publishes the release
-   as latest.
+3. `make release-sign TAG=v0.2.0 KEY=~/.ssh/tc_release_sk` prints the commit the tag points at on
+   GitHub (and refuses if it isn't on `main`, where a tag's own `release.yml` could skip the
+   workflow's checks, or if your local tag differs: read it before you go on), downloads the
+   draft's assets and refuses to sign unless `checksums.txt` has exactly one `version v0.2.0`
+   line, every tarball matches it, and every tarball passes `gh attestation verify` (signed by
+   this repo's `release.yml`, from `refs/tags/v0.2.0`, at that commit, on a GitHub-hosted
+   runner). Then it signs `checksums.txt` (`ssh-keygen -Y sign -n tc-release`), checks the
+   signature and version line exactly as `tc update` will, uploads `checksums.txt.sig` and
+   publishes the release as latest. The provenance check is what makes signing safe while the
+   release is a draft: anyone with write access can replace a draft's files, but not forge an
+   attestation from the workflow run on that tag.
 4. Homebrew: `make release-sign` ends by regenerating `Formula/tc.rb` from the just-signed
    `checksums.txt` (`scripts/brew-formula.sh`, which re-verifies the signature first). Commit the
    change on a branch and open a PR to `main`; until it merges, `brew upgrade` stays on the old
@@ -162,6 +173,38 @@ Downloads are https-only, redirects included (`install.sh` runs curl with `--pro
 `TC_INSECURE_NO_SIG=1 sh install.sh` skips the signature check. Don't: anyone who can change the
 release (or what your network serves for it) can then run code as you.
 
-Repository settings that back this up: branch protection on `main`, 2FA for everyone with
-write access, a tag ruleset limiting who can push `v*` tags, and required reviewers on the
+**Rollback protection.** The signature covers only `checksums.txt`, and which tag is "latest"
+comes from an unsigned redirect. So `tc update` and `install.sh` also require the signed file's
+`version` line to equal the tag they are installing: an old signed `checksums.txt` (and its old,
+vulnerable binaries) republished as `v99.0.0` is refused. Releases up to `v0.6.1`
+(`release.LegacyUnversioned`, `LEGACY_UNVERSIONED` in `install.sh`) were built before the line
+existed and are still accepted without it; every newer tag must carry it. Bounding the exception
+by version is what keeps it safe: an attacker can only relabel old files as a tag ≤ v0.6.1, which
+no client on v0.6.1 or newer treats as an update. What this can't stop is the release host
+withholding updates or pointing `latest` at an older genuine release; `tc update` never
+downgrades, but a fresh `install.sh` would install it, so check the release page if in doubt.
+
+### Release signing keys
+
+- Sign with a key that does nothing else: not the key in your `~/.ssh/authorized_keys`
+  everywhere, nor your GitHub login or commit-signing key. Best is a hardware-backed key, so
+  the private half never leaves the token and each signature needs a touch:
+  `ssh-keygen -t ed25519-sk -O resident -O verify-required -C tc-release -f ~/.ssh/tc_release_sk`
+  (YubiKey or similar, OpenSSH 8.2+; `ssh-keygen -Y verify` and tc both accept
+  `sk-ssh-ed25519@openssh.com`). Without hardware, a separate `ed25519` key with a passphrase,
+  kept off shared machines.
+- Each maintainer who signs has their own line in `AllowedSigners`/`ALLOWED_SIGNERS`; the
+  comment at the end of the line says whose it is.
+- **Rotate** (new key, lost token, a maintainer leaves): add the new line in both places, merge,
+  and cut a release signed with a key that is *already* trusted, so existing installs learn the
+  new key through `tc update`. Then remove the old line, merge, and cut the next release with
+  the new key. Installs older than the release that added the new key can't verify releases
+  signed only by it; they reinstall with the one-liner (which fetches the current `install.sh`).
+- **Compromised key**: remove its line at once and release (signed by another trusted key).
+  Until users update, they still trust it, so say so in the release notes and ask everyone to
+  run `tc update` now.
+
+Repository settings that back this up: branch protection on `main` (PR required, review from
+Code Owners: `.github/CODEOWNERS` covers the release path), 2FA for everyone with write access,
+a tag ruleset limiting who can create, move or delete `v*` tags, and required reviewers on the
 `release` environment the publish job uses.

@@ -27,6 +27,7 @@ curl -fsSL https://raw.githubusercontent.com/pranavjayakumar/terminal-chat/main/
 and sha256, installs `tc` to `~/.local/bin` and runs `tc join`, which tries their SSH keys (ssh-agent,
 then `~/.ssh`, else it makes a tc-only key), suggests a name from `git config user.name`, and asks once
 to confirm. Then `tc`. Prefer Homebrew? `brew tap pranavjayakumar/tc https://github.com/pranavjayakumar/terminal-chat && brew install pranavjayakumar/tc/tc`, then `tc join 'tc://…'`.
+`go install` isn't supported: the module path (`github.com/skailama/tc`) isn't where this repo lives, so use the installer, Homebrew or a release tarball.
 
 **Second computer:** `tc login` on the first one prints a `tc login 'tc://host:port#pin'` line; run it
 on the other with the same SSH key (re-running your original install command works too). If the join
