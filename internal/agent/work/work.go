@@ -77,8 +77,9 @@ type Work struct {
 	BranchPrefix string // every work branch starts with this
 	// Author is the name and email on the commits tc makes for the agent.
 	AuthorName, AuthorEmail string
-	// GoModCache is the sandbox's module cache, which Prefetch fills.
-	GoModCache string
+	// ModProxy is the module cache Prefetch fills and the sandbox reads as
+	// its GOPROXY; only tc writes it.
+	ModProxy string
 }
 
 // New returns the Work for the agent home at agentDir.
@@ -93,7 +94,7 @@ func New(agentDir string) *Work {
 		BranchPrefix: "agent/",
 		AuthorName:   "tc agent",
 		AuthorEmail:  "agent@tc.invalid",
-		GoModCache:   p.GoModCache,
+		ModProxy:     p.ModProxy,
 	}
 }
 
@@ -202,27 +203,33 @@ func (w *Work) Worktree(ctx context.Context, slug string) (Worktree, error) {
 	}
 	_, _ = w.git(ctx, gitDir, "", false, "worktree", "prune")
 	if _, err := w.git(ctx, gitDir, "", false, "rev-parse", "--verify", "--quiet", "refs/heads/"+wt.Branch); err == nil {
-		if _, err := w.git(ctx, gitDir, "", false, "worktree", "add", "-q", wt.Dir, wt.Branch); err != nil {
-			return wt, err
-		}
-	} else if _, err := w.git(ctx, gitDir, "", false, "worktree", "add", "-q", "-b", wt.Branch, wt.Dir, "origin/"+w.Base); err != nil {
+		// An existing branch holds what the agent wrote: no prefetch.
+		_, err = w.git(ctx, gitDir, "", false, "worktree", "add", "-q", wt.Dir, wt.Branch)
+		return wt, err
+	}
+	if _, err := w.git(ctx, gitDir, "", false, "worktree", "add", "-q", "-b", wt.Branch, wt.Dir, "origin/"+w.Base); err != nil {
 		return wt, err
 	}
 	_ = w.Prefetch(ctx, wt.Dir) // best effort: a missing module fails the agent's build, not the worktree
 	return wt, nil
 }
 
-// Prefetch downloads the worktree's Go modules into the sandbox's module
-// cache, from outside the sandbox: the sandbox can reach proxy.golang.org
-// but not the storage it redirects large modules to. Downloading runs no
-// code, and nothing outside the sandbox builds from that cache.
+// Prefetch downloads the Go modules of a worktree fresh from Base into
+// ModProxy, from outside the sandbox (which has no internet). Only go.mod
+// at Base is read (no go.work, no env file), only proxy.golang.org is
+// asked (no VCS, no private-module bypass), and the cache is one the
+// sandbox can't write, so it can't plant links for tc's go to follow.
+// Downloading runs no code, and nothing outside the sandbox builds from it.
 func (w *Work) Prefetch(ctx context.Context, dir string) error {
-	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil || w.GoModCache == "" {
+	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil || w.ModProxy == "" {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
-	_, err := w.exec(ctx, Cmd{Dir: dir, Name: "go", Args: []string{"mod", "download"}, Env: []string{"GOTOOLCHAIN=local", "GOMODCACHE=" + w.GoModCache}})
+	_, err := w.exec(ctx, Cmd{Dir: dir, Name: "go", Args: []string{"mod", "download"}, Env: []string{
+		"GOTOOLCHAIN=local", "GOMODCACHE=" + w.ModProxy, "GOWORK=off", "GOENV=off", "GOFLAGS=-mod=mod",
+		"GOPROXY=https://proxy.golang.org", "GOVCS=*:off", "GOSUMDB=sum.golang.org",
+		"GOPRIVATE=", "GONOPROXY=", "GONOSUMDB=", "GOINSECURE=", "GOAUTH=off"}})
 	return err
 }
 
@@ -284,8 +291,45 @@ type PR struct {
 	SHA         string // the commit that will be pushed
 	BaseSHA     string // merge base with origin/Base
 	Stat        string // git diff --stat BaseSHA..SHA
+	Diff        string // the whole diff BaseSHA..SHA
 	Files       []string
 	CI          []string // changed files under .github/
+}
+
+// MaxPRDiff is the largest diff a PR card carries; a bigger change is
+// refused rather than shown in part.
+const MaxPRDiff = 256 << 10
+
+// checkStaged makes sure what `git add` staged is what the worktree holds
+// now, through no hard link: a sandboxed process running in the background
+// could swap a link to a secret in and out around the add.
+func (w *Work) checkStaged(ctx context.Context, gitDir, dir string) error {
+	ls, err := w.git(ctx, gitDir, dir, false, "ls-files", "-s", "-z")
+	if err != nil {
+		return err
+	}
+	for _, rec := range strings.Split(ls, "\x00") {
+		meta, rel, ok := strings.Cut(rec, "\t")
+		if !ok {
+			continue
+		}
+		f := strings.Fields(meta) // mode, blob, stage
+		path := filepath.Join(dir, filepath.FromSlash(rel))
+		if len(f) < 2 || f[0] == "120000" || f[0] == "160000" {
+			continue // symlinks are stored as links; gitlinks were refused before
+		}
+		if safegit.Linked(path) {
+			return fmt.Errorf("%s is a hard link to a file elsewhere: refusing to commit it", rel)
+		}
+		got, err := w.git(ctx, gitDir, dir, false, "hash-object", "--no-filters", "--", rel)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(got) != f[1] {
+			return fmt.Errorf("%s changed while tc was committing it: try again once nothing is writing there", rel)
+		}
+	}
+	return nil
 }
 
 // PreparePR commits whatever the agent left uncommitted in the worktree
@@ -323,6 +367,9 @@ func (w *Work) PreparePR(ctx context.Context, dir, branch, message string) (PR, 
 	if _, err := g("add", "-A"); err != nil {
 		return PR{}, err
 	}
+	if err := w.checkStaged(ctx, gitDir, dir); err != nil {
+		return PR{}, err
+	}
 	if _, err := g("diff", "--cached", "--quiet"); err != nil {
 		if _, err := g("commit", "-q", "--no-verify", "-m", message); err != nil {
 			return PR{}, err
@@ -342,6 +389,12 @@ func (w *Work) PreparePR(ctx context.Context, dir, branch, message string) (PR, 
 	}
 	if pr.Stat, err = g("diff", "--no-color", "--no-ext-diff", "--no-textconv", "--stat=100", pr.BaseSHA, pr.SHA); err != nil {
 		return PR{}, err
+	}
+	if pr.Diff, err = g("diff", "--no-color", "--no-ext-diff", "--no-textconv", "--full-index", pr.BaseSHA, pr.SHA); err != nil {
+		return PR{}, err
+	}
+	if len(pr.Diff) > MaxPRDiff {
+		return PR{}, fmt.Errorf("the change is %d bytes of diff, over the %d your owner can review on a card: split it", len(pr.Diff), MaxPRDiff)
 	}
 	names, err := g("diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", pr.BaseSHA, pr.SHA)
 	if err != nil {
@@ -378,8 +431,8 @@ func (w *Work) OpenDraftPR(ctx context.Context, pr PR, title, body string) (stri
 	if _, err := w.git(ctx, gitDir, pr.Dir, true, "push", "-q", "--no-verify", "--", w.url(), pr.SHA+":refs/heads/"+pr.Branch); err != nil {
 		return "", err
 	}
-	out, err := w.exec(ctx, Cmd{Dir: os.TempDir(), Name: "gh", Creds: true, Args: []string{"pr", "create", "--draft", "--repo=" + w.Repo,
-		"--base=" + w.Base, "--head=" + pr.Branch, "--title=" + title, "--body=" + body}})
+	out, err := w.gh(ctx, "pr", "create", "--draft", "--repo="+w.Repo,
+		"--base="+w.Base, "--head="+pr.Branch, "--title="+title, "--body="+body)
 	if err != nil {
 		return "", err
 	}
@@ -391,11 +444,22 @@ func (w *Work) OpenIssue(ctx context.Context, title, body string) (string, error
 	if err := checkText(title, body); err != nil {
 		return "", err
 	}
-	out, err := w.exec(ctx, Cmd{Dir: os.TempDir(), Name: "gh", Creds: true, Args: []string{"issue", "create", "--repo=" + w.Repo, "--title=" + title, "--body=" + body}})
+	out, err := w.gh(ctx, "issue", "create", "--repo="+w.Repo, "--title="+title, "--body="+body)
 	if err != nil {
 		return "", err
 	}
 	return lastURL(out)
+}
+
+// gh runs gh as the owner in an empty folder of its own, so neither gh nor
+// a git it starts finds a repository the agent could have written.
+func (w *Work) gh(ctx context.Context, args ...string) (string, error) {
+	dir, err := os.MkdirTemp("", "tc-gh-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(dir)
+	return w.exec(ctx, Cmd{Dir: dir, Name: "gh", Creds: true, Args: args, Env: []string{"GIT_CEILING_DIRECTORIES=" + filepath.Dir(dir)}})
 }
 
 func lastURL(out string) (string, error) {

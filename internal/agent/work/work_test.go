@@ -255,6 +255,9 @@ func TestPreparePRAndPush(t *testing.T) {
 	if !strings.Contains(pr.Stat, "poll.go") || !strings.Contains(pr.Stat, "2 files changed") {
 		t.Errorf("stat = %q", pr.Stat)
 	}
+	if !strings.Contains(pr.Diff, "+package tc") || !strings.Contains(pr.Diff, "+on: push") {
+		t.Errorf("diff = %q", pr.Diff)
+	}
 	if author := git(t, wt.Dir, "log", "-1", "--format=%an <%ae>|%s"); author != "tc agent <agent@tc.invalid>|Add /poll\n" {
 		t.Errorf("commit = %q", author)
 	}
@@ -385,6 +388,28 @@ func TestRewrittenWorktreeIsRefused(t *testing.T) {
 	// A dir that isn't under the worktrees folder is never used.
 	if _, err := w.PreparePR(ctx, w.RepoDir, wt.Branch, "x"); err == nil {
 		t.Error("repo dir accepted as a worktree")
+	}
+}
+
+// Prefetch reads only go.mod (no go.work, no env file), asks only the
+// public proxy (no VCS), into the cache only tc writes.
+func TestPrefetchEnv(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "go.mod"), "module x\n")
+	f := &fakeRunner{}
+	w := New(t.TempDir())
+	w.Runner = f
+	if err := w.Prefetch(context.Background(), dir); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.calls) != 1 || f.calls[0].String() != "go mod download" || f.calls[0].Creds {
+		t.Fatalf("calls %+v", f.calls)
+	}
+	env := strings.Join(f.calls[0].Env, " ") + " "
+	for _, want := range []string{"GOMODCACHE=" + w.ModProxy + " ", "GOWORK=off", "GOENV=off", "GOVCS=*:off", "GOPROXY=https://proxy.golang.org ", "GOPRIVATE= ", "GONOSUMDB= "} {
+		if !strings.Contains(env, want) {
+			t.Errorf("env missing %q: %s", want, env)
+		}
 	}
 }
 

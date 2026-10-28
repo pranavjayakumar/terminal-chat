@@ -550,7 +550,7 @@ and one status row. Code: `internal/tui/agent.go` (icons, state), `agentlive.go`
   it). Work/Crew runs start in the agent's `worktrees/`, load no settings or CLAUDE.md from there (only tc's
   `--settings`), and the shell may read only its worktrees, granted folders, `repo/`, skills and its own Go
   caches (`<agent home>/cache`); it can't write `repo/`, `dream/`, any `.git` or tc's files, and reaches only
-  proxy.golang.org, sum.golang.org, github.com and the tc server. It can't commit: `open_pr` commits the
+  the tc server (no internet: Go modules come from `modproxy/`, which `work_start` fills as tc). It can't commit: `open_pr` commits the
   worktree as tc, with hooks, fsmonitor, credential helpers and system/global git config off and the git dir
   pinned (a changed `.git` pointer is refused), and pushes exactly the commit on the card.
 - **Follow-ups and quiet** (harness, `internal/agent/engage.go`; nothing in tc draws them). After an agent

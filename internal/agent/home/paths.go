@@ -33,6 +33,10 @@ type Paths struct {
 	// GoCache and GoModCache are the sandboxed shell's own Go caches: the
 	// owner's would let it plant code the owner's next build runs.
 	GoCache, GoModCache string
+	// ModProxy is the module cache tc fills from outside the sandbox
+	// (work_start); the sandbox reads it as its only GOPROXY and can't
+	// write it.
+	ModProxy string
 }
 
 // PathsFor returns the layout of the agent home at dir.
@@ -55,5 +59,6 @@ func PathsFor(dir string) Paths {
 		Dream:         j("dream"),
 		GoCache:       j("cache", "go-build"),
 		GoModCache:    j("cache", "gomod"),
+		ModProxy:      j("modproxy"),
 	}
 }

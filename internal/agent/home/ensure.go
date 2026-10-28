@@ -47,7 +47,7 @@ func EnsureWith(dir string, o Options) error {
 		return err
 	}
 	p := PathsFor(dir)
-	for _, d := range []string{p.Root, filepath.Dir(p.Settings), p.Skills, p.DeviceHome, p.State, p.Worktrees, filepath.Dir(p.GoCache)} {
+	for _, d := range []string{p.Root, filepath.Dir(p.Settings), p.Skills, p.DeviceHome, p.State, p.Worktrees, filepath.Dir(p.GoCache), p.ModProxy} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return fmt.Errorf("creating %s: %w", d, err)
 		}

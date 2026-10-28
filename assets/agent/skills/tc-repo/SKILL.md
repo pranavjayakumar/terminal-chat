@@ -12,8 +12,8 @@ you: your owner is the one named in your system prompt.
   the main clone. Slug: short, lowercase, dashes (`poll-command`). Your shell starts in the
   worktrees folder: `cd` into yours first.
 - You can't commit (the sandbox keeps git's data read-only); `open_pr` commits for you.
-- Modules come from tc's cache, which `work_start` fills. A brand-new dependency may not
-  download in the sandbox; say so in the PR instead of working around it.
+- Modules come from tc's cache, which `work_start` fills. The sandbox has no internet, so a brand-new dependency won't
+  download; say so in the PR instead of working around it. PR cards show your owner the whole diff.
 - Read `CLAUDE.md` and `docs/STATUS.md` in the worktree first. They hold the rules: principles,
   layout, dependency direction, definition of done.
 - Go 1.25. Always prefix Go commands with `GOTOOLCHAIN=local`.

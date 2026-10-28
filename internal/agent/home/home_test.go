@@ -193,7 +193,7 @@ func TestSettingsJSON(t *testing.T) {
 		t.Error("sandbox must be on with no escape hatch")
 	}
 	doms := s.Sandbox.Network.AllowedDomains
-	if strings.Join(doms, " ") != "proxy.golang.org sum.golang.org github.com chat.example.com" {
+	if strings.Join(doms, " ") != "chat.example.com" {
 		t.Errorf("domains = %v", doms)
 	}
 	if !s.Permissions.BlockReads {
@@ -267,7 +267,10 @@ func TestSettingsSandboxEscapes(t *testing.T) {
 	if strings.Contains(deny, "Read("+abs(dir)+")") {
 		t.Error("deny rules block the agent home")
 	}
-	for _, d := range []string{"storage.googleapis.com", "*.githubusercontent.com", "api.github.com"} {
+	if !contains(fsys.DenyWrite, p.ModProxy) || !contains(fsys.AllowRead, p.ModProxy) || s.Env["GOPROXY"] != "file://"+filepath.ToSlash(filepath.Join(p.ModProxy, "cache", "download")) {
+		t.Errorf("module proxy: env %v", s.Env)
+	}
+	for _, d := range []string{"storage.googleapis.com", "*.githubusercontent.com", "api.github.com", "proxy.golang.org", "sum.golang.org"} {
 		if contains(s.Sandbox.Network.AllowedDomains, d) {
 			t.Errorf("network allows %s", d)
 		}

@@ -68,23 +68,14 @@ type filesystem struct {
 	DenyWrite  []string `json:"denyWrite"`
 }
 
-// defaultDomains are all the sandboxed shell may reach besides the tc
-// server and the hosts the owner added. Each one is read-only without
-// credentials, and the sandbox gets none:
-//   - proxy.golang.org: Go module downloads (go build/test of a new dep).
-//   - sum.golang.org: the checksum database every module download checks.
-//   - github.com: Go's fallback for modules the proxy doesn't have
-//     (git over https, public repos only).
-//
-// Not here on purpose: storage.googleapis.com (where the proxy redirects
-// large modules; anyone can write to a bucket of theirs there, so it is an
-// exfil channel; tc downloads the worktree's modules itself at work_start),
-// api.github.com and *.githubusercontent.com (nothing in a build needs them).
-var defaultDomains = []string{
-	"proxy.golang.org",
-	"sum.golang.org",
-	"github.com",
-}
+// defaultDomains is empty: the sandboxed shell reaches only the tc server
+// and the hosts the owner added. Go modules come from Paths.ModProxy, a
+// cache tc fills from proxy.golang.org at work_start (outside the sandbox)
+// and the sandbox uses as its GOPROXY. Not even the module proxy is open:
+// asking it for attacker.example/<secret> makes it fetch that path from
+// the attacker's host, which carries data out, and so do
+// storage.googleapis.com (anyone's bucket) and sum.golang.org lookups.
+var defaultDomains = []string{}
 
 // secretPaths are home-relative paths no agent session may read or write.
 // With blockReadsOutsideWorkingDirectories the sandbox already denies all
@@ -178,7 +169,7 @@ func SettingsJSON(dir string, o Options) ([]byte, error) {
 	// TC_HOME (cache.db holds messages in the clear) wherever it is, and
 	// the agent's own private parts.
 	denyRead = append(denyRead, tcHome, p.DeviceHome, p.State, p.Memory, p.Me, p.Config)
-	allowRead := []string{p.Worktrees, p.Repo, p.Skills, filepath.Dir(p.GoCache)}
+	allowRead := []string{p.Worktrees, p.Repo, p.Skills, filepath.Dir(p.GoCache), p.ModProxy}
 	for _, r := range readOK {
 		allowRead = append(allowRead, "~/"+r)
 	}
@@ -187,7 +178,7 @@ func SettingsJSON(dir string, o Options) ([]byte, error) {
 	}
 
 	denyWrite := []string{p.Code, p.Config, p.Soul, p.Me, filepath.Dir(p.Settings), p.Memory, p.State, p.DeviceHome,
-		p.Repo, p.Dream, "**/.git"}
+		p.Repo, p.Dream, p.ModProxy, "**/.git"}
 	// Linux skips glob write rules: name each worktree's .git too.
 	if ents, err := os.ReadDir(p.Worktrees); err == nil {
 		for _, e := range ents {
@@ -203,6 +194,8 @@ func SettingsJSON(dir string, o Options) ([]byte, error) {
 			"GOMODCACHE":  p.GoModCache,
 			"GOTOOLCHAIN": "local",
 			"GOTELEMETRY": "off",
+			"GOPROXY":     "file://" + filepath.ToSlash(filepath.Join(p.ModProxy, "cache", "download")),
+			"GOWORK":      "off",
 		},
 		Hooks: map[string][]hookGroup{
 			"SessionStart": hook(HookSessionStart),

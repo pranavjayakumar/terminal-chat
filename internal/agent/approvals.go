@@ -158,9 +158,13 @@ func PRPreview(pr work.PR, title, body string) string {
 	}
 	fmt.Fprintf(&b, "branch %s · commit %s · base %s\n", pr.Branch, abbrev(pr.SHA), abbrev(pr.BaseSHA))
 	b.WriteString(strings.TrimRight(pr.Stat, "\n"))
+	b.WriteString("\nfiles: " + strings.Join(pr.Files, ", "))
 	b.WriteString("\ntitle: " + title)
 	if body = strings.TrimSpace(body); body != "" {
 		b.WriteString("\n\n" + body)
+	}
+	if d := strings.TrimRight(pr.Diff, "\n"); d != "" {
+		b.WriteString("\n\nthe whole diff:\n" + d)
 	}
 	return b.String()
 }

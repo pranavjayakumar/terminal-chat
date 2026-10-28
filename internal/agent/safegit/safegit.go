@@ -17,9 +17,12 @@ import (
 	"syscall"
 )
 
-// Flags go before the subcommand on every tc-side git. Config files the
-// agent can reach are already out of its reach to write (settings.go); these
-// make sure that even a changed config never runs a program.
+// Flags go before the subcommand on every tc-side git. The config files tc's
+// git reads are out of the sandbox's reach to write (settings.go), and
+// system and global config are off (Env); these switch off the
+// program-running keys git would also honour from the repo's own config.
+// Keys with arbitrary names (filter.<x>.clean, include.path) can't be
+// switched off this way: they rely on the repo config staying unwritable.
 var Flags = []string{
 	"-c", "core.hooksPath=/dev/null",
 	"-c", "core.fsmonitor=false",
@@ -29,6 +32,7 @@ var Flags = []string{
 	"-c", "tag.gpgsign=false",
 	"-c", "core.pager=cat",
 	"-c", "protocol.ext.allow=never",
+	"-c", "core.sshCommand=false",
 	"-c", "gc.auto=0",
 	"-c", "maintenance.auto=false",
 }
