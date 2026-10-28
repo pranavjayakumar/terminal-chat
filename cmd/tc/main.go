@@ -20,6 +20,7 @@ const usage = `tc — terminal team chat
                              join a team (--key may be a .pub held in ssh-agent)
   tc login tc://host:port#pin [--key path]
                              sign in on another computer with the same SSH key
+                             (or give it its own key: an admin's tc invite --for @you)
   tc login                   show this computer's tc://host:port#pin
   tc send <#chan|@user|@your-agent> [message...]   (reads stdin if no message)
   tc send <#chan|@user> --file path[:start[-end]] [--context N] [message...]
@@ -33,6 +34,8 @@ const usage = `tc — terminal team chat
                              revoke a lost or stolen device
   tc invite [--uses N] [--ttl 72h] [--key github:user] [--raw]   (or --list, --revoke ID)
                              invite someone (admins; members if the server allows)
+  tc invite --for @user [--raw]
+                             (admin) add-key invite: signs a new computer in as @user with its own SSH key
   tc background on|off|status
                              notifications (mentions, DMs, huddle rings) while tc is closed;
                              starts at login; tc update restarts it

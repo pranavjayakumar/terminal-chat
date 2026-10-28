@@ -229,7 +229,7 @@ side holds every row, the roomier side gets a shorter menu that scrolls. It work
 ## Slash commands
 
 `/join #x`, `/leave`, `/create #x [--private [--plaintext]]`, `/add @user`, `/topic text`, `/dm @a @b` (`/dm @me` or my own name: my notes, also in `Option-K`; `@me` is always me, even if an account is named `me`; after `/dm` the popup offers `@me` and my name),
-`/invite` (admin; prints code), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps), `/pins` (overlay of this channel's pinned messages, newest pin first, as `author · preview`; Enter jumps, Esc closes),
+`/invite` (admin; prints code), `/invite --for @user` (admin; add-key invite for a new computer of theirs), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps), `/pins` (overlay of this channel's pinned messages, newest pin first, as `author · preview`; Enter jumps, Esc closes),
 `/activity`, `/highlight [word…]`, `/unhighlight word…`, `/group name @a @b…` (admin), `/groups`,
 `/remind <when> <text>`, `/reminders`, `/remind-delete id`, `/snippet path[:range] [message]`,
 `/share-pane [pane]` (herdr only), `/verify @user [--github login]`, `/accept-key @user`, `/members`,

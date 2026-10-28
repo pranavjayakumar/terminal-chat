@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -111,6 +112,12 @@ func boundLabel(src string, keys int64) string {
 // the invite to them. Members may invite when the server allows it; the
 // server enforces who and how much.
 func (m *Model) inviteCommand(args []string) (tea.Cmd, error) {
+	if slices.ContainsFunc(args, func(a string) bool { return a == "--for" || strings.HasPrefix(a, "--for=") }) {
+		if len(args) == 1 && strings.HasPrefix(args[0], "--for=") {
+			args = []string{"--for", strings.TrimPrefix(args[0], "--for=")}
+		}
+		return m.addKeyInviteCommand(args)
+	}
 	login, args, err := keyArg(args)
 	if err != nil {
 		return nil, err
@@ -165,6 +172,52 @@ func (m *Model) inviteCommand(args []string) (tea.Cmd, error) {
 		}
 		return inviteShownMsg{summary: strings.Join(parts, " · "), code: sanitize.Line(inv.Code),
 			line: line, how: how, copyErr: cerr}, nil
+	}), nil
+}
+
+// addKeyInviteCommand runs /invite --for @user (admins): an add-key invite
+// that signs a new computer in as that user with its own SSH key, so no
+// private key has to be copied between computers. The server refuses
+// anyone but an admin.
+func (m *Model) addKeyInviteCommand(args []string) (tea.Cmd, error) {
+	const usage = "usage: /invite --for @user (add-key invites are single-use and last 7 days)"
+	if len(args) != 2 || args[0] != "--for" {
+		return nil, errors.New(usage)
+	}
+	id, ok := m.findUser(args[1])
+	if !ok {
+		return nil, errors.New("no user " + sanitize.Line(args[1]))
+	}
+	u := m.users[id]
+	if id == m.me.ID && u.ID == 0 {
+		u = m.me
+	}
+	name := sanitize.Line(u.Name)
+	switch {
+	case u.Bot:
+		return nil, errors.New("@" + name + " is a bot; bots can't sign in")
+	case u.Disabled:
+		return nil, errors.New("@" + name + " is disabled; invite them as a new account instead")
+	}
+	be, opt, version := m.c, m.opt, m.opt.Version
+	return m.callThen("invite", func(ctx context.Context) (tea.Msg, error) {
+		code, err := be.CreateInvite(ctx, id)
+		if err != nil {
+			var pe *proto.Error
+			if errors.As(err, &pe) && pe.Code == proto.ErrForbidden {
+				return nil, errors.New("only admins can add an SSH key to an account")
+			}
+			return nil, err
+		}
+		line, err := proto.InstallCommand(code, version)
+		if err != nil {
+			return nil, err
+		}
+		how, cerr := clip(ctx, opt, line)
+		return inviteShownMsg{
+			summary: "add-key invite for @" + name + " · 1 use · lasts 7 days · run it on their new computer: it signs in as @" + name +
+				" with that computer's own SSH key (if asked for a name, any valid one: it's ignored)",
+			code: sanitize.Line(code), line: line, how: how, copyErr: cerr}, nil
 	}), nil
 }
 

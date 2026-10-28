@@ -22,6 +22,7 @@ type fakeClient struct {
 	me          proto.User
 	status      client.Status
 	users       []proto.User
+	addKeyErr   error // CreateInvite's answer
 	chans       []client.ChannelView
 	msgs        map[uint64][]client.Message
 	threads     map[uint64][]client.Message
@@ -251,7 +252,11 @@ func (f *fakeClient) Search(ctx context.Context, q string, ch uint64) ([]proto.M
 	return []proto.Message{f.msgs[10][0].Message, f.threads[103][1].Message}, nil
 }
 func (f *fakeClient) CreateInvite(ctx context.Context, user uint64) (string, error) {
-	return "tc1-invite", nil
+	f.record(fmt.Sprintf("addkey %d", user))
+	if f.addKeyErr != nil {
+		return "", f.addKeyErr
+	}
+	return "tc://chat.example.com:7443/abcdefghijklmnopqrstuvwxyz#Pin-_x", nil
 }
 func (f *fakeClient) CreateTeamInvite(ctx context.Context, uses int, ttl time.Duration) (proto.InviteRes, error) {
 	f.record(fmt.Sprintf("invite %d %s", uses, ttl))
