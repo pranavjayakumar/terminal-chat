@@ -66,7 +66,7 @@ user, server or chat data, but GitHub sees your IP address and that it runs tc.
 | `F1` or `/help` | all keys and commands |
 | `Ctrl-C` twice | quit |
 
-Commands: `/join #x` `/create #x [--private [--plaintext]]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/pins` `/activity` `/highlight [word…]` `/unhighlight word…` `/group name @a @b` (admin) `/groups` `/remind <when> <text>` `/reminders` `/remind-delete id` `/away [status]` `/back` `/snippet file[:range]` `/share-pane [pane]` `/invite [uses] [ttl]` `/invite --for @user` (admin) `/invites` `/invite-revoke id` (yours; admins: any) `/webhook name` `/webhooks` `/webhook-delete id` `/verify @user` `/accept-key @user` `/members` `/alarm` `/devices [@user]` `/device-revoke id` `/disable @user` (admin) `/huddle` `/leave-huddle` `/notify …` `/dnd …` `/sounds`.
+Commands: `/join #x` `/create #x [--private [--plaintext]]` `/add @user` `/dm @a @b` `/topic …` `/name …` `/search …` `/pins` `/activity` `/highlight [word…]` `/unhighlight word…` `/group name @a @b` (admin) `/groups` `/remind <when> <text>` `/reminders` `/remind-delete id` `/away [status]` `/back` `/snippet file[:range]` `/share-pane [pane]` `/invite [uses] [ttl]` `/invite --for @user` (admin) `/invites` `/invite-revoke id` (yours; admins: any) `/webhook name` `/webhooks` `/webhook-delete id` `/verify @user` `/accept-key @user` `/endorse-key [SHA256:…]` `/members` `/alarm` `/devices [@user]` `/device-revoke id` `/disable @user` (admin) `/huddle` `/leave-huddle` `/notify …` `/dnd …` `/sounds`.
 
 Private channels are end-to-end encrypted; `--plaintext` opts out (needed only for webhooks/bots).
 Admins: `tc users` lists accounts and who invited them; `tc users disable @name` locks an account

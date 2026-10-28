@@ -351,6 +351,11 @@ func joinWithKeys(ctx context.Context, env joinEnv, inv proto.Invite, code, name
 		fmt.Fprintf(env.out, "Note: you're signed in to the existing account %s with %s. If that key already had the account, "+
 			"the invite was not used (it grants nothing to an existing key); if it was an invite to add a key to %s's account, the key is added now.\n",
 			sanitize.Line(u.Name), sanitize.Line(used.Describe()), sanitize.Line(u.Name))
+		// The fingerprint comes from this computer, not the server: it's
+		// what the user's other computers may safely vouch for (#146).
+		fmt.Fprintf(env.out, "If the key is new to the account, your other computers don't trust it yet. On one that's signed in as %s, run:\n\n"+
+			"  tc devices endorse %s\n\nand then here the command it prints.\n",
+			sanitize.Line(u.Name), identity.Fingerprint(used.Pub))
 	}
 	printJoinTips(env, u)
 	return nil

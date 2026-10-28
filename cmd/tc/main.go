@@ -32,6 +32,8 @@ const usage = `tc — terminal team chat
   tc devices [@user]         list your (or someone's) devices
   tc devices revoke <id> [--yes] [--self [--force]]
                              revoke a lost or stolen device
+  tc devices endorse SHA256:…
+                             trust another SSH key of yours (e.g. from an add-key invite) everywhere
   tc invite [--uses N] [--ttl 72h] [--key github:user] [--raw]   (or --list, --revoke ID)
                              invite someone (admins; members if the server allows)
   tc invite --for @user [--raw]

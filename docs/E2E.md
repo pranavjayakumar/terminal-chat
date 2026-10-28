@@ -177,6 +177,25 @@ What a malicious server can and cannot do today, and what closes each gap:
   **Known gap:** there is no per-key removal, so the owner can't drop just the stolen key and keep the
   account. Members can't mint add-key invites (admins only, §4.1 of PROTOCOL.md), so a stolen key alone
   can't add a second key of the thief's that would survive this.
+- **A second SSH key of your own** (#146; an add-key invite, `tc invite --for @you`): its devices are a
+  pending key change everywhere, your own devices included, and nothing is sealed to them. `/accept-key`
+  never accepts your own keys: the server could invent a key "of yours", post a fake "from you"
+  message to prompt you, and its device would then get every channel key. Instead a computer you
+  trust vouches for the key: `tc devices endorse SHA256:…` / `/endorse-key SHA256:…` signs a
+  KeyEndorse (`"tc-endorse-v1\x00"`, binding `server_id`, your user id and the new key) with the SSH
+  key that computer logs in with and publishes it (`key.endorse`, PROTOCOL.md §13.2). Every client
+  that pinned that key for you — your other devices and everyone you talk to — then pins the new key
+  as Endorsed through the existing KeyEndorse chain check; nothing else ever does. The fingerprint is
+  typed by the user, read off the computer that holds the key (`tc join` and `tc devices` print it
+  there), never picked from what the server says is pending, so the server can't steer which key gets
+  endorsed. The new computer endorses the old one's key the same way (its own first pin is only its
+  login key). Why the server can't fake it: it would need a signature, by a key the client already
+  pinned for that user, over this server's id, that user id and its key; endorsements by unpinned
+  keys, self-endorsements, other users' keys, another server's id or a broken signature are ignored
+  (malicious-server test `TestMaliciousOwnKeyEndorsement`). With an honest server, a thief holding your SSH
+  key could endorse a key of theirs only if it were already a login key of your account, which takes an
+  admin's add-key invite (clients don't check that; with a colluding server a stolen key can endorse any
+  key, which gives nothing new: it can already sign device certs). An endorsed key is as trusted as the key that endorsed it: `/verify` still upgrades TOFU.
 - **Lost devices**: K lives only on devices. Losing every device of a user loses their encrypted
   history (no backup in v1); a new device gets new messages, and older history only from a member's
   backlinks (the history of every epoch whose K a remaining member holds).
@@ -469,6 +488,7 @@ Limits: enc ≤ 64 KiB + 1 KiB; DeviceCert ≤ 4 KiB; ≤ 8 devices/user; bundle
    | case | result |
    |---|---|
    | device cert under a server-added SSH key / add-key invite | detected: key-change banner, bob's sends `ErrKeyChange`, nothing sealed to it |
+   | that key plus forged/replayed `key.endorse` (self-signed, unpinned or other user's signer, another server's id, bad signature) (#146) | harmless: ignored; the key stays pending for alice's own devices and for bob, `/accept-key @me` refused, nothing sealed to it |
    | fake `chan.join` of mallory (plain / + bundle signed by mallory) | detected: alarm "membership not confirmed" / "rotated by someone not in epoch n", sends and rotations refused |
    | replayed old bundle; live claim of an older epoch | harmless: ignored, sends stay on the head epoch |
    | forced reset to a snapshot at an older epoch | detected: rollback alarm (trust store survives the reset) |
