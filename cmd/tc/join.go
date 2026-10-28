@@ -135,7 +135,8 @@ func showLogin(out io.Writer, home string) error {
 	}
 	fmt.Fprintf(out, "This computer is signed in as %s to:\n\n  %s\n\n", sanitize.Line(cfg.Name), line)
 	fmt.Fprintf(out, "On another computer that has the same SSH key (in ssh-agent or ~/.ssh), run:\n\n  tc login '%s'\n\n", line)
-	fmt.Fprintln(out, "The account is the SSH key: copy that key to the other computer (or reach it through ssh-agent forwarding).")
+	fmt.Fprintf(out, "Other computer without that key? It can get its own: an admin runs tc invite --for @%s\n"+
+		"and you run the line it prints there (no need to copy your private key over).\n", sanitize.Line(cfg.Name))
 	return nil
 }
 
@@ -345,8 +346,11 @@ func joinWithKeys(ctx context.Context, env joinEnv, inv proto.Invite, code, name
 		fmt.Fprintln(env.out, "It has no passphrase: anyone who can read that file can chat as you. (Prefer your own key? tc join --key ~/.ssh/id_ed25519.)")
 	}
 	if !loginOnly && (u.Name != name || preexisting(u, time.Now())) {
-		fmt.Fprintf(env.out, "Note: %s already has an account, so you're signed in as %s and the invite was not used (it grants nothing to an existing key).\n",
-			sanitize.Line(used.Describe()), sanitize.Line(u.Name))
+		// The client can't tell these apart: WELCOME doesn't say whether
+		// the invite was spent.
+		fmt.Fprintf(env.out, "Note: you're signed in to the existing account %s with %s. If that key already had the account, "+
+			"the invite was not used (it grants nothing to an existing key); if it was an invite to add a key to %s's account, the key is added now.\n",
+			sanitize.Line(u.Name), sanitize.Line(used.Describe()), sanitize.Line(u.Name))
 	}
 	printJoinTips(env, u)
 	return nil
@@ -465,7 +469,7 @@ func noKeyError(all []joinKey, last error) error {
 		b.WriteString(" (no keys found in ssh-agent or ~/.ssh)")
 	}
 	writeTried(&b, all)
-	b.WriteString("\n  tc login needs the key you joined with: load it into ssh-agent (ssh-add) or pass --key path; the account belongs to that key, so copy it here from the computer you joined on")
+	b.WriteString("\n  tc login needs the key you joined with: load it into ssh-agent (ssh-add) or pass --key path; or give this computer its own key: an admin runs tc invite --for @you and you run the line it prints here")
 	if last != nil {
 		var bye *client.ByeError
 		if !errors.As(last, &bye) || bye.Code != proto.ByeAuthFailed {

@@ -221,8 +221,8 @@ Kinds:
   that exists → BYE `name_taken`. Accounts named `me` from before the reservation keep
   working (login doesn't check names), but clients resolve `@me` to the caller, so others
   can't address such an account by name.
-- **add key** (`invite.create {user}`): attaches `pubkey` to an existing user
-  (new laptop). `name` is ignored.
+- **add key** (`invite.create {user}`; `tc invite --for @user`, `/invite --for @user`, admins
+  only): attaches `pubkey` to an existing user (new laptop with its own key). `name` is ignored.
 
 ### 4.2 BYE codes
 

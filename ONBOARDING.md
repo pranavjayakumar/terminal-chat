@@ -29,6 +29,9 @@ invite isn't used up.
 
 **Second computer:** run `tc login` on the first one. It prints `tc login 'tc://host:port#pin'`; run
 that on the other computer with the same SSH key there (or re-run your original install command).
+No copy of that key there? Don't copy private keys around: ask an admin for an add-key invite
+(`tc invite --for @you`, or `/invite --for @you` in chat) and run it on the new computer; it signs in
+as you with that computer's own key.
 
 **Lost a laptop?** `tc devices` lists your devices, `tc devices revoke <id>` (or `/devices` in chat)
 revokes one and re-keys every encrypted conversation it could read. If the thief may also have your
@@ -92,6 +95,7 @@ tc server invite --uses 15 --ttl 24h        # one line for the whole team
 tc server invite --admin                     # single-use, 24 h max
 tc server invite --list / --revoke ID        # see and cancel live invites
 tc invite --key github:alice                 # only alice's GitHub SSH keys can redeem it
+tc invite --for @alice                       # alice's new computer joins her account with its own key
 tc users                                     # accounts and who invited them
 tc users disable @name                       # lock an account out for good
 ```

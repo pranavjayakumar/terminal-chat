@@ -44,6 +44,7 @@ var commandTable = []cmdSpec{
 	{name: "back", desc: "presence: back from away", helpHidden: true},
 	{name: "invite", args: "[uses] [ttl]", desc: "invite: copies the install one-liner (e.g. /invite 5 3d)"},
 	{name: "invite", args: "--key github:user", desc: "invite only someone holding that GitHub account's SSH keys", more: true},
+	{name: "invite", args: "--for @user", desc: "(admin) sign a new computer in as @user with its own SSH key", more: true},
 	{name: "invites", desc: "open invites with ids (yours; admins: all)"},
 	{name: "invite-revoke", args: "id", desc: "make an invite unusable at once"},
 	{name: "share-pane", args: "[pane]", desc: "send a herdr pane's output (preview first)"},
