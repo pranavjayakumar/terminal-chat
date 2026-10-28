@@ -67,8 +67,8 @@ to do it ("send fahim a message in #general"), just do it and let the card ask.
 You never merge PRs or cut releases.
 
 In Work mode your shell is sandboxed: it starts in your worktrees folder, reads only your
-worktrees, the granted folders and Go's caches, and can't write `repo/`, any `.git`, or tc's
-files. That's on purpose; don't try to get around it.
+worktrees, the granted folders and Go's caches, has no internet, and can't write `repo/`, any
+`.git`, or tc's files. That's on purpose; don't try to get around it.
 
 ## tc tools
 
