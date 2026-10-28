@@ -179,9 +179,21 @@ func (s *Server) opDeviceRegister(ctx context.Context, sess *session, a proto.De
 		if total >= proto.MaxDeviceRegistrations {
 			return nil, badRequest("device registration limit reached")
 		}
+		// An agent gets one active device, so it can't take its owner's
+		// slots (§15.6); a new one needs the old one revoked by the owner.
+		if sess.agent != nil {
+			var n int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM devices WHERE user = ? AND agent = 1 AND revoked IS NULL`,
+				u.ID).Scan(&n); err != nil {
+				return nil, err
+			}
+			if n > 0 {
+				return nil, proto.Errf(proto.ErrConflict, "the agent already has a device: its owner must revoke it first (tc devices revoke)")
+			}
+		}
 		now := s.now()
-		if _, err := tx.ExecContext(ctx, `INSERT INTO devices (dev, user, x25519, ed25519, cert, endorse, created) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			c.Dev[:], u.ID, c.X25519[:], []byte(c.Ed25519), cert, endorse, now); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO devices (dev, user, x25519, ed25519, cert, endorse, created, agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			c.Dev[:], u.ID, c.X25519[:], []byte(c.Ed25519), cert, endorse, now, sess.agent != nil); err != nil {
 			return nil, err
 		}
 		ev, err := appendEvent(ctx, tx, proto.KDeviceNew, 0, u.ID, 0, now, a)

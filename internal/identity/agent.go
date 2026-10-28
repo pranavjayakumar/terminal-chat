@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"encoding/binary"
 	"fmt"
 	"time"
 
@@ -83,3 +84,29 @@ func decodeAgentEndorse(b []byte) (AgentEndorse, error) {
 
 // AllowedKeyType reports whether SSH keys of type t are accepted (§4).
 func AllowedKeyType(t string) bool { return allowedKey[t] }
+
+// CtxAgentKey signs an agent key's proof of possession (PROTOCOL.md §15.2
+// agent.key).
+const CtxAgentKey = "tc-agent-key-v1\x00"
+
+// agentKeyPayload is server_id || owner (u64 big-endian) || pubkey: fixed
+// widths before the key, so no two inputs share a payload.
+func agentKeyPayload(serverID e2ecrypto.ServerID, owner uint64, pubkey []byte) []byte {
+	b := make([]byte, 0, len(serverID)+8+len(pubkey))
+	b = append(b, serverID[:]...)
+	b = binary.BigEndian.AppendUint64(b, owner)
+	return append(b, pubkey...)
+}
+
+// SignAgentKey proves, with the agent's own key, that whoever registers it
+// as owner's agent key holds it: else anyone could register someone else's
+// public key (from github.com/<user>.keys, say) and lock them out of tc.
+func SignAgentKey(agentKey ssh.Signer, serverID e2ecrypto.ServerID, owner uint64) ([]byte, error) {
+	return SignContext(agentKey, CtxAgentKey, agentKeyPayload(serverID, owner, agentKey.PublicKey().Marshal()))
+}
+
+// VerifyAgentKey checks a SignAgentKey proof for pubkey (wire-encoded).
+func VerifyAgentKey(pubkey, proof []byte, serverID e2ecrypto.ServerID, owner uint64) error {
+	_, err := VerifyContext(pubkey, proof, CtxAgentKey, agentKeyPayload(serverID, owner, pubkey))
+	return err
+}
