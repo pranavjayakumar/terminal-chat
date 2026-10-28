@@ -115,6 +115,18 @@ not argv, so it isn't visible for the length of the join.
   `TC_HOME`, at TUI start, 5 s timeout) to show `update vX` in the sidebar. It sends no version,
   user, server or channel data, but GitHub sees the machine's IP and that it runs tc. On private or
   air-gapped teams, set `TC_NO_UPDATE_CHECK=1` in teammates' environment. The server never checks.
+- Before every server upgrade, housekeeping (as root):
+
+  ```sh
+  new=/root/tc-backup-$(date +%F).db
+  (umask 077 && sqlite3 /var/lib/tc/tc.db ".backup $new") && chmod 600 "$new" &&
+    find /root -maxdepth 1 -name 'tc-backup-*.db' ! -path "$new" -delete   # keep only the latest
+  cp -p /usr/local/bin/tc /usr/local/bin/tc.prev   # replaces the older one; roll back: mv tc.prev tc, restart
+  ```
+
+  The backup holds every account, channel and message (end-to-end encrypted ones only as
+  ciphertext): keep it 0600 and keep just one. Never leave copies of `server.key` outside `/var/lib/tc` (no `/root/server.key`, no copy
+  in a home directory or `/tmp`); a stray copy lets anyone who reads it impersonate the server.
 - Upgrade: `tc update` as root on the server (or copy a new binary), then `systemctl restart tc`.
   Clients reconnect and catch up automatically; they update themselves with `tc update` (which
   also restarts a teammate's `tc background` notifier). Servers before passive sessions
@@ -176,11 +188,11 @@ release (or what your network serves for it) can then run code as you.
 **Rollback protection.** The signature covers only `checksums.txt`, and which tag is "latest"
 comes from an unsigned redirect. So `tc update` and `install.sh` also require the signed file's
 `version` line to equal the tag they are installing: an old signed `checksums.txt` (and its old,
-vulnerable binaries) republished as `v99.0.0` is refused. Releases up to `v0.6.1`
+vulnerable binaries) republished as `v99.0.0` is refused. Releases up to `v0.6.2`
 (`release.LegacyUnversioned`, `LEGACY_UNVERSIONED` in `install.sh`) were built before the line
 existed and are still accepted without it; every newer tag must carry it. Bounding the exception
-by version is what keeps it safe: an attacker can only relabel old files as a tag ≤ v0.6.1, which
-no client on v0.6.1 or newer treats as an update. What this can't stop is the release host
+by version is what keeps it safe: an attacker can only relabel old files as a tag ≤ v0.6.2, which
+no client on v0.6.2 or newer treats as an update. What this can't stop is the release host
 withholding updates or pointing `latest` at an older genuine release; `tc update` never
 downgrades, but a fresh `install.sh` would install it, so check the release page if in doubt.
 

@@ -230,8 +230,8 @@ func ParseChecksums(b []byte) map[string]string {
 
 // LegacyUnversioned is the newest release whose checksums.txt may lack the
 // "version <tag>" line: every release up to it was built before the workflow
-// wrote one (v0.6.1 was already a draft then). Anything newer must carry it.
-const LegacyUnversioned = "v0.6.1"
+// wrote one (v0.6.2 was published by the old workflow). Anything newer must carry it.
+const LegacyUnversioned = "v0.6.2"
 
 // ErrVersionLine means a signed checksums.txt isn't bound to the tag being
 // installed: an old signed file republished under a newer tag (a rollback).

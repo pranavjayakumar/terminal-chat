@@ -136,7 +136,7 @@ verify_sig() {
 
 # LEGACY_UNVERSIONED is the newest release whose checksums.txt may lack the
 # "version <tag>" line (release.LegacyUnversioned; a test checks).
-LEGACY_UNVERSIONED=v0.6.1
+LEGACY_UNVERSIONED=v0.6.2
 
 # check_version_line dies unless the signed $1/checksums.txt is for $tag:
 # exactly one "version" line, equal to "version $tag". The signature covers

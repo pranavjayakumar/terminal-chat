@@ -25,15 +25,16 @@ func TestCheckVersionLine(t *testing.T) {
 		{h + "version v0.7.0\n", "v0.7.0", true},
 		{"version v0.7.0", "v0.7.0", true},
 		// Releases built before the line existed.
+		{h, "v0.6.2", true},
 		{h, "v0.6.1", true},
 		{h, "v0.6.0", true},
 		{h, "v0.1.0", true},
 		// Anything newer must carry it: a rollback under a new tag.
-		{h, "v0.6.2", false},
+		{h, "v0.6.3", false},
 		{h, "v0.7.0", false},
 		{h, "v1.0.0", false},
 		{h, "v99.0.0", false},
-		{h, "v0.6.1-rc1", false},
+		{h, "v0.6.2-rc1", false},
 		{"version v0.4.0\n" + h, "v0.7.0", false},
 		{"version v0.7.0\nversion v0.7.0\n" + h, "v0.7.0", false},
 		{"version v0.7.0\nversion v0.8.0\n" + h, "v0.7.0", false},
@@ -66,6 +67,8 @@ func TestFetchRefusesRollback(t *testing.T) {
 		ok   bool
 	}{
 		{"v0.5.0", legacy, true}, // a real legacy release still installs
+		{"v0.6.2", legacy, true}, // the last one the old workflow published
+		{"v0.6.3", legacy, false},
 		{"v0.9.0", legacy, false},
 		{"v0.9.0", append([]byte("version v0.8.0\n"), legacy...), false},
 		{"v0.9.0", append([]byte("version v0.9.0\n"), legacy...), true},
@@ -99,11 +102,12 @@ func TestInstallRefusesRollback(t *testing.T) {
 		sums []byte
 		want string // "" installs
 	}{
+		{"v0.6.2", legacy, ""}, // the last release the old workflow published
 		{"v0.6.1", legacy, ""},
 		{"v0.5.0", legacy, ""},
-		{"v0.6.2", legacy, `no "version v0.6.2" line`},
+		{"v0.6.3", legacy, `no "version v0.6.3" line`},
 		{"v0.9.0", legacy, `no "version v0.9.0" line`},
-		{"v0.6.1-rc1", legacy, `no "version v0.6.1-rc1" line`},
+		{"v0.6.2-rc1", legacy, `no "version v0.6.2-rc1" line`},
 		{"v0.9.0", append([]byte("version v0.8.0\n"), legacy...), "version line doesn't match v0.9.0"},
 		{"v0.9.0", append([]byte("version v0.9.0\nversion v0.9.0\n"), legacy...), "version line doesn't match"},
 		{"v0.9.0", append([]byte("version v0.9.0\r\n"), legacy...), "version line doesn't match"},
