@@ -53,7 +53,7 @@ func TestPrintAddKeyInvite(t *testing.T) {
 	printAddKeyInvite(&b, code, "alice", "v0.2.0")
 	out := b.String()
 	for _, want := range []string{"Add-key invite for @alice", "own SSH key", "| sh -s -- '" + code + "'",
-		"tc join '" + code + "' --name alice", "/accept-key @alice"} {
+		"tc join '" + code + "' --name alice", "tc devices endorse"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
 		}

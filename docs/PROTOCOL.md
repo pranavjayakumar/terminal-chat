@@ -403,7 +403,7 @@ Event = {seq: u64, kind: str, chan?: u64, time: i64, actor: u64, data: map}
 An event on channel C is visible to user U iff U is a member of C **at that
 event's seq**. Exceptions: `chan.join`/`chan.leave` about U are always visible
 to U; `chan.new`/`chan.update` of public channels and all `user.*` are visible
-to everyone, as is `group.update`. Live fan-out checks membership at send time; after U's `chan.leave`
+to everyone, as is `group.update` (and, to `e2e1` sessions, `device.*` and `key.endorse`, §13.2). Live fan-out checks membership at send time; after U's `chan.leave`
 commits, no more events for C reach U's sessions. A new member gets the full
 Channel in their `chan.join` event and fetches older messages with `history`.
 
@@ -719,11 +719,13 @@ DeviceRevoke.sig = SSH signature by an endorsed key of `user` ("tc-revoke-v1\x00
 | `device.register` | `{cert: Signed, endorse?: Signed}` | `{seq}` |
 | `device.revoke` | `{revoke: Signed}` | `{seq}` |
 | `devices.list` | `{users?: [u64], after?: u64}` | `{certs: [Signed], endorse: [Signed], revoked: [Signed], next?: u64, revoked_seqs?: [u64]}` |
+| `key.endorse` | `{endorse: Signed}` (cap `key_endorse`) | `{seq}` |
 
 | event kind | data | visible to |
 |---|---|---|
 | `device.new` | `Device` | every `e2e1` session |
 | `device.revoke` | `{revoke: Signed}` | every `e2e1` session |
+| `key.endorse` | `{endorse: Signed}` | every `e2e1` session |
 
 Server rules (honest case):
 - **device.register** (write op, rate limited): `cert` and `endorse` are
@@ -752,12 +754,30 @@ Server rules (honest case):
   4096 entries, else `bad_request`), including
   revoked ones, with every distinct `endorse` attached to them and every
   revoke, ordered by user, and `revoked_seqs[i]`, the seq of `revoked[i]`'s
-  `device.revoke` event (§13.3 "Revocation vs epochs"). Whole users only; when the next user would push
+  `device.revoke` event (§13.3 "Revocation vs epochs"). A user's `key.endorse`
+  endorsements are in `endorse` too, with that user's devices (a user with no
+  device gets none listed). Whole users only; when the next user would push
   the result past ~768 KiB the server stops and sets `next`: call again with
   the same `users` and `after = next`.
+- **key.endorse** (cap `key_endorse`, write op, rate limited; `forbidden` for
+  agent sessions): publishes a KeyEndorse after the fact, e.g. for a login key
+  an add-key invite (§4.1) added, so that clients that pinned another key of
+  the user trust it (#146). `endorse` ≤ 4 KiB (`too_large`); malformed or
+  other `server_id` → `bad_request`; `user` ≠ caller → `forbidden`; `new_ssh`
+  not one of the caller's registered login keys (agent keys don't count) →
+  `bad_request`; not signed by another of the caller's registered login keys
+  (a key never endorses itself) → `forbidden`. An exact repeat is ok
+  `{seq: 0}` and emits nothing; at most 32 per user (`bad_request`). Emits
+  `key.endorse`. Servers without the cap answer `unknown_op`; clients check
+  the cap first.
 - **Snapshot** (§6) adds `devs: [Device]` (every device, revoked ones too),
-  `revoked: [Signed]` (every DeviceRevoke) and `revoked_seqs: [u64]` (same
-  length: each revoke's event seq), possibly over several parts.
+  `revoked: [Signed]` (every DeviceRevoke), `revoked_seqs: [u64]` (same
+  length: each revoke's event seq) and `endorse: [Signed]` (every
+  `key.endorse` endorsement), possibly over several parts.
+- **Compatibility:** older clients ignore the `key.endorse` event kind and the
+  snapshot's `endorse` field, but they already verify KeyEndorse chains in
+  `devices.list` (which they call for their own user on every connection, and
+  for everyone after a reset), so they come to trust an endorsed key too.
 
 Clients store what they receive and decide trust locally: a cert counts only
 if it verifies under an SSH key pinned for its `user` (directly or via a
@@ -770,7 +790,12 @@ pinned on first use; a valid cert under any other key that no pinned key
 endorses is a pending key change, not a verified device, until the user
 acknowledges it. Users whose pins are only first-use (or endorsed by a
 first-use key) are reported as unverified until confirmed out of band
-(`docs/E2E.md` "Threat model").
+(`docs/E2E.md` "Threat model"). A pending key of the client's **own** user is
+never acknowledged on a prompt (the server could invent the key and prompt
+for it); it counts only once a KeyEndorse from a key the client pinned for
+itself vouches for it. Clients make one (`tc devices endorse SHA256:…`,
+`/endorse-key SHA256:…`) only for a fingerprint the user typed, read off the
+computer that holds the key.
 
 Limits: `Signed` objects here ≤ 4 KiB; ≤ 8 non-revoked devices per user;
 ≤ 32 device registrations per user, ever.
@@ -1140,7 +1165,7 @@ server result from an encrypted channel (the server never returns them).
 
 ### 13.5 Ops
 
-Implemented: `device.register`, `device.revoke`, `devices.list` (§13.2),
+Implemented: `device.register`, `device.revoke`, `devices.list`, `key.endorse` (§13.2),
 `key.rotate`, `key.fetch` (§13.3), `key.share` (§13.7), `chan.create + e2e?`,
 `dm.open` (e2e DMs; a DM with no other members — private notes — is never e2e, because the server
 posts reminders into it), `send + enc`, `edit/delete/react/unreact + enc`, `chan.add + bundle`,
@@ -1289,7 +1314,7 @@ reaction's `enc` is stored with it (`Message.renc`) and carried by
 
 ### 13.6 Events
 
-Implemented: `device.new`, `device.revoke` (§13.2), and:
+Implemented: `device.new`, `device.revoke`, `key.endorse` (§13.2), and:
 
 | event kind | chan | data | visible to |
 |---|---|---|---|
@@ -1594,7 +1619,7 @@ An agent session is the owner (`user` is the owner's id) with these differences:
   approvals, and an agent's would look like the owner's tap), `remind.*`, `agent.register`,
   `agent.retire`, `agent.key`, `agent.dm`, changing `agent.access` (it may read its own list with
   an empty `agent.access`), `invite.*`, `user.disable`, `user.update`, `group.set`, `hook.*`,
-  `device.revoke`, `chan.create`, `chan.join`, `chan.leave`, `chan.add`, `chan.remove`,
+  `device.revoke`, `key.endorse`, `chan.create`, `chan.join`, `chan.leave`, `chan.add`, `chan.remove`,
   `chan.topic`, `chan.encrypt`, `dm.open`, `huddle.join`;
 - `agent.update` is allowed (it renames itself when its owner asks it to, §15.2);
 - `key.rotate` stays allowed in the channels it may read, so its sends can re-key like any member

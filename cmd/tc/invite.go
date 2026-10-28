@@ -217,7 +217,8 @@ func printAddKeyInvite(w io.Writer, code, name, version string) {
 	fmt.Fprintf(w, "\n  %s\n\n", sanitize.Line(install))
 	fmt.Fprintf(w, "Already have tc there? Run:\n\n  tc join '%s' --name %s\n\n", code, name)
 	fmt.Fprintf(w, "If it asks for a name, give any valid one: it's ignored, and the key joins @%s's account.\n", name)
-	fmt.Fprintf(w, "People in encrypted chats with @%s see a key change for them and accept it with /accept-key @%s.\n", name, name)
+	fmt.Fprintf(w, "Then, on a computer already signed in as @%s, run tc devices endorse <the new key's fingerprint, which tc join shows>:\n"+
+		"until then @%s's other devices, and everyone in encrypted chats with them, don't trust the new key.\n", name, name)
 }
 
 // inviteErr says what the server's bare forbidden / not_found mean for

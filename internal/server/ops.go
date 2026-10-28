@@ -52,14 +52,14 @@ var writeOps = map[string]bool{
 	proto.OpChanLeave: true, proto.OpChanRemove: true, proto.OpChanEncrypt: true, proto.OpChanTopic: true, proto.OpDMOpen: true,
 	proto.OpInviteCreate: true, proto.OpInviteList: true, proto.OpInviteRevoke: true, proto.OpUserDisable: true, proto.OpUserUpdate: true,
 	proto.OpHookCreate: true, proto.OpHookDelete: true, proto.OpHookList: true,
-	proto.OpDeviceRegister: true, proto.OpDeviceRevoke: true, proto.OpKeyRotate: true,
+	proto.OpDeviceRegister: true, proto.OpDeviceRevoke: true, proto.OpKeyRotate: true, proto.OpKeyEndorse: true,
 	proto.OpKeyShare:      true,
 	proto.OpAgentRegister: true, proto.OpAgentUpdate: true, proto.OpAgentRetire: true, proto.OpAgentAccess: true, proto.OpAgentDM: true, proto.OpAgentKey: true,
 }
 
 // e2eOps exist only in sessions that negotiated proto.CapE2E.
 var e2eOps = map[string]bool{
-	proto.OpDeviceRegister: true, proto.OpDeviceRevoke: true, proto.OpDevicesList: true,
+	proto.OpDeviceRegister: true, proto.OpDeviceRevoke: true, proto.OpDevicesList: true, proto.OpKeyEndorse: true,
 	proto.OpKeyRotate: true, proto.OpKeyFetch: true, proto.OpKeyShare: true, proto.OpChanEncrypt: true,
 }
 
@@ -188,6 +188,8 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 		return withArgs(args, func(a proto.DeviceRevokeArgs) (any, error) { return s.opDeviceRevoke(ctx, u, a) })
 	case proto.OpDevicesList:
 		return withArgs(args, func(a proto.DevicesListArgs) (any, error) { return s.opDevicesList(ctx, a) })
+	case proto.OpKeyEndorse:
+		return withArgs(args, func(a proto.KeyEndorseArgs) (any, error) { return s.opKeyEndorse(ctx, sess, a) })
 	case proto.OpKeyRotate:
 		return withArgs(args, func(a proto.KeyRotateArgs) (any, error) { return s.opKeyRotate(ctx, u, a) })
 	case proto.OpKeyFetch:

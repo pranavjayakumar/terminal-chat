@@ -31,7 +31,9 @@ invite isn't used up.
 that on the other computer with the same SSH key there (or re-run your original install command).
 No copy of that key there? Don't copy private keys around: ask an admin for an add-key invite
 (`tc invite --for @you`, or `/invite --for @you` in chat) and run it on the new computer; it signs in
-as you with that computer's own key.
+as you with that computer's own key. Then link the two keys so encrypted chats trust the new one: on
+the old computer run `tc devices endorse <the key tc join printed on the new one>`, and on the new one
+the `tc devices endorse …` line that prints (or `/endorse-key` in chat).
 
 **Lost a laptop?** `tc devices` lists your devices, `tc devices revoke <id>` (or `/devices` in chat)
 revokes one and re-keys every encrypted conversation it could read. If the thief may also have your

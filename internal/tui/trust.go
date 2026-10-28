@@ -144,6 +144,11 @@ func (m *Model) trustCommand(c command) (tea.Cmd, bool, error) {
 		if !ok {
 			return nil, true, fmt.Errorf("unknown user %s", sanitize.Line(c.args[0]))
 		}
+		if u == m.me.ID {
+			// A prompt the server can trigger mustn't trust a key it says
+			// is mine (#94, #146): the user names it instead.
+			return nil, true, errors.New("your own keys: /endorse-key SHA256:… with the key your other computer shows (/endorse-key there)")
+		}
 		pend := m.c.PendingKeys(u)
 		if len(pend) == 0 {
 			return nil, true, fmt.Errorf("no pending key change for %s", m.atName(u))
@@ -158,6 +163,9 @@ func (m *Model) trustCommand(c command) (tea.Cmd, bool, error) {
 		}
 		m.openTrustOverlay(v)
 		return nil, true, nil
+	case "endorse-key":
+		cmd, err := m.endorseKeyCommand(c.args)
+		return cmd, true, err
 	case "alarm":
 		ch, err := m.needActive()
 		if err != nil {
@@ -182,6 +190,56 @@ func (m *Model) trustCommand(c command) (tea.Cmd, bool, error) {
 		return nil, true, nil
 	}
 	return nil, false, nil
+}
+
+// EndorseBackend is implemented by backends that can vouch for another SSH
+// key of the user's (*client.Client does; #146).
+type EndorseBackend interface {
+	OwnKeyFingerprint() string
+	EndorseKey(ctx context.Context, fp string) (client.EndorseResult, error)
+}
+
+var _ EndorseBackend = (*client.Client)(nil)
+
+// endorseKeyCommand runs /endorse-key [SHA256:…]. Without an argument it
+// shows this computer's key (what the other computer needs); with one it
+// makes this computer's key vouch for that key. The fingerprint is always
+// typed by the user, copied from the other computer: never offered from
+// what the server says is pending.
+func (m *Model) endorseKeyCommand(args []string) (tea.Cmd, error) {
+	be, ok := m.c.(EndorseBackend)
+	if !ok {
+		return nil, errors.New("endorsing keys isn't supported here")
+	}
+	if len(args) == 0 {
+		mine := sanitize.Line(be.OwnKeyFingerprint())
+		m.list = listState{title: "this computer's SSH key", rows: []string{
+			mine,
+			"To trust it on another computer of yours: /endorse-key " + mine + " there.",
+			"To trust that computer's key here: /endorse-key <the key it shows>.",
+		}}
+		m.mode = modeList
+		return nil, nil
+	}
+	if len(args) != 1 || !strings.HasPrefix(args[0], "SHA256:") {
+		return nil, errors.New("usage: /endorse-key SHA256:… (the key /endorse-key shows on your other computer)")
+	}
+	fp := args[0]
+	return m.callThen("endorse-key", func(ctx context.Context) (tea.Msg, error) {
+		r, err := be.EndorseKey(ctx, fp)
+		if errors.Is(err, client.ErrKeyTrusted) {
+			return infoMsg(sanitize.Line(fp) + " is already trusted here"), nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		by := sanitize.Line(r.By)
+		return listMsg{title: "✓ key trusted", rows: []string{
+			"This computer's key " + by + " now vouches for " + sanitize.Line(r.Key) + ":",
+			"your devices and everyone you chat with trust that key's devices.",
+			"On the computer with that key, run: /endorse-key " + by,
+		}}, nil
+	}), nil
 }
 
 func (m *Model) needActive() (uint64, error) {

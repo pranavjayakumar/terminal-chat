@@ -24,7 +24,9 @@ func (s *Server) sid() e2ecrypto.ServerID {
 	return id
 }
 
-func isDeviceKind(kind string) bool { return kind == proto.KDeviceNew || kind == proto.KDeviceRevoke }
+func isDeviceKind(kind string) bool {
+	return kind == proto.KDeviceNew || kind == proto.KDeviceRevoke || kind == proto.KKeyEndorse
+}
 
 func signedSize(v proto.Signed) int { return len(v.B) + len(v.Sig) }
 
@@ -208,6 +210,113 @@ func (s *Server) opDeviceRegister(ctx context.Context, sess *session, a proto.De
 		return []proto.Event{ev}, nil
 	})
 	return res, err
+}
+
+// opKeyEndorse stores a KeyEndorse by which one of the caller's login keys
+// vouches for another (cap key_endorse, §13.2). Like every check here it
+// only turns garbage away early: clients verify endorsements themselves
+// against keys they pinned, so the server can't make one count.
+func (s *Server) opKeyEndorse(ctx context.Context, sess *session, a proto.KeyEndorseArgs) (any, error) {
+	u := sess.user
+	if sess.agent != nil {
+		return nil, proto.Errf(proto.ErrForbidden, "agents can't endorse keys")
+	}
+	if signedSize(a.Endorse) > proto.MaxSigned {
+		return nil, proto.Errf(proto.ErrTooLarge, "signed objects are limited to 4 KiB")
+	}
+	sid := s.sid()
+	e, err := identity.PeekKeyEndorse(identity.Signed(a.Endorse))
+	switch {
+	case err != nil:
+		return nil, badRequest("malformed key endorsement")
+	case e.ServerID != sid:
+		return nil, badRequest("key endorsement is for another server")
+	case e.User != u.ID:
+		return nil, proto.Errf(proto.ErrForbidden, "key endorsement is for another user")
+	}
+	keys, err := userKeys(ctx, s.st.db, u.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !slices.ContainsFunc(keys, func(k []byte) bool { return bytes.Equal(k, e.NewSSH) }) {
+		return nil, badRequest("the endorsed key isn't one of your SSH keys")
+	}
+	verified := false
+	for _, k := range keys {
+		if bytes.Equal(k, e.NewSSH) {
+			continue // a key can't endorse itself
+		}
+		if v, err := identity.Signed(a.Endorse).VerifyKeyEndorse(sid, k); err == nil && v.User == u.ID && bytes.Equal(v.NewSSH, e.NewSSH) {
+			verified = true
+			break
+		}
+	}
+	if !verified {
+		return nil, proto.Errf(proto.ErrForbidden, "key endorsement is not signed by another of your SSH keys")
+	}
+	raw := proto.MustRaw(a.Endorse)
+	var res proto.SeqRes
+	_, err = s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM key_endorse WHERE endorse = ?`, []byte(raw)).Scan(&n); err != nil {
+			return nil, err
+		}
+		if n > 0 {
+			return nil, nil // a retry
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM key_endorse WHERE user = ?`, u.ID).Scan(&n); err != nil {
+			return nil, err
+		}
+		if n >= proto.MaxKeyEndorsements {
+			return nil, badRequest("key endorsement limit reached")
+		}
+		now := s.now()
+		if _, err := tx.ExecContext(ctx, `INSERT INTO key_endorse (endorse, user, new_ssh, created) VALUES (?, ?, ?, ?)`,
+			[]byte(raw), u.ID, e.NewSSH, now); err != nil {
+			return nil, err
+		}
+		ev, err := appendEvent(ctx, tx, proto.KKeyEndorse, 0, u.ID, 0, now, a)
+		if err != nil {
+			return nil, err
+		}
+		res.Seq = ev.Seq
+		return []proto.Event{ev}, nil
+	})
+	return res, err
+}
+
+// keyEndorsements returns the key.endorse endorsements of users (nil: all),
+// by user, in the order they were made.
+func keyEndorsements(ctx context.Context, q querier, users []uint64) (map[uint64][]proto.Signed, error) {
+	query := `SELECT user, endorse FROM key_endorse`
+	var args []any
+	if len(users) > 0 {
+		js, err := json.Marshal(users)
+		if err != nil {
+			return nil, err
+		}
+		query += ` WHERE user IN (SELECT value FROM json_each(?))`
+		args = append(args, string(js))
+	}
+	rows, err := q.QueryContext(ctx, query+` ORDER BY user, created, rowid`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[uint64][]proto.Signed{}
+	for rows.Next() {
+		var u uint64
+		var raw []byte
+		if err := rows.Scan(&u, &raw); err != nil {
+			return nil, err
+		}
+		var sg proto.Signed
+		if err := proto.Unmarshal(raw, &sg); err != nil {
+			return nil, err
+		}
+		out[u] = append(out[u], sg)
+	}
+	return out, rows.Err()
 }
 
 // activeDevice is a non-revoked device's id and Ed25519 key, from its stored
@@ -404,19 +513,32 @@ func (s *Server) opDevicesList(ctx context.Context, a proto.DevicesListArgs) (an
 	res := proto.DevicesListRes{Certs: []proto.Signed{}, Endorse: []proto.Signed{}, Revoked: []proto.Signed{}}
 	// Rows arrive grouped by user. A user's rows are collected, then added
 	// whole if they fit; one user always fits
-	// (MaxDeviceRegistrations × 3 × MaxSigned < MaxResultBytes).
+	// ((MaxDeviceRegistrations × 3 + MaxKeyEndorsements) × MaxSigned <
+	// MaxResultBytes). A user's key.endorse endorsements come with their
+	// devices (they only matter for certs).
 	var group []deviceRow
 	var lastIncluded uint64
 	size, groupSize := 0, 0
 	seen := map[string]bool{}
+	var ends map[uint64][]proto.Signed
 	flush := func() bool {
 		if len(group) == 0 {
 			return true
 		}
-		if size+groupSize > proto.MaxResultBytes && size > 0 {
+		extra := 0
+		for _, e := range ends[group[0].user] {
+			extra += signedSize(e)
+		}
+		if size+groupSize+extra > proto.MaxResultBytes && size > 0 {
 			return false
 		}
-		size += groupSize
+		size += groupSize + extra
+		for _, e := range ends[group[0].user] {
+			if !seen[string(proto.MustRaw(e))] {
+				seen[string(proto.MustRaw(e))] = true
+				res.Endorse = append(res.Endorse, e)
+			}
+		}
 		for _, d := range group {
 			res.Certs = append(res.Certs, d.dev.Cert)
 			if e := d.dev.Endorse; e != nil && !seen[string(proto.MustRaw(*e))] {
@@ -435,7 +557,11 @@ func (s *Server) opDevicesList(ctx context.Context, a proto.DevicesListArgs) (an
 	if a.After > math.MaxInt64 || slices.ContainsFunc(a.Users, func(u uint64) bool { return u > math.MaxInt64 }) {
 		return nil, badRequest("user ids out of range")
 	}
-	err := eachDevice(ctx, s.st.db, a.Users, a.After, func(d deviceRow) bool {
+	ends, err := keyEndorsements(ctx, s.st.db, a.Users)
+	if err != nil {
+		return nil, err
+	}
+	err = eachDevice(ctx, s.st.db, a.Users, a.After, func(d deviceRow) bool {
 		if d.revUnknown {
 			s.log.Error("device revoke without a seq, omitted", "user", d.user)
 		}
@@ -484,6 +610,22 @@ func (sess *session) snapshotDevices(ctx context.Context, tx *sql.Tx, out *frame
 	}
 	if perr != nil {
 		return perr
+	}
+	ends, err := keyEndorsements(ctx, tx, nil)
+	if err != nil {
+		return err
+	}
+	for _, es := range ends {
+		for _, e := range es {
+			if size+signedSize(e) > snapshotPart && size > 0 {
+				if err := out.snapshot(part); err != nil {
+					return err
+				}
+				part, size = proto.Snapshot{}, 0
+			}
+			part.Endorse = append(part.Endorse, e)
+			size += signedSize(e)
+		}
 	}
 	if size > 0 {
 		return out.snapshot(part)

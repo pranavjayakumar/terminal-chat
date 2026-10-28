@@ -112,7 +112,7 @@ func (c *Client) kickE2E() {
 // e2eKinds are the events after which the worker has something to do.
 func e2eKind(kind string) bool {
 	switch kind {
-	case proto.KDeviceNew, proto.KDeviceRevoke, proto.KKeyEpoch, proto.KKeyShare,
+	case proto.KDeviceNew, proto.KDeviceRevoke, proto.KKeyEndorse, proto.KKeyEpoch, proto.KKeyShare,
 		proto.KChanNew, proto.KChanUpdate, proto.KChanJoin, proto.KChanLeave, proto.KUserUpdate:
 		return true
 	}

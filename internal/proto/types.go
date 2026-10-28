@@ -231,6 +231,9 @@ type Snapshot struct {
 	Revoked []Signed `msgpack:"revoked,omitempty"`
 	// RevokedSeqs[i] is the seq of Revoked[i]'s device.revoke event.
 	RevokedSeqs []uint64 `msgpack:"revoked_seqs,omitempty"`
+	// Endorse is every key.endorse endorsement (e2e1 sessions with cap
+	// key_endorse on the server, §13.2).
+	Endorse []Signed `msgpack:"endorse,omitempty"`
 	// Keys is the latest epoch bundle of each visible e2e channel (§13.3).
 	Keys []EpochKey `msgpack:"keys,omitempty"`
 	// Groups is every user group (cap groups).

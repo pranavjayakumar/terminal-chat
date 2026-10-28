@@ -27,6 +27,7 @@ var commandTable = []cmdSpec{
 	{name: "verify", args: "@user", desc: "compare safety numbers; v marks them verified"},
 	{name: "verify", args: "@user --github login", desc: "check their key against github.com/login.keys", more: true},
 	{name: "accept-key", args: "@user [fp]", desc: "review and accept a changed key (unblocks sending)"},
+	{name: "endorse-key", args: "[SHA256:…]", desc: "trust another SSH key of yours (no arg: show this computer's)"},
 	{name: "members", desc: "who's here; ? = not verified, ! = key changed"},
 	{name: "devices", args: "[@user]", desc: "your (or someone's) devices; d revokes a lost one"},
 	{name: "device-revoke", args: "id", desc: "revoke one of your devices (asks first)"},
