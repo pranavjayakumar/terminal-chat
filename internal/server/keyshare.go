@@ -65,7 +65,8 @@ func (s *Server) keyNeed(sess *session, e proto.Ephemeral) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.members[e.Chan][e.User] {
+	// Key material follows message content for agent sessions (§15.4).
+	if !s.members[e.Chan][e.User] || !s.agentSeesLocked(sess, e.Chan) {
 		return
 	}
 	out := proto.Ephemeral{Kind: proto.EphKeyNeed, Chan: e.Chan, User: e.User, Epoch: e.Epoch, Dev: e.Dev}
@@ -74,7 +75,7 @@ func (s *Server) keyNeed(sess *session, e proto.Ephemeral) {
 		return
 	}
 	for to := range s.sessions {
-		if to != sess && to.e2e && s.members[e.Chan][to.user.ID] {
+		if to != sess && to.e2e && s.members[e.Chan][to.user.ID] && s.agentSeesLocked(to, e.Chan) {
 			to.pushLive(outFrame{t: proto.TEphemeral, payload: payload})
 		}
 	}

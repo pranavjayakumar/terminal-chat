@@ -209,6 +209,16 @@ What a malicious server can and cannot do today, and what closes each gap:
 - **The local cache is sensitive**: `TC_HOME/cache.db` holds decrypted messages and the outbox, and
   `e2e.db` the device and epoch keys (both 0600, SQLite `secure_delete`). Rely on disk encryption; a
   thief with the disk reads what that device could.
+- **Agents** (PROTOCOL.md §15): an agent's device is a device of its owner, so epoch bundles box K
+  to it in **every** encrypted channel the owner is in, not only the agent DM and the channels on
+  the access list. The server gates what an agent session is sent (message content, `key.share`,
+  `key.fetch`, `key.need`, §15.4), but a compromised agent host, or a server colluding with one,
+  can open the current key of any of its owner's encrypted channels from the bundles it gets
+  anyway (`key.epoch`, snapshot `keys`). Treat the agent's machine as one of the owner's devices.
+  Closing this needs clients to leave agent devices out of bundles (and box per access grant),
+  which is a bigger change than this fix. An agent has one active device at a time (the server
+  refuses a second); the owner's client revokes the old agent devices when it gives the agent a
+  new key (`tc agent login`) or retires it, so they stop getting K after the next rotation.
 - **Availability** is not defended: a server can drop, delay or withhold anything. Clients recover
   what they can fetch again (bundles by `key.fetch`, keys by `key.share`) and never fail open.
 

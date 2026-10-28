@@ -1635,12 +1635,20 @@ encrypted edits or deletes an agent's device signed for a message that isn't an 
 | `agent.retire` | `{}` | `{agent: Agent}` | owner sessions; closes its sessions (BYE `revoked`), deletes its key and empties the access list (a new agent starts from nothing); the handle stays taken |
 | `agents.list` | `{}` | `{agents: [Agent]}` | retired ones included; `online` filled in |
 | `agent.access` | `{add?: [u64], remove?: [u64], temp?: [u64]}` | `{chans: [u64], expires?: {u64: i64}}` | owner sessions; the agent access list (§15.4) after the change: `add` grants until removed, `temp` for 7 days (a lasting grant stays lasting), `expires` gives each temporary grant's end; `{}` reads it |
-| `agent.key` | `{pubkey: bin}` | `{}` | owner sessions with an active agent (`not_found`); the agent's own SSH key (§15.1); `conflict` if the key is registered to anyone already; closes agent sessions logged in otherwise |
+| `agent.key` | `{pubkey: bin, proof: bin}` | `{}` | owner sessions with an active agent (`not_found`); the agent's own SSH key (§15.1); `proof` (below) missing or not verifying → `bad_request`; `conflict` if the key is registered to anyone already; closes agent sessions logged in otherwise |
 | `agent.dm` | `{}` | `{chan: Channel}` | the owner's agent DM, created on the first call (`not_found` without an active agent); encrypted when the caller has `e2e1` |
 
 ```
 Agent = {handle, icon?: str, owner: u64, online?: bool, created: i64, retired?: i64}
 ```
+
+`agent.key`'s `proof` is an SSH signature (§4 algorithm rules) by `pubkey` itself over
+`"tc-agent-key-v1\0" || server_id (16 bytes) || owner (the caller's user id, u64 big-endian) ||
+pubkey (wire)`: only the key's holder can register it (public keys are public, e.g.
+`github.com/<user>.keys`, and a key registered as someone's agent key could never join as
+itself). The agent key is local to the owner's machine (`tc agent login` makes it), so the
+client signs with it directly. Clients from before `proof` existed send none and get
+`bad_request`; they must update to set up an agent (agents set up earlier keep working).
 
 `icon` is one short line (≤ 32 B; an emoji or a tc Symbols glyph). Events: `agent.update` (data
 `Agent`, never with `online`) on register, update and retire, to every `agent1` session;
@@ -1671,11 +1679,19 @@ sender also signs it in Plain (`{…, via?: str}`) and clients use only the sign
 
 ### 15.4 What an agent session sees
 
-Channel objects (snapshot `chans`, `chan.*` and `key.*` events) reach an agent session as they
-reach its owner. Message content — `msg.*`, `react.*` and `pin.*` events, snapshot `msgs`,
-`history`, `search` (which must name a channel), `pins.list`, `send`, `edit`, `delete` — only for its **agent DM** and the channels in its owner's **access list**; elsewhere
+Channel objects (snapshot `chans`, `chan.*` events, `key.epoch` events and snapshot `keys`) reach
+an agent session as they reach its owner. Message content — `msg.*`, `react.*` and `pin.*` events, snapshot `msgs`,
+`history`, `search` (which must name a channel), `pins.list`, `send`, `edit`, `delete` — and
+channel key material — `key.share` events, `key.fetch`, `key.share` — only for its **agent DM** and the channels in its owner's **access list**; elsewhere
 events are skipped and requests answer `forbidden`. Channel-scoped ephemerals follow the same
-rule. The access list is only the owner's to change (channels the owner can read, not agent
+rule (`key.need` from or to an agent session included). (Epoch bundles still box K to every
+member device, the agent's included, so the agent's device can open the current key of
+every encrypted channel its owner is in: docs/E2E.md "Agents".)
+
+An agent session may have **one** active device: `device.register` from an agent session while
+an agent device of its owner is still active → `conflict` (the owner revokes it first). When
+the owner gives the agent a new key or retires it, the owner's client revokes the agent's old
+devices (signed with the owner's key; the server can't sign a revoke). The access list is only the owner's to change (channels the owner can read, not agent
 DMs, at most 256).
 
 **Calls.** The server can't read encrypted text, so mentions grant access client-side: an
@@ -1718,4 +1734,4 @@ the last one goes, and after `sync` for each agent online.
 ### 15.6 Limits
 
 `icon` ≤ 32 B · `text` ≤ 16 KiB · `enc` ≤ 17 KiB · access list ≤ 256 channels · `status` ≤ 128 B ·
-`agent` ephemerals ≤ 4/s per session.
+`agent` ephemerals ≤ 4/s per session · 1 active agent device (it counts toward the owner's 8).

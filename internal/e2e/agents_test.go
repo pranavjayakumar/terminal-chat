@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -358,4 +359,41 @@ func TestAgentKeyIsNotTheOwner(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "agent") {
 		t.Fatalf("the agent's key as its owner: %v", err)
 	}
+}
+
+// activeAgentDevices is how many of alice's active devices aren't hers
+// (the agent's), as her client sees them after a refresh.
+func activeAgentDevices(ctx context.Context, alice *user) int {
+	if alice.RefreshDevices(ctx, alice.Me().ID) != nil {
+		return -1
+	}
+	n := 0
+	for _, d := range alice.Devices(alice.Me().ID) {
+		if !d.Revoked && !d.This && d.Verified {
+			n++
+		}
+	}
+	return n
+}
+
+// The server allows an agent one active device, so giving the agent a new
+// key (tc agent login again, from a fresh home) must revoke the old key's
+// device, and retiring the agent revokes its device too.
+func TestAgentDevicesGoWithTheirKey(t *testing.T) {
+	alice, _, agent, ctx := brAgentSetup(t)
+	eventually(t, "agent device", func() bool { return activeAgentDevices(ctx, alice) == 1 })
+	agent.cancel()
+	agent.Close()
+
+	again := startAgent(t, alice, "rocky") // new home, new key
+	eventually(t, "new agent online", again.online)
+	eventually(t, "only the new agent device", func() bool {
+		return activeAgentDevices(ctx, alice) == 1 &&
+			slices.ContainsFunc(again.Devices(alice.Me().ID), func(d client.DeviceInfo) bool { return d.This && !d.Revoked })
+	})
+
+	if err := alice.RetireAgent(ctx); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "no agent device", func() bool { return activeAgentDevices(ctx, alice) == 0 })
 }
