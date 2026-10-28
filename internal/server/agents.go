@@ -64,6 +64,10 @@ func migrateAgents(db *sql.DB) error {
 	if err := addColumn(db, "keys", "agent", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	// devices.agent: registered by an agent session (at most one active).
+	if err := addColumn(db, "devices", "agent", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	// agent_access.expires: the end of a temporary grant (0 = until removed).
 	return addColumn(db, "agent_access", "expires", "INTEGER NOT NULL DEFAULT 0")
 }
@@ -229,6 +233,10 @@ func (s *Server) applyAgentCache(ev proto.Event) {
 	}
 }
 
+// agentGatedKind: events an agent session gets only for the channels it may
+// read: message content, and key.share (a channel key sealed to a device).
+func agentGatedKind(kind string) bool { return proto.IsMsgKind(kind) || kind == proto.KKeyShare }
+
 // agentSeesLocked reports whether sess may see ch's messages: always for a
 // person's session; for an agent session, its DM and its access list.
 // Called with s.mu held.
@@ -332,6 +340,18 @@ func (s *Server) gateAgentOp(ctx context.Context, sess *session, op string, args
 		ch = a.Chan
 	case proto.OpKeyRotate:
 		a, err := decodeArgs[proto.KeyRotateArgs](args)
+		if err != nil {
+			return err
+		}
+		ch = a.Chan
+	case proto.OpKeyFetch:
+		a, err := decodeArgs[proto.KeyFetchArgs](args)
+		if err != nil {
+			return err
+		}
+		ch = a.Chan
+	case proto.OpKeyShare:
+		a, err := decodeArgs[proto.KeyShareArgs](args)
 		if err != nil {
 			return err
 		}
@@ -731,6 +751,15 @@ func (s *Server) opAgentKey(ctx context.Context, u proto.User, a proto.AgentKeyA
 	pk, err := ssh.ParsePublicKey(a.Pubkey)
 	if err != nil || !identity.AllowedKeyType(pk.Type()) {
 		return nil, badRequest("not an accepted SSH public key")
+	}
+	// Proof of possession: without it a member could register a victim's
+	// public key and so block their join and key-bound invites. Clients
+	// before the proof get this message instead.
+	if len(a.Proof) == 0 {
+		return nil, badRequest("agent.key needs a proof signed by the agent's key; update tc")
+	}
+	if identity.VerifyAgentKey(pk.Marshal(), a.Proof, s.sid(), u.ID) != nil {
+		return nil, badRequest("the proof does not verify under that key")
 	}
 	fp := identity.Fingerprint(pk)
 	_, err = s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {

@@ -305,7 +305,7 @@ func (s *Server) publishLocked(ev proto.Event) {
 		s.log.Error("encoding event", "seq", ev.Seq, "err", err)
 		return
 	}
-	e2eOnly, agentOnly, msg := isE2EKind(ev.Kind), proto.IsAgentKind(ev.Kind), proto.IsMsgKind(ev.Kind)
+	e2eOnly, agentOnly, msg := isE2EKind(ev.Kind), proto.IsAgentKind(ev.Kind), agentGatedKind(ev.Kind)
 	for sess := range s.sessions {
 		if e2eOnly && !sess.e2e || agentOnly && !sess.agentCap || msg && !s.agentSeesLocked(sess, ev.Chan) {
 			continue

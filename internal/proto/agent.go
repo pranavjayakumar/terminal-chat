@@ -163,7 +163,11 @@ type AgentAccessRes struct {
 const AgentGrantTTL = 7 * 24 * time.Hour
 
 // AgentKeyArgs registers Pubkey (SSH wire format) as the caller's agent's
-// own key (§15.1): it logs in only as that agent, never as the owner.
+// own key (§15.1): it logs in only as that agent, never as the owner. Proof
+// is Pubkey's signature over "tc-agent-key-v1\0" || server_id || owner
+// (u64 BE) || pubkey (identity.SignAgentKey): only the key's holder can
+// register it.
 type AgentKeyArgs struct {
 	Pubkey []byte `msgpack:"pubkey"`
+	Proof  []byte `msgpack:"proof"`
 }
