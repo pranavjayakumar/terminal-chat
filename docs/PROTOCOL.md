@@ -223,6 +223,7 @@ Kinds:
   can't address such an account by name.
 - **add key** (`invite.create {user}`; `tc invite --for @user`, `/invite --for @user`, admins
   only): attaches `pubkey` to an existing user (new laptop with its own key). `name` is ignored.
+  A `user` that is a bot or disabled → `bad_request` (unknown → `not_found`).
 
 ### 4.2 BYE codes
 

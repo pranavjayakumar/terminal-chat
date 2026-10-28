@@ -206,19 +206,17 @@ func runAddKeyInvite(ctx context.Context, cl *client.Client, c inviteCmd, out io
 // printAddKeyInvite shows an add-key invite: who it is for and where to run it.
 func printAddKeyInvite(w io.Writer, code, name, version string) {
 	name = sanitize.Line(name)
-	if !proto.ShellSafe(code) || !proto.ValidName(name) {
+	install, err := proto.InstallCommand(code, version)
+	if err != nil || !proto.ShellSafe(code) || !proto.ValidName(name) {
 		fmt.Fprintf(w, "\nAdd-key invite for @%s has unsafe characters, so it isn't shown as a command: %s\n\n", name, sanitize.Line(code))
 		return
 	}
 	fmt.Fprintf(w, "\nAdd-key invite for @%s (single use, lasts 7 days).\n", name)
 	fmt.Fprintf(w, "Run this on @%s's new computer: it installs tc and signs that computer in as @%s with its own SSH key\n", name, name)
 	fmt.Fprintln(w, "(no need to copy a private key from another computer):")
-	fmt.Fprintln(w)
-	if cmd, err := proto.InstallCommand(code, version); err == nil {
-		fmt.Fprintf(w, "  %s\n\n", sanitize.Line(cmd))
-	}
+	fmt.Fprintf(w, "\n  %s\n\n", sanitize.Line(install))
 	fmt.Fprintf(w, "Already have tc there? Run:\n\n  tc join '%s' --name %s\n\n", code, name)
-	fmt.Fprintf(w, "If it asks for a name, any answer works: the key joins @%s's account.\n", name)
+	fmt.Fprintf(w, "If it asks for a name, give any valid one: it's ignored, and the key joins @%s's account.\n", name)
 	fmt.Fprintf(w, "People in encrypted chats with @%s see a key change for them and accept it with /accept-key @%s.\n", name, name)
 }
 

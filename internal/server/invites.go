@@ -361,6 +361,9 @@ func (s *Server) opInviteCreate(ctx context.Context, u proto.User, a proto.Invit
 		if target.Bot {
 			return nil, badRequest("bots can't log in")
 		}
+		if target.Disabled {
+			return nil, badRequest("that account is disabled")
+		}
 	}
 	maxUses, maxTTL := int64(proto.MaxInviteUses), proto.MaxInviteTTL
 	if member {

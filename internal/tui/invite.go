@@ -112,7 +112,10 @@ func boundLabel(src string, keys int64) string {
 // the invite to them. Members may invite when the server allows it; the
 // server enforces who and how much.
 func (m *Model) inviteCommand(args []string) (tea.Cmd, error) {
-	if slices.Contains(args, "--for") {
+	if slices.ContainsFunc(args, func(a string) bool { return a == "--for" || strings.HasPrefix(a, "--for=") }) {
+		if len(args) == 1 && strings.HasPrefix(args[0], "--for=") {
+			args = []string{"--for", strings.TrimPrefix(args[0], "--for=")}
+		}
 		return m.addKeyInviteCommand(args)
 	}
 	login, args, err := keyArg(args)
@@ -212,8 +215,8 @@ func (m *Model) addKeyInviteCommand(args []string) (tea.Cmd, error) {
 		}
 		how, cerr := clip(ctx, opt, line)
 		return inviteShownMsg{
-			summary: "add-key invite for @" + name + " · 1 use · run it on their new computer: it signs in as @" + name +
-				" with that computer's own SSH key (if asked for a name, any answer works)",
+			summary: "add-key invite for @" + name + " · 1 use · lasts 7 days · run it on their new computer: it signs in as @" + name +
+				" with that computer's own SSH key (if asked for a name, any valid one: it's ignored)",
 			code: sanitize.Line(code), line: line, how: how, copyErr: cerr}, nil
 	}), nil
 }

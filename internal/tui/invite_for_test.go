@@ -47,6 +47,12 @@ func TestInviteForCommand(t *testing.T) {
 		t.Fatalf("@me: calls %v notice %q", f.calls, m.notice)
 	}
 	m.viewerKey(kEsc)
+	f.calls = nil
+	do("/invite --for=@bob")
+	if !f.called("addkey 2") {
+		t.Fatalf("--for=: calls %v notice %q", f.calls, m.notice)
+	}
+	m.viewerKey(kEsc)
 
 	// Bad input never reaches the backend.
 	f.calls = nil
