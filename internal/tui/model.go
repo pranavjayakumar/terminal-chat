@@ -833,6 +833,9 @@ func (m *Model) setErr(what string, err error) {
 	if errors.Is(err, client.ErrOffline) {
 		msg = "offline — try again when connected"
 	}
+	if errors.Is(err, client.ErrOwnKeyAccept) {
+		msg = errOwnKeyHint.Error()
+	}
 	var pe *proto.Error
 	if errors.As(err, &pe) {
 		msg = protoErrText(pe)
@@ -1110,6 +1113,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case inviteShownMsg:
 		m.showInvite(msg)
+		return m, nil
+	case keyShownMsg:
+		m.showKey(msg)
 		return m, nil
 	case hookShownMsg:
 		m.showHook(msg)

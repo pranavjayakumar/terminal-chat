@@ -114,6 +114,7 @@ type Supervisor struct {
 	watches  map[string]*Watch      // watch key → the owner's watch
 	quiets   map[string]*Quiet      // session key → a pause someone asked for (engage.go)
 	quieted  map[string]bool        // session key → the run called quiet
+	sorry    map[string]time.Time   // session key → when we last said "I was asleep"
 	status   Status
 	lastRun  time.Time
 	online   bool
@@ -176,7 +177,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	s.runs, s.threads, s.busy = map[string]*run{}, map[string][]Ask{}, map[string]bool{}
 	s.pending, s.branches = map[string]*approval{}, map[string]string{}
 	s.engaged, s.left, s.watches = map[string]*engagement{}, map[string]bool{}, map[string]*Watch{}
-	s.quiets, s.quieted = map[string]*Quiet{}, map[string]bool{}
+	s.quiets, s.quieted, s.sorry = map[string]*Quiet{}, map[string]bool{}, map[string]time.Time{}
 	s.loadQuiets()
 	s.owner = s.Chat.Me().ID
 	if s.handleNow() == "" {
@@ -342,11 +343,34 @@ func (s *Supervisor) accept(ctx context.Context, a Ask) {
 		return
 	}
 	if now.Sub(time.UnixMilli(a.Msg.Time)) > s.StaleAfter {
-		s.reply(a.Chan, a.Thread, "sorry, I was asleep 💤 ask me again?")
+		if s.sorryDue(a.Key, now) {
+			s.reply(a.Chan, a.Thread, "sorry, I was asleep 💤 ask me again?")
+		}
 		s.activity(a, "stale", "asked while asleep", 0)
 		return
 	}
 	s.enqueue(ctx, a)
+}
+
+// sorryEvery is how long one apology covers its conversation: a backlog
+// replay of many missed asks in one place gets a single "I was asleep".
+const sorryEvery = 10 * time.Minute
+
+// sorryDue reports whether key is due an apology now, and if so records
+// it. Expired entries go on every call, so the map only holds the window.
+func (s *Supervisor) sorryDue(key string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, t := range s.sorry {
+		if now.Sub(t) >= sorryEvery {
+			delete(s.sorry, k)
+		}
+	}
+	if _, ok := s.sorry[key]; ok {
+		return false
+	}
+	s.sorry[key] = now
+	return true
 }
 
 // enqueue puts a in line in its thread.

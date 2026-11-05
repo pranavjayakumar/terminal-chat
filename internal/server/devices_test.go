@@ -459,6 +459,71 @@ func TestDevicesListPages(t *testing.T) {
 	alice.fail(proto.OpDevicesList, proto.DevicesListArgs{Users: make([]uint64, maxListUsers+1)}, proto.ErrBadRequest)
 }
 
+// A devices.list page loads key.endorse endorsements only for users that can
+// still make the page, never for every user past the cursor, and each user's
+// endorsements still come with their devices across pages.
+func TestDevicesListLoadsEndorsementsPerPage(t *testing.T) {
+	ts := startServer(t, "tcp")
+	fastClock(ts)
+	const users, perUser = 6, 4
+	var ids []uint64
+	for i := range users {
+		u := ts.registerCaps(t, "u"+string(rune('a'+i)), false, e2eCaps)
+		ids = append(ids, u.user.ID)
+		for j := range 24 { // ~720 KiB of devices: one user per page
+			blob := proto.MustRaw(proto.Signed{B: make([]byte, 30000), Sig: []byte{byte(j)}})
+			id := []byte{byte(i), byte(j)}
+			if _, err := ts.st.db.Exec(`INSERT INTO devices (dev, user, x25519, ed25519, cert, created) VALUES (?, ?, ?, ?, ?, ?)`,
+				id, u.user.ID, append([]byte{'x'}, id...), append([]byte{'e'}, id...), blob, j); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for j := range perUser {
+			e := proto.MustRaw(proto.Signed{B: []byte{byte(i), byte(j)}, Sig: make([]byte, 1000)})
+			if _, err := ts.st.db.Exec(`INSERT INTO key_endorse (endorse, user, new_ssh, created) VALUES (?, ?, ?, ?)`,
+				e, u.user.ID, []byte{byte(i), byte(j)}, j); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	ctx := context.Background()
+	var asked [][]uint64
+	loaded := 0
+	load := func(ctx context.Context, q querier, us []uint64, after uint64) (map[uint64][]proto.Signed, error) {
+		asked = append(asked, slices.Clone(us))
+		m, err := keyEndorsements(ctx, q, us, after)
+		for _, es := range m {
+			loaded += len(es)
+		}
+		return m, err
+	}
+	certs, ends, after, pages := 0, 0, uint64(0), 0
+	for {
+		asked, loaded = nil, 0
+		res, err := devicesListPage(ctx, ts.st.db, proto.DevicesListArgs{After: after}, load, func(uint64) {})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pages++
+		// The page has room for one user; the scan stops at the second.
+		if len(asked) != 1 || len(asked[0]) > 2 || loaded > 2*perUser {
+			t.Fatalf("page %d loaded %d endorsements for %v", pages, loaded, asked)
+		}
+		if len(res.Certs) != 24 || len(res.Endorse) != perUser {
+			t.Fatalf("page %d: %d certs, %d endorsements", pages, len(res.Certs), len(res.Endorse))
+		}
+		certs += len(res.Certs)
+		ends += len(res.Endorse)
+		if res.Next == 0 {
+			break
+		}
+		after = res.Next
+	}
+	if pages != users || certs != users*24 || ends != users*perUser {
+		t.Fatalf("%d pages, %d certs, %d endorsements", pages, certs, ends)
+	}
+}
+
 func TestDevicesListRejectsOutOfRangeIDs(t *testing.T) {
 	ts := startServer(t, "tcp")
 	alice := ts.registerCaps(t, "alice", true, e2eCaps)

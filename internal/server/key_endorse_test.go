@@ -90,6 +90,17 @@ func TestKeyEndorse(t *testing.T) {
 	if r.Seq != 0 {
 		t.Fatalf("repeat: seq %d", r.Seq)
 	}
+	// A client's retry after a lost RES signs a new time: the same (key,
+	// signer) pair, so again nothing (no row, no event, no use of the 32).
+	later, err := identity.NewKeyEndorse(alice.signer, sid, alice.user.ID, laptopKey.PublicKey(), time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r = proto.SeqRes{}
+	alice.ok(proto.OpKeyEndorse, proto.KeyEndorseArgs{Endorse: proto.Signed(later)}, &r)
+	if r.Seq != 0 {
+		t.Fatalf("re-signed retry: seq %d", r.Seq)
+	}
 	bob.quiet(100 * time.Millisecond)
 
 	var list proto.DevicesListRes
@@ -113,6 +124,18 @@ func TestKeyEndorse(t *testing.T) {
 		t.Fatal("snapshot without e2e1 has endorsements")
 	}
 	dave.fail(proto.OpKeyEndorse, good, proto.ErrUnknownOp)
+
+	// Another pair (the laptop's key vouching for the first) is new.
+	r = proto.SeqRes{}
+	laptop.ok(proto.OpKeyEndorse, endorseArgs(t, laptopKey, sid, alice.user.ID, alice.signer.PublicKey()), &r)
+	if r.Seq == 0 {
+		t.Fatal("a second pair was taken for a repeat")
+	}
+	var n int
+	ts.st.db.QueryRow(`SELECT COUNT(*) FROM key_endorse WHERE user = ?`, alice.user.ID).Scan(&n)
+	if n != 2 {
+		t.Fatalf("%d key_endorse rows, want 2", n)
+	}
 }
 
 // An agent session never endorses a key, not even with its owner's (it
