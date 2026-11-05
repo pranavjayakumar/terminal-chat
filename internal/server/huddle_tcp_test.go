@@ -296,8 +296,9 @@ func TestStreamVoiceSlowLink(t *testing.T) {
 	}
 	// Structural bound: voiceMaxAge in the queue + the frame ahead on the
 	// link + its own transfer (~80 ms here), plus scheduling slack under
-	// -race on a loaded machine. Unbounded, it'd grow past 1.5 s in 3 s.
-	if worst > voiceMaxAge+250*time.Millisecond {
+	// -race on a loaded machine (a full parallel suite has hit +275 ms).
+	// Unbounded, it'd grow past 1.5 s in 3 s, so this still catches that.
+	if worst > voiceMaxAge+600*time.Millisecond {
 		t.Fatalf("voice %v late", worst)
 	}
 }

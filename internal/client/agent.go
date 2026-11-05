@@ -104,6 +104,10 @@ func LoginAgent(ctx context.Context, ownerHome, agentHome, handle string) (proto
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+	// Before anything changes: an older server can't take agent.key's proof.
+	if err := owner.requireCap(proto.CapAgentKeyProof, "this tc's agent setup (update the server)"); err != nil {
+		return proto.Agent{}, err
+	}
 	if _, err := owner.FetchAgents(ctx); err != nil {
 		return proto.Agent{}, err
 	}

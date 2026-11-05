@@ -375,6 +375,48 @@ func TestQueue(t *testing.T) {
 	}
 }
 
+// A backlog replay of many stale asks gets one apology per conversation
+// per window, not one per ask; every stale ask is still in the feed.
+func TestStaleApologyOncePerThread(t *testing.T) {
+	clock := &fakeClock{t: time.Now()}
+	h := newHarness(t, cfgDefault(), func(s *Supervisor) { s.StaleAfter = time.Hour; s.Now = clock.now })
+	h.s.queue.update(func(q *queueState) { q.Since = time.Now().Add(-72 * time.Hour).UnixMilli() })
+	stale := func() int {
+		acts, _ := ReadActivity(h.s.paths.State, 100)
+		n := 0
+		for _, a := range acts {
+			if a.What == "stale" {
+				n++
+			}
+		}
+		return n
+	}
+	root := h.chat.say(bobID, general, 0, "@rocky you there?", 2*time.Hour)
+	for i := 0; i < 6; i++ {
+		h.chat.say(carolID, general, 0, "@rocky ping "+string(rune('a'+i)), 2*time.Hour)
+	}
+	h.waitFor("7 stale asks logged", func() bool { return stale() == 7 })
+	if p := h.chat.posts(); len(p) != 1 || p[0].ch != general || p[0].thread != 0 || !strings.Contains(p[0].body, "asleep") {
+		t.Fatalf("top-level apologies %+v", p)
+	}
+	// Two threads: one apology each.
+	other := h.chat.say(bobID, general, 0, "plain root", 2*time.Hour)
+	for _, th := range []uint64{root.ID, other.ID, root.ID, other.ID} {
+		h.chat.say(bobID, general, th, "@rocky in a thread", 2*time.Hour)
+	}
+	h.waitFor("thread asks logged", func() bool { return stale() == 11 })
+	if p := h.chat.posts(); len(p) != 3 || p[1].thread != root.ID || p[2].thread != other.ID {
+		t.Fatalf("thread apologies %+v", p)
+	}
+	// After the window the same place gets a fresh one.
+	clock.add(sorryEvery + time.Minute)
+	h.chat.say(bobID, general, 0, "@rocky still asleep?", 2*time.Hour)
+	h.waitFor("new apology", func() bool { return len(h.chat.posts()) == 4 })
+	if p := h.chat.posts()[3]; p.thread != 0 || len(h.run.requests()) != 0 {
+		t.Fatalf("late apology %+v", p)
+	}
+}
+
 func TestBacklogOnStart(t *testing.T) {
 	dir := shortDir(t)
 	cfg := cfgDefault()

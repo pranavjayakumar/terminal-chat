@@ -20,12 +20,18 @@ func TestInviteForCommand(t *testing.T) {
 		m.input.SetValue(in)
 		run(m, m.submit())
 	}
+	// A member is told at once, without asking the server.
+	do("/invite --for @bob")
+	if !m.noticeErr || !strings.Contains(m.notice, "only admins can add an SSH key") || len(f.calls) != 0 {
+		t.Fatalf("member: %q %v", m.notice, f.calls)
+	}
+	m.me.Admin, f.me.Admin, f.users[0].Admin = true, true, true
 	do("/invite --for @bob")
 	if !f.called("addkey 2") {
 		t.Fatalf("calls %v notice %q", f.calls, m.notice)
 	}
 	v := checkView(t, m, "add-key invite")
-	if m.noticeErr || m.mode != modeViewer || !strings.Contains(v, "add-key invite for @bob") {
+	if m.noticeErr || m.mode != modeViewer || !strings.Contains(v, "add-key invite for @bob") || !strings.Contains(v, "it won't use it") {
 		t.Fatalf("notice %q view:\n%s", m.notice, v)
 	}
 	code := "tc://chat.example.com:7443/abcdefghijklmnopqrstuvwxyz#Pin-_x"

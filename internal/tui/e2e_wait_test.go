@@ -24,7 +24,7 @@ func TestWaitingMessagesSayWhy(t *testing.T) {
 		run(m, m.openChannel(20))
 		v := ansi.Strip(checkView(t, m, "waiting"))
 		// Narrow: the reason may be cut, the command not.
-		for _, want := range []string{"🔒 /accept-key @bob"} {
+		for _, want := range []string{"🔒 /accept-key @bob", "🔒 /endorse-key"} {
 			if !strings.Contains(v, want) {
 				t.Errorf("%d cols: missing %q in\n%s", sz[0], want, v)
 			}
@@ -33,7 +33,7 @@ func TestWaitingMessagesSayWhy(t *testing.T) {
 			continue
 		}
 		for _, want := range []string{"🔒 waiting for key", "🔒 waiting for the sender's device",
-			"🔒 /accept-key @bob to read: @bob's key changed", "🔒 sent under an SSH key of yours this device doesn't trust"} {
+			"🔒 /accept-key @bob to read: @bob's key changed", "🔒 /endorse-key to read: sent under another SSH key of yours"} {
 			if !strings.Contains(v, want) {
 				t.Errorf("missing %q in\n%s", want, v)
 			}

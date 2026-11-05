@@ -147,7 +147,7 @@ func (m *Model) trustCommand(c command) (tea.Cmd, bool, error) {
 		if u == m.me.ID {
 			// A prompt the server can trigger mustn't trust a key it says
 			// is mine (#94, #146): the user names it instead.
-			return nil, true, errors.New("your own keys: /endorse-key SHA256:… with the key your other computer shows (/endorse-key there)")
+			return nil, true, errOwnKeyHint
 		}
 		pend := m.c.PendingKeys(u)
 		if len(pend) == 0 {
@@ -204,6 +204,10 @@ type EndorseBackend interface {
 
 var _ EndorseBackend = (*client.Client)(nil)
 
+// errOwnKeyHint is what refusing to accept one of my own keys says in the
+// TUI (client.ErrOwnKeyAccept names the CLI's command). Fits 80 columns.
+var errOwnKeyHint = errors.New("your own key: run /endorse-key on both computers (see /help)")
+
 // endorseKeyCommand runs /endorse-key [SHA256:…]. Without an argument it
 // shows this computer's key (what the other computer needs); with one it
 // makes this computer's key vouch for that key. The fingerprint is always
@@ -215,19 +219,16 @@ func (m *Model) endorseKeyCommand(args []string) (tea.Cmd, error) {
 		return nil, errors.New("endorsing keys isn't supported here")
 	}
 	if len(args) == 0 {
-		mine := sanitize.Line(be.OwnKeyFingerprint())
-		m.list = listState{title: "this computer's SSH key", rows: []string{
-			mine,
-			"To trust it on another computer of yours: /endorse-key " + mine + " there.",
-			"To trust that computer's key here: /endorse-key <the key it shows>. Copy it from that computer, never from a message.",
-		}}
-		m.mode = modeList
+		m.showKey(ownKeyView(sanitize.Line(be.OwnKeyFingerprint())))
 		return nil, nil
 	}
 	if len(args) != 1 || !strings.HasPrefix(args[0], "SHA256:") {
 		return nil, errors.New("usage: /endorse-key SHA256:… (the key /endorse-key shows on your other computer)")
 	}
 	fp := args[0]
+	if err := client.CheckFingerprint(fp); err != nil {
+		return nil, err
+	}
 	return m.callThen("endorse-key", func(ctx context.Context) (tea.Msg, error) {
 		r, err := be.EndorseKey(ctx, fp)
 		if errors.Is(err, client.ErrKeyTrusted) {
@@ -236,13 +237,79 @@ func (m *Model) endorseKeyCommand(args []string) (tea.Cmd, error) {
 		if err != nil {
 			return nil, err
 		}
-		by := sanitize.Line(r.By)
-		return listMsg{title: "✓ key trusted", rows: []string{
-			"This computer's key " + by + " now vouches for " + sanitize.Line(r.Key) + ":",
-			"your devices and everyone you chat with trust that key's devices.",
-			"On the computer with that key, run: /endorse-key " + by,
-		}}, nil
+		return endorsedView(sanitize.Line(r.By), sanitize.Line(r.Key)), nil
 	}), nil
+}
+
+// keyShownMsg shows SSH key fingerprints in a wide viewer: a list cuts
+// long rows, and a fingerprint is only useful whole (y copies copy).
+type keyShownMsg struct {
+	title string
+	parts []keyPart
+	copy  string
+}
+
+// keyPart is a paragraph (wrapped at spaces) or, with fp, a fingerprint
+// drawn on rows of its own and cut only at the width.
+type keyPart struct {
+	text string
+	fp   bool
+}
+
+func ownKeyView(mine string) keyShownMsg {
+	shown := mine
+	if shown == "" {
+		shown = "unknown until connected"
+	}
+	return keyShownMsg{title: "this computer's SSH key", copy: mine, parts: []keyPart{
+		{text: "This computer's SSH key (y copies it):"},
+		{text: shown, fp: mine != ""},
+		{},
+		{text: "To trust it on another computer of yours, run /endorse-key and this key there."},
+		{text: "To trust that computer's key here: /endorse-key <the key it shows>. Copy it from that computer, never from a message."},
+	}}
+}
+
+func endorsedView(by, key string) keyShownMsg {
+	cmd := "/endorse-key " + by
+	return keyShownMsg{title: "✓ key trusted", copy: cmd, parts: []keyPart{
+		{text: "✓ This computer now vouches for"},
+		{text: key, fp: true},
+		{text: "On that computer, run (y copies it):"},
+		{text: cmd, fp: true},
+		{text: "Your devices and everyone you chat with now trust that key's devices."},
+	}}
+}
+
+func (m *Model) showKey(s keyShownMsg) {
+	m.view = viewer{
+		title: s.title,
+		build: func(w int) []string { return keyLines(s.parts, w) },
+		copy:  s.copy,
+		back:  modeNormal,
+		wide:  true,
+	}
+	m.mode = modeViewer
+}
+
+func keyLines(parts []keyPart, w int) []string {
+	w = max(w, 8)
+	var out []string
+	for _, p := range parts {
+		switch {
+		case p.text == "":
+			out = append(out, "")
+		case p.fp:
+			for r := []rune(p.text); len(r) > 0; {
+				n := min(len(r), w)
+				out = append(out, string(r[:n]))
+				r = r[n:]
+			}
+		default:
+			out = append(out, wrapWords(p.text, w)...)
+		}
+	}
+	return out
 }
 
 func (m *Model) needActive() (uint64, error) {

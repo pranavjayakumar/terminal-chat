@@ -62,13 +62,17 @@ The server key never rotates in v1; rotating means re-issuing invites.
 | 0x11 | RES | S→C | `{id: u32, ok: bool, data?: any, err?: {code: str, msg: str}}` |
 | 0x20 | EVENT | S→C | `Event` (persistent, carries `seq`) |
 | 0x21 | EPHEMERAL | both | `{kind: str, ...}` (typing, presence; never stored) |
-| 0x22 | SNAPSHOT | S→C | `{users?: [User], chans?: [Channel], msgs?: [Message], read?: {chan: seq}, groups?: [Group], devs?, revoked?, keys?}` (one part; `groups` §8, `devs`/`revoked` §13.2, `keys` §13.6) |
+| 0x22 | SNAPSHOT | S→C | `{users?: [User], chans?: [Channel], msgs?: [Message], read?: {chan: seq}, groups?: [Group], devs?, revoked?, revoked_seqs?, endorse?, keys?, agents?}` (one part; `groups` §8, `devs`/`revoked`/`revoked_seqs`/`endorse` §13.2, `keys` §13.6, `agents` §15.2) |
 | 0x30 | PING | both | `{t: i64}` |
 | 0x31 | PONG | both | `{t: i64}` (echo) |
 | 0x40 | VOICE | both | one voice datagram (§14.3 layout, raw bytes, **not** MessagePack) on a session without datagrams; cap `voice_tcp`, §14.4 |
 | 0x7F | BYE | both | `{code: str, msg: str, keys?: [str]}` then close (`keys`: §4.1 key hint) |
 
-Effective caps = intersection of HELLO and WELCOME caps. Protocol version is the ALPN.
+Effective caps = intersection of HELLO and WELCOME caps, except the server-advertised ones:
+a client never sends those in HELLO and they apply whenever WELCOME has them (`hooks`, `pins`,
+`groups`, `remind`, `team_invites`, `invite_manage`, `key_invites` and `member_invites` §4.1,
+`key_endorse` §13.2, `agent_key_proof` §15.2; `key_hint` §4.1 goes the other way, HELLO only;
+`passive` §4.3 echoes a HELLO request). Protocol version is the ALPN.
 
 ## 4. Handshake & authentication
 
@@ -127,7 +131,8 @@ transaction that creates the user/key, so concurrent redemptions of an N-use inv
 produce exactly N users. A redemption that fails (`name_taken`, a reserved name, or
 `key_exists` when a concurrent redemption registered the same key first) rolls back and
 spends nothing. A key that was already registered never redeems (§4). Exhausted, expired or unknown → BYE `invite_invalid`.
-Add-key invites are always single-use. Admin invites (server host only) are single-use and
+Add-key invites are always single-use. Redeeming one re-checks its target: a user disabled
+(or gone, or a bot) since the invite was made → BYE `invite_invalid`, and nothing is spent. Admin invites (server host only) are single-use and
 last at most 24 hours (default 24 hours). `uses`/`ttl_ms` in `invite.create` need cap
 `team_invites` (servers without it ignore them and mint a 1-use, 7-day invite).
 
@@ -231,7 +236,7 @@ Kinds:
 handshake_timeout, protocol_error, slow_consumer, server_shutdown, revoked,
 too_many_sessions`.
 (`key_exists` now only when a concurrent redemption registered the key first, §4.)
-`too_many_sessions`: the account already has 32 sessions (§9); clients reconnect later as
+`too_many_sessions`: the account (or its agent) already has 32 sessions (§9); clients reconnect later as
 after any other BYE (older clients do).
 
 ### 4.3 Passive sessions (cap `passive`)
@@ -505,7 +510,10 @@ Group = {name: str, members: [u64]}
 ```
 
 A `Group` (cap `groups`) is a named set of users that `@name` mentions at once (§5 rules). The
-server advertises caps `groups`, `remind`, `team_invites` and `invite_manage` (§4.1) in WELCOME; older servers lack the ops.
+server advertises caps `groups`, `remind`, `team_invites`, `invite_manage` (§4.1), `key_endorse`
+(§13.2) and `agent_key_proof` (§15.2) in WELCOME; older servers lack the ops (or, for
+`agent_key_proof`, the `agent.key` proof). These are server-advertised only (§3): clients don't
+send them in HELLO.
 
 `Message.id` is the seq of its `msg.new` event, so ids order chronologically
 and map directly onto read markers.
@@ -535,8 +543,9 @@ All sizes are UTF-8 bytes.
   PINGs and EPHEMERALs wait until the sync's RES). A client may take as long as it likes to
   read a catch-up, but one frame write that sees no progress for 45 s during sync → BYE
   `slow_consumer`.
-- At most 32 concurrent sessions per account (agent and passive sessions included); one more
-  → BYE `too_many_sessions` after authentication.
+- At most 32 concurrent sessions per account (passive sessions included), and 32 more for its
+  agent, counted apart so an agent can't use up its owner's; one more → BYE
+  `too_many_sessions` after authentication.
 - `huddle.join` takes from the shared write-op bucket; `huddle.leave` doesn't. Datagrams have
   their own per-session bucket (burst 100, refill 60/s). Voice limits (datagram size, relay queue,
   huddle sizes) are in §14.
@@ -572,6 +581,12 @@ variation selectors past one per character, and combining marks past 3 per chara
 - Additive change → new `caps` string, optional fields, new ops/kinds/frame types.
 - Clients ignore unknown event kinds, fields and frame types.
 - Servers return `unknown_op` for unknown ops and never close the connection for it.
+- **Deliberate exception — `agent.key` `proof` (cap `agent_key_proof`, v0.6.3):** the server
+  requires a field older clients (v0.6.2 and before) don't send, because without it a member
+  could register anyone's public key as their agent's and lock that person out (§15.2). An old
+  client's `agent.key` gets `bad_request` with a message telling the user to run `tc update`;
+  agents set up before keep working. New clients check the cap first and, against an older
+  server, say to update the server.
 
 ## 12. Webhooks (HTTP)
 
@@ -766,8 +781,11 @@ Server rules (honest case):
   other `server_id` → `bad_request`; `user` ≠ caller → `forbidden`; `new_ssh`
   not one of the caller's registered login keys (agent keys don't count) →
   `bad_request`; not signed by another of the caller's registered login keys
-  (a key never endorses itself) → `forbidden`. An exact repeat is ok
-  `{seq: 0}` and emits nothing; at most 32 per user (`bad_request`). Emits
+  (a key never endorses itself) → `forbidden`. The server keeps one per
+  (user, `new_ssh`, signing key): a repeat for a pair it already has — an
+  exact repeat, or a client's retry after a lost RES, which signs a new
+  `time` — is ok `{seq: 0}`, stores nothing and emits nothing; at most 32
+  per user (`bad_request`). Emits
   `key.endorse`. Servers without the cap answer `unknown_op`; clients check
   the cap first.
 - **Snapshot** (§6) adds `devs: [Device]` (every device, revoked ones too),
@@ -1610,7 +1628,7 @@ owner's, like any message of the owner's.
 ### 15.1 Agent sessions and keys
 
 An agent logs in with **its own SSH key**. The owner's session registers it with
-`agent.key {pubkey}` (the agent's current key replaces any earlier one; `agent.retire` deletes
+`agent.key {pubkey, proof}` (§15.2; the agent's current key replaces any earlier one; `agent.retire` deletes
 it). Such an **agent key** is never its owner: any HELLO signed by it (with cap `agent1`; else
 `BYE protocol_error`) is a session of the owner's current agent, whatever `HELLO.agent` says;
 `BYE auth_failed` once the agent is retired. A client that didn't ask for an agent session MUST
@@ -1668,7 +1686,7 @@ encrypted edits or deletes an agent's device signed for a message that isn't an 
 | `agent.retire` | `{}` | `{agent: Agent}` | owner sessions; closes its sessions (BYE `revoked`), deletes its key and empties the access list (a new agent starts from nothing); the handle stays taken |
 | `agents.list` | `{}` | `{agents: [Agent]}` | retired ones included; `online` filled in |
 | `agent.access` | `{add?: [u64], remove?: [u64], temp?: [u64]}` | `{chans: [u64], expires?: {u64: i64}}` | owner sessions; the agent access list (§15.4) after the change: `add` grants until removed, `temp` for 7 days (a lasting grant stays lasting), `expires` gives each temporary grant's end; `{}` reads it |
-| `agent.key` | `{pubkey: bin, proof: bin}` | `{}` | owner sessions with an active agent (`not_found`); the agent's own SSH key (§15.1); `proof` (below) missing or not verifying → `bad_request`; `conflict` if the key is registered to anyone already; closes agent sessions logged in otherwise |
+| `agent.key` | `{pubkey: bin, proof: bin}` | `{}` | owner sessions with an active agent; the agent's own SSH key (§15.1); closes agent sessions logged in otherwise. Errors, checked in this order: agent session → `forbidden`; `pubkey` not an accepted SSH key, or `proof` (below) missing or not verifying → `bad_request`; no active agent → `not_found`; the key registered to anyone already → `conflict` (re-registering the agent's current key is ok `{}`) |
 | `agent.dm` | `{}` | `{chan: Channel}` | the owner's agent DM, created on the first call (`not_found` without an active agent); encrypted when the caller has `e2e1` |
 
 ```
@@ -1680,8 +1698,11 @@ Agent = {handle, icon?: str, owner: u64, online?: bool, created: i64, retired?: 
 pubkey (wire)`: only the key's holder can register it (public keys are public, e.g.
 `github.com/<user>.keys`, and a key registered as someone's agent key could never join as
 itself). The agent key is local to the owner's machine (`tc agent login` makes it), so the
-client signs with it directly. Clients from before `proof` existed send none and get
-`bad_request`; they must update to set up an agent (agents set up earlier keep working).
+client signs with it directly. Servers that require `proof` advertise cap `agent_key_proof`
+(server-advertised only); a client checks it before `agent.key` and, without it, tells the user
+to update the server. Clients from before `proof` existed (v0.6.2 and older) send none and get
+`bad_request` whose message says to run `tc update`; agents set up earlier keep working. This is
+a deliberate break of the additive-only rule (§11).
 
 `icon` is one short line (≤ 32 B; an emoji or a tc Symbols glyph). Events: `agent.update` (data
 `Agent`, never with `online`) on register, update and retire, to every `agent1` session;

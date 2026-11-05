@@ -57,7 +57,7 @@ type Server struct {
 	members      map[uint64]map[uint64]bool // chan -> current members
 	kinds        map[uint64]string          // chan -> kind
 	online       map[uint64]int             // user -> live session count
-	userSessions map[uint64]int             // user -> every registered session (maxSessionsPerUser)
+	userSessions map[sessionKey]int         // user (or their agent) -> every registered session (maxSessionsPerUser)
 	presence     map[uint64]proto.Ephemeral // user -> last presence
 	limits       map[uint64]*bucket         // sends
 	wlimits      map[uint64]*bucket         // other write ops
@@ -120,7 +120,7 @@ func New(cfg Config) (*Server, error) {
 		sessions: map[*session]struct{}{},
 		members:  map[uint64]map[uint64]bool{},
 		kinds:    map[uint64]string{},
-		online:   map[uint64]int{}, userSessions: map[uint64]int{},
+		online:   map[uint64]int{}, userSessions: map[sessionKey]int{},
 		presence: map[uint64]proto.Ephemeral{},
 		limits:   map[uint64]*bucket{},
 		wlimits:  map[uint64]*bucket{},

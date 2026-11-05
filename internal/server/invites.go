@@ -294,14 +294,24 @@ func (s *Server) revokeInvite(ctx context.Context, id string, creator uint64) er
 // redeemCheck applies the invite rules that go beyond uses and expiry, in
 // redeem's transaction: the creator must still be allowed to invite (the
 // liveInvite rule; an add-key invite needs an admin creator, which also
-// voids member add-key invites minted before they were admin-only), and a
+// voids member add-key invites minted before they were admin-only), an
+// add-key invite's target (0: none) must still be an enabled person, and a
 // key-bound invite needs one of its keys (fp). It returns a BYE message, or
 // "" if the invite may be redeemed; for a key mismatch also the fingerprints
 // the invite accepts (the key_hint, §4.1).
-func (s *Server) redeemCheck(ctx context.Context, tx *sql.Tx, token string, createdBy uint64, addKey bool, fp string) (string, []string, error) {
+func (s *Server) redeemCheck(ctx context.Context, tx *sql.Tx, token string, createdBy, target uint64, fp string) (string, []string, error) {
+	addKey := target != 0
 	if createdBy != 0 {
 		c, err := getUser(ctx, tx, createdBy)
 		if err != nil || c.Disabled || (!c.Admin && (addKey || !s.cfg.MemberInvites)) {
+			return "invite is invalid, used or expired", nil, nil
+		}
+	}
+	// Disabled after the invite was made: the invite must not give the
+	// account a key, so it fails before anything is spent.
+	if addKey {
+		t, err := getUser(ctx, tx, target)
+		if err != nil || t.Disabled || t.Bot {
 			return "invite is invalid, used or expired", nil, nil
 		}
 	}

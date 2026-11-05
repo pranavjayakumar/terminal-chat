@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -302,6 +304,32 @@ func agentKeyArgs(ts *testServer, owner *tclient, key ssh.Signer) proto.AgentKey
 		owner.t.Fatal(err)
 	}
 	return proto.AgentKeyArgs{Pubkey: key.PublicKey().Marshal(), Proof: proof}
+}
+
+// agent.key's errors come in the documented order (§15.2): the key and its
+// proof (bad_request), then an active agent (not_found), then a key already
+// registered (conflict). A missing proof tells an old client to update, and
+// the server advertises agent_key_proof so new clients can tell first.
+func TestAgentKeyErrorOrder(t *testing.T) {
+	ts := startServer(t, "tcp")
+	alice := ts.registerCaps(t, "alice", true, agentCaps)
+	alice.syncFresh()
+	if !slices.Contains(alice.welcome.Caps, proto.CapAgentKeyProof) {
+		t.Fatalf("WELCOME caps %v lack %s", alice.welcome.Caps, proto.CapAgentKeyProof)
+	}
+	key := newKey(t)
+	// No agent yet: a bad key or a missing proof is still bad_request.
+	alice.fail(proto.OpAgentKey, proto.AgentKeyArgs{Pubkey: []byte("junk")}, proto.ErrBadRequest)
+	r := alice.req(proto.OpAgentKey, proto.AgentKeyArgs{Pubkey: key.PublicKey().Marshal()})
+	if r.OK || r.Err == nil || r.Err.Code != proto.ErrBadRequest || !strings.Contains(r.Err.Msg, "tc update") {
+		t.Fatalf("agent.key without proof: %+v", r.Err)
+	}
+	// A valid proof but no agent: not_found.
+	alice.fail(proto.OpAgentKey, agentKeyArgs(ts, alice, key), proto.ErrNotFound)
+	// With an agent, a key someone already has: conflict.
+	alice.ok(proto.OpAgentRegister, proto.AgentRegisterArgs{Handle: "rocky"}, nil)
+	alice.fail(proto.OpAgentKey, agentKeyArgs(ts, alice, alice.signer), proto.ErrConflict)
+	alice.ok(proto.OpAgentKey, agentKeyArgs(ts, alice, key), nil)
 }
 
 // Registering someone else's public key (github.com/<user>.keys is public)

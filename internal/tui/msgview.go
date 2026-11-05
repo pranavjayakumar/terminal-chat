@@ -32,8 +32,8 @@ type blockKey struct {
 	split   bool // Settings › Messages: Split (ours on the right)
 	tail    bool // last of its group: ours shows time and status
 	concern concern
-	appr    apprState // an agent's approval card (approval.go)
-	fold    string    // an agent run's folded steps line (agentlive.go)
+	appr    apprInfo // an agent's approval card or its continuation (approval.go)
+	fold    string   // an agent run's folded steps line (agentlive.go)
 }
 
 // blockCache memoizes message blocks in two generations: when the current
@@ -211,7 +211,9 @@ func (m *Model) drawBlock(x client.Message, k blockKey, mine, own bool) *canvas 
 			line("⚠ unauthenticated (legacy, server-claimed)", fgb(th.err))
 		}
 		if x.Sec != client.SecWaiting && x.Sec != client.SecInvalid {
-			if card, ok := parseApproval(x); ok && agent {
+			if k.appr.cont && agent {
+				m.drawApprovalPart(g, x, k.appr, bw)
+			} else if card, ok := parseApproval(x); ok && agent {
 				m.drawApproval(g, x, card, k.appr, bw, at, textFg)
 			} else {
 				m.drawText(g, x, bw, at, textFg)
