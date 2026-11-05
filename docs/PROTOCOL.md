@@ -548,9 +548,13 @@ All sizes are UTF-8 bytes.
 - Each session's unsent output is capped at 8 MiB (sync output excluded); beyond that → BYE `slow_consumer`.
 - Sync output (§6) is paced by the client instead: the server produces it only while less
   than 1 MiB of it waits unsent, and reads nothing else from that client meanwhile (requests,
-  PINGs and EPHEMERALs wait until the sync's RES). A client may take as long as it likes to
-  read a catch-up, but one frame write that sees no progress for 45 s during sync → BYE
-  `slow_consumer`.
+  PINGs and EPHEMERALs wait until the sync's RES). A client may take its time to read a
+  catch-up, within two rules, either → BYE `slow_consumer`: one frame write that sees no
+  progress for 45 s during sync; and less than 512 B/s on average reaching the transport over
+  any 2-minute window in which the server was waiting on the client throughout (checked every
+  5 s; a check finding nothing being written starts a new window). Live events for the
+  client that arrive during its sync wait for it, at most 1024 frames and 8 MiB; beyond →
+  BYE `slow_consumer`.
 - At most 32 concurrent sessions per account (passive sessions included), and 32 more for its
   agent, counted apart so an agent can't use up its owner's; one more → BYE
   `too_many_sessions` after authentication.
