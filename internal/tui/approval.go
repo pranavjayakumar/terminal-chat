@@ -2,9 +2,12 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -33,6 +36,8 @@ import (
 // The preview is never cut: every quoted line is drawn, wrapped to the
 // width. A preview too long for one message goes on in the next messages
 // ("#<code> (2/3)"), and the card's `full:` line (size and sha256) says so.
+// Those continuations draw as part of the card (verbatim, never as
+// markdown), and the choices wait until the last part is in.
 
 const (
 	apprYes   = "✅"
@@ -53,6 +58,15 @@ type approvalCard struct {
 
 // apprState is a card's answer as its block shows it.
 type apprState uint8
+
+// apprInfo is what a block needs to draw a card or one of its
+// continuations: the answer, and for a card in parts how many are in.
+type apprInfo struct {
+	st   apprState
+	cont bool // a continuation ("#code (part/of)") of a card above
+	part int  // continuation: which part; card: the first part still missing (0: none)
+	of   int  // parts in all (0 or 1: one message)
+}
 
 const (
 	apprPending apprState = iota
@@ -128,7 +142,8 @@ func agentTitle(h string) string {
 	if h == "" {
 		return "Your agent"
 	}
-	return strings.ToUpper(h[:1]) + h[1:]
+	r, n := utf8.DecodeRuneInString(h)
+	return string(unicode.ToUpper(r)) + h[n:]
 }
 
 // title is the card's first line: who wants what.
@@ -173,32 +188,112 @@ func verdict(x client.Message) apprState {
 	return apprPending
 }
 
-// approvalStates is every card's state in msgs: answered, or given up on
-// ("⌛ no answer on #code" from the same agent).
-func (m *Model) approvalStates(msgs []client.Message) map[uint64]apprState {
-	var out map[uint64]apprState
+// parts is how many messages the card comes in: the harness's `full:`
+// line ends "continued in the next N messages".
+func (c approvalCard) parts() int {
+	const pre, suf = "continued in the next ", " messages"
+	i := strings.LastIndex(c.full, pre)
+	if i < 0 || !strings.HasSuffix(c.full, suf) {
+		return 1
+	}
+	n, err := strconv.Atoi(c.full[i+len(pre) : len(c.full)-len(suf)])
+	if err != nil || n < 1 || n > 1000 {
+		return 1
+	}
+	return n + 1
+}
+
+// contPart is which part of card (from x) message y carries: its first line
+// is "#code (i/n)", from the same agent in the same thread (0: none).
+func contPart(card approvalCard, n int, x, y client.Message) int {
+	if !y.FromAgent() || y.Deleted || !y.Sec.Trusted() || y.Author != x.Author || y.Agent != x.Agent || y.Thread != x.Thread {
+		return 0
+	}
+	first, _, _ := strings.Cut(y.Body, "\n")
+	rest, ok := strings.CutPrefix(first, card.code+" (")
+	if !ok {
+		return 0
+	}
+	var i, of int
+	if k, err := fmt.Sscanf(rest, "%d/%d)", &i, &of); err != nil || k != 2 || of != n || i < 2 || i > n ||
+		rest != fmt.Sprintf("%d/%d)", i, of) {
+		return 0
+	}
+	return i
+}
+
+// approvalStates is every card's state in msgs (answered, or given up on:
+// "⌛ no answer on #code" from the same agent) and its continuations'.
+func (m *Model) approvalStates(msgs []client.Message) map[uint64]apprInfo {
+	var out map[uint64]apprInfo
 	for i, x := range msgs {
 		card, ok := parseApproval(x)
 		if !ok {
 			continue
 		}
 		if out == nil {
-			out = map[uint64]apprState{}
+			out = map[uint64]apprInfo{}
 		}
 		st := verdict(x)
-		if st == apprPending {
-			for _, y := range msgs[i+1:] {
-				if y.FromAgent() && y.Author == x.Author && strings.Contains(y.Body, "no answer on "+card.code) {
-					st = apprExpired
+		n := card.parts()
+		var have []bool
+		if n > 1 {
+			have = make([]bool, n+1)
+		}
+		var conts []uint64
+		for _, y := range msgs[i+1:] {
+			if st == apprPending && y.FromAgent() && y.Author == x.Author && strings.Contains(y.Body, "no answer on "+card.code) {
+				st = apprExpired
+			}
+			if n > 1 {
+				if k := contPart(card, n, x, y); k > 0 && !have[k] {
+					have[k] = true
+					conts = append(conts, y.ID)
+					out[y.ID] = apprInfo{cont: true, part: k, of: n}
 				}
 			}
 		}
-		out[x.ID] = st
+		for _, id := range conts {
+			ci := out[id]
+			ci.st = st
+			out[id] = ci
+		}
+		info := apprInfo{st: st}
+		if n > 1 {
+			info.of = n
+			for k := 2; k <= n; k++ {
+				if !have[k] {
+					info.part = k
+					break
+				}
+			}
+		}
+		out[x.ID] = info
 		if st != apprPending {
 			delete(m.ag.pending, x.ID)
 		}
 	}
 	return out
+}
+
+// apprInfoOf is card x's info, from whichever pane holds it.
+func (m *Model) apprInfoOf(x client.Message) apprInfo {
+	for _, p := range []*pane{&m.thread, &m.main} {
+		for _, y := range p.msgs {
+			if y.ID == x.ID {
+				return m.approvalStates(p.msgs)[x.ID]
+			}
+		}
+	}
+	return apprInfo{st: verdict(x)}
+}
+
+// waitingPart is "waiting for part i/n" while card info isn't all in.
+func (a apprInfo) waitingPart() string {
+	if a.part == 0 {
+		return ""
+	}
+	return fmt.Sprintf("waiting for part %d/%d", a.part, a.of)
 }
 
 // apprChoice is one answer: its key, its label on the card, a short label
@@ -215,6 +310,11 @@ func apprChoices(action string) [3]apprChoice {
 	case strings.HasPrefix(action, "open a draft PR"), strings.Contains(action, "draft PR"):
 		yes, no = "open it", "don't"
 		again = "open, and don't ask again today for draft PRs"
+		// The harness grants a CI-changing PR on its own target ("tc
+		// .github"); the title after ": " is the agent's words, not this.
+		if head, _, _ := strings.Cut(action, ": "); strings.Contains(head, "CHANGES CI") {
+			again = "open, and don't ask again today for PRs that change CI"
+		}
 	case strings.HasPrefix(action, "open a GitHub issue"):
 		yes, no = "open it", "don't"
 		again = "open, and don't ask again today for issues"
@@ -229,8 +329,9 @@ func apprChoices(action string) [3]apprChoice {
 // drawApproval draws a card as a block of its own: who wants what, the
 // preview, why, then the choices (the owner), a wait line (everyone
 // else); once answered it folds to one line.
-func (m *Model) drawApproval(g *grower, x client.Message, card approvalCard, st apprState, bw int, at func(int) int, textFg rgb) {
+func (m *Model) drawApproval(g *grower, x client.Message, card approvalCard, info apprInfo, bw int, at func(int) int, textFg rgb) {
 	th := m.st.th
+	st := info.st
 	owner := m.ownerName(x.Author)
 	mine := x.Author == m.me.ID
 	who := owner
@@ -262,31 +363,26 @@ func (m *Model) drawApproval(g *grower, x client.Message, card approvalCard, st 
 		y.Body, y.Edited = d, 0
 		m.drawText(g, y, bw, at, textFg)
 	}
-	y := g.row()
-	g.c.put(2, y, truncate(card.title(), bw), fgb(th.fg), "")
-	for _, q := range card.quote {
-		for _, part := range wrapCells(sanitize.Line(q), bw-2) {
-			yy := g.row()
-			e := g.c.put(2, yy, "▏", fgc(th.faint), "")
-			g.c.put(e+1, yy, part, fgc(th.dim), "")
-		}
-	}
+	m.prose(g, card.title(), bw, fgb(th.fg))
+	m.drawQuote(g, card.quote, bw)
 	if card.full != "" {
 		for _, part := range wrapCells("⚠ long: "+sanitize.Line(card.full), bw) {
 			g.c.put(2, g.row(), part, fgc(th.warn), "")
 		}
 	}
 	if card.why != "" {
-		yy := g.row()
-		g.c.put(2, yy, truncate("why: "+sanitize.Line(card.why), bw), fgc(th.faint), "")
+		m.prose(g, "why: "+sanitize.Line(card.why), bw, fgc(th.faint))
 	}
 	if !mine {
-		yy := g.row()
-		g.c.put(2, yy, truncate("waiting for "+owner, bw), fgc(th.faint), "")
+		m.prose(g, "waiting for "+owner, bw, fgc(th.faint))
+		return
+	}
+	if w := info.waitingPart(); w != "" {
+		m.prose(g, w, bw, fgc(th.faint))
 		return
 	}
 	// the three choices as pills, wrapping in a narrow column
-	y = g.row()
+	y := g.row()
 	xx := 2
 	for i, ch := range apprChoices(card.action) {
 		label := " " + ch.key + " " + ch.label + " "
@@ -300,12 +396,70 @@ func (m *Model) drawApproval(g *grower, x client.Message, card approvalCard, st 
 		}
 		xx = g.c.pill(xx, y, truncate(label, bw-2), st, "appr|"+ch.key) + 1
 	}
-	yy := g.row()
-	g.c.put(2, yy, truncate("only you can answer · select it, then 1–3", bw), fgc(th.faint), "")
+	m.prose(g, "only you can answer · select it, then 1–3", bw, fgc(th.faint))
+}
+
+// prose draws s (already sanitized) wrapped at spaces to width bw; a word
+// longer than the width is cut into pieces, never lost.
+func (m *Model) prose(g *grower, s string, bw int, st cstyle) {
+	bw = max(bw, 1)
+	for _, row := range wrapWords(s, bw) {
+		for _, part := range wrapCells(row, bw) {
+			g.c.put(2, g.row(), part, st, "")
+		}
+	}
+}
+
+// drawQuote draws a card's preview lines verbatim: a ▏ gutter on each line,
+// a ┊ on the rows a long line goes on in (so a piece starting with + or -
+// doesn't read as a diff line). Warnings (⚠ CHANGES CI) stand out.
+func (m *Model) drawQuote(g *grower, quote []string, bw int) {
+	th := m.st.th
+	for _, q := range quote {
+		q = sanitize.Line(q)
+		st := fgc(th.dim)
+		if strings.HasPrefix(q, "⚠") {
+			st = fgb(th.warn)
+		}
+		for i, part := range wrapCells(q, bw-2) {
+			yy := g.row()
+			gut := "▏"
+			if i > 0 {
+				gut = "┊"
+			}
+			e := g.c.put(2, yy, gut, fgc(th.faint), "")
+			g.c.put(e+1, yy, part, st, "")
+		}
+	}
+}
+
+// drawApprovalPart draws a continuation of a card ("#code (2/3)" and more
+// preview lines) as the card's: verbatim, no markdown. Once the card is
+// answered it folds to one line, like the card.
+func (m *Model) drawApprovalPart(g *grower, x client.Message, info apprInfo, bw int) {
+	th := m.st.th
+	first, rest, _ := strings.Cut(x.Body, "\n")
+	head := sanitize.Line(first) + " · part " + strconv.Itoa(info.part) + " of " + strconv.Itoa(info.of)
+	if info.st != apprPending {
+		g.c.put(2, g.row(), truncate(head, bw), fgc(th.faint), "")
+		return
+	}
+	m.prose(g, head, bw, fgc(th.faint))
+	var quote []string
+	for _, l := range strings.Split(rest, "\n") {
+		if q, ok := strings.CutPrefix(l, "> "); ok {
+			quote = append(quote, q)
+		} else if l == ">" {
+			quote = append(quote, "")
+		}
+	}
+	m.drawQuote(g, quote, bw)
 }
 
 // wrapCells cuts s into pieces of at most w cells, keeping every character
-// (and its spacing: a diffstat or a command must read as written).
+// and its spacing (a diffstat or a command must read as written): joined,
+// the pieces are s. A piece ends after a space when there is one in its
+// last third, so words and hashes stay whole where they can.
 func wrapCells(s string, w int) []string {
 	w = max(w, 1)
 	if s == "" {
@@ -317,6 +471,11 @@ func wrapCells(s string, w int) []string {
 		if head == "" {
 			_, n := utf8.DecodeRuneInString(s)
 			head, rest = s[:n], s[n:]
+		}
+		if rest != "" {
+			if i := strings.LastIndexByte(head, ' '); i >= 0 && strWidth(head[:i+1]) > w-w/3 {
+				head, rest = s[:i+1], s[i+1:]
+			}
 		}
 		out = append(out, head)
 		s = rest
@@ -337,6 +496,10 @@ func (m *Model) answerApproval(x client.Message, choice string) tea.Cmd {
 	}
 	if verdict(x) != apprPending {
 		m.setInfo("already answered")
+		return nil
+	}
+	if w := m.apprInfoOf(x).waitingPart(); w != "" {
+		m.setInfo(w + " · read all of it first")
 		return nil
 	}
 	var emojis []string
