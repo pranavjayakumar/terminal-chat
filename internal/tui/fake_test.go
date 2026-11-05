@@ -120,6 +120,7 @@ func newFake() *fakeClient {
 	ms = append(ms, client.Message{Message: proto.Message{Chan: 10, Author: 1, Body: "failed one", Time: base + 26*time.Hour.Milliseconds()}, Failed: "forbidden: nope", Local: 8})
 	f.msgs[10] = ms
 	f.chans[1].Last = 139
+	f.chans[1].Read = 137 // 138 and 139 are unread
 	f.threads[103] = []client.Message{ms[3],
 		{Message: proto.Message{ID: 200, Chan: 10, Thread: 103, Author: 2, Body: "reply one", Time: base + 5*time.Minute.Milliseconds()}},
 		{Message: proto.Message{ID: 201, Chan: 10, Thread: 103, Author: 3, Body: "reply two", Time: base + 6*time.Minute.Milliseconds()}},

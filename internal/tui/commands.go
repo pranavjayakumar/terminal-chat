@@ -39,6 +39,7 @@ var commandTable = []cmdSpec{
 	{name: "dm", args: "@a @b", desc: "direct message (@me: your notes, where reminders land)"},
 	{name: "search", args: "terms", desc: "search; Enter jumps"},
 	{name: "pins", desc: "pinned messages here; Enter jumps"},
+	{name: "read-all", desc: "mark every channel read"},
 	{name: "highlight", args: "word…", desc: "mark messages with these words like a mention (none: list)"},
 	{name: "unhighlight", args: "word…", desc: "stop highlighting"},
 	{name: "away", args: "[status]", desc: "presence", help: "/away [status], /back"},

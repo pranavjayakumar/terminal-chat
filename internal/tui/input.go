@@ -183,6 +183,9 @@ func (m *Model) selectFooter() string {
 			}
 		}
 		keys = append(keys, "v view", "y copy")
+		if !sel.Deleted && codeOnly(sel.Body) != "" {
+			keys = append(keys, "Y code")
+		}
 	}
 	keys = append(keys, "m menu")
 	full := strings.Join(keys, " · ") + " · Esc"
@@ -271,7 +274,7 @@ func (m *Model) submit() tea.Cmd {
 	}
 	m.clearInput()
 	m.clearErr()
-	p.scroll = 0
+	p.scroll, p.place = 0, false
 	m.reloadPane(p)
 	return nil
 }
@@ -387,6 +390,8 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 	case "activity":
 		m.openActivity()
 		return nil, nil
+	case "read-all":
+		return nil, m.readAll()
 	case "join":
 		if err := need(1, "/join #channel"); err != nil {
 			return nil, err

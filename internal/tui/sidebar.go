@@ -70,6 +70,9 @@ func (m *Model) sideEntry(v client.ChannelView) sideItem {
 				it.icon, it.iconFg = m.icon(icOnline), th.ok
 			case proto.PresAway:
 				it.icon, it.iconFg, it.extra = m.icon(icAway), th.warn, "away"
+				if st := sanitize.Line(m.presence[others[0]].Status); st != "" {
+					it.extra = st // their /away text, cut to the row
+				}
 			}
 		default:
 			it.icon = "◇"
@@ -96,9 +99,18 @@ func (m *Model) sideEntry(v client.ChannelView) sideItem {
 			it.badgeFg = th.accent
 		}
 	}
-	it.extra = m.huddleMarker(v.ID)
+	away := it.extra // a huddle running in the DM says more
+	hud := m.huddleMarker(v.ID)
+	it.extra = hud
 	if m.hasDraft(v.ID) {
 		it.extra += " ✎"
+	}
+	switch {
+	case hud != "" || away == "":
+	case it.extra == "":
+		it.extra = away
+	default:
+		it.extra += " " + away // last, so a narrow row cuts it first
 	}
 	return it
 }

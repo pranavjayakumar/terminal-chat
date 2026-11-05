@@ -594,6 +594,27 @@ func (m *Model) sepBlock(label string, cw int) *canvas {
 	})
 }
 
+// newBlock is the "new" divider above a channel's first unread message:
+// the accent line, so it reads apart from a day divider. above: it sits on
+// the oldest loaded message and older ones may be unread too.
+func (m *Model) newBlock(cw int, above bool) *canvas {
+	lab := " new "
+	if above {
+		lab = " new · more above "
+	}
+	k := blockKey{renderKey: renderKey{failed: "sep:" + lab, width: cw}, th: m.st.th}
+	return m.blocks.get(k, func() *canvas {
+		th := m.st.th
+		c := newCanvas(cw, 1, th)
+		lw := strWidth(lab)
+		x := max(cw-lw-2, 0) // the label near the right end
+		c.put(0, 0, strings.Repeat("─", x), fgc(th.accent), "")
+		c.put(x, 0, truncate(lab, max(cw-x, 0)), fgc(th.accent).with(aBold), "")
+		c.put(x+lw, 0, strings.Repeat("─", max(cw-x-lw, 0)), fgc(th.accent), "")
+		return c
+	})
+}
+
 func dayLabel(t time.Time, now time.Time) string {
 	switch {
 	case sameDay(t.UnixMilli(), now.UnixMilli()):
@@ -652,17 +673,29 @@ func (m *Model) paneLines(p *pane, w int) ([]prow, []int) {
 		prev = nil
 	}
 	used := make(map[blockKey]*canvas, len(p.msgs))
+	newIdx := m.newIndex(p)
+	p.memoNewRow = -1
 	for i, x := range p.msgs {
 		sep := i == 0 || !sameDay(p.msgs[i-1].Time, x.Time)
-		header := sep || !grouped(p.msgs[i-1], x)
+		isNew := i == newIdx
+		header := sep || isNew || !grouped(p.msgs[i-1], x)
 		// Cozy: exactly one blank row between groups and around a
 		// divider, none inside a group. Compact: none at all.
-		if i > 0 && (sep || header) && !m.ui.Compact {
+		if i > 0 && header && !m.ui.Compact {
 			rows = append(rows, prow{})
 			owner = append(owner, -1)
 		}
 		if sep {
 			rows = append(rows, prow{b: m.sepBlock(dayLabel(time.UnixMilli(x.Time).Local(), now), w)})
+			owner = append(owner, -1)
+			if !m.ui.Compact {
+				rows = append(rows, prow{})
+				owner = append(owner, -1)
+			}
+		}
+		if isNew {
+			p.memoNewRow = len(rows)
+			rows = append(rows, prow{b: m.newBlock(w, i == 0 && !m.histDone[p.ch])})
 			owner = append(owner, -1)
 			if !m.ui.Compact {
 				rows = append(rows, prow{})

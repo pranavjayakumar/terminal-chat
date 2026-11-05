@@ -251,7 +251,7 @@ func (m *Model) click(a string) tea.Cmd {
 		}
 		return nil
 	case "scroll":
-		m.focus().scroll = 0
+		m.focus().scroll, m.focus().place = 0, false
 		return m.markRead()
 	case "pal":
 		i, _ := strconv.Atoi(rest)

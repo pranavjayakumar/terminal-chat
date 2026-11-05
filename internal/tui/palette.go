@@ -62,6 +62,7 @@ func (m *Model) palCommands() []palItem {
 		{group: "Messages", label: "Search", meta: "/search", icon: m.icon(icSearch), run: "/search ", tabs: "m"},
 		{group: "Messages", label: "Insert emoji", desc: "picker; + reacts in select mode, :name completes", meta: m.kn.of("⌥E"), icon: m.icon(icReact), run: "app:emoji", tabs: "m"},
 		{group: "Messages", label: "Pinned messages", meta: "/pins", icon: m.icon(icPin), run: "/pins", tabs: "m"},
+		{group: "Messages", label: "Mark all read", meta: "/read-all", icon: "✓", run: "/read-all", tabs: "am"},
 		{group: "Messages", label: "Remind me", meta: "/remind", icon: "⏰", run: "/remind ", tabs: "m"},
 		{group: "You", label: "Set away", meta: "/away", icon: "◑", run: "/away", tabs: "m"},
 		{group: "You", label: "Back from away", meta: "/back", icon: m.icon(icOnline), run: "/back", tabs: "m"},
@@ -72,12 +73,22 @@ func (m *Model) palCommands() []palItem {
 	if m.thread.open() {
 		out = append(out, palItem{group: "Commands", label: "Close thread", meta: "esc", icon: m.icon(icThread), run: "app:closethread", tabs: "am"})
 	}
+	if m.prevCh != 0 && m.prevCh != m.active {
+		if _, ok := m.chanView(m.prevCh); ok {
+			out = append(out, palItem{group: "Commands", label: "Previous channel", desc: m.chanTitle(m.prevCh), meta: m.kn.of("⌃6"), icon: m.icon(icChannel), run: "app:back", tabs: "am"})
+		}
+	}
 	if m.active != 0 {
-		hud := palItem{group: "Commands", label: "Join huddle here", meta: "/huddle", icon: m.icon(icHuddle), iconTone: 'i', run: "/huddle", tabs: "am"}
+		hud := palItem{group: "Commands", label: "Join huddle here", meta: m.kn.of("⌥H"), icon: m.icon(icHuddle), iconTone: 'i', run: "/huddle", tabs: "am"}
 		if m.hud.in {
-			hud.label, hud.meta, hud.run = "Leave huddle", "/leave-huddle", "/leave-huddle"
+			hud.label, hud.run = "Leave huddle", "/leave-huddle"
 		}
 		out = append(out, hud)
+		mute := palItem{group: "Commands", label: "Mute " + m.chanTitle(m.active), desc: "no popups or sounds; dimmed", meta: "/notify off", icon: "🔕", run: "/notify off", tabs: "am"}
+		if m.muted(m.active) {
+			mute.label, mute.desc, mute.meta, mute.run = "Unmute "+m.chanTitle(m.active), "back to the default level", "/notify default", "/notify default"
+		}
+		out = append(out, mute)
 	}
 	for _, c := range m.compCommands() {
 		it := palItem{group: "All commands", label: "/" + c.name, desc: c.desc, icon: "/", tabs: "m", run: "/" + c.name}
@@ -262,8 +273,36 @@ func (m *Model) filterPalette() {
 			return b.score - a.score
 		})
 	} else {
-		// Unread and mentioned jump targets first, as the switcher did.
+		// The channels left lately first, under Recent (the open one is
+		// where we are), then unread and mentioned ones, as the switcher did.
+		rank := map[uint64]int{}
+		for _, id := range m.recent {
+			if id != m.active && len(rank) < maxRecent {
+				rank[id] = len(rank) + 1
+			}
+		}
+		for i := range p.shown {
+			if it := &p.shown[i]; it.sw != nil && rank[it.sw.ch] > 0 {
+				it.group = "Recent"
+			}
+		}
 		slices.SortStableFunc(p.shown, func(a, b palItem) int {
+			ra, rb := 0, 0
+			if a.sw != nil {
+				ra = rank[a.sw.ch]
+			}
+			if b.sw != nil {
+				rb = rank[b.sw.ch]
+			}
+			if (ra > 0) != (rb > 0) {
+				if ra > 0 {
+					return -1
+				}
+				return 1
+			}
+			if ra != rb {
+				return ra - rb
+			}
 			ua := a.sw != nil && (a.sw.unread > 0 || a.sw.mention)
 			ub := b.sw != nil && (b.sw.unread > 0 || b.sw.mention)
 			if ua != ub {
@@ -397,6 +436,8 @@ func (m *Model) appAction(run string) tea.Cmd {
 		m.cycleSidebar()
 	case run == "app:emoji":
 		m.openPicker(false)
+	case run == "app:back":
+		return m.backChannel()
 	case run == "app:closethread":
 		m.closeThread()
 		m.layoutInput()

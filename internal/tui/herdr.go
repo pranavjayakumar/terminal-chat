@@ -378,7 +378,7 @@ func (m *Model) sharePreviewKey(key string) tea.Cmd {
 		if m.thread.open() && m.thread.root == s.root && s.root != 0 {
 			p = &m.thread
 		}
-		p.scroll = 0
+		p.scroll, p.place = 0, false
 		m.reloadPane(p)
 		m.share = shareState{}
 		return nil

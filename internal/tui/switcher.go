@@ -290,7 +290,9 @@ func (m *Model) jumpTo(x proto.Message) tea.Cmd {
 		return nil
 	}
 	m.endWiden(true)
+	m.jumping = true
 	cmd := m.openChannel(x.Chan)
+	m.jumping = false
 	p := &m.main
 	if x.Thread != 0 {
 		cmd = tea.Batch(cmd, m.openThread(x.Thread))

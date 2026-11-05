@@ -50,6 +50,12 @@ type pane struct {
 	scroll   int // lines up from the bottom; 0 = following new messages
 	sel      int // selected message index in select mode, -1 none
 
+	// The channel's read marker when it was opened (catchup.go): a "new"
+	// divider goes above the first message after it that isn't mine.
+	newAt  uint64
+	hasNew bool
+	place  bool // still to be scrolled to that divider once laid out
+
 	// memo of the last layout, owned by View/Update on the event loop.
 	ver                     int
 	memoVer, memoW, memoDay int
@@ -60,6 +66,7 @@ type pane struct {
 	memoLive                string               // the live agent rows it drew
 	memoBase                int                  // where they start in memoLines
 	memoLiveH               int                  // and how many rows they take
+	memoNewRow              int                  // the "new" divider's row, -1 none
 	liveMarks               map[*canvas]liveMark // their animated glyphs (agentlive.go)
 }
 
@@ -195,10 +202,13 @@ type Model struct {
 	lastCanvas *canvas // the last frame, for clicks and the theme cross-fade
 	spare      *canvas // the frame before it, reused for the next
 	lastFrame  string
-	reuseFrame bool    // nothing changed since lastFrame (pointer motion)
-	blinkIdle  bool    // the cursor blink loop stopped after blinkFor without keys
-	sbForce    string  // Ctrl-B's choice below sbIconsBelow columns, this session only
-	ag         agentUI // personal agents (agent.go)
+	reuseFrame bool     // nothing changed since lastFrame (pointer motion)
+	blinkIdle  bool     // the cursor blink loop stopped after blinkFor without keys
+	sbForce    string   // Ctrl-B's choice below sbIconsBelow columns, this session only
+	prevCh     uint64   // the channel open before this one (catchup.go)
+	jumping    bool     // openChannel for a jump: no divider placement, no mark
+	recent     []uint64 // channels left lately, newest first, this session only
+	ag         agentUI  // personal agents (agent.go)
 }
 
 // ---- tea messages ----
@@ -593,12 +603,16 @@ func (m *Model) openChannel(ch uint64) tea.Cmd {
 	}
 	if ch == m.active && m.main.ch == ch {
 		m.closeThread()
-		m.main.scroll = 0
+		m.main.scroll, m.main.place = 0, false
 		return m.markRead()
+	}
+	if m.active != 0 && m.active != ch {
+		m.noteVisit(m.active)
 	}
 	m.active = ch
 	m.seen(ch)
 	m.main = pane{ch: ch, sel: -1}
+	m.noteNew(&m.main)
 	m.closeThread()
 	m.closePicker(false)
 	if m.mode == modeSelect || m.mode == modeConfirmDelete || m.mode == modeMsgMenu {
@@ -612,20 +626,29 @@ func (m *Model) openChannel(ch uint64) tea.Cmd {
 	if v, ok := m.chanView(ch); ok && !v.Member && v.Kind == proto.ChanPublic {
 		cmds = append(cmds, m.call("join", func(ctx context.Context) error { return m.c.Join(ctx, ch) }))
 	}
-	cmds = append(cmds, m.markRead(), m.typingTick())
-	m.unverifiedHint()
 	if len(m.main.msgs) < 30 {
 		cmds = append(cmds, m.fetchHistory(ch))
 	}
+	if m.jumping {
+		m.main.place = false // the jump decides where the view goes
+	} else {
+		m.settleNew() // after the fetch starts: it may bring the first unread
+		cmds = append(cmds, m.markRead())
+	}
+	cmds = append(cmds, m.typingTick())
+	m.unverifiedHint()
 	return tea.Batch(cmds...)
 }
 
 // markRead moves the active channel's read marker to its newest message
-// while the view is at the bottom. Local and cheap.
+// while the view is at the bottom or, scrolled up, to the newest message
+// shown so far; never before an opening channel shows its first unread
+// message. Local and cheap.
 func (m *Model) markRead() tea.Cmd {
 	// Not gated on terminal focus: a visible but unfocused pane (a herdr
 	// split next to an editor) is still being read.
-	if m.active == 0 || m.main.scroll > 0 {
+	m.settleNew()
+	if m.active == 0 || m.main.place {
 		return nil
 	}
 	if m.status.State == client.Syncing {
@@ -639,6 +662,10 @@ func (m *Model) markRead() tea.Cmd {
 			continue
 		}
 		last := max(v.Last, lastID(m.main.msgs))
+		up := m.main.scroll > 0
+		if up {
+			last = m.readUpTo(&m.main, v.Read)
+		}
 		if !v.Member || last <= v.Read {
 			return nil
 		}
@@ -646,7 +673,10 @@ func (m *Model) markRead() tea.Cmd {
 			m.setErr("mark read", err)
 			return nil
 		}
-		v.Read, v.Unread, v.Mention = last, 0, false
+		v.Read = last
+		if !up {
+			v.Unread, v.Mention = 0, false
+		} // else the counts follow from the cache's channel update
 	}
 	return nil
 }
@@ -1042,6 +1072,10 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.layoutInput()
 		m.clampScroll(&m.main)
 		m.clampScroll(&m.thread)
+		if m.main.place {
+			m.settleNew()
+			m.markRead()
+		}
 		m.helpScroll = min(max(m.helpScroll, 0), m.helpMaxScroll()) // rows rewrap
 		return m, nil
 	case tea.FocusMsg:
@@ -1088,6 +1122,10 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil // started before a leave or reset: stale
 		}
 		m.histBusy[msg.ch] = false
+		if msg.ch == m.main.ch && m.main.place {
+			// Whatever came, the first unread message is as loaded as it gets.
+			defer func() { m.settleNew(); m.markRead() }()
+		}
 		if msg.err != nil {
 			if v, ok := m.chanView(msg.ch); ok && !v.Member && v.Kind != proto.ChanPublic {
 				return m, nil // removed meanwhile: the header says so
@@ -1180,6 +1218,7 @@ func (m *Model) applyUpdate(u client.Update) tea.Cmd {
 			if len(m.main.msgs) < 30 {
 				cmds = append(cmds, m.fetchHistory(m.active))
 			}
+			m.newAfterSync()
 			cmds = append(cmds, m.markRead())
 		}
 	}
@@ -1357,6 +1396,9 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 	case modeSelect:
 		if cmd, handled := m.selectKey(k); handled {
 			m.trimWiden()
+			if m.focus() == &m.main {
+				m.markRead() // the selection scrolled new messages into view
+			}
 			return cmd
 		}
 		m.leaveSelect()
@@ -1396,11 +1438,15 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 	case key == kHelpAlt:
 		m.openHelp()
 		return nil
+	case key == kBackChan:
+		return m.backChannel()
+	case key == kHuddle && m.active != 0:
+		return m.huddleHere()
 	case menuKey(key) != "" && m.menuBarShown():
 		return m.menuAction(menuKey(key))
 	case key == kCtrlEnd || (key == kEnd && empty):
 		p := m.focus()
-		p.scroll = 0
+		p.scroll, p.place = 0, false
 		if p == &m.main {
 			return m.markRead()
 		}
@@ -1527,13 +1573,12 @@ func (m *Model) scrollBy(p *pane, n int) tea.Cmd {
 	lines, _ := m.paneLines(p, w)
 	top := max(len(lines)-h, 0)
 	p.scroll = min(max(p.scroll+n, 0), top)
+	p.place = false
 	m.hover = "" // the list moved under the pointer
 	if p == &m.main {
+		m.markRead() // scrolling down reads what comes into view
 		if n > 0 && p.scroll == top {
 			return m.loadOlder()
-		}
-		if p.scroll == 0 {
-			return m.markRead()
 		}
 	}
 	return nil
@@ -1557,7 +1602,7 @@ func (m *Model) leaveSelect() {
 	m.main.sel, m.thread.sel = -1, -1
 	if m.jump.wide != 0 {
 		m.endWiden(true)
-		m.main.scroll = 0
+		m.main.scroll, m.main.place = 0, false
 	}
 	m.updatePlaceholder()
 }
@@ -1572,6 +1617,7 @@ func (m *Model) selected() (client.Message, bool) {
 
 // ensureVisible scrolls so the selected message is on screen.
 func (m *Model) ensureVisible(p *pane) {
+	p.place = false
 	w, h := m.paneWidth(p), m.paneHeight(p)
 	if w <= 0 || h <= 0 || p.sel < 0 {
 		return
@@ -1691,7 +1737,7 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 			m.ensureVisible(p)
 		} else {
 			m.leaveSelect()
-			p.scroll = 0
+			p.scroll, p.place = 0, false
 			return m.markRead(), true
 		}
 		return nil, true
@@ -1708,6 +1754,16 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 	case kEnd, kCtrlEnd, "G":
 		p.sel = len(p.msgs) - 1
 		m.ensureVisible(p)
+		return nil, true
+	case kSelMine:
+		for i := len(p.msgs) - 1; i >= 0; i-- {
+			if x := p.msgs[i]; m.ownMsg(x) && !x.Deleted {
+				p.sel = i
+				m.ensureVisible(p)
+				return nil, true
+			}
+		}
+		m.setInfo("no message of yours loaded here")
 		return nil, true
 	}
 	sel, ok := m.selected()
@@ -1783,6 +1839,13 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 		return nil, true
 	case kSelCopy:
 		return m.copyCmd(sanitize.Text(sel.Body)), true
+	case kSelCode:
+		code := codeOnly(sel.Body)
+		if sel.Deleted || code == "" {
+			m.setInfo("no code block in this message")
+			return nil, true
+		}
+		return m.copyCmd(code), true
 	case kSelPin:
 		if sel.ID == 0 || sel.Deleted {
 			return nil, true
