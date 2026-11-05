@@ -155,7 +155,7 @@ func (m *Model) selectFooter() string {
 		return "Esc leaves select mode"
 	}
 	var keys []string
-	if _, ok := parseApproval(sel); ok && sel.Author == m.me.ID && verdict(sel) == apprPending {
+	if _, ok := parseApproval(sel); ok && sel.Author == m.me.ID && verdict(sel) == apprPending && m.apprInfoOf(sel).waitingPart() == "" {
 		for _, ch := range apprChoices(parseApprovalAction(sel)) {
 			keys = append(keys, ch.key+" "+ch.short)
 		}

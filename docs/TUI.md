@@ -232,7 +232,7 @@ side holds every row, the roomier side gets a shorter menu that scrolls. It work
 `/invite` (admin; prints code), `/invite --for @user` (admin; add-key invite for a new computer of theirs), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps), `/pins` (overlay of this channel's pinned messages, newest pin first, as `author · preview`; Enter jumps, Esc closes),
 `/activity`, `/highlight [word…]`, `/unhighlight word…`, `/group name @a @b…` (admin), `/groups`,
 `/remind <when> <text>`, `/reminders`, `/remind-delete id`, `/snippet path[:range] [message]`,
-`/share-pane [pane]` (herdr only), `/verify @user [--github login]`, `/accept-key @user`, `/endorse-key [SHA256:…]` (trust another SSH key of yours; no argument: show this computer's), `/members`,
+`/share-pane [pane]` (herdr only), `/verify @user [--github login]`, `/accept-key @user`, `/endorse-key [SHA256:…]` (trust another SSH key of yours; no argument: show this computer's; both in a wide viewer where `y` copies the key or the command to run on the other computer, and a fingerprint that isn't 50 characters is refused as cut off), `/members`,
 `/alarm`, `/alarm-clear #name`, `/devices [@user]`, `/device-revoke id`, `/disable @user` (admin), `/quit`.
 `/invites` and `/webhooks` open a list, one per row. The invite and webhook viewers take the full width (no sidebar) so a mouse selection copies only the command.
 `/webhook name` copies the curl command; when no system clipboard tool took it (only OSC 52, which Terminal.app and tmux without `set-clipboard on` ignore) a viewer opens with the command hidden: `s` shows it (it holds the secret URL), `y` copies again, Esc closes and forgets it.
@@ -516,7 +516,12 @@ and one status row. Code: `internal/tui/agent.go` (icons, state), `agentlive.go`
   preview as `> ` lines (older harnesses: `✋ @owner approve: <action>? react ✅ / ❌  ·  #code` + detail) and
   waits for the owner's ✅ / ❌. Nothing is cut: tc wraps every preview line to the width; a preview too
   long for one message continues in the next ones (`#code (2/3)`), and the card's `full:` line (lines,
-  bytes, sha256) shows as `⚠ long: …`. Tool cards show every argument as JSON; PR cards show the exact
+  bytes, sha256) shows as `⚠ long: …`. A continuation from the same agent in the same thread draws as part
+  of the card (`#code (2/3) · part 2 of 3`, its `> ` lines verbatim, never markdown); until the last part
+  is in, the card shows `waiting for part i/n` instead of the choices, and 1–3 don't answer. Preview lines
+  start with a `▏` gutter; the rows a long line goes on in use `┊` (so a piece starting with +/- doesn't read
+  as a diff line), breaking at a space in the row's last third, else at the width. Lines starting `⚠` are
+  drawn in the warning color; title, `why:` and the hint line wrap rather than cut. Tool cards show every argument as JSON; PR cards show the exact
   commit, `git diff --stat` against the base and `⚠ CHANGES CI (.github/)` first when it does. Posts in
   another channel, issues and PRs always get a card, even on the owner's own ask. tc draws the detail, then `<action>?  1 yes  2 yes, ok today  3 no` (`PRs ok today`
   when the action names a PR) and `only you can answer · keys 1–3`; everyone else sees `waiting for Fizan`.

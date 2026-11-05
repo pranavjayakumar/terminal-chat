@@ -184,6 +184,10 @@ func (m *Model) addKeyInviteCommand(args []string) (tea.Cmd, error) {
 	if len(args) != 2 || args[0] != "--for" {
 		return nil, errors.New(usage)
 	}
+	if !m.me.Admin {
+		// The server refuses too; this just says so without a round trip.
+		return nil, errors.New(errAddKeyAdmin)
+	}
 	id, ok := m.findUser(args[1])
 	if !ok {
 		return nil, errors.New("no user " + sanitize.Line(args[1]))
@@ -205,7 +209,7 @@ func (m *Model) addKeyInviteCommand(args []string) (tea.Cmd, error) {
 		if err != nil {
 			var pe *proto.Error
 			if errors.As(err, &pe) && pe.Code == proto.ErrForbidden {
-				return nil, errors.New("only admins can add an SSH key to an account")
+				return nil, errors.New(errAddKeyAdmin)
 			}
 			return nil, err
 		}
@@ -216,10 +220,12 @@ func (m *Model) addKeyInviteCommand(args []string) (tea.Cmd, error) {
 		how, cerr := clip(ctx, opt, line)
 		return inviteShownMsg{
 			summary: "add-key invite for @" + name + " · 1 use · lasts 7 days · run it on their new computer: it signs in as @" + name +
-				" with that computer's own SSH key (if asked for a name, any valid one: it's ignored)",
+				" with that computer's own SSH key (if tc join asks for a name, type any: it won't use it)",
 			code: sanitize.Line(code), line: line, how: how, copyErr: cerr}, nil
 	}), nil
 }
+
+const errAddKeyAdmin = "only admins can add an SSH key to an account"
 
 // inviteShownMsg carries a new invite to the UI, which shows it in full:
 // the status line truncates, and the copy can silently fail (tmux), so the

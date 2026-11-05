@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/skailama/tc/internal/client"
 )
@@ -15,12 +16,30 @@ type endorseFake struct {
 	*fakeClient
 	err error
 	got []string
+	own string
 }
 
-func (f *endorseFake) OwnKeyFingerprint() string { return "SHA256:desk" }
+// Real-length fingerprints: the views must show and copy all 50 characters.
+const (
+	fpDesk   = "SHA256:uNiVztksCsDhcc0u9e8BujQXVUpKZIDTMczCvj3tD2s"
+	fpLaptop = "SHA256:Xq3vJ8rT0bLmN2pQ9sKdW4eYhZ7cFgA1uI6oVxR5tE0"
+	fpOther  = "SHA256:Ab3vJ8rT0bLmN2pQ9sKdW4eYhZ7cFgA1uI6oVxR5tE0"
+)
+
+func (f *endorseFake) OwnKeyFingerprint() string { return f.own }
 func (f *endorseFake) EndorseKey(_ context.Context, fp string) (client.EndorseResult, error) {
 	f.got = append(f.got, fp)
-	return client.EndorseResult{By: "SHA256:desk", Key: fp}, f.err
+	return client.EndorseResult{By: fpDesk, Key: fp}, f.err
+}
+
+// onScreen: s is on screen whole, though rows may cut it at the width.
+func onScreen(t *testing.T, m *Model, s string) bool {
+	t.Helper()
+	var b strings.Builder
+	for _, l := range strings.Split(ansi.Strip(checkView(t, m, "key view")), "\n") {
+		b.WriteString(strings.TrimSpace(l))
+	}
+	return strings.Contains(b.String(), s)
 }
 
 // /endorse-key (#146): without an argument it shows this computer's key;
@@ -36,52 +55,74 @@ func TestEndorseKeyCommand(t *testing.T) {
 		m.input.SetValue(in)
 		run(m, m.submit())
 	}
+	// Not connected yet: no key to show, and it says so.
 	do("/endorse-key")
-	if m.mode != modeList || !strings.Contains(checkView(t, m, "own key"), "SHA256:desk") || len(f.got) != 0 {
-		t.Fatalf("mode %v got %v", m.mode, f.got)
+	if m.mode != modeViewer || !onScreen(t, m, "unknown until connected") {
+		t.Fatalf("no key yet: mode %v\n%s", m.mode, ansi.Strip(m.View()))
 	}
-	m.listKey(kEsc)
+	m.viewerKey(kEsc)
 
-	do("/endorse-key SHA256:laptopkey")
-	if len(f.got) != 1 || f.got[0] != "SHA256:laptopkey" {
-		t.Fatalf("got %v", f.got)
-	}
-	v := checkView(t, m, "endorsed")
-	if m.noticeErr || !strings.Contains(v, "/endorse-key SHA256:desk") {
-		t.Fatalf("notice %q view:\n%s", m.notice, v)
-	}
-	for _, sz := range [][2]int{{100, 30}, {40, 12}, {20, 6}} {
+	f.own = fpDesk
+	for _, sz := range [][2]int{{200, 60}, {100, 30}, {40, 12}} {
 		m.Update(tea.WindowSizeMsg{Width: sz[0], Height: sz[1]})
-		checkView(t, m, "endorse list")
+		f.got = nil
+		do("/endorse-key")
+		if m.mode != modeViewer || !onScreen(t, m, fpDesk) || m.view.copy != fpDesk || len(f.got) != 0 {
+			t.Fatalf("%dx%d own key: mode %v copy %q got %v\n%s", sz[0], sz[1], m.mode, m.view.copy, f.got, ansi.Strip(m.View()))
+		}
+		m.viewerKey(kEsc)
+
+		f.got = nil
+		do("/endorse-key " + fpLaptop)
+		if len(f.got) != 1 || f.got[0] != fpLaptop {
+			t.Fatalf("got %v", f.got)
+		}
+		if m.noticeErr || m.mode != modeViewer || !onScreen(t, m, fpLaptop) || !onScreen(t, m, "/endorse-key "+fpDesk) ||
+			m.view.copy != "/endorse-key "+fpDesk {
+			t.Fatalf("%dx%d endorsed: notice %q copy %q\n%s", sz[0], sz[1], m.notice, m.view.copy, ansi.Strip(m.View()))
+		}
+		m.Update(tea.WindowSizeMsg{Width: 20, Height: 6})
+		checkView(t, m, "endorsed tiny")
+		m.Update(tea.WindowSizeMsg{Width: sz[0], Height: sz[1]})
+		m.viewerKey(kEsc)
 	}
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	m.listKey(kEsc)
 
 	f.err = client.ErrKeyTrusted
-	do("/endorse-key SHA256:laptopkey")
+	do("/endorse-key " + fpLaptop)
 	if m.noticeErr || !strings.Contains(m.notice, "already trusted") {
 		t.Fatalf("trusted: %q", m.notice)
 	}
 	f.err = errors.New("no device of yours has signed in with that SSH key yet")
-	do("/endorse-key SHA256:other")
+	do("/endorse-key " + fpOther)
 	if !m.noticeErr || !strings.Contains(m.notice, "no device of yours") {
 		t.Fatalf("error: %q", m.notice)
 	}
 
 	f.got = nil
+	// A cut fingerprint is caught here, before the backend sees it.
+	do("/endorse-key " + fpLaptop[:30])
+	if !m.noticeErr || !strings.Contains(m.notice, "looks cut off") || len(f.got) != 0 {
+		t.Fatalf("cut: %q, calls %v", m.notice, f.got)
+	}
 	for _, in := range []string{"/endorse-key laptop", "/endorse-key SHA256:a SHA256:b", "/accept-key @me"} {
 		do(in)
 		if !m.noticeErr {
 			t.Errorf("%q: notice %q", in, m.notice)
 		}
 	}
-	if !strings.Contains(m.notice, "/endorse-key") || len(f.got) != 0 {
+	if !strings.Contains(m.notice, "/endorse-key") || len(f.got) != 0 || strWidth(m.notice) > 80 {
 		t.Fatalf("accept-key @me: %q, calls %v", m.notice, f.got)
+	}
+	// The client's refusal to accept my own key names the TUI's command.
+	m.setErr("accept-key", client.ErrOwnKeyAccept)
+	if strings.Contains(m.notice, "tc devices") || !strings.Contains(m.notice, "/endorse-key") {
+		t.Fatalf("own key accept: %q", m.notice)
 	}
 
 	// A backend that can't endorse says so.
 	m2, _ := newTestModelFake(t, 100, 30)
-	m2.input.SetValue("/endorse-key SHA256:x")
+	m2.input.SetValue("/endorse-key " + fpLaptop)
 	run(m2, m2.submit())
 	if !m2.noticeErr || !strings.Contains(m2.notice, "isn't supported") {
 		t.Fatalf("unsupported: %q", m2.notice)

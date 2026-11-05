@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -37,7 +38,22 @@ var (
 	ErrOwnKeyAccept = errors.New("your own keys are trusted by endorsing them from another computer of yours (tc devices endorse), never on a prompt")
 	// ErrKeyNotSeen: no device of mine has signed in with that key.
 	ErrKeyNotSeen = errors.New("no device of yours has signed in with that SSH key yet")
+	// ErrBadFingerprint: not a whole SHA256 fingerprint. Worded for both
+	// the CLI and the TUI: it names neither's command.
+	ErrBadFingerprint = errors.New("that fingerprint looks cut off: it should be 50 characters (SHA256: and 43 more)")
 )
+
+// fpRE is a whole OpenSSH SHA256 fingerprint: unpadded base64 of 32 bytes.
+var fpRE = regexp.MustCompile(`^SHA256:[A-Za-z0-9+/]{43}$`)
+
+// CheckFingerprint is nil when fp is a whole SHA256 fingerprint, else
+// ErrBadFingerprint: a fingerprint copied between computers is often cut.
+func CheckFingerprint(fp string) error {
+	if !fpRE.MatchString(fp) {
+		return ErrBadFingerprint
+	}
+	return nil
+}
 
 // EndorseResult says which keys an EndorseKey call linked.
 type EndorseResult struct {
@@ -73,8 +89,8 @@ func (c *Client) OwnKeyFingerprint() string {
 // trusted already, ErrKeyNotSeen if no device of mine uses it.
 func (c *Client) EndorseKey(ctx context.Context, fp string) (EndorseResult, error) {
 	fp = strings.TrimSpace(fp)
-	if !strings.HasPrefix(fp, "SHA256:") || len(fp) < len("SHA256:")+10 || strings.ContainsAny(fp, " \t") {
-		return EndorseResult{}, errors.New("give the key's full SHA256 fingerprint, e.g. SHA256:AbC… (tc devices on that computer shows it)")
+	if err := CheckFingerprint(fp); err != nil {
+		return EndorseResult{}, err
 	}
 	if c.IsAgentSession() {
 		return EndorseResult{}, errors.New("an agent can't vouch for SSH keys")
