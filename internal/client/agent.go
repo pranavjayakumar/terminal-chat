@@ -142,6 +142,12 @@ func LoginAgent(ctx context.Context, ownerHome, agentHome, handle string) (proto
 	if err != nil {
 		return proto.Agent{}, err
 	}
+	// The owner's devices keep it too: this one then knows the key is the
+	// agent's even if the server never shows it the agent's endorsement,
+	// and won't endorse it as one of the owner's (EndorseKey).
+	if err := owner.tx(func(tx *sql.Tx) error { return storeEndorse(tx, proto.Signed(endorse)) }); err != nil {
+		return proto.Agent{}, fmt.Errorf("keeping the agent's endorsement: %w", err)
+	}
 	w, err := loginOnce(ctx, proto.Invite{Addr: cfg.Addr, Pin: cfg.Pin}, signer, "", "", handle)
 	if err != nil {
 		return proto.Agent{}, err

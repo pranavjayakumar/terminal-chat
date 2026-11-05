@@ -1636,8 +1636,12 @@ endorsed agent key as an **agent key** of the user, not as one of the user's key
 certified by it are the agent's devices, verified without a key-change warning; an agent key
 never endorses keys or signs revokes, an agent's device never signs a device revoke for its
 owner, a key some AgentEndorse names is never a user's first (TOFU) key, and /verify never turns
-an agent key into a verified key of the user. Older clients don't know AgentEndorse and show the
-agent's key as a key change of its owner.
+an agent key into a verified key of the user. A KeyEndorse of a key that some AgentEndorse names
+is ignored, whichever the server sends first; a key that a KeyEndorse already pinned as the
+user's (the AgentEndorse withheld until then) becomes an agent key once a valid AgentEndorse
+for it arrives. The owner's client that sets the agent up keeps the AgentEndorse it signs
+itself, and `key.endorse` is never signed for a key an AgentEndorse of the user's names. Older
+clients don't know AgentEndorse and show the agent's key as a key change of its owner.
 
 An agent session is the owner (`user` is the owner's id) with these differences:
 - it never counts toward the owner's presence (no `presence` changes; its `typing` and `presence`

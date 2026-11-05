@@ -184,7 +184,10 @@ const (
 	// Agent: the user's agent's own key, vouched for by an AgentEndorse
 	// under one of the user's other pinned keys (PROTOCOL §15.1). Its
 	// devices are the agent's; it never endorses keys or signs revokes, and
-	// no other reason ever turns into it or out of it.
+	// nothing turns it into another reason. The one way into it from
+	// another is an Endorsed key that an AgentEndorse turns out to name:
+	// the owner's KeyEndorse for it came first only because the server
+	// ordered (or withheld) them so, and the agent's role is the narrower.
 	Agent How = "agent"
 )
 
@@ -557,7 +560,8 @@ func checkKey(fp string, wire []byte) error {
 // trusted for reason how:
 //
 //   - the user's first key is pinned (Endorsed is refused with ErrNoAnchor);
-//   - an already-pinned key is kept, upgrading how if it is stronger;
+//   - an already-pinned key is kept, upgrading how if it is stronger (and an
+//     Endorsed one becomes Agent, see Agent);
 //   - another key with how == Endorsed (its KeyEndorse verified by the caller
 //     against a pinned key) is pinned alongside the existing ones;
 //   - any other new key is recorded as a pending change and ErrKeyChanged is
@@ -575,6 +579,11 @@ func (s *Store) PinKey(sid e2ecrypto.ServerID, user uint64, fp string, wire []by
 		err := tx.QueryRow(`SELECT how FROM pinned_keys WHERE server_id = ? AND user = ? AND fp = ?`,
 			sid[:], i64(user), fp).Scan(&cur)
 		if err == nil {
+			if how == Agent && cur == Endorsed {
+				_, err = tx.Exec(`UPDATE pinned_keys SET how = ? WHERE server_id = ? AND user = ? AND fp = ?`,
+					how, sid[:], i64(user), fp)
+				return err
+			}
 			if cur == Agent || how == Agent {
 				return nil
 			}
