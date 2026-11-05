@@ -163,6 +163,9 @@ var (
 	ErrKeyMismatch = errors.New("trust: key does not match the epoch's kc")
 	// ErrNoAlarm means there is no alarm to clear.
 	ErrNoAlarm = errors.New("trust: no alarm")
+	// ErrChainMoved means a rewind's expected head or target epoch isn't
+	// what is recorded (the chain changed since the user confirmed it).
+	ErrChainMoved = errors.New("trust: chain changed since it was shown")
 	// ErrPinsChanged means the keys offered for verification aren't exactly
 	// the user's pinned keys (they changed since they were compared).
 	ErrPinsChanged = errors.New("trust: pinned keys changed since they were compared")
@@ -1141,29 +1144,34 @@ func (s *Store) AdvanceEpoch(sid e2ecrypto.ServerID, ch uint64, e Epoch) error {
 		if e.Epoch != uint32(ep)+1 {
 			return fmt.Errorf("%w: epoch %d after head %d", ErrGap, e.Epoch, ep)
 		}
-		var k []byte
-		if e.Key != nil {
-			k = e.Key[:]
-		}
-		var seq any
-		if e.Seq != 0 {
-			seq = i64(e.Seq)
-		}
-		if _, err := tx.Exec(`INSERT INTO epochs (server_id, chan, epoch, hash, kc, roster, back, k, seq, boxed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT (server_id, chan, epoch) DO UPDATE SET hash = excluded.hash, kc = excluded.kc,
-				roster = excluded.roster, back = excluded.back, k = excluded.k, seq = excluded.seq, boxed = excluded.boxed`,
-			sid[:], i64(ch), int64(e.Epoch), e.Hash[:], e.KC[:], packRoster(e.Roster), e.Back, k, seq, packDevs(e.Boxed)); err != nil {
-			return err
-		}
-		_, err = tx.Exec(`INSERT INTO chain_heads (server_id, chan, epoch, hash, eh) VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT (server_id, chan) DO UPDATE SET epoch = excluded.epoch, hash = excluded.hash, eh = excluded.eh`,
-			sid[:], i64(ch), int64(e.Epoch), e.Hash[:], e.Hash[:e2ecrypto.IDSize])
-		return err
+		return putHead(tx, sid, ch, e)
 	})
 	if err != nil {
 		return fmt.Errorf("advancing chain of channel %d: %w", ch, err)
 	}
 	return nil
+}
+
+// putHead records e and makes it the channel's head.
+func putHead(tx *sql.Tx, sid e2ecrypto.ServerID, ch uint64, e Epoch) error {
+	var k []byte
+	if e.Key != nil {
+		k = e.Key[:]
+	}
+	var seq any
+	if e.Seq != 0 {
+		seq = i64(e.Seq)
+	}
+	if _, err := tx.Exec(`INSERT INTO epochs (server_id, chan, epoch, hash, kc, roster, back, k, seq, boxed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (server_id, chan, epoch) DO UPDATE SET hash = excluded.hash, kc = excluded.kc,
+			roster = excluded.roster, back = excluded.back, k = excluded.k, seq = excluded.seq, boxed = excluded.boxed`,
+		sid[:], i64(ch), int64(e.Epoch), e.Hash[:], e.KC[:], packRoster(e.Roster), e.Back, k, seq, packDevs(e.Boxed)); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`INSERT INTO chain_heads (server_id, chan, epoch, hash, eh) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (server_id, chan) DO UPDATE SET epoch = excluded.epoch, hash = excluded.hash, eh = excluded.eh`,
+		sid[:], i64(ch), int64(e.Epoch), e.Hash[:], e.Hash[:e2ecrypto.IDSize])
+	return err
 }
 
 // Epoch returns a verified epoch of the channel; ok is false if none is recorded.
@@ -1324,11 +1332,89 @@ func clearAlarm(tx *sql.Tx, sid e2ecrypto.ServerID, action string, ch, by uint64
 	return err
 }
 
+// RewindChain moves the channel's pinned head back from `from` to `to`, an
+// epoch this device verified, then on through `then`, because user `by`
+// chose to accept a server whose chain is `to` followed by `then` (restored
+// from a backup) after reading what that discards. It is the only way a
+// head ever moves down, so it is narrow: the channel must be in alarm, the
+// head must still be `from` and the recorded epoch `to` must have to.Hash
+// (else ErrChainMoved: the state the user confirmed is gone), to.Epoch must
+// be in 1..from.Epoch-1, and `then` (which the caller verified, at least
+// one epoch: the head never rests on `to`, whose roster may include members
+// the discarded epochs removed) must be epochs to.Epoch+1, +2… In one
+// transaction the epochs above `to` are deleted, `then` is recorded with
+// its last as the head, and the alarm moves to the audit log as
+// "rewind_chain" with detail.
+func (s *Store) RewindChain(sid e2ecrypto.ServerID, ch uint64, from, to Head, then []Epoch, by uint64, detail string) error {
+	if to.Epoch == 0 || to.Epoch >= from.Epoch || len(then) == 0 {
+		return fmt.Errorf("rewinding chain: %w: epoch %d → %d", ErrInvalid, from.Epoch, to.Epoch)
+	}
+	for i, e := range then {
+		if e.Epoch != to.Epoch+1+uint32(i) || len(e.Roster) == 0 {
+			return fmt.Errorf("rewinding chain: %w: epoch %d", ErrInvalid, e.Epoch)
+		}
+		if e.Key != nil && e2ecrypto.KeyCommitment(*e.Key, sid, ch, e.Epoch) != e.KC {
+			return fmt.Errorf("rewinding chain: %w", ErrKeyMismatch)
+		}
+	}
+	err := s.tx(func(tx *sql.Tx) error {
+		var ep int64
+		var hash []byte
+		err := tx.QueryRow(`SELECT epoch, hash FROM chain_heads WHERE server_id = ? AND chan = ?`,
+			sid[:], i64(ch)).Scan(&ep, &hash)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && (uint32(ep) != from.Epoch || subtle.ConstantTimeCompare(hash, from.Hash[:]) != 1)) {
+			return ErrChainMoved
+		}
+		if err != nil {
+			return err
+		}
+		err = tx.QueryRow(`SELECT hash FROM epochs WHERE server_id = ? AND chan = ? AND epoch = ?`,
+			sid[:], i64(ch), int64(to.Epoch)).Scan(&hash)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && subtle.ConstantTimeCompare(hash, to.Hash[:]) != 1) {
+			return ErrChainMoved
+		}
+		if err != nil {
+			return err
+		}
+		var alarm string
+		var raised int64
+		err = tx.QueryRow(`SELECT detail, time FROM chan_alarms WHERE server_id = ? AND chan = ?`, sid[:], i64(ch)).Scan(&alarm, &raised)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNoAlarm
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO trust_audit (server_id, time, by, action, chan, detail, raised)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`, sid[:], time.Now().UnixNano(), i64(by), "rewind_chain", i64(ch),
+			fmt.Sprintf("%s (alarm: %s)", detail, alarm), raised); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM chan_alarms WHERE server_id = ? AND chan = ?`, sid[:], i64(ch)); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM epochs WHERE server_id = ? AND chan = ? AND epoch > ?`,
+			sid[:], i64(ch), int64(to.Epoch)); err != nil {
+			return err
+		}
+		for _, e := range then {
+			if err := putHead(tx, sid, ch, e); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("rewinding chain of channel %d: %w", ch, err)
+	}
+	return nil
+}
+
 // AuditEntry is a row of the trust audit log.
 type AuditEntry struct {
 	Time   time.Time
 	By     uint64 // the local user who did it
-	Action string // "clear_alarm", "clear_server_alarm" or "verify"
+	Action string // "clear_alarm", "clear_server_alarm", "rewind_chain" or "verify"
 	Chan   uint64 // the cleared channel alarm's channel
 	User   uint64 // the verified user
 	Detail string // the cleared alarm's detail, or how the user was verified

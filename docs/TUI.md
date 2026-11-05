@@ -244,7 +244,7 @@ side holds every row, the roomier side gets a shorter menu that scrolls. It work
 `/activity`, `/read-all` (every channel's read marker to its newest message; `marked N channels read`, or `nothing unread`; refused while syncing), `/highlight [word…]`, `/unhighlight word…`, `/group name @a @b…` (admin), `/groups`,
 `/remind <when> <text>`, `/reminders`, `/remind-delete id`, `/snippet path[:range] [message]`,
 `/share-pane [pane]` (herdr only), `/verify @user [--github login]`, `/accept-key @user`, `/endorse-key [SHA256:…]` (trust another SSH key of yours; no argument: show this computer's; both in a wide viewer where `y` copies the key or the command to run on the other computer, and a fingerprint that isn't 50 characters is refused as cut off), `/members`,
-`/alarm`, `/alarm-clear #name`, `/devices [@user]`, `/device-revoke id`, `/disable @user` (admin), `/quit`.
+`/alarm`, `/alarm-clear #name`, `/alarm-recover [#name]`, `/devices [@user]`, `/device-revoke id`, `/disable @user` (admin), `/quit`.
 `/invites` and `/webhooks` open a list, one per row. The invite and webhook viewers take the full width (no sidebar) so a mouse selection copies only the command.
 `/webhook name` copies the curl command; when no system clipboard tool took it (only OSC 52, which Terminal.app and tmux without `set-clipboard on` ignore) a viewer opens with the command hidden: `s` shows it (it holds the secret URL), `y` copies again, Esc closes and forgets it.
 `/topic` or `/name` alone shows the current topic or display name; `--clear` removes it. Commands that change something confirm it in the status line (`added @bob`, `topic set`, `away: lunch`).
@@ -360,7 +360,14 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
   wrong name only says what to type; `/alarm-clear #name` (`@bob` in a DM) clears it, recorded in the
   trust store's audit log. For the server-wide alarm the list, prompt and result say "server-wide —
   clears the alarm for all encrypted channels". Alarms derived from current state (unconfirmed member)
-  can't be cleared.
+  can't be cleared. For a rollback or fork `/alarm` says clearing won't help while the server still
+  shows it and points at `/alarm-recover` instead.
+- **After a server restore**: `/alarm-recover` (online) previews accepting the server's older key chain
+  in a list: which epochs are discarded, who gets the key afterwards, a `⚠` line per user who wasn't in
+  this device's newest epoch (removed after the backup?), and "To accept: /alarm-recover #name". If it
+  can't be accepted (a fork that isn't a member's recovery, a chain sharing nothing with ours…) it says
+  why and keeps nothing. `/alarm-recover #name` accepts exactly the last preview of that channel, once;
+  without a preview it says to preview first, and if the chain moved since, it says to preview again.
 
 ## Devices
 

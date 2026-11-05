@@ -328,12 +328,12 @@ func TestClearAlarm(t *testing.T) {
 	}
 }
 
-// Only the deliberate trust-UX path may clear alarms: no other client code
-// calls the trust store's Clear* methods.
+// Only the deliberate trust-UX paths may clear alarms or rewind a chain: no
+// other client code calls the trust store's Clear* methods or RewindChain.
 func TestAlarmClearsOnlyFromVerify(t *testing.T) {
 	files, _ := filepath.Glob("*.go")
 	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") || f == "verify.go" {
+		if strings.HasSuffix(f, "_test.go") || f == "verify.go" || f == "recover.go" {
 			continue
 		}
 		b, err := os.ReadFile(f)
@@ -344,7 +344,7 @@ func TestAlarmClearsOnlyFromVerify(t *testing.T) {
 			if strings.HasPrefix(strings.TrimSpace(line), "//") {
 				continue
 			}
-			for _, m := range []string{"ClearChannelAlarm", "ClearTrustAlarm", "ClearAlarm(", "VerifyKeys("} {
+			for _, m := range []string{"ClearChannelAlarm", "ClearTrustAlarm", "ClearAlarm(", "VerifyKeys(", "RewindChain(", "RecoverChain("} {
 				if strings.Contains(line, m) {
 					t.Errorf("%s:%d calls %s", f, i+1, m)
 				}

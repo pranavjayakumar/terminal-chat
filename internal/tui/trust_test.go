@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -27,6 +28,9 @@ type fakeTrust struct {
 	pending    map[uint64][]string
 	alarms     map[uint64]client.AlarmInfo
 	cleared    []uint64
+	plan       client.ChainRecovery
+	planErr    error
+	recovered  []client.ChainRecovery
 }
 
 func (f *fakeClient) UnverifiedUsers() []uint64 {
@@ -135,6 +139,23 @@ func (f *fakeClient) ClearAlarm(ch uint64) error {
 	delete(f.tr.alarms, ch)
 	f.e2eSt[ch] = client.E2EStatus{State: client.E2EOK, Epoch: 1}
 	f.tr.cleared = append(f.tr.cleared, ch)
+	return nil
+}
+
+func (f *fakeClient) ChainRecoveryPlan(ctx context.Context, ch uint64) (client.ChainRecovery, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p := f.tr.plan
+	p.Chan = ch
+	return p, f.tr.planErr
+}
+
+func (f *fakeClient) RecoverChain(ctx context.Context, plan client.ChainRecovery) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tr.recovered = append(f.tr.recovered, plan)
+	delete(f.tr.alarms, plan.Chan)
+	f.e2eSt[plan.Chan] = client.E2EStatus{State: client.E2EOK, Epoch: plan.Ancestor + 1}
 	return nil
 }
 
@@ -503,6 +524,120 @@ func TestAlarmClearConfirm(t *testing.T) {
 	runInput(t, m, "/alarm-clear @bob")
 	if !slices.Equal(f.tr.cleared, []uint64{20}) || !strings.Contains(m.notice, "for all encrypted channels") {
 		t.Fatalf("cleared %v notice %q", f.tr.cleared, m.notice)
+	}
+}
+
+// A rollback after a server restore: /alarm points at /alarm-recover
+// instead of claiming clearing helps; /alarm-recover previews what
+// accepting discards (who gets the key back), and only the channel's name
+// typed after a preview accepts exactly that preview, once.
+func TestAlarmRecover(t *testing.T) {
+	const detail = "rollback: the server shows epoch 2, this device verified 3"
+	for _, sz := range trustSizes {
+		m, f := newTestModelFake(t, sz[0], sz[1])
+		trustFake(f)
+		f.e2eSt[20] = client.E2EStatus{State: client.E2EAlarm, Detail: detail}
+		f.tr.alarms = map[uint64]client.AlarmInfo{20: {Detail: detail, Since: time.Now(), Chain: true, Why: "older epoch"}}
+		f.tr.plan = client.ChainRecovery{Head: 3, Ancestor: 2, Top: 2, Roster: []uint64{1, 2, 3}, Readded: []uint64{3}}
+		run(m, m.applyUpdate(client.Update{Channels: true}))
+		run(m, m.openChannel(20))
+		runInput(t, m, "/alarm")
+		v := plain(m)
+		if sz[1] >= 24 && (!strings.Contains(v, "/alarm-recover") || !strings.Contains(v, "doesn't help")) {
+			t.Errorf("%v /alarm doesn't point at /alarm-recover:\n%s", sz, v)
+		}
+		if strings.Contains(v, "e.g. a server") {
+			t.Errorf("%v /alarm still suggests clearing after a restore:\n%s", sz, v)
+		}
+		press(m, "esc")
+		runInput(t, m, "/alarm-recover @bob")
+		if len(f.tr.recovered) != 0 || !m.noticeErr || !strings.Contains(m.notice, "preview first") {
+			t.Fatalf("%v confirmed without a preview: %v %q", sz, f.tr.recovered, m.notice)
+		}
+		checkView(t, m, "no preview")
+		m.clearInput()
+		runInput(t, m, "/alarm-recover")
+		if m.mode != modeList {
+			t.Fatalf("%v preview: mode %v notice %q", sz, m.mode, m.notice)
+		}
+		v = ansi.Strip(checkView(t, m, "preview"))
+		if sz[1] >= 60 {
+			for _, want := range []string{"stops at epoch 2", "Discards epoch 3", "@carol wasn't in epoch 3", "To accept: /alarm-recover @bob"} {
+				if !strings.Contains(v, want) {
+					t.Errorf("%v preview misses %q:\n%s", sz, want, v)
+				}
+			}
+		}
+		for range 30 {
+			press(m, "down")
+			checkView(t, m, "preview scrolled")
+		}
+		press(m, "esc")
+		runInput(t, m, "/alarm-recover bobby")
+		if len(f.tr.recovered) != 0 || !m.noticeErr {
+			t.Fatalf("%v wrong name accepted: %v %q", sz, f.tr.recovered, m.notice)
+		}
+		m.clearInput()
+		runInput(t, m, "/alarm-recover @bob")
+		if len(f.tr.recovered) != 1 || f.tr.recovered[0].Ancestor != 2 || f.tr.recovered[0].Chan != 20 || m.noticeErr {
+			t.Fatalf("%v recovered %+v notice %q", sz, f.tr.recovered, m.notice)
+		}
+		checkView(t, m, "recovered")
+		if h := ansi.Strip(m.headerLine(200)); strings.Contains(h, "alarm") {
+			t.Errorf("header after recovery %q", h)
+		}
+	}
+	// A refusal is shown as is, and nothing is kept to confirm.
+	m, f := newTestModelFake(t, 80, 24)
+	trustFake(f)
+	f.e2eSt[20] = client.E2EStatus{State: client.E2EAlarm, Detail: "fork: a second bundle for epoch 2"}
+	f.tr.alarms = map[uint64]client.AlarmInfo{20: {Detail: "fork: a second bundle for epoch 2", Chain: true}}
+	f.tr.planErr = client.ErrNotRecoverable
+	run(m, m.applyUpdate(client.Update{Channels: true}))
+	run(m, m.openChannel(20))
+	// A good preview first: a later refusal must drop it.
+	f.tr.planErr = nil
+	f.tr.plan = client.ChainRecovery{Head: 3, Ancestor: 2, Top: 3, Fork: true, Rotator: 1, Roster: []uint64{1, 2}}
+	runInput(t, m, "/alarm-recover")
+	if m.mode != modeList || !strings.Contains(plain(m), "different epoch 3,") {
+		t.Fatalf("fork preview:\n%s", plain(m))
+	}
+	press(m, "esc")
+	f.tr.planErr = fmt.Errorf("%w: the server's epoch 3 doesn't verify", client.ErrNotRecoverable)
+	runInput(t, m, "/alarm-recover")
+	if v := ansi.Strip(checkView(t, m, "refusal")); m.mode != modeList || !strings.Contains(v, "can't accept") ||
+		!strings.Contains(v, "epoch 3 doesn't") {
+		t.Fatalf("refusal not shown:\n%s", v)
+	}
+	press(m, "esc")
+	runInput(t, m, "/alarm-recover @bob")
+	if len(f.tr.recovered) != 0 || !strings.Contains(m.notice, "preview first") {
+		t.Fatalf("refused plan confirmed: %v %q", f.tr.recovered, m.notice)
+	}
+
+	// Not a chain alarm: nothing to recover, no request.
+	m, f = newTestModelFake(t, 80, 24)
+	trustFake(f)
+	f.e2eSt[20] = client.E2EStatus{State: client.E2EAlarm, Detail: "epoch 2: bundle signature doesn't verify"}
+	f.tr.alarms = map[uint64]client.AlarmInfo{20: {Detail: "epoch 2: bundle signature doesn't verify"}}
+	run(m, m.applyUpdate(client.Update{Channels: true}))
+	run(m, m.openChannel(20))
+	runInput(t, m, "/alarm-recover")
+	if !m.noticeErr || !strings.Contains(m.notice, "only for a rollback or fork") || m.mode != modeNormal {
+		t.Fatalf("non-chain alarm: %q", m.notice)
+	}
+
+	// A preview arriving after switching channels doesn't take the screen.
+	m, f = newTestModelFake(t, 80, 24)
+	trustFake(f)
+	f.e2eSt[20] = client.E2EStatus{State: client.E2EAlarm, Detail: detail}
+	f.tr.alarms = map[uint64]client.AlarmInfo{20: {Detail: detail, Chain: true}}
+	run(m, m.applyUpdate(client.Update{Channels: true}))
+	run(m, m.openChannel(20))
+	m.active = 0
+	m.gotRecover(recoverMsg{ch: 20, plan: client.ChainRecovery{Chan: 20, Head: 3, Ancestor: 2, Top: 2}})
+	if m.mode != modeNormal || len(m.recoverPl) != 0 || !strings.Contains(m.notice, "ready") {
+		t.Fatalf("late preview: mode %v kept %v notice %q", m.mode, m.recoverPl, m.notice)
 	}
 }
 
