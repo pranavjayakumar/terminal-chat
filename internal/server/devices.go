@@ -241,29 +241,28 @@ func (s *Server) opKeyEndorse(ctx context.Context, sess *session, a proto.KeyEnd
 	if !slices.ContainsFunc(keys, func(k []byte) bool { return bytes.Equal(k, e.NewSSH) }) {
 		return nil, badRequest("the endorsed key isn't one of your SSH keys")
 	}
-	verified := false
+	var signer []byte
 	for _, k := range keys {
 		if bytes.Equal(k, e.NewSSH) {
 			continue // a key can't endorse itself
 		}
 		if v, err := identity.Signed(a.Endorse).VerifyKeyEndorse(sid, k); err == nil && v.User == u.ID && bytes.Equal(v.NewSSH, e.NewSSH) {
-			verified = true
+			signer = k
 			break
 		}
 	}
-	if !verified {
+	if signer == nil {
 		return nil, proto.Errf(proto.ErrForbidden, "key endorsement is not signed by another of your SSH keys")
 	}
 	raw := proto.MustRaw(a.Endorse)
 	var res proto.SeqRes
 	_, err = s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
-		var n int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM key_endorse WHERE endorse = ?`, []byte(raw)).Scan(&n); err != nil {
+		// One endorsement per (new key, signing key): a retry after a lost
+		// RES signs a new time, and must not add a row or burn the limit.
+		if dup, err := endorsedBy(ctx, tx, sid, u.ID, e.NewSSH, signer); err != nil || dup {
 			return nil, err
 		}
-		if n > 0 {
-			return nil, nil // a retry
-		}
+		var n int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM key_endorse WHERE user = ?`, u.ID).Scan(&n); err != nil {
 			return nil, err
 		}
@@ -283,6 +282,31 @@ func (s *Server) opKeyEndorse(ctx context.Context, sess *session, a proto.KeyEnd
 		return []proto.Event{ev}, nil
 	})
 	return res, err
+}
+
+// endorsedBy reports whether user already has a key.endorse endorsement of
+// newSSH signed by signer (stored rows were verified on the way in; at most
+// MaxKeyEndorsements per user, so checking each is cheap).
+func endorsedBy(ctx context.Context, q querier, sid e2ecrypto.ServerID, user uint64, newSSH, signer []byte) (bool, error) {
+	rows, err := q.QueryContext(ctx, `SELECT endorse FROM key_endorse WHERE user = ? AND new_ssh = ?`, user, newSSH)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return false, err
+		}
+		var sg proto.Signed
+		if err := proto.Unmarshal(raw, &sg); err != nil {
+			return false, err
+		}
+		if _, err := identity.Signed(sg).VerifyKeyEndorse(sid, signer); err == nil {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // keyEndorsements returns the key.endorse endorsements of users (nil: all)

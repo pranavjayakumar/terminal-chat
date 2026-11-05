@@ -779,8 +779,11 @@ Server rules (honest case):
   other `server_id` → `bad_request`; `user` ≠ caller → `forbidden`; `new_ssh`
   not one of the caller's registered login keys (agent keys don't count) →
   `bad_request`; not signed by another of the caller's registered login keys
-  (a key never endorses itself) → `forbidden`. An exact repeat is ok
-  `{seq: 0}` and emits nothing; at most 32 per user (`bad_request`). Emits
+  (a key never endorses itself) → `forbidden`. The server keeps one per
+  (user, `new_ssh`, signing key): a repeat for a pair it already has — an
+  exact repeat, or a client's retry after a lost RES, which signs a new
+  `time` — is ok `{seq: 0}`, stores nothing and emits nothing; at most 32
+  per user (`bad_request`). Emits
   `key.endorse`. Servers without the cap answer `unknown_op`; clients check
   the cap first.
 - **Snapshot** (§6) adds `devs: [Device]` (every device, revoked ones too),
