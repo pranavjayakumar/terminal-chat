@@ -17,19 +17,19 @@ type keyGroup struct {
 var keyGroups = []keyGroup{
 	{"Navigate", [][2]string{
 		{"⌥K", "command palette"}, {"⌥↑ ⌥↓", "previous / next channel"}, {"⌃P ⌃N", "previous / next channel"},
-		{"⌥⇧↑ ⌥⇧↓", "previous / next unread"}, {"⌥A", "activity"}, {"⌃B F2", "sidebar size"},
+		{"⌥⇧↑ ⌥⇧↓", "previous / next unread"}, {"⌃6", "back to the last channel"}, {"⌥A", "activity"}, {"⌃B F2", "sidebar size"},
 		{"⌥[ ⌥]", "thread pane width"}, {"PgUp PgDn", "scroll history"}, {"End", "jump to newest"}, {"esc", "back out of anything"},
 	}},
 	{"Messages", [][2]string{
 		{"↑", "select (empty input)"}, {"m ⏎", "message menu"}, {"r", "reply in thread"}, {"+", "react (emoji picker)"}, {"e", "edit yours"},
-		{"d", "delete yours"}, {"y", "copy"}, {"p", "pin / unpin"}, {"v", "view full"}, {"r d", "failed: retry, discard"},
+		{"d", "delete yours"}, {"y", "copy"}, {"Y", "copy code only"}, {"E", "your newest"}, {"p", "pin / unpin"}, {"v", "view full"}, {"r d", "failed: retry, discard"},
 	}},
 	{"Write", [][2]string{
 		{"⏎", "send"}, {"⌥⏎", "new line"}, {"⌃J", "new line"}, {"@", "mention someone"}, {"#", "link a channel"},
 		{"/", "commands"}, {"⌥E", "emoji picker"}, {":fi", "emoji by name"}, {"⇥", "complete"}, {"⌃U", "clear draft"}, {"esc esc", "clear draft"},
 	}},
 	{"Huddle", [][2]string{
-		{"/huddle", "join here"}, {"⌃T hold", "push to talk"}, {"⌃T tap", "open mic on / off"}, {"/leave-huddle", "leave"},
+		{"⌥H", "join / leave here"}, {"/huddle", "join here"}, {"⌃T hold", "push to talk"}, {"⌃T tap", "open mic on / off"}, {"/leave-huddle", "leave"},
 	}},
 	{"App", [][2]string{
 		{"/settings", "settings"}, {"/search", "search"}, {"F1", "this sheet"}, {"⌃C ⌃C", "quit"},

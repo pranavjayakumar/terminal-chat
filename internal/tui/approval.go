@@ -636,7 +636,9 @@ func (m *Model) openApproval() tea.Cmd {
 	if !ok {
 		return nil
 	}
+	m.jumping = true
 	cmd := m.openChannel(p.ch)
+	m.jumping = false
 	if p.thread != 0 {
 		cmd = tea.Batch(cmd, m.openThread(p.thread))
 		m.layoutInput()

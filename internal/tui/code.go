@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/skailama/tc/internal/sanitize"
 	"github.com/skailama/tc/internal/snippet"
 )
 
@@ -121,4 +122,16 @@ func (s *styles) diffStyle(k diffKind) lipgloss.Style {
 		return s.diffHdr
 	}
 	return s.code
+}
+
+// codeOnly is the text of body's fenced blocks without their fences (Y in
+// select mode), blocks a blank line apart; "" when it has none.
+func codeOnly(body string) string {
+	var blocks []string
+	for _, s := range splitFences(strings.Split(sanitize.Text(body), "\n")) {
+		if s.code {
+			blocks = append(blocks, strings.Join(s.lines, "\n"))
+		}
+	}
+	return strings.Join(blocks, "\n\n")
 }

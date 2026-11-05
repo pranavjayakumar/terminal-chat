@@ -18,7 +18,7 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
                         │                          ↳ 3 replies   ▐ 🚀 1 ▌  ▐ 👀 1 ▌        │
  Direct                 │                                                       21:49 ✓
  ● bob               1  │
- ◐ dave away            │        carol is typing •··
+ ◐ dave lunch           │        carol is typing •··
                         │        ╭─ #general ───────────────────────────────── public ─╮
                         │        │ message #general                                    │
  ● alice online      ⚙  │        ╰────────────── ⌥K commands · ⌥⏎ newline · ⏎ send ─╯
@@ -56,6 +56,14 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
   with a `☺+` pill that opens the emoji picker for that message. Hovering a pill shows who reacted above it
   (`you, bob and 3 others reacted with :tada:`; five names at most).
 - Thread roots show `↳ N replies`; threads open in a right pane (or full width below 100 cols).
+- A channel opened with unread messages draws a `new` divider (an accent line, the label near its right
+  end) above the first message after its read marker that isn't mine; that message gets its name row. It
+  stays while the channel is open (it marks where catching up began), one blank row above and below in
+  Cozy, none in Compact, under a day divider when both fall there; `/read-all` removes it. On the oldest
+  loaded message, before the channel's history is known to be complete, it reads `new · more above`. See
+  Behavior for where the view opens.
+- A DM's sidebar row shows the person's `/away` text after the name (`◐ dave lunch`, `away` when they gave
+  none; sanitized, cut to the row; a running huddle's `♪N` takes its place).
 - An empty channel shows a dim `no messages yet — say hi · F1 help · ⌥K channels & people` (shorter when the message pane is under 64 or 26 columns; in my notes `your notes — only you see them; /remind lands here`) once a history fetch said it is empty.
 - Typing line right above the input, no blank row between (`bob is typing •··`); its row stays reserved when
   nobody types, so the log never jumps. Errors, rings and
@@ -200,14 +208,16 @@ bottom hint falls back to `←↑↓→ move · Tab category · esc` (its previe
 | `Enter` | send (completes instead while the completion popup is open, unless the `@`/`#` word already equals the highlighted item) |
 | `/`, `@`, `#`, `:` | completion popup above the input (see below; `:` under Emoji) |
 | `Tab` | complete from the popup; reopens it after `Esc` |
-| `Option-K` (`Alt-K`; also the `˚` macOS sends when Option types characters; `Ctrl-K` still works as a fallback) | command palette: tabs All · Channels · People · Commands · Settings (`Tab`/`Shift-Tab`); fuzzy search keeps the quick switcher's behavior (Enter opens the top channel or person; DMs created on demand); command rows run the slash command, or type it when it needs arguments; theme rows switch the theme |
+| `Option-K` (`Alt-K`; also the `˚` macOS sends when Option types characters; `Ctrl-K` still works as a fallback) | command palette: tabs All · Channels · People · Commands · Settings (`Tab`/`Shift-Tab`); with no query the channels and DMs left lately this session come first under `Recent` (five at most, never the open one), then unread ones; the Commands group adds `Previous channel` (`⌃6`), `Mute #x` / `Unmute #x` (`/notify off` / `/notify default` for the open channel) and `Mark all read`; fuzzy search keeps the quick switcher's behavior (Enter opens the top channel or person; DMs created on demand); command rows run the slash command, or type it when it needs arguments; theme rows switch the theme |
 | `Alt-A` | activity view (also `/activity`); `Ctrl-A` stays the textarea's line start |
 | `Option-E` (`Alt-E`; on macOS set Option as Meta: Option-E alone is the accent dead key) | emoji picker: inserts at the cursor; in select mode it reacts like `+`; again closes it |
 | `Alt-↑/↓` or `Ctrl-P/N` | previous / next channel (`Ctrl-P/N` move the completion popup's highlight while it is open) |
 | `Alt-Shift-↑/↓` | previous / next unread channel |
+| `Ctrl-6` (`Ctrl-^`) | back to the channel open before this one (again: forth; vim's alternate file); also the palette's `Previous channel` |
+| `Alt-H` | leave the open channel's huddle when in it, else join it (switching from one elsewhere, like `/huddle`); any skin |
 | `PgUp/PgDn`, mouse wheel | scroll history (fetches older via History at top) |
 | `↑` on empty input | select messages mode (↑/↓ moves selection) |
-| in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (emoji picker; typing filters, so `+ +1 Enter` and `+ :tada: Enter` still work), `y` copy body (OSC 52), `p` pin / unpin (notice "pinned" / "unpinned"), `m` or `Enter` message menu (below), `Esc` leave |
+| in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (emoji picker; typing filters, so `+ +1 Enter` and `+ :tada: Enter` still work), `y` copy body (OSC 52), `Y` copy only the code blocks, without fences (several: a blank line apart; none: a notice), `E` select my newest message loaded here, `v` view full, `p` pin / unpin (notice "pinned" / "unpinned"), `m` or `Enter` message menu (below), `Esc` leave |
 | `Esc` | close the completion popup / thread / palette / dialog / select mode; never quits |
 | `Ctrl-C` twice (the second while `press ⌃C again to quit` (`Ctrl+C` off macOS) shows, 4 s), or `/quit` | quit |
 | `F1` or `/help` | keyboard sheet: Navigate, Messages, Write, Huddle, App, then every command (`?` is just text, so messages can start with it) |
@@ -218,8 +228,9 @@ bottom hint falls back to `←↑↓→ move · Tab category · esc` (its previe
 **Message menu** (`⋯` on the hover toolbar, or `m` / `Enter` in select mode): a small floating panel by the
 button, in the skin's frame (Modern rounded, Retro double line with a shadow) with the icon pack's icons.
 Its rows run the select-mode keys and show them on the right: `↩ Reply in thread` (r), `☺ React` (+),
-`✎ Edit` (e, own), `⧉ Copy text` (y), `¶ Pin` / `Unpin` (p), `✕ Delete` (d, own, error color, still asks to
-confirm). Only rows that do something show: a deleted or unsent message gets `Copy text`, a failed one
+`✎ Edit` (e, own), `⧉ Copy text` (y), `‹› Copy code` (Y, when it has a fenced block), `View full` (v),
+`¶ Pin` / `Unpin` (p), `✕ Delete` (d, own, error color, still asks to
+confirm). Only rows that do something show: a deleted message gets `Copy text`, an unsent one `Copy text` and `View full`, a failed one
 `Retry send` (r), `Copy text` and `Discard` (d). `↑/↓` move, `Enter` runs, the letters run directly, `Esc`,
 `m` or a click outside closes it (the click still acts), `⋯` again closes it; any other key closes it and
 does what it does in select mode (`v`, `Option-K`, `PgUp`); the pointer lights a row and a
@@ -230,7 +241,7 @@ side holds every row, the roomier side gets a shorter menu that scrolls. It work
 
 `/join #x`, `/leave`, `/create #x [--private [--plaintext]]`, `/add @user`, `/topic text`, `/dm @a @b` (`/dm @me` or my own name: my notes, also in `Option-K`; `@me` is always me, even if an account is named `me`; after `/dm` the popup offers `@me` and my name),
 `/invite` (admin; prints code), `/invite --for @user` (admin; add-key invite for a new computer of theirs), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps), `/pins` (overlay of this channel's pinned messages, newest pin first, as `author · preview`; Enter jumps, Esc closes),
-`/activity`, `/highlight [word…]`, `/unhighlight word…`, `/group name @a @b…` (admin), `/groups`,
+`/activity`, `/read-all` (every channel's read marker to its newest message; `marked N channels read`, or `nothing unread`; refused while syncing), `/highlight [word…]`, `/unhighlight word…`, `/group name @a @b…` (admin), `/groups`,
 `/remind <when> <text>`, `/reminders`, `/remind-delete id`, `/snippet path[:range] [message]`,
 `/share-pane [pane]` (herdr only), `/verify @user [--github login]`, `/accept-key @user`, `/endorse-key [SHA256:…]` (trust another SSH key of yours; no argument: show this computer's; both in a wide viewer where `y` copies the key or the command to run on the other computer, and a fingerprint that isn't 50 characters is refused as cut off), `/members`,
 `/alarm`, `/alarm-clear #name`, `/devices [@user]`, `/device-revoke id`, `/disable @user` (admin), `/quit`.
@@ -398,8 +409,18 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
 
 ## Behavior
 
-- Opening a channel marks it read up to the newest message (MarkRead) when the view is at the bottom.
-  Scrolled up → don't mark read; show `↓ N new` pill.
+- Opening a channel with unread messages scrolls so its `new` divider is the top row of the pane, or stays
+  at the bottom when everything from the divider down fits. The read marker (MarkRead) moves only over what
+  has been on screen: at the bottom, to the newest message; scrolled up, to the newest message whose last
+  row is in view (scrolling, paging, select mode and `End` move it on), never past an unread message wholly
+  above the screen that nobody saw. Nothing is marked before the first layout, nor while a history fetch
+  that may hold the first unread message is under way. A jump (search, activity, an approval) opens the
+  channel at its target without placing or marking. Scrolled up, the `↓ N new` pill shows what is left. An
+  open loads up to 500 messages from the cache to reach the first unread one.
+- tc opens on its cache, before connecting; when the first sync after a connect brings unread messages to
+  the open channel and the reader is still at the bottom in normal mode, the channel gets its divider and
+  placement then (read markers don't move while syncing).
+- `/read-all` (palette: `Mark all read`) marks every channel read and drops their pending notifications.
 - Unread counts in the sidebar (dim; a DM's in the accent); `@N` in the accent when there's a mention, pulsing
   briefly when it grows (bot messages never make a mention). Both stop at `99+`.
 - Notifications: see "Notifications & herdr" below.

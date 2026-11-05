@@ -66,6 +66,7 @@ func agentFake() *fakeClient {
 	}
 	f.msgs[10][4].Replies = 2
 	f.chans[1].Last = 503
+	f.chans[1].Read, f.chans[1].Unread = 503, 0 // caught up: no "new" divider in the goldens
 	card := msg(401, 10, 1, "rocky", 5, "✋ Rocky wants to open a draft PR on tc: /poll  ·  #k3x9q\n> plan for /poll, about 15 min and ~$2:\n> proto poll op + vote event\n> tests unit + e2e, then a draft PR\nwhy: alice asked in #general: \"@rocky add /poll to tc\"")
 	card.Thread = 400
 	ask := msg(402, 10, 1, "", 5, "@rocky add /poll to tc")
