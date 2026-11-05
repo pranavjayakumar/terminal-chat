@@ -69,6 +69,10 @@ type ChainRecovery struct {
 	// device's newest verified epoch (e.g. removed after the backup was
 	// taken); Dropped were in it and aren't in Roster.
 	Roster, Readded, Dropped []uint64
+	// Unverified is how many devices the server's newest epoch (fork)
+	// seals its key to that this device hasn't verified: the rotator's
+	// word that they belong to Roster.
+	Unverified int
 
 	headHash, ancHash, topHash [32]byte
 	branch                     []trust.Epoch // fork: the verified epochs Ancestor+1..Top
@@ -81,7 +85,7 @@ func (r ChainRecovery) same(o ChainRecovery) bool {
 	return r.Chan == o.Chan && r.Head == o.Head && r.Ancestor == o.Ancestor && r.Top == o.Top &&
 		r.Fork == o.Fork && r.Rotator == o.Rotator && r.headHash == o.headHash && r.ancHash == o.ancHash &&
 		r.topHash == o.topHash && slices.Equal(r.Roster, o.Roster) && slices.Equal(r.Readded, o.Readded) &&
-		slices.Equal(r.Dropped, o.Dropped)
+		slices.Equal(r.Dropped, o.Dropped) && r.Unverified == o.Unverified
 }
 
 func refuse(format string, a ...any) error {
@@ -166,6 +170,14 @@ func (c *Client) recoverOnce(ctx context.Context, s *session, sid e2ecrypto.Serv
 	}
 	from := trust.Head{Epoch: got.Head, Hash: got.headHash}
 	to := trust.Head{Epoch: got.Ancestor, Hash: got.ancHash}
+	// The discarded epoch after the shared one was verified with its seq:
+	// messages sealed under the shared epoch after it were already invalid
+	// here. The server picks the new epoch's seq; it must not move that
+	// cutoff later (a member the new epoch leaves out posting under the
+	// shared key in between).
+	if old, ok, _ := c.trust.Epoch(sid, want.Chan, got.Ancestor+1); ok && old.Seq != 0 && (then[0].Seq == 0 || old.Seq < then[0].Seq) {
+		then[0].Seq = old.Seq
+	}
 	if err := c.trust.RewindChain(sid, want.Chan, from, to, then, c.Me().ID, detail); err != nil {
 		if errors.Is(err, trust.ErrChainMoved) || errors.Is(err, trust.ErrNoAlarm) {
 			return ErrRecoveryChanged
@@ -448,6 +460,27 @@ func (c *Client) chainRecovery(ctx context.Context, s *session, sid e2ecrypto.Se
 				r.Rotator = by.User
 				if !slices.Contains(headEp.Roster, by.User) {
 					return r, refuse("the server's epoch %d was made by someone epoch %d (the newest this device verified) doesn't include", e, head.Epoch)
+				}
+			}
+			// Devices, not just users: a key sealed to a device this device
+			// knows is revoked must not come back with the chain, whatever
+			// seqs the server gives. The newest epoch's key is the one in
+			// use: no box to a revoked device at all. Older ones: none whose
+			// signed time is after the revoke's.
+			for _, bx := range eb.Boxes {
+				d, ok, _ := c.trust.Device(sid, bx.Dev)
+				switch {
+				case !ok:
+					if e == r.Top {
+						r.Unverified++
+					}
+				case !d.Revoked:
+				case e == r.Top:
+					return r, refuse("the server's epoch %d seals its key to a device of @%s that this device knows is revoked: "+
+						"wait until a member starts a new key, then preview again", e, sanitize.Line(c.User(d.User).Name))
+				case d.RevokedTime != 0 && eb.Time > d.RevokedTime+revokeSkew.Milliseconds():
+					return r, refuse("the server's epoch %d seals its key to a device of @%s it signed after that device was revoked",
+						e, sanitize.Line(c.User(d.User).Name))
 				}
 			}
 			for _, u := range eb.Roster {

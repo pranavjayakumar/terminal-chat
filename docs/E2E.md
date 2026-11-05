@@ -113,6 +113,11 @@ the local cache is therefore sensitive — rely on disk encryption, documented.
   whose first rotator our newest verified epoch still includes (another member's recovery: we pin
   exactly the previewed epochs). The head never rests on A, whose roster may include members the
   discarded epochs removed, so nothing the server serves between preview and pin can slip in.
+  Devices count, not just users: a branch whose newest epoch seals its key to a device this device
+  knows is revoked is refused whatever seqs the server gives (a withheld revoke and rotation), as is
+  any branch epoch sealing to a revoked device with a signed time after the revoke; the preview counts
+  boxes to devices this device hasn't verified. The first pinned epoch keeps the earlier of its seq and
+  the discarded epoch's (the server can't move the cutoff for messages under the shared epoch later).
   Everything else is refused: an alarm that isn't a rollback or fork, a forged or unverifiable
   branch, a branch started by someone the discarded epochs removed, a chain sharing no epoch with ours
   (searched at most 1024 epochs down), a chain still holding our head, two bundles for an epoch, or a

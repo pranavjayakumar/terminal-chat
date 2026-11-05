@@ -789,6 +789,10 @@ func (m *Model) recoverRows(p client.ChainRecovery) []string {
 		add(fmt.Sprintf("⚠ %s wasn't in epoch %d (removed after the backup?) and gets the key again — /remove "+
 			"them afterwards if that removal should stand.", m.atName(u), p.Head))
 	}
+	if p.Unverified > 0 {
+		add(fmt.Sprintf("⚠ The key is also sealed to %d device(s) this device hasn't verified (the rotator's word that "+
+			"they belong to those members).", p.Unverified))
+	}
 	if len(p.Dropped) > 0 {
 		add(fmt.Sprintf("No longer get the key (not members on the server, or not in its chain): %s.", m.nameList(p.Dropped)))
 	}
@@ -797,7 +801,8 @@ func (m *Model) recoverRows(p client.ChainRecovery) []string {
 	if p.Fork {
 		add(fmt.Sprintf("The server's key chain is this device's up to epoch %d, then goes on with a different %s, "+
 			"the first made by %s. That is what another member recovering from a server restored from a backup "+
-			"looks like — and also what that member and the server splitting the channel would look like.",
+			"looks like, or a member who never saw the lost epochs starting a new key as usual — and also what "+
+			"that member and the server splitting the channel would look like.",
 			p.Ancestor, epochSpan(p.Ancestor+1, p.Top), m.atName(p.Rotator)))
 	} else {
 		add(fmt.Sprintf("The server's chain stops at epoch %d — identical to this device's up to there — and no "+
