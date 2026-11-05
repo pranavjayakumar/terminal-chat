@@ -541,16 +541,23 @@ type voiceOut struct {
 // with the socket not draining between two checks: the peer stopped
 // reading. Any frame counts (the write that blocks is usually chat or a
 // PING: voice is skipped while the socket is backlogged), but a big frame
-// on a slow link that is still moving is left alone. Where the OS can't
-// report the backlog, the time alone decides.
+// on a slow link that is still moving is left alone: bytes reaching the
+// transport between two checks (progressConn), or else the socket's backlog
+// changing, count as moving.
 func (sess *session) checkVoiceStuck(now time.Time) { sess.checkStuck(now, voiceStuck) }
 
 // checkStuck is checkVoiceStuck with a given limit; a syncing session uses
 // it with syncStuck, since its reader then reads nothing to time out on.
 func (sess *session) checkStuck(now time.Time, limit time.Duration) {
+	wrote := sess.wrote.Load()
+	moved := wrote != sess.lastWrote
+	sess.lastWrote = wrote
 	if w := sess.writing.Load(); w == 0 || now.UnixNano()-w <= int64(limit) {
 		sess.lastUnsent = -1
 		return
+	}
+	if moved {
+		return // bytes reached the transport since the last check
 	}
 	unsent := sess.unsent
 	if unsent == nil {

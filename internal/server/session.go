@@ -40,7 +40,7 @@ const (
 	syncStuck     = idleTimeout
 	presenceEvery = time.Second
 	// maxSessionsPerUser bounds one account's concurrent sessions (devices,
-	// background listeners, tc send/tail, its agent).
+	// background listeners, tc send/tail), and its agent's (sessionKey).
 	maxSessionsPerUser = 32
 )
 
@@ -96,8 +96,12 @@ type session struct {
 	writing     atomic.Int64
 	// checkVoiceStuck's state (readLoop's ticker only); unsent is
 	// transport.Unsent unless a test replaces it.
-	lastUnsent   int
-	unsent       func() (int, bool)
+	lastUnsent int
+	unsent     func() (int, bool)
+	// wrote counts bytes written to the transport (progressConn);
+	// lastWrote is its value at the last check.
+	wrote        atomic.Int64
+	lastWrote    int64
 	dgBucket     bucket // only the datagram reader goroutine touches it
 	lastTyping   map[uint64]time.Time
 	lastKeyNeed  map[uint64]time.Time // under srv.mu
@@ -108,10 +112,11 @@ type session struct {
 
 func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 	sess := &session{
-		srv: s, conn: conn, codec: proto.NewCodec(conn),
+		srv: s, conn: conn,
 		wake: make(chan struct{}, 1), done: make(chan struct{}), drained: make(chan struct{}, 1),
 		lastTyping: map[uint64]time.Time{}, lastKeyNeed: map[uint64]time.Time{},
 	}
+	sess.codec = proto.NewCodec(progressConn{conn, &sess.wrote})
 	defer conn.Close()
 
 	timer := time.AfterFunc(handshakeTimeout, func() {
@@ -330,6 +335,16 @@ func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp str
 	return user, "", ""
 }
 
+// sessionKey counts sessions toward maxSessionsPerUser: an agent's apart
+// from its owner's, so an agent (a less trusted machine) can't use up the
+// sessions its owner needs, even to retire it.
+type sessionKey struct {
+	user  uint64
+	agent bool
+}
+
+func (sess *session) key() sessionKey { return sessionKey{sess.user.ID, sess.agent != nil} }
+
 func (s *Server) register(sess *session) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -342,10 +357,10 @@ func (s *Server) register(sess *session) string {
 			return proto.ByeRevoked
 		}
 	}
-	if s.userSessions[sess.user.ID] >= maxSessionsPerUser {
+	if s.userSessions[sess.key()] >= maxSessionsPerUser {
 		return proto.ByeTooManySessions
 	}
-	s.userSessions[sess.user.ID]++
+	s.userSessions[sess.key()]++
 	s.sessions[sess] = struct{}{}
 	if sess.agent != nil { // the agent being here isn't its owner being here
 		s.agentOnlineLocked(sess, 1)
@@ -371,8 +386,8 @@ func (s *Server) unregister(sess *session) {
 		return
 	}
 	delete(s.sessions, sess)
-	if s.userSessions[sess.user.ID]--; s.userSessions[sess.user.ID] <= 0 {
-		delete(s.userSessions, sess.user.ID)
+	if s.userSessions[sess.key()]--; s.userSessions[sess.key()] <= 0 {
+		delete(s.userSessions, sess.key())
 	}
 	s.huddleGoneLocked(sess)
 	if sess.agent != nil {
@@ -570,6 +585,36 @@ func (sess *session) writer() {
 func (sess *session) writerDone() {
 	sess.conn.Close()
 	sess.close()
+}
+
+// progressChunk: where the OS can't report a send backlog (QUIC), writes
+// go out in pieces this big, so checkStuck sees a long write on a slow link
+// moving instead of judging it by its age alone.
+const progressChunk = 16 << 10
+
+// progressConn counts the bytes written to the transport in wrote.
+type progressConn struct {
+	transport.Conn
+	wrote *atomic.Int64
+}
+
+func (c progressConn) Write(p []byte) (int, error) {
+	if c.Kind() == "tcp" { // checkStuck watches the socket itself
+		n, err := c.Conn.Write(p)
+		c.wrote.Add(int64(n))
+		return n, err
+	}
+	total := 0
+	for len(p) > 0 {
+		n, err := c.Conn.Write(p[:min(len(p), progressChunk)])
+		total += n
+		c.wrote.Add(int64(n))
+		if err != nil {
+			return total, err
+		}
+		p = p[n:]
+	}
+	return total, nil
 }
 
 // ---- inbound ----

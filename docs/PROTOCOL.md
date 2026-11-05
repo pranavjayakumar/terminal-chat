@@ -236,7 +236,7 @@ Kinds:
 handshake_timeout, protocol_error, slow_consumer, server_shutdown, revoked,
 too_many_sessions`.
 (`key_exists` now only when a concurrent redemption registered the key first, §4.)
-`too_many_sessions`: the account already has 32 sessions (§9); clients reconnect later as
+`too_many_sessions`: the account (or its agent) already has 32 sessions (§9); clients reconnect later as
 after any other BYE (older clients do).
 
 ### 4.3 Passive sessions (cap `passive`)
@@ -543,8 +543,9 @@ All sizes are UTF-8 bytes.
   PINGs and EPHEMERALs wait until the sync's RES). A client may take as long as it likes to
   read a catch-up, but one frame write that sees no progress for 45 s during sync → BYE
   `slow_consumer`.
-- At most 32 concurrent sessions per account (agent and passive sessions included); one more
-  → BYE `too_many_sessions` after authentication.
+- At most 32 concurrent sessions per account (passive sessions included), and 32 more for its
+  agent, counted apart so an agent can't use up its owner's; one more → BYE
+  `too_many_sessions` after authentication.
 - `huddle.join` takes from the shared write-op bucket; `huddle.leave` doesn't. Datagrams have
   their own per-session bucket (burst 100, refill 60/s). Voice limits (datagram size, relay queue,
   huddle sizes) are in §14.
