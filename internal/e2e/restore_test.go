@@ -161,8 +161,17 @@ func rotateRetry(t *testing.T, ctx context.Context, u *user, ch uint64) {
 	}
 }
 
+// inAlarm: u holds a stored rollback or fork alarm for ch. Not just any
+// alarm state: right after a restore the computed "unconfirmed member"
+// alarm (a removed member is a member again on the server) can come first.
 func inAlarm(u *user, ch uint64) func() bool {
-	return func() bool { return u.status(ch).State == client.E2EAlarm }
+	return func() bool {
+		if u.status(ch).State != client.E2EAlarm {
+			return false
+		}
+		info, ok := u.Alarm(ch)
+		return ok && info.Chain
+	}
 }
 
 func (u *user) audited(sid e2ecrypto.ServerID, action string) int {
