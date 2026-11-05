@@ -580,6 +580,8 @@ func (sess *session) checkStuck(now time.Time, limit time.Duration) {
 // reached the transport. A tick with the writer idle (the server, not the
 // client, is the bottleneck) starts a new window.
 func (sess *session) checkSyncRate(now time.Time) {
+	sess.rateMu.Lock() // tests call it beside the ticker
+	defer sess.rateMu.Unlock()
 	wrote := sess.wrote.Load()
 	if sess.rateFrom.IsZero() || sess.writing.Load() == 0 {
 		sess.rateFrom, sess.rateWrote = now, wrote

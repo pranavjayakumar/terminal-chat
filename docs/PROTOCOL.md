@@ -115,16 +115,18 @@ Auth = {pubkey: bin, sig: bin, invite?: str, name?: str}
 
 The server waits 20 s for HELLO after the TLS handshake (≤ 10 s), then BYE
 `handshake_timeout` (hardware keys may wait for a touch). A TCP connection that sends no
-byte within 5 s of connecting is closed (a client sends its ClientHello at once).
-Connections that haven't authenticated yet are capped per source: at most 32 per IPv4 /24 or
-IPv6 /64, 64 per IPv6 /56 and 128 per IPv6 /48; beyond that, a TCP connection is closed
-before the TLS handshake and a QUIC one right after it (no BYE). In all at most 512 are
-pending; when that is full, a newcomer evicts the oldest pending connection of the source
-group (IPv4 /24, IPv6 /48) holding the most slots — closed like a refused one, or with the
-transport closed if it already finished TLS — provided that group holds more than the
-newcomer's own; otherwise the newcomer is refused. A flood therefore only displaces itself,
-and a client from a quiet source always gets in. A connection stops counting once HELLO
-verified. The server operator can change 512 and 32 (`tc server --max-pending`,
+byte within 8 s of connecting is closed (a client sends its ClientHello at once).
+Connections that haven't authenticated yet are capped: at most 32 per IPv4 /24 or IPv6 /64
+(beyond that, a TCP connection is closed before the TLS handshake and a QUIC one right after
+it, no BYE), 64 per IPv6 /56, 128 per IPv6 /48 and 512 in all. When a /56, a /48 or the total
+is full, a newcomer evicts the oldest pending connection among the groups holding the most
+slots in it — /64s within a /56 or /48; IPv4 /24s and IPv6 /48s in the total — provided they
+hold more than the newcomer's own group; otherwise it is refused like above. An evicted
+connection is closed the same way, or its transport closed if it already finished TLS. A
+flood from a few prefixes therefore only displaces itself, and a client from a quiet prefix
+gets in; one spread over hundreds of prefixes (one connection each) can still age out pending
+connections faster than slow ones (a hardware-key touch) authenticate. A connection stops
+counting once HELLO verified. The server operator can change 512 and 32 (`tc server --max-pending`,
 `--max-pending-per-source`; the IPv6 /56 and /48 caps scale with the latter).
 
 ### 4.1 Invites
@@ -551,10 +553,10 @@ All sizes are UTF-8 bytes.
   PINGs and EPHEMERALs wait until the sync's RES). A client may take its time to read a
   catch-up, within two rules, either → BYE `slow_consumer`: one frame write that sees no
   progress for 45 s during sync; and less than 512 B/s on average reaching the transport over
-  any 2-minute window in which the server was waiting on the client throughout (checked every
-  5 s; a check finding nothing being written starts a new window). Live events for the
-  client that arrive during its sync wait for it, at most 1024 frames and 8 MiB; beyond →
-  BYE `slow_consumer`.
+  each 2-minute window in which the server was waiting on the client throughout (checked every
+  5 s; a check finding nothing being written starts a new window, as does a passing one). Live
+  events for the client that arrive before its sync completes wait for it, at most 1024 frames
+  and 8 MiB of payload; beyond → BYE `slow_consumer`.
 - At most 32 concurrent sessions per account (passive sessions included), and 32 more for its
   agent, counted apart so an agent can't use up its owner's; one more → BYE
   `too_many_sessions` after authentication.

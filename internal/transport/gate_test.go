@@ -163,15 +163,46 @@ func TestGateIPv6Hierarchy(t *testing.T) {
 		{func(i int) string { return fmt.Sprintf("[2001:db8:1:%x::1]:1", (i%256)<<8) }, 4 * 32},
 	} {
 		g := newGate(10000, 32)
-		n := 0
+		var held []*fakeConn
 		for i := range 256 * 40 {
-			if _, ok := admitFake(g, tc.addr(i)); ok {
-				n++
+			if c, ok := admitFake(g, tc.addr(i)); ok {
+				held = append(held, c)
 			}
 		}
-		if n != tc.want {
-			t.Errorf("%s…: %d slots, want %d", tc.addr(0), n, tc.want)
+		if g.pending() != tc.want {
+			t.Errorf("%s…: %d slots, want %d", tc.addr(0), g.pending(), tc.want)
 		}
+	}
+}
+
+// One host filling its /48 from a few /64s (32 each) doesn't lock out the
+// other subscribers there: a newcomer from a quiet /64 evicts the flooder's
+// oldest, and the flooder's re-dials don't evict the newcomer.
+func TestGateSharedIPv6Prefix(t *testing.T) {
+	g := newGate(10000, 32)
+	flood := func(i int) string { return fmt.Sprintf("[2001:db8:1:%x::1]:1", (i%4)<<8) } // 4 /56s, a /64 each
+	var held []*fakeConn
+	for i := range 4 * 32 {
+		c, ok := admitFake(g, flood(i))
+		if !ok {
+			t.Fatal("refused while filling")
+		}
+		held = append(held, c)
+	}
+	honest, ok := admitFake(g, "[2001:db8:1:ff01::7]:1")
+	if !ok {
+		t.Fatal("a neighbour in the same /48 was locked out")
+	}
+	waitKilled(t, held[0])
+	for i := range 1000 {
+		admitFake(g, flood(i))
+	}
+	time.Sleep(50 * time.Millisecond)
+	if honest.killed.Load() {
+		t.Fatal("the flood evicted the neighbour")
+	}
+	if g.pending() != 4*32 {
+		t.Fatalf("pending = %d", g.pending())
 	}
 }
 

@@ -145,8 +145,13 @@ func LoginAgent(ctx context.Context, ownerHome, agentHome, handle string) (proto
 	// The owner's devices keep it too: this one then knows the key is the
 	// agent's even if the server never shows it the agent's endorsement,
 	// and won't endorse it as one of the owner's (EndorseKey).
+	// The cache copy is for other passes; the server can reset the cache,
+	// so the pin goes straight into the trust store as well.
 	if err := owner.tx(func(tx *sql.Tx) error { return storeEndorse(tx, proto.Signed(endorse)) }); err != nil {
 		return proto.Agent{}, fmt.Errorf("keeping the agent's endorsement: %w", err)
+	}
+	if err := owner.trust.PinKey(sid, cfg.UserID, ssh.FingerprintSHA256(signer.PublicKey()), signer.PublicKey().Marshal(), trust.Agent); err != nil && !errors.Is(err, trust.ErrNoAnchor) {
+		return proto.Agent{}, fmt.Errorf("pinning the agent's key: %w", err)
 	}
 	w, err := loginOnce(ctx, proto.Invite{Addr: cfg.Addr, Pin: cfg.Pin}, signer, "", "", handle)
 	if err != nil {

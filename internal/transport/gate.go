@@ -69,12 +69,13 @@ func (pc *pendingConn) group() netip.Prefix { return pc.keys[len(pc.keys)-1] }
 
 // gate counts pending connections. Each prefix level has its own cap:
 // perSource for an IPv4 /24 or IPv6 /64, twice that for a /56, four times
-// for a /48. When all max slots are taken, a newcomer doesn't wait behind
-// them: the oldest pending connection of the group (IPv4 /24, IPv6 /48)
-// holding the most slots is closed to make room, provided that group holds
-// more than the newcomer's own. Flooding from many prefixes then only churns
-// the flooder's own connections, and an honest client, whose group holds
-// one or two slots, is the last to go.
+// for a /48. A full /24 or /64 refuses. When all max slots are taken, a
+// newcomer doesn't wait behind them: the oldest pending connection among
+// the groups (IPv4 /24, IPv6 /48) holding the most slots is closed to make
+// room, provided they hold more than the newcomer's own group; a full /56
+// or /48 does the same among its /64s. Flooding from many prefixes then
+// mostly churns the flooder's own connections, and an honest client, whose
+// group holds one or two slots, is among the last to go.
 type gate struct {
 	max, perSource int
 	keyOf          func(net.Addr) []netip.Prefix // tests replace it
@@ -105,18 +106,34 @@ func newGate(max, perSource int) *gate {
 func (g *gate) admit(addr net.Addr, kill func()) (release func(), ok bool) {
 	keys := g.keyOf(addr)
 	g.mu.Lock()
-	for i, k := range keys {
-		if g.by[k] >= g.perSource<<i {
+	if g.by[keys[0]] >= g.perSource {
+		g.mu.Unlock()
+		return nil, false
+	}
+	// A full IPv6 /56 or /48 (many subscribers' /64s, on a carrier or
+	// campus) makes room inside itself the same way the full gate does:
+	// its /64 holding the most loses its oldest, never a lighter one's. One
+	// eviction frees a slot at every level above it and in the total.
+	var victim *pendingConn
+	for i := 1; i < len(keys) && victim == nil; i++ {
+		if g.by[keys[i]] < g.perSource<<i {
+			continue
+		}
+		k := keys[i]
+		victim = g.victimLocked(func(pc *pendingConn) bool { return pc.keys[i] == k },
+			func(pc *pendingConn) netip.Prefix { return pc.keys[0] }, keys[0])
+		if victim == nil {
 			g.mu.Unlock()
 			return nil, false
 		}
 	}
-	var victim *pendingConn
-	if g.n >= g.max {
-		if victim = g.victimLocked(keys[len(keys)-1]); victim == nil {
+	if victim == nil && g.n >= g.max {
+		if victim = g.victimLocked(nil, (*pendingConn).group, keys[len(keys)-1]); victim == nil {
 			g.mu.Unlock()
 			return nil, false
 		}
+	}
+	if victim != nil {
 		g.dropLocked(victim)
 		g.evicted++
 	}
@@ -138,13 +155,17 @@ func (g *gate) admit(addr net.Addr, kill func()) (release func(), ok bool) {
 	}, true
 }
 
-// victimLocked picks the oldest connection of the group holding the most
-// slots, if that is more than group (the newcomer's) holds; else nil.
-func (g *gate) victimLocked(group netip.Prefix) *pendingConn {
+// victimLocked picks, among the connections in (nil: all), the oldest of
+// the groups (groupOf) holding the most slots, if that is more than mine
+// (the newcomer's group) holds; else nil.
+func (g *gate) victimLocked(in func(*pendingConn) bool, groupOf func(*pendingConn) netip.Prefix, mine netip.Prefix) *pendingConn {
 	var best *pendingConn
-	bestN := g.by[group]
+	bestN := g.by[mine]
 	for pc := range g.conns {
-		n := g.by[pc.group()]
+		if in != nil && !in(pc) {
+			continue
+		}
+		n := g.by[groupOf(pc)]
 		if n > bestN || (best != nil && n == bestN && pc.seq < best.seq) {
 			best, bestN = pc, n
 		}

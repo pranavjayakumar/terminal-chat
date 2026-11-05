@@ -56,20 +56,20 @@ func TestSyncTrickleIsSlowConsumer(t *testing.T) {
 			}
 			t0 := time.Now()
 			sess.checkSyncRate(t0)
+			base := sess.wrote.Load()
 			buf := make([]byte, 1<<10)
 			for i := range 5 { // a trickle: what one window's reads would be
 				if _, err := io.ReadFull(c.conn, buf); err != nil {
 					t.Fatal(err)
 				}
 				sess.checkSyncRate(t0.Add(time.Duration(i+1) * 5 * time.Second))
-				sess.checkStuck(time.Now(), syncStuck) // not stuck: moving
 			}
 			if isClosed(sess) {
 				t.Fatal("closed before a whole window passed")
 			}
 			sess.checkSyncRate(t0.Add(syncRateWindow + time.Second))
 			if !isClosed(sess) {
-				t.Fatalf("a sync moving %d bytes in %v is still open", sess.wrote.Load()-sess.rateWrote, syncRateWindow)
+				t.Fatalf("a sync moving %d bytes in %v is still open", sess.wrote.Load()-base, syncRateWindow)
 			}
 		})
 	}
@@ -86,6 +86,7 @@ func TestSyncSteadyReaderKeepsSync(t *testing.T) {
 			defer close(stop)
 			t0 := time.Now()
 			sess.checkSyncRate(t0)
+			base := sess.wrote.Load() // ≥ the window's start
 			go func() {
 				buf := make([]byte, 4<<10)
 				for {
@@ -102,9 +103,9 @@ func TestSyncSteadyReaderKeepsSync(t *testing.T) {
 			}()
 			// syncMinRate × the window, plus a chunk, must reach the transport.
 			need := int64(syncMinRate*(syncRateWindow+time.Second).Seconds()) + progressChunk
-			for deadline := time.Now().Add(10 * time.Second); sess.wrote.Load()-sess.rateWrote < need; time.Sleep(10 * time.Millisecond) {
+			for deadline := time.Now().Add(10 * time.Second); sess.wrote.Load()-base < need; time.Sleep(10 * time.Millisecond) {
 				if time.Now().After(deadline) {
-					t.Fatalf("reader too slow for the test: %d bytes", sess.wrote.Load()-sess.rateWrote)
+					t.Fatalf("reader too slow for the test: %d bytes", sess.wrote.Load()-base)
 				}
 			}
 			if sess.writing.Load() == 0 {

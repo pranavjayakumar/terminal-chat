@@ -23,7 +23,7 @@ const (
 	// firstByteTimeout: a TCP client sends its ClientHello as soon as it
 	// connects, so one that sent nothing by now (after several retransmits
 	// on a lossy link) only holds a pending slot.
-	firstByteTimeout = 5 * time.Second
+	firstByteTimeout = 8 * time.Second
 	keepAlivePeriod  = 20 * time.Second
 	maxIdleTimeout   = 60 * time.Second
 )

@@ -110,8 +110,9 @@ type session struct {
 	// lastWrote is its value at the last check.
 	wrote     atomic.Int64
 	lastWrote int64
-	// checkSyncRate's window (readLoop's ticker only): when it started
-	// (zero: none) and wrote then.
+	// checkSyncRate's window, under rateMu: when it started (zero: none)
+	// and wrote then.
+	rateMu       sync.Mutex
 	rateFrom     time.Time
 	rateWrote    int64
 	dgBucket     bucket // only the datagram reader goroutine touches it
@@ -766,6 +767,9 @@ func (sess *session) handleReq(ctx context.Context, r proto.Req) {
 			sess.respond(r.ID, nil, proto.Errf(proto.ErrBadRequest, "sync already done"))
 			return
 		}
+		sess.rateMu.Lock() // a failed sync's window doesn't carry over
+		sess.rateFrom = time.Time{}
+		sess.rateMu.Unlock()
 		sess.syncing.Store(true)
 		res, err := sess.srv.sync(ctx, sess, r.Args)
 		sess.touch() // PINGs that arrived meanwhile are still unread

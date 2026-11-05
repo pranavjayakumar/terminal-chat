@@ -684,7 +684,7 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 	}
 	agentSSH := map[string]bool{}
 	for _, e := range endorse {
-		if ae, err := identity.PeekAgentEndorse(e); err == nil {
+		if ae, err := identity.PeekAgentEndorse(e); err == nil && ae.ServerID == sid {
 			agentSSH[string(ae.AgentSSH)] = true
 		}
 	}
@@ -705,6 +705,12 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 			continue
 		}
 		for _, p := range ownerPins(u) {
+			// Not by a key some AgentEndorse names: an agent key pinned
+			// Endorsed while its AgentEndorse was withheld mustn't demote
+			// the owner's real keys.
+			if agentSSH[string(p)] {
+				continue
+			}
 			v, err := e.VerifyAgentEndorse(sid, p)
 			if err != nil || v.User != u || !bytes.Equal(v.AgentSSH, ae.AgentSSH) {
 				continue
