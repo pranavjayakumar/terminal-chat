@@ -70,7 +70,8 @@ The server key never rotates in v1; rotating means re-issuing invites.
 
 Effective caps = intersection of HELLO and WELCOME caps, except the server-advertised ones:
 a client never sends those in HELLO and they apply whenever WELCOME has them (`hooks`, `pins`,
-`groups`, `remind`, the invite caps of §4.1, `key_endorse` §13.2, `agent_key_proof` §15.2;
+`groups`, `remind`, `team_invites`, `invite_manage`, `key_invites` and `member_invites` §4.1,
+`key_endorse` §13.2, `agent_key_proof` §15.2; `key_hint` §4.1 goes the other way, HELLO only;
 `passive` §4.3 echoes a HELLO request). Protocol version is the ALPN.
 
 ## 4. Handshake & authentication
@@ -131,7 +132,7 @@ produce exactly N users. A redemption that fails (`name_taken`, a reserved name,
 `key_exists` when a concurrent redemption registered the same key first) rolls back and
 spends nothing. A key that was already registered never redeems (§4). Exhausted, expired or unknown → BYE `invite_invalid`.
 Add-key invites are always single-use. Redeeming one re-checks its target: a user disabled
-(or gone) since the invite was made → BYE `invite_invalid`, and nothing is spent. Admin invites (server host only) are single-use and
+(or gone, or a bot) since the invite was made → BYE `invite_invalid`, and nothing is spent. Admin invites (server host only) are single-use and
 last at most 24 hours (default 24 hours). `uses`/`ttl_ms` in `invite.create` need cap
 `team_invites` (servers without it ignore them and mint a 1-use, 7-day invite).
 
