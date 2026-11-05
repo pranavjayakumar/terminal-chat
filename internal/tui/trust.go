@@ -18,7 +18,7 @@ import (
 
 // Trust UX (docs/E2E.md step 10, docs/TUI.md "Verifying people"):
 // /verify (safety numbers, --github), the key-change banner and
-// /accept-key, /alarm and /alarm-clear, "?" for members trusted only on
+// /accept-key, /alarm, /alarm-clear and /alarm-recover, "?" for members trusted only on
 // first use, /members.
 
 // verifyState is the trust overlay: a safety number to compare (/verify),
@@ -180,6 +180,9 @@ func (m *Model) trustCommand(c command) (tea.Cmd, bool, error) {
 		return nil, true, nil
 	case "alarm-clear":
 		return nil, true, m.alarmClear(c)
+	case "alarm-recover":
+		cmd, err := m.alarmRecover(c)
+		return cmd, true, err
 	case "members":
 		ch, err := m.needActive()
 		if err != nil {
@@ -624,10 +627,191 @@ func (m *Model) alarmRows(ch uint64, a client.AlarmInfo) []string {
 		if a.Server {
 			scope = " (" + serverWide + ")"
 		}
-		add("Nothing is sent here while it lasts. Clear it only once you know why it happened (e.g. a server " +
-			"restored from a backup): /alarm-clear " + m.chanConfirmName(ch) + scope + ". It comes back if the server " +
-			"still presents what raised it. Clearing is recorded in the trust audit log.")
+		add("Nothing is sent here while it lasts.")
+		if a.Chain {
+			add("Clearing doesn't help while the server still shows this: it comes back at once. If the server " +
+				"was restored from a backup, /alarm-recover shows whether this device can accept the server's older " +
+				"key chain and exactly what that discards; it never does anything without your confirmation.")
+			add("If you know the cause is gone, /alarm-clear " + m.chanConfirmName(ch) + " clears it (recorded in the " +
+				"trust audit log).")
+		} else {
+			add("Clear it only once you know why it happened: /alarm-clear " + m.chanConfirmName(ch) + scope +
+				". It comes back if the server still presents what raised it. Clearing is recorded in the trust audit log.")
+		}
 	}
+	return rows
+}
+
+// recoverMsg is the result of /alarm-recover: a preview (done false) or
+// the accepted recovery (done true).
+type recoverMsg struct {
+	ch   uint64
+	plan client.ChainRecovery
+	done bool
+	err  error
+}
+
+// alarmRecover is /alarm-recover: with no name it previews (online) what
+// accepting the server's chain would do and keeps that preview; with the
+// channel's name typed it accepts exactly the kept preview — the client
+// refuses if the server's chain isn't the same any more.
+func (m *Model) alarmRecover(c command) (tea.Cmd, error) {
+	ch, err := m.needActive()
+	if err != nil {
+		return nil, err
+	}
+	info, ok := m.c.Alarm(ch)
+	if !ok {
+		return nil, fmt.Errorf("no alarm in %s", m.chanTitle(ch))
+	}
+	if !info.Chain {
+		return nil, errors.New("/alarm-recover is only for a rollback or fork after a server restore (/alarm explains this one)")
+	}
+	be, ctx := m.c, m.ctx
+	if c.rest == "" {
+		m.setInfo("checking the server's key chain…")
+		return func() tea.Msg {
+			ctx, cancel := context.WithTimeout(ctx, reqTimeout)
+			defer cancel()
+			plan, err := be.ChainRecoveryPlan(ctx, ch)
+			return recoverMsg{ch: ch, plan: plan, err: err}
+		}, nil
+	}
+	want := m.chanConfirmName(ch)
+	if !confirmMatches(c.rest, want) {
+		return nil, fmt.Errorf("type /alarm-recover %s (after its preview)", want)
+	}
+	plan, ok := m.recoverPl[ch]
+	if !ok {
+		return nil, fmt.Errorf("preview first: /alarm-recover, then /alarm-recover %s", want)
+	}
+	delete(m.recoverPl, ch) // one confirmation per preview
+	m.setInfo("accepting the server's key chain…")
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(ctx, reqTimeout)
+		defer cancel()
+		return recoverMsg{ch: ch, plan: plan, done: true, err: be.RecoverChain(ctx, plan)}
+	}, nil
+}
+
+func (m *Model) gotRecover(msg recoverMsg) {
+	name := m.chanConfirmName(msg.ch)
+	// A preview or result for a channel that isn't on screen (or arriving
+	// over another overlay) must not take the screen.
+	here := msg.ch == m.active && m.mode == modeNormal
+	if msg.done {
+		m.reloadChans()
+		_, alarm := m.c.Alarm(msg.ch)
+		switch {
+		case msg.err != nil && alarm:
+			m.setErr("alarm-recover", msg.err)
+			if errors.Is(msg.err, client.ErrRecoveryChanged) {
+				m.setErr("alarm-recover", fmt.Errorf("%s's key chain changed since the preview — /alarm-recover again", name))
+			}
+		case msg.err != nil:
+			// Rewound (the alarm is gone); what followed didn't finish.
+			m.setInfo(sanitize.Line(msg.err.Error()))
+		case msg.plan.Fork:
+			m.setInfo(fmt.Sprintf("%s follows the server's key chain again — recorded in the trust audit log", name))
+		default:
+			m.setInfo(fmt.Sprintf("%s rewound to epoch %d with a fresh key — recorded in the trust audit log", name, msg.plan.Ancestor))
+		}
+		return
+	}
+	delete(m.recoverPl, msg.ch) // the last preview shown is what confirms
+	if _, ok := m.c.Alarm(msg.ch); !ok {
+		return
+	}
+	if msg.err != nil {
+		if !errors.Is(msg.err, client.ErrNotRecoverable) || !here {
+			m.setErr("alarm-recover", msg.err)
+			return
+		}
+		m.clearNotice()
+		w := max(m.dims().mainW-2, 10)
+		rows := wrapPlain(sanitize.Line(msg.err.Error()), w)
+		rows = append(rows, "")
+		rows = append(rows, wrapPlain("Nothing was changed. /alarm explains the alarm.", w)...)
+		m.list = listState{title: name + ": can't accept the server's key chain", rows: rows}
+		m.mode = modeList
+		return
+	}
+	if m.recoverPl == nil {
+		m.recoverPl = map[uint64]client.ChainRecovery{}
+	}
+	m.recoverPl[msg.ch] = msg.plan
+	if !here {
+		m.setInfo(fmt.Sprintf("preview for %s ready — open it and run /alarm-recover", name))
+		delete(m.recoverPl, msg.ch)
+		return
+	}
+	m.clearNotice()
+	m.list = listState{title: name + ": accept older key chain?", rows: m.recoverRows(msg.plan)}
+	m.mode = modeList
+}
+
+// nameList is "@a @b" for us ("nobody" if empty).
+func (m *Model) nameList(us []uint64) string {
+	out := make([]string, len(us))
+	for i, u := range us {
+		out[i] = m.atName(u)
+	}
+	if len(out) == 0 {
+		return "nobody"
+	}
+	return strings.Join(out, " ")
+}
+
+// epochSpan is "epoch a" or "epochs a–b".
+func epochSpan(a, b uint32) string {
+	if a == b {
+		return fmt.Sprintf("epoch %d", a)
+	}
+	return fmt.Sprintf("epochs %d–%d", a, b)
+}
+
+// recoverRows says what confirming p accepts and discards: the summary and
+// the command first, the reasoning after.
+func (m *Model) recoverRows(p client.ChainRecovery) []string {
+	w := max(m.dims().mainW-2, 10)
+	var rows []string
+	add := func(s string) { rows = append(rows, wrapPlain(s, w)...) }
+	name := m.chanConfirmName(p.Chan)
+	lost := epochSpan(p.Ancestor+1, p.Head)
+	if p.Fork {
+		add(fmt.Sprintf("Discards %s here and follows the server's chain (%s by %s). Key goes to: %s.",
+			lost, epochSpan(p.Ancestor+1, p.Top), m.atName(p.Rotator), m.nameList(p.Roster)))
+	} else {
+		add(fmt.Sprintf("Discards %s here and starts a new epoch %d (a fresh key) for: %s.",
+			lost, p.Ancestor+1, m.nameList(p.Roster)))
+	}
+	for _, u := range p.Readded {
+		add(fmt.Sprintf("⚠ %s wasn't in epoch %d (removed after the backup?) and gets the key again — /remove "+
+			"them afterwards if that removal should stand.", m.atName(u), p.Head))
+	}
+	if p.Unverified > 0 {
+		add(fmt.Sprintf("⚠ The key is also sealed to %d device(s) this device hasn't verified (the rotator's word that "+
+			"they belong to those members).", p.Unverified))
+	}
+	if len(p.Dropped) > 0 {
+		add(fmt.Sprintf("No longer get the key (not members on the server, or not in its chain): %s.", m.nameList(p.Dropped)))
+	}
+	add("To accept: /alarm-recover " + name)
+	rows = append(rows, "")
+	if p.Fork {
+		add(fmt.Sprintf("The server's key chain is this device's up to epoch %d, then goes on with a different %s, "+
+			"the first made by %s. That is what another member recovering from a server restored from a backup "+
+			"looks like, or a member who never saw the lost epochs starting a new key as usual — and also what "+
+			"that member and the server splitting the channel would look like.",
+			p.Ancestor, epochSpan(p.Ancestor+1, p.Top), m.atName(p.Rotator)))
+	} else {
+		add(fmt.Sprintf("The server's chain stops at epoch %d — identical to this device's up to there — and no "+
+			"longer has %s. That is what a server restored from a backup taken before them looks like — and also "+
+			"what a server hiding them on purpose (for example to undo a removal) would look like.", p.Ancestor, lost))
+	}
+	rows = append(rows, "")
+	add("Accept only if you know the server was restored from a backup. Accepting is recorded in the trust " +
+		"audit log; other members' devices that verified the discarded epochs have to accept too.")
 	return rows
 }
 

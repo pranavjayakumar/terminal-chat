@@ -134,6 +134,17 @@ not argv, so it isn't visible for the length of the join.
   server before teammates turn it on.
 - Backup: `sqlite3 /var/lib/tc/tc.db ".backup /root/tc-$(date +%F).db"` (safe while running), plus
   `server.key`/`server.crt` — **losing the key invalidates every client's pin and every invite**.
+- **Restoring a backup breaks end-to-end encrypted channels that changed keys after it was taken.**
+  Clients pin each encrypted channel's key chain; a restored server shows an older one, which is
+  exactly what a server hiding a membership change would do, so those channels go into a red
+  `rollback` alarm and sending there stops. `/alarm-clear` doesn't help. After a restore, a member of
+  each affected channel runs `/alarm-recover` in it, reads the preview (which epochs are discarded and
+  who gets the key back: **anyone removed after the backup is a member again** — `/remove` them
+  afterwards), then confirms with `/alarm-recover #channel`; that starts a fresh key. Each other
+  member whose device saw the lost epochs does the same (their preview says the chain was continued by
+  that member). Tell your team before restoring, and that a restore is the only reason to accept.
+  Messages and membership changes made after the backup are gone from the server; restore only the
+  newest backup, and only when you must.
 
 ## Cutting a release (maintainers)
 

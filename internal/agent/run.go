@@ -116,7 +116,7 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 		s.activity(a, "error", err.Error(), res.CostUSD)
 		return
 	}
-	replied := false
+	replied, post := false, ""
 	switch text := strings.TrimSpace(res.Text); {
 	case a.FollowUp && (res.IsError || res.IsBudgetStop()):
 		s.reply(a.Chan, a.Thread, "that one ran past my budget for a single ask, so I stopped. try a smaller piece?")
@@ -128,7 +128,7 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 		if !a.Owner {
 			text = s.defangBroadcast(text) // nobody else pings a whole channel through me
 		}
-		s.reply(a.Chan, a.Thread, text)
+		post = text
 		s.activity(a, "reply", short(text, 120), res.CostUSD)
 		replied = true
 		if a.Watch != nil {
@@ -152,6 +152,11 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 		// Only a direct ask restarts the follow-up count: replies to
 		// follow-ups keep it, so MaxFollowUps bounds the conversation.
 		s.engage(a.Key, time.Duration(cfg.EngageMinutes)*time.Minute, !a.FollowUp)
+	}
+	if post != "" {
+		// After engaging: an answer to the reply must find the fresh window
+		// (and a reset follow-up count), not the one this ask replaced.
+		s.reply(a.Chan, a.Thread, post)
 	}
 	sess.Tokens, sess.Window = res.ContextTokens, res.ContextWindow
 	sess.Turns++

@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/skailama/tc/internal/agent/home"
 	"github.com/skailama/tc/internal/agent/work"
@@ -196,7 +198,8 @@ func agentTitle(h string) string {
 	if h == "" {
 		return "Your agent"
 	}
-	return strings.ToUpper(h[:1]) + h[1:]
+	r, n := utf8.DecodeRuneInString(h)
+	return string(unicode.ToUpper(r)) + h[n:]
 }
 
 func oneLine(s string, n int) string {

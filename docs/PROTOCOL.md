@@ -1004,6 +1004,40 @@ current epoch below the pinned head is an **alarm** for the channel: the
 head doesn't move and the alarm is kept in the trust store. A bundle whose
 rotator the client can't verify (yet) stops the walk without an alarm.
 
+**Accepting an older chain** (a server restored from a backup; no wire
+change). A restore loses the epochs committed after the backup, so a device
+that verified one sees its current epoch below the pinned head (and, once
+another member has recovered and rotated, a fork). Nothing moves the pinned
+head down by itself. A client MAY offer the user an explicit, audited
+acceptance, which it MUST refuse unless, fetching the server's bundles with
+`key.fetch` (one per epoch; two different ones for an epoch is a refusal):
+
+- some epoch A ≥ 1 below the pinned head H is served with exactly the bundle
+  the client verified for A (same ChainHash, hence the same chain up to A),
+  and A is the newest such epoch; and
+- either the server has no epoch above A (a **strict prefix**), or its
+  epochs A+1…top all verify by the rules above on top of the verified epoch
+  A, the rotator of A+1 is in the roster of H (no one the discarded
+  epochs removed can author the branch), top boxes no device the client
+  knows is revoked (whatever the seqs), and no branch epoch boxes a revoked
+  device with a signed `time` more than 5 minutes after the revoke's; and
+- the user is in the roster of H.
+
+The alarm must be a rollback or fork (other alarms are evidence, not a
+restore), and A at most 1024 epochs below H. The user sees, before
+confirming, which epochs are discarded and everyone who holds a key of an
+accepted epoch that H's roster didn't include, and the client re-checks that
+the server shows exactly that when the user confirms. The head never rests
+on A, whose roster may include members the discarded epochs removed: for a
+branch the client pins exactly the previewed epochs A+1…top together with
+the rewind; for a strict prefix it first commits its own `key.rotate` for
+epoch A+1 on A with exactly the previewed roster (the server refuses it
+with `stale_epoch` if the members changed) and pins that epoch together with
+the rewind. Both are one trust-store transaction. The first pinned epoch
+keeps the earlier of its own seq and the seq of the discarded epoch A+1 this
+device verified, so the server can't move the "sealed under A after A+1"
+cutoff for messages later.
+
 The chain link is about the signed bundle, not its keys: a bundle that
 verifies and whose `prev` is the pinned head is accepted and becomes the
 new head even if its box to this device is missing, fails to open or

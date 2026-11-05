@@ -35,7 +35,11 @@ const (
 	kSelCopy    = "y"
 	kSelPin     = "p"
 	kSelView    = "v"
-	kSelMenu    = "m" // the message menu
+	kSelMenu    = "m"      // the message menu
+	kSelMine    = "E"      // select my newest message
+	kSelCode    = "Y"      // copy only the code blocks
+	kBackChan   = "ctrl+^" // Ctrl-6: the previous channel (vim's alternate file)
+	kHuddle     = "alt+h"  // join or leave this channel's huddle
 	kConfirmYes = "y"
 	kTalk       = "ctrl+t" // only inside a voice huddle (huddle.go)
 	kSettings   = "ctrl+," // only where the terminal reports it (kitty keys); /settings works everywhere

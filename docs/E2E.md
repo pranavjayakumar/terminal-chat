@@ -100,6 +100,41 @@ the local cache is therefore sensitive — rely on disk encryption, documented.
   raise time) to the `trust_audit` table with who cleared it and when — never a silent delete. Nothing
   in the sync code calls them (a test checks). Computed alarms (unconfirmed member) can't be cleared.
   Clearing the server-wide alarm says so ("server-wide — clears the alarm for all encrypted channels").
+- **Server restored from a backup** (issue #84). A restore loses every epoch committed after the
+  backup: each device that verified one is in a rollback alarm that `/alarm-clear` can't end (the next
+  pass raises it again), and an honest restore looks exactly like a server hiding a membership change.
+  `/alarm-recover` (`Client.ChainRecoveryPlan`) previews accepting the server's chain and changes
+  nothing; `/alarm-recover #name` (`Client.RecoverChain`) accepts exactly the previewed state and
+  nothing else (`ErrRecoveryChanged` if the server's chain or ours moved since). Accepting is allowed
+  only (PROTOCOL §13.3 "Accepting an older chain") when the server serves, for some epoch A below our
+  head, the very bundle we verified (a hash chain, so the whole chain up to A is ours), and above A
+  either nothing (**strict prefix**: we first get the server to commit our own fresh epoch A+1 on A
+  for exactly the previewed members, then pin it) or a branch that verifies in full on top of A and
+  whose first rotator our newest verified epoch still includes (another member's recovery: we pin
+  exactly the previewed epochs). The head never rests on A, whose roster may include members the
+  discarded epochs removed, so nothing the server serves between preview and pin can slip in.
+  Devices count, not just users: a branch whose newest epoch seals its key to a device this device
+  knows is revoked is refused whatever seqs the server gives (a withheld revoke and rotation), as is
+  any branch epoch sealing to a revoked device with a signed time after the revoke; the preview counts
+  boxes to devices this device hasn't verified. The first pinned epoch keeps the earlier of its seq and
+  the discarded epoch's (the server can't move the cutoff for messages under the shared epoch later).
+  Everything else is refused: an alarm that isn't a rollback or fork, a forged or unverifiable
+  branch, a branch started by someone the discarded epochs removed, a chain sharing no epoch with ours
+  (searched at most 1024 epochs down), a chain still holding our head, two bundles for an epoch, or a
+  device whose newest epoch excludes its user. `trust.RewindChain` is the only way a pinned head moves
+  down: in one transaction it checks the head and target are what was shown, needs a channel alarm,
+  replaces the epochs above the target with the given ones (at least one) and moves the alarm to the
+  audit log as `rewind_chain` (with the hashes and who gets a key back). The preview's "readded" list
+  covers every roster of the accepted epochs, not only the newest. Only `verify.go`/`recover.go` call it
+  (a test checks). Messages judged invalid against a discarded epoch are judged again (their enc names
+  the bundle, so those sealed under a discarded epoch stay invalid). **What this can't tell apart:** a
+  server acting alone can drop epochs and present the verified chain cut short; a user who confirms
+  then undoes what those epochs did — most importantly a removal: the removed member is a member again
+  on the restored server and gets the fresh key. The preview names each such user ("⚠ @bob wasn't in
+  epoch 4 … gets the key again") and says to accept only after a known restore; `/remove` afterwards
+  re-applies the removal. A removed member colluding with the server can't author the branch others
+  follow (the first-rotator rule), and a server can't make anyone accept anything without a typed
+  confirmation after the preview.
 
 ## Rollout
 

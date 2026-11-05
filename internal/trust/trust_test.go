@@ -1450,6 +1450,91 @@ func TestOweRotation(t *testing.T) {
 	check(sidA, 7, false)
 }
 
+// RewindChain is the only way down the chain: it needs an alarm, the exact
+// head and target the user was shown, a target below the head and the
+// epochs that follow it (the head never rests on the target); it replaces
+// the epochs above the target with those, and moves the alarm to the audit
+// log, all at once.
+func TestRewindChain(t *testing.T) {
+	s, home := newStore(t)
+	const ch = 9
+	var heads []Head
+	for e := uint32(1); e <= 3; e++ {
+		h := [32]byte{byte(e), 0x77}
+		if err := s.AdvanceEpoch(sidA, ch, Epoch{Epoch: e, Hash: h, Roster: []uint64{1, 2}}); err != nil {
+			t.Fatal(err)
+		}
+		heads = append(heads, Head{Epoch: e, Hash: h})
+	}
+	if err := s.AdvanceEpoch(sidA, ch, Epoch{Epoch: 4, Hash: [32]byte{4, 0x77}, Roster: []uint64{1}}); err != nil {
+		t.Fatal(err)
+	}
+	from, to := Head{Epoch: 4, Hash: [32]byte{4, 0x77}}, heads[1]
+	fresh := []Epoch{{Epoch: 3, Hash: [32]byte{0x33}, Roster: []uint64{1, 2}}}
+	if err := s.RewindChain(sidA, ch, from, to, fresh, 1, "x"); !errors.Is(err, ErrNoAlarm) {
+		t.Fatalf("rewind without an alarm: %v", err)
+	}
+	s.RaiseAlarm(sidA, ch, "rollback: the server shows epoch 2, this device verified 4")
+	bad := func(name string, from, to Head, then []Epoch, want error) {
+		t.Helper()
+		if err := s.RewindChain(sidA, ch, from, to, then, 1, "x"); !errors.Is(err, want) {
+			t.Fatalf("%s: %v, want %v", name, err, want)
+		}
+		if h, _, _ := s.ChainHead(sidA, ch); h.Epoch != 4 {
+			t.Fatalf("%s moved the head to %d", name, h.Epoch)
+		}
+		if _, ok, _ := s.Epoch(sidA, ch, 3); !ok {
+			t.Fatalf("%s dropped an epoch", name)
+		}
+		if _, ok, _ := s.Alarm(sidA, ch); !ok {
+			t.Fatalf("%s cleared the alarm", name)
+		}
+	}
+	bad("upwards", from, Head{Epoch: 5}, fresh, ErrInvalid)
+	bad("to itself", from, from, fresh, ErrInvalid)
+	bad("to nothing", from, Head{}, fresh, ErrInvalid)
+	bad("resting on the target", from, to, nil, ErrInvalid)
+	bad("a gap after the target", from, to, []Epoch{{Epoch: 4, Hash: [32]byte{1}, Roster: []uint64{1}}}, ErrInvalid)
+	bad("a key not matching kc", from, to, []Epoch{{Epoch: 3, Hash: [32]byte{1}, Roster: []uint64{1}, Key: &e2ecrypto.Key{1}}}, ErrKeyMismatch)
+	bad("stale head", heads[2], heads[1], fresh, ErrChainMoved)
+	bad("other head hash", Head{Epoch: 4, Hash: [32]byte{9}}, to, fresh, ErrChainMoved)
+	bad("other target hash", from, Head{Epoch: 2, Hash: [32]byte{9}}, fresh, ErrChainMoved)
+	if a, _ := s.Audit(sidA); len(a) != 0 {
+		t.Fatalf("refused rewinds audited: %+v", a)
+	}
+
+	if err := s.RewindChain(sidA, ch, from, to, fresh, 7, "accepted"); err != nil {
+		t.Fatal(err)
+	}
+	if h, _, _ := s.ChainHead(sidA, ch); h.Epoch != 3 || h.Hash != fresh[0].Hash || [16]byte(h.EH) != [16]byte(fresh[0].Hash[:16]) {
+		t.Fatalf("head %+v", h)
+	}
+	if _, ok, _ := s.Epoch(sidA, ch, 4); ok {
+		t.Fatal("discarded epoch kept")
+	}
+	if e, ok, _ := s.Epoch(sidA, ch, 3); !ok || e.Hash != fresh[0].Hash {
+		t.Fatalf("epoch 3 %+v", e)
+	}
+	if e, ok, _ := s.Epoch(sidA, ch, 2); !ok || e.Hash != to.Hash {
+		t.Fatal("target epoch changed")
+	}
+	if _, ok, _ := s.Alarm(sidA, ch); ok {
+		t.Fatal("alarm kept")
+	}
+	// Done once: the same rewind again finds another head.
+	s.RaiseAlarm(sidA, ch, "again")
+	if err := s.RewindChain(sidA, ch, from, to, fresh, 7, "accepted"); !errors.Is(err, ErrChainMoved) {
+		t.Fatalf("replayed rewind: %v", err)
+	}
+	s.Close()
+	s = open(t, home)
+	a, err := s.Audit(sidA)
+	if err != nil || len(a) != 1 || a[0].Action != "rewind_chain" || a[0].Chan != ch || a[0].By != 7 ||
+		!strings.Contains(a[0].Detail, "accepted") || !strings.Contains(a[0].Detail, "rollback") || a[0].Raised.IsZero() {
+		t.Fatalf("audit %+v %v", a, err)
+	}
+}
+
 // An Endorsed key that an AgentEndorse names becomes Agent; nothing moves
 // out of Agent, and anchors (TOFU, Verified) are never demoted.
 func TestEndorsedKeyBecomesAgent(t *testing.T) {
