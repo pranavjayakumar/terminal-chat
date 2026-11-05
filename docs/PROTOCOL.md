@@ -114,10 +114,18 @@ Auth = {pubkey: bin, sig: bin, invite?: str, name?: str}
   without the token): `tc login` with it sends a HELLO without `invite`.
 
 The server waits 20 s for HELLO after the TLS handshake (≤ 10 s), then BYE
-`handshake_timeout` (hardware keys may wait for a touch). Connections that haven't
-authenticated yet are capped: at most 32 per source (an IPv4 /24, an IPv6 /64) and 512 in
-all; beyond either, a TCP connection is closed before the TLS handshake and a QUIC one
-right after it (no BYE). A connection stops counting once HELLO verified.
+`handshake_timeout` (hardware keys may wait for a touch). A TCP connection that sends no
+byte within 5 s of connecting is closed (a client sends its ClientHello at once).
+Connections that haven't authenticated yet are capped per source: at most 32 per IPv4 /24 or
+IPv6 /64, 64 per IPv6 /56 and 128 per IPv6 /48; beyond that, a TCP connection is closed
+before the TLS handshake and a QUIC one right after it (no BYE). In all at most 512 are
+pending; when that is full, a newcomer evicts the oldest pending connection of the source
+group (IPv4 /24, IPv6 /48) holding the most slots — closed like a refused one, or with the
+transport closed if it already finished TLS — provided that group holds more than the
+newcomer's own; otherwise the newcomer is refused. A flood therefore only displaces itself,
+and a client from a quiet source always gets in. A connection stops counting once HELLO
+verified. The server operator can change 512 and 32 (`tc server --max-pending`,
+`--max-pending-per-source`; the IPv6 /56 and /48 caps scale with the latter).
 
 ### 4.1 Invites
 
