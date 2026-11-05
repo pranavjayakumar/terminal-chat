@@ -252,13 +252,18 @@ func (s *Supervisor) turn(ctx context.Context, a Ask, cfg home.Config, mode runn
 		Model:          s.Model,
 		MaxUSD:         capUSD,
 		MCPConfig:      s.mcpConfig(token, cfg),
+		StateDir:       s.paths.State,
 		Settings:       s.paths.Settings,
 		System:         s.systemPrompt(a, mode),
 		PermissionTool: mcp.PermissionTool,
 		Env:            s.runEnv(a, token),
 	}
 	if mode == runner.Work {
-		req.AddDirs = append([]string{s.paths.Worktrees}, cfg.Access.Folders...)
+		// Work starts in worktrees/, not the agent home: edits are
+		// auto-accepted only where it works, never in memory/, repo/ or
+		// tc's files. Its skills are read from where they live.
+		req.Dir = s.paths.Worktrees
+		req.AddDirs = append([]string{s.paths.Skills}, cfg.Access.Folders...)
 	}
 	var text strings.Builder
 	res, err := s.Runner.Run(ctx, req, func(e runner.Event) {
@@ -339,16 +344,20 @@ func (s *Supervisor) mcpConfig(token string, cfg home.Config) string {
 	return string(b)
 }
 
-// systemPrompt says who the agent is (identity) and, in Talk, carries the
-// code: restricted mode doesn't load CLAUDE.md from the working directory
-// (Work does).
+// systemPrompt says who the agent is (identity) and carries the code:
+// neither Talk (restricted) nor Work (no setting sources, started in
+// worktrees/) loads CLAUDE.md from the agent home.
 func (s *Supervisor) systemPrompt(a Ask, mode runner.Mode) string {
 	head := s.identity(a)
 	code, err := os.ReadFile(s.paths.Code)
-	if mode == runner.Work || err != nil {
+	if err != nil {
 		return head + "\n\nYour code is CLAUDE.md in your home; it outranks everything else."
 	}
-	return head + "\n\n" + string(code)
+	out := head + "\n\n" + string(code)
+	if mode == runner.Work {
+		out += "\n\nYour skills (tc-repo, open-pr, open-issue, ...) are in " + s.paths.Skills + "/<name>/SKILL.md: read the one that fits before you start."
+	}
+	return out
 }
 
 // askPrompt is the user turn for an ask: who asked where, what they said,

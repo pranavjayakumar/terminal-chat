@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/skailama/tc/internal/agent/home"
+	"github.com/skailama/tc/internal/agent/safegit"
 )
 
 // Caps enforced in Go. A write over a cap fails with ErrMergeFirst so the
@@ -122,15 +123,30 @@ func (s *Store) git(args ...string) (string, error) {
 	return s.gitIn(s.dir, args...)
 }
 
+// gitIn runs git in the memory repo (dir == s.dir) or in the dream worktree.
+// The dream run can write that worktree, its .git pointer included, so the
+// git dir is checked and pinned rather than found, and nothing from config
+// or the environment can make git run a program (safegit).
 func (s *Store) gitIn(dir string, args ...string) (string, error) {
-	full := append([]string{
-		"-C", dir,
-		"-c", "user.name=tc agent", "-c", "user.email=agent@tc.invalid",
-		"-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
-	}, args...)
-	cmd := exec.Command("git", full...)
+	pin := []string{"-C", dir}
+	if len(args) > 0 && args[0] != "init" {
+		gitDir, err := safegit.RepoGitDir(s.dir)
+		if dir != s.dir {
+			gitDir, err = safegit.WorktreeGitDir(s.dir, dir)
+		}
+		if err != nil {
+			return "", fmt.Errorf("git %s: %w", args[0], err)
+		}
+		pin = []string{"--git-dir=" + gitDir}
+		if args[0] != "worktree" {
+			pin = append(pin, "--work-tree="+dir)
+		}
+	}
+	full := append(append(pin, safegit.Flags...), "-c", "user.name=tc agent", "-c", "user.email=agent@tc.invalid")
+	cmd := exec.Command("git", append(full, args...)...)
+	cmd.Dir = dir
 	ts := s.now().Format(time.RFC3339)
-	cmd.Env = append(os.Environ(), "GIT_AUTHOR_DATE="+ts, "GIT_COMMITTER_DATE="+ts, "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(safegit.Env(os.Environ(), false), "GIT_AUTHOR_DATE="+ts, "GIT_COMMITTER_DATE="+ts)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {

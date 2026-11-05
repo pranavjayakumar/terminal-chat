@@ -77,7 +77,9 @@ func TestScheduleChecksNamesAndFires(t *testing.T) {
 	if res := h.call(mcp.ToolSchedule, map[string]string{"when": "someday", "text": "x"}); !res.Error {
 		t.Fatalf("bad time accepted: %+v", res)
 	}
+	stop := h.approveAll()
 	res := h.call(mcp.ToolSchedule, map[string]string{"when": "9am", "chan": "#general", "text": "standup @bob @here", "repeat": "weekdays"})
+	stop()
 	if res.Error || !strings.Contains(res.Text, "every weekday") {
 		t.Fatalf("schedule: %+v", res)
 	}
@@ -283,7 +285,9 @@ func TestAskAgentFromDMNeedsChannel(t *testing.T) {
 	if r := h.call(mcp.ToolAskAgent, map[string]string{"handle": "bobbot", "question": "x"}); !r.Error || !strings.Contains(r.Text, "DM") {
 		t.Fatalf("asked from the DM: %+v", r)
 	}
+	stop := h.approveAll()
 	r := h.call(mcp.ToolAskAgent, map[string]string{"handle": "bobbot", "question": "ping?", "chan": "#general"})
+	stop()
 	if r.Error || !strings.Contains(r.Text, "no answer") {
 		t.Fatalf("timeout: %+v", r)
 	}

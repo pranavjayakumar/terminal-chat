@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -16,8 +17,8 @@ import (
 // Approvals. The harness (internal/agent/approvals.go) posts a card
 //
 //	✋ Rocky wants to post in #general  ·  #<code>
-//	> exactly what it will post (first lines)
 //	why: bob asked in #general: "…"
+//	> exactly what it will post, every line
 //
 // (older harnesses: `✋ @<owner> approve: <action>? react ✅ / ❌  ·
 // #<code>` and a detail) in the thread and waits for its owner to react ✅
@@ -28,6 +29,10 @@ import (
 // owner's reactions only; everyone else sees "waiting for <owner>").
 // Choice 2 reacts ✅ and ♾️: the harness takes the ✅ as yes and the ♾️ as
 // "the same kind of action on the same target is fine for today".
+//
+// The preview is never cut: every quoted line is drawn, wrapped to the
+// width. A preview too long for one message goes on in the next messages
+// ("#<code> (2/3)"), and the card's `full:` line (size and sha256) says so.
 
 const (
 	apprYes   = "✅"
@@ -43,6 +48,7 @@ type approvalCard struct {
 	detail string   // old cards: free text under the card
 	quote  []string // new cards: the preview
 	why    string
+	full   string // "N lines · N bytes · sha256 … · continued in the next N messages"
 }
 
 // apprState is a card's answer as its block shows it.
@@ -92,6 +98,8 @@ func parseApproval(x client.Message) (approvalCard, bool) {
 				c.quote = append(c.quote, l[2:])
 			case strings.HasPrefix(l, "why: "):
 				c.why = l[len("why: "):]
+			case strings.HasPrefix(l, "full: "):
+				c.full = l[len("full: "):]
 			}
 		}
 	}
@@ -257,9 +265,16 @@ func (m *Model) drawApproval(g *grower, x client.Message, card approvalCard, st 
 	y := g.row()
 	g.c.put(2, y, truncate(card.title(), bw), fgb(th.fg), "")
 	for _, q := range card.quote {
-		yy := g.row()
-		e := g.c.put(2, yy, "▏", fgc(th.faint), "")
-		g.c.put(e+1, yy, truncate(sanitize.Line(q), bw-2), fgc(th.dim), "")
+		for _, part := range wrapCells(sanitize.Line(q), bw-2) {
+			yy := g.row()
+			e := g.c.put(2, yy, "▏", fgc(th.faint), "")
+			g.c.put(e+1, yy, part, fgc(th.dim), "")
+		}
+	}
+	if card.full != "" {
+		for _, part := range wrapCells("⚠ long: "+sanitize.Line(card.full), bw) {
+			g.c.put(2, g.row(), part, fgc(th.warn), "")
+		}
 	}
 	if card.why != "" {
 		yy := g.row()
@@ -287,6 +302,26 @@ func (m *Model) drawApproval(g *grower, x client.Message, card approvalCard, st 
 	}
 	yy := g.row()
 	g.c.put(2, yy, truncate("only you can answer · select it, then 1–3", bw), fgc(th.faint), "")
+}
+
+// wrapCells cuts s into pieces of at most w cells, keeping every character
+// (and its spacing: a diffstat or a command must read as written).
+func wrapCells(s string, w int) []string {
+	w = max(w, 1)
+	if s == "" {
+		return []string{""}
+	}
+	var out []string
+	for s != "" {
+		head, rest := splitWidth(s, w)
+		if head == "" {
+			_, n := utf8.DecodeRuneInString(s)
+			head, rest = s[:n], s[n:]
+		}
+		out = append(out, head)
+		s = rest
+	}
+	return out
 }
 
 // answerApproval reacts choice ("1"–"3") on card x, if it is my agent's

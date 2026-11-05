@@ -229,10 +229,10 @@ side holds every row, the roomier side gets a shorter menu that scrolls. It work
 ## Slash commands
 
 `/join #x`, `/leave`, `/create #x [--private [--plaintext]]`, `/add @user`, `/topic text`, `/dm @a @b` (`/dm @me` or my own name: my notes, also in `Option-K`; `@me` is always me, even if an account is named `me`; after `/dm` the popup offers `@me` and my name),
-`/invite` (admin; prints code), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps), `/pins` (overlay of this channel's pinned messages, newest pin first, as `author · preview`; Enter jumps, Esc closes),
+`/invite` (admin; prints code), `/invite --for @user` (admin; add-key invite for a new computer of theirs), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps), `/pins` (overlay of this channel's pinned messages, newest pin first, as `author · preview`; Enter jumps, Esc closes),
 `/activity`, `/highlight [word…]`, `/unhighlight word…`, `/group name @a @b…` (admin), `/groups`,
 `/remind <when> <text>`, `/reminders`, `/remind-delete id`, `/snippet path[:range] [message]`,
-`/share-pane [pane]` (herdr only), `/verify @user [--github login]`, `/accept-key @user`, `/members`,
+`/share-pane [pane]` (herdr only), `/verify @user [--github login]`, `/accept-key @user`, `/endorse-key [SHA256:…]` (trust another SSH key of yours; no argument: show this computer's), `/members`,
 `/alarm`, `/alarm-clear #name`, `/alarm-recover [#name]`, `/devices [@user]`, `/device-revoke id`, `/disable @user` (admin), `/quit`.
 `/invites` and `/webhooks` open a list, one per row. The invite and webhook viewers take the full width (no sidebar) so a mouse selection copies only the command.
 `/webhook name` copies the curl command; when no system clipboard tool took it (only OSC 52, which Terminal.app and tmux without `set-clipboard on` ignore) a viewer opens with the command hidden: `s` shows it (it holds the secret URL), `y` copies again, Esc closes and forgets it.
@@ -519,8 +519,13 @@ and one status row. Code: `internal/tui/agent.go` (icons, state), `agentlive.go`
   The palette's People group lists every other agent too (`@juno · Bob's agent`): picking one types
   `@juno ` into the composer; my agent without a DM yet opens it. The agent speaks
   first (the harness); tc only draws it. Without the DM yet, the panel's `d` creates it (`OpenAgentDM`).
-- **Approvals.** The harness posts `✋ @owner approve: <action>? react ✅ / ❌  ·  #code` + detail and waits
-  for the owner's ✅ / ❌. tc draws the detail, then `<action>?  1 yes  2 yes, ok today  3 no` (`PRs ok today`
+- **Approvals.** The harness posts `✋ Rocky wants to <action>  ·  #code`, a `why:` line and the whole
+  preview as `> ` lines (older harnesses: `✋ @owner approve: <action>? react ✅ / ❌  ·  #code` + detail) and
+  waits for the owner's ✅ / ❌. Nothing is cut: tc wraps every preview line to the width; a preview too
+  long for one message continues in the next ones (`#code (2/3)`), and the card's `full:` line (lines,
+  bytes, sha256) shows as `⚠ long: …`. Tool cards show every argument as JSON; PR cards show the exact
+  commit, `git diff --stat` against the base and `⚠ CHANGES CI (.github/)` first when it does. Posts in
+  another channel, issues and PRs always get a card, even on the owner's own ask. tc draws the detail, then `<action>?  1 yes  2 yes, ok today  3 no` (`PRs ok today`
   when the action names a PR) and `only you can answer · keys 1–3`; everyone else sees `waiting for Fizan`.
   Keys 1–3 answer only a card selected on purpose (select mode, where the footer reads `1 yes · 2 PRs ok
   today · 3 no`); digits typed in the composer are always text. `⌥O` (or the palette's `Approval waiting ·
@@ -548,6 +553,13 @@ and one status row. Code: `internal/tui/agent.go` (icons, state), `agentlive.go`
   `RegisterAgent`, then makes the agent home as `tc agent setup` does (`home.EnsureWith` with the server's
   host, config with this machine's id, `client.LoginAgent` for its device unless it is signed in already);
   `tc background` runs it. A refused handle shows the server's reason.
+- **Work sandbox** (harness, `internal/agent/home/settings.go`, `internal/agent/safegit`; nothing in tc draws
+  it). Work/Crew runs start in the agent's `worktrees/`, load no settings or CLAUDE.md from there (only tc's
+  `--settings`), and the shell may read only its worktrees, granted folders, `repo/`, skills and its own Go
+  caches (`<agent home>/cache`); it can't write `repo/`, `dream/`, any `.git` or tc's files, and reaches only
+  the tc server (no internet: Go modules come from `modproxy/`, which `work_start` fills as tc). It can't commit: `open_pr` commits the
+  worktree as tc, with hooks, fsmonitor, credential helpers and system/global git config off and the git dir
+  pinned (a changed `.git` pointer is refused), and pushes exactly the commit on the card.
 - **Follow-ups and quiet** (harness, `internal/agent/engage.go`; nothing in tc draws them). After an agent
   replies in a thread (or a channel's top level), people's messages there reach it without an @mention
   until nobody has written there for `engage_minutes` (default 10). "Be quiet for 5 min, then …" makes it

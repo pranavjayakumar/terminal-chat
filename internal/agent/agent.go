@@ -61,7 +61,10 @@ type Memory interface {
 type Work interface {
 	EnsureClone(ctx context.Context) error
 	Worktree(ctx context.Context, slug string) (work.Worktree, error)
-	OpenDraftPR(ctx context.Context, dir, branch, title, body string) (string, error)
+	// PreparePR commits the worktree and describes the branch for the card;
+	// OpenDraftPR pushes exactly that commit.
+	PreparePR(ctx context.Context, dir, branch, message string) (work.PR, error)
+	OpenDraftPR(ctx context.Context, pr work.PR, title, body string) (string, error)
 	OpenIssue(ctx context.Context, title, body string) (string, error)
 }
 
@@ -153,6 +156,10 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	s.defaults()
 	s.paths = home.PathsFor(s.Dir)
 	if err := os.MkdirAll(s.paths.State, 0o700); err != nil {
+		return err
+	}
+	// The tool socket lives here; MkdirAll keeps an older, looser mode.
+	if err := os.Chmod(s.paths.State, 0o700); err != nil {
 		return err
 	}
 	var err error

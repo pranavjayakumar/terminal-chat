@@ -102,6 +102,15 @@ CREATE TABLE IF NOT EXISTS devices (
 	revoked BLOB
 );
 CREATE INDEX IF NOT EXISTS devices_user ON devices(user);
+-- key.endorse endorsements (§13.2): msgpack Signed KeyEndorse of new_ssh,
+-- a login key of user, by another of user's keys.
+CREATE TABLE IF NOT EXISTS key_endorse (
+	endorse BLOB PRIMARY KEY,
+	user INTEGER NOT NULL REFERENCES users(id),
+	new_ssh BLOB NOT NULL,
+	created INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS key_endorse_user ON key_endorse(user);
 CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5(body, content='messages', content_rowid='id');
 INSERT INTO msg_fts(msg_fts, rank) VALUES('secure-delete', 1);
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
@@ -494,7 +503,7 @@ func visibleEvents(ctx context.Context, q querier, u, since, h uint64, limit int
 		SELECT seq, kind, COALESCE(chan, 0), time, actor, data FROM events e
 		WHERE seq > ?1 AND seq <= ?2 AND (
 			kind IN ('user.new', 'user.update', 'group.update')
-			OR (?5 AND kind IN ('device.new', 'device.revoke'))
+			OR (?5 AND kind IN ('device.new', 'device.revoke', 'key.endorse'))
 			OR (?6 AND kind = 'agent.update')
 			OR (?6 AND kind = 'agent.access' AND actor = ?3)
 			OR (kind = 'read.update' AND actor = ?3)

@@ -15,19 +15,28 @@ func Dir(tcHome string) string { return filepath.Join(tcHome, "agent") }
 
 // Paths names every file and folder in an agent home.
 type Paths struct {
-	Root       string // the agent home
-	Code       string // CLAUDE.md, the code
-	Settings   string // .claude/settings.json
-	Skills     string // .claude/skills
-	Soul       string // soul.md
-	Me         string // me.md
-	Config     string // config.json
-	DeviceHome string // home/: the agent device's TC_HOME
-	Memory     string // memory/: the agent's git-backed memory
-	State      string // state/: sessions, ledger, activity, queue
-	Repo       string // repo/: the tc clone
-	Worktrees  string // worktrees/: one per piece of work
-	Dream      string // dream/: the memory worktree a dream run edits
+	Root     string // the agent home
+	Code     string // CLAUDE.md, the code
+	Settings string // .claude/settings.json
+	// DreamSettings is .claude/dream-settings.json, the memory dream's.
+	DreamSettings string
+	Skills        string // .claude/skills
+	Soul          string // soul.md
+	Me            string // me.md
+	Config        string // config.json
+	DeviceHome    string // home/: the agent device's TC_HOME
+	Memory        string // memory/: the agent's git-backed memory
+	State         string // state/: sessions, ledger, activity, queue
+	Repo          string // repo/: the tc clone
+	Worktrees     string // worktrees/: one per piece of work
+	Dream         string // dream/: the memory worktree a dream run edits
+	// GoCache and GoModCache are the sandboxed shell's own Go caches: the
+	// owner's would let it plant code the owner's next build runs.
+	GoCache, GoModCache string
+	// ModProxy is the module cache tc fills from outside the sandbox
+	// (work_start); the sandbox reads it as its only GOPROXY and can't
+	// write it.
+	ModProxy string
 	// Guest is the working directory of Talk runs for anyone but the
 	// owner: nothing private in it, so reading it needs no prompt.
 	Guest string
@@ -37,19 +46,23 @@ type Paths struct {
 func PathsFor(dir string) Paths {
 	j := func(p ...string) string { return filepath.Join(append([]string{dir}, p...)...) }
 	return Paths{
-		Root:       dir,
-		Code:       j("CLAUDE.md"),
-		Settings:   j(".claude", "settings.json"),
-		Skills:     j(".claude", "skills"),
-		Soul:       j("soul.md"),
-		Me:         j("me.md"),
-		Config:     j("config.json"),
-		DeviceHome: j("home"),
-		Memory:     j("memory"),
-		State:      j("state"),
-		Repo:       j("repo"),
-		Worktrees:  j("worktrees"),
-		Dream:      j("dream"),
-		Guest:      j("guest"),
+		Root:          dir,
+		Code:          j("CLAUDE.md"),
+		Settings:      j(".claude", "settings.json"),
+		DreamSettings: j(".claude", "dream-settings.json"),
+		Skills:        j(".claude", "skills"),
+		Soul:          j("soul.md"),
+		Me:            j("me.md"),
+		Config:        j("config.json"),
+		DeviceHome:    j("home"),
+		Memory:        j("memory"),
+		State:         j("state"),
+		Repo:          j("repo"),
+		Worktrees:     j("worktrees"),
+		Dream:         j("dream"),
+		GoCache:       j("cache", "go-build"),
+		GoModCache:    j("cache", "gomod"),
+		ModProxy:      j("modproxy"),
+		Guest:         j("guest"),
 	}
 }

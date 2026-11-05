@@ -26,7 +26,7 @@ fuzzing) run in CI; this list covers what only a human at a real terminal can ju
 | Private channel | `/create #x --private`, `/add @bob` | 🔒, bob reads history; `/members` |
 | Offline | kill the network or the server, send, reconnect | message sends once, in order |
 | Shell | `echo hi \| tc send '#general'`, `tc tail '#general'` | code block; live stream |
-| Invites | `/invite 2 1d`, `/invites`, `/invite-revoke id`; `tc invite --key github:<login>` | one-liner works; key-bound invite only works with that GitHub key |
+| Invites | `/invite 2 1d`, `/invites`, `/invite-revoke id`; `tc invite --key github:<login>`; `tc invite --for @you` on a computer without your key | one-liner works; key-bound invite only works with that GitHub key; add-key invite signs the new computer in as you |
 | Second computer | `tc login` on machine 1, run the printed line on machine 2 | same account, history, encrypted DMs readable |
 | Devices | `/devices`, `/device-revoke id` | revoked device can't read new encrypted messages |
 | Admin | `tc users`, `/disable @bob` | bob is locked out |

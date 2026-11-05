@@ -28,8 +28,9 @@ const (
 	// ApproveAlways: every post outside the thread it was asked in, and
 	// every PR, push and issue.
 	ApproveAlways Approvals = "always"
-	// ApproveWorkOnly: posting anywhere it can read never asks; PRs,
-	// pushes, issues and shell writes outside granted folders do.
+	// ApproveWorkOnly: posting in the channel it was asked in never asks;
+	// posts in other channels, PRs, pushes, issues and shell writes
+	// outside granted folders do, even on the owner's own ask.
 	ApproveWorkOnly Approvals = "work_only"
 	// ApproveNever: nothing asks.
 	ApproveNever Approvals = "never"

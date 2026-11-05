@@ -282,7 +282,7 @@ func (s *Server) applyCache(ev proto.Event) {
 // e2e-only kinds are filtered by publishLocked.
 func (s *Server) visibleLocked(ev proto.Event, u uint64) bool {
 	switch ev.Kind {
-	case proto.KUserNew, proto.KUserUpdate, proto.KGroupUpdate, proto.KDeviceNew, proto.KDeviceRevoke, proto.KAgentUpdate:
+	case proto.KUserNew, proto.KUserUpdate, proto.KGroupUpdate, proto.KDeviceNew, proto.KDeviceRevoke, proto.KKeyEndorse, proto.KAgentUpdate:
 		return true
 	case proto.KReadUpdate, proto.KAgentAccess:
 		return ev.Actor == u

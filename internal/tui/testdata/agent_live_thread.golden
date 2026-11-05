@@ -5,26 +5,26 @@
   ⌕ Jump to…        ⌥K  │                                                                                                                   
                         │                                                                                                                   
   Channels              │                                                                                                                   
-  # backend          3  │                                                                                                                   
+  # backend          3  │                                                                         ──────────────── Today ─────────────────  
 ▎ # general             │                                                                                                                   
-  # secret          @1  │                                                                         ──────────────── Today ─────────────────  
+  # secret          @1  │                                                                         │ bob  20:41                              
+                        │                                                                         │ can we get /poll? picking dinner        
+  Direct                │                                                                         │ took 43 messages                        
+  ◐ bob                 │                                                                         │ ↳ 2 replies                             
+   └ ◡◡ Juno 💤         │                                                                                                                   
+                        │  ────────────────────────────── Today ──────────────────────────────    ────────────── 2 replies ───────────────  
                         │                                                                                                                   
-  Direct                │                                                                         │ bob  20:41                              
-  ◐ bob                 │                                                                         │ can we get /poll? picking dinner        
-   └ ◡◡ Juno 💤         │                                                                         │ took 43 messages                        
-                        │  ────────────────────────────── Today ──────────────────────────────    │ ↳ 2 replies                             
-                        │                                                                                                                   
-                        │  │ bob  20:37                                                           ────────────── 2 replies ───────────────  
-                        │  │ my manager replied to my 3-page proposal with "let's revisit       │                                           
-                        │  │ after Q4 👍"                                                       │ │ alice                                   
-                        │                                                                       │ │ @rocky add /poll to tc                  
-                        │  │ carol  20:38                                                       │ │ 20:42 ✓                                 
-                        │  │ @rocky what is he really saying?                                   │                                           
-                        │                                                                         ┆ ▟▙ Rocky ⟡  20:42                       
-                        │  ┆ ▟▙ Rocky ⟡ · Alice's agent  20:39                                    ┆ Rocky wants to open a draft PR on…      
-                        │  ┆ translation: no, but politely.                                       ┆ ▏ plan for /poll, about 15 min an…      
-                        │  ┆ "revisit after Q4" is where proposals go to rest.                    ┆ ▏ proto poll op + vote event            
-                        │                                                                         ┆ ▏ tests unit + e2e, then a draft …      
+                        │  │ bob  20:37                                                           │ alice                                   
+                        │  │ my manager replied to my 3-page proposal with "let's revisit       │ │ @rocky add /poll to tc                  
+                        │  │ after Q4 👍"                                                       │ │ 20:42 ✓                                 
+                        │                                                                       │                                           
+                        │  │ carol  20:38                                                       │ ┆ ▟▙ Rocky ⟡  20:42                       
+                        │  │ @rocky what is he really saying?                                   │ ┆ Rocky wants to open a draft PR on…      
+                        │                                                                         ┆ ▏ plan for /poll, about 15 min and      
+                        │  ┆ ▟▙ Rocky ⟡ · Alice's agent  20:39                                    ┆ ▏  ~$2:                                 
+                        │  ┆ translation: no, but politely.                                       ┆ ▏ proto poll op + vote event            
+                        │  ┆ "revisit after Q4" is where proposals go to rest.                    ┆ ▏ tests unit + e2e, then a draft P      
+                        │                                                                         ┆ ▏ R                                     
                         │  │ alice                                                                ┆ why: alice asked in #general: "@r…      
                         │  │ lol                                                                  ┆ ▐ 1 open it ▌                           
                         │  │ 20:40 ✓                                                              ┆ ▐ 2 open, and don't ask again to…▌      

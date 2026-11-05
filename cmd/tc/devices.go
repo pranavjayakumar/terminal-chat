@@ -49,6 +49,7 @@ func cmdDevices(args []string) error {
 
 type devicesArgs struct {
 	revoke           string // device id prefix; "" lists
+	endorse          string // SSH key fingerprint to vouch for
 	who              string // list: @user without the @; "" = me
 	yes, self, force bool
 }
@@ -57,6 +58,13 @@ func parseDevices(args []string) (devicesArgs, error) {
 	var a devicesArgs
 	if len(args) > 0 && (args[0] == "list" || args[0] == "ls") {
 		args = args[1:]
+	}
+	if len(args) > 0 && args[0] == "endorse" {
+		if len(args) != 2 || !strings.HasPrefix(args[1], "SHA256:") {
+			return a, errors.New("usage: tc devices endorse SHA256:… (the fingerprint tc devices shows on your other computer)")
+		}
+		a.endorse = args[1]
+		return a, nil
 	}
 	if len(args) > 0 && args[0] == "revoke" {
 		for _, x := range args[1:] {
@@ -93,6 +101,13 @@ func devices(ctx context.Context, c devicesBackend, args []string, in io.Reader,
 		return err
 	}
 	me := c.Me()
+	if a.endorse != "" {
+		e, ok := c.(endorseBackend)
+		if !ok {
+			return errors.New("endorsing keys isn't supported here")
+		}
+		return endorseKey(ctx, e, a.endorse, out)
+	}
 	user, name := me.ID, me.Name
 	if a.who != "" {
 		user = 0
@@ -114,6 +129,9 @@ func devices(ctx context.Context, c devicesBackend, args []string, in io.Reader,
 	if a.revoke == "" {
 		printDevices(out, c.Devices(user), name, user == me.ID)
 		if user == me.ID {
+			if e, ok := c.(endorseBackend); ok {
+				printOwnKey(out, e.OwnKeyFingerprint(), c.Devices(user))
+			}
 			printDeviceErr(out, c.DeviceError())
 		}
 		return nil
@@ -179,6 +197,50 @@ func devices(ctx context.Context, c devicesBackend, args []string, in io.Reader,
 		printDeviceErr(out, c.DeviceError())
 	}
 	return nil
+}
+
+// endorseBackend is what tc devices endorse needs (*client.Client).
+type endorseBackend interface {
+	OwnKeyFingerprint() string
+	EndorseKey(ctx context.Context, fp string) (client.EndorseResult, error)
+}
+
+var _ endorseBackend = (*client.Client)(nil)
+
+// endorseKey makes this computer's SSH key vouch for another key of the
+// user's (#146), then says what to run on the other computer so it trusts
+// this one too.
+func endorseKey(ctx context.Context, c endorseBackend, fp string, out io.Writer) error {
+	rctx, cancel := context.WithTimeout(ctx, devicesTimeout)
+	defer cancel()
+	r, err := c.EndorseKey(rctx, fp)
+	if errors.Is(err, client.ErrKeyTrusted) {
+		fmt.Fprintf(out, "%s is already trusted on this computer.\n", sanitize.Line(fp))
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "✓ this computer's SSH key %s now vouches for %s.\n", sanitize.Line(r.By), sanitize.Line(r.Key))
+	fmt.Fprintln(out, "Your devices and everyone you chat with trust that key's devices from now on.")
+	fmt.Fprintf(out, "On the computer with that key, run this so it trusts this one too:\n\n  tc devices endorse %s\n\n", sanitize.Line(r.By))
+	return nil
+}
+
+// printOwnKey shows this computer's SSH key, which the user's other
+// computers need for tc devices endorse, and says what to do about devices
+// under a key of theirs this computer doesn't trust.
+func printOwnKey(out io.Writer, fp string, ds []client.DeviceInfo) {
+	if fp != "" {
+		fmt.Fprintf(out, "This computer's SSH key: %s\n", sanitize.Line(fp))
+	}
+	for _, d := range ds {
+		if !d.Verified && !d.Revoked {
+			fmt.Fprintln(out, "Devices marked unverified use an SSH key this computer doesn't trust. If it is yours (an add-key invite),\n"+
+				"run tc devices on that computer and here: tc devices endorse <the SSH key it shows>. Never endorse a key you don't recognize.")
+			return
+		}
+	}
 }
 
 var errLastRegistration = fmt.Errorf("your account has no device registrations left (%d per account, ever): revoked, this device could never register again and would lose encryption for good. Add --force to revoke it anyway", proto.MaxDeviceRegistrations)

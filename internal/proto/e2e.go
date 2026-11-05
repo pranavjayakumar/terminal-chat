@@ -21,6 +21,25 @@ const (
 	KDeviceRevoke = "device.revoke"
 )
 
+// Key endorsements after the fact (cap key_endorse, PROTOCOL.md §13.2): an
+// existing device publishes a KeyEndorse, signed by an SSH key it holds,
+// for another login key of the same user (e.g. one an add-key invite
+// added), so the user's other devices and everyone else trust that key
+// without a prompt the server could trigger.
+const (
+	CapKeyEndorse = "key_endorse"
+	OpKeyEndorse  = "key.endorse"
+	// KKeyEndorse carries a KeyEndorseArgs; visible to every e2e1 session.
+	KKeyEndorse = "key.endorse"
+	// MaxKeyEndorsements bounds the key.endorse endorsements per user.
+	MaxKeyEndorsements = 32
+)
+
+// KeyEndorseArgs is key.endorse's args and the key.endorse event data.
+type KeyEndorseArgs struct {
+	Endorse Signed `msgpack:"endorse"`
+}
+
 // Epoch ops and event (PROTOCOL.md §13.3).
 const (
 	OpKeyRotate = "key.rotate"

@@ -137,7 +137,7 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 	}
 	defer s.unregister(sess)
 	w := proto.Welcome{
-		Server: Version, Caps: append([]string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapVoice, proto.CapVoiceTCP, proto.CapAgent}, s.inviteCaps()...), ServerID: s.st.serverID, User: user, Time: s.now(),
+		Server: Version, Caps: append([]string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapVoice, proto.CapVoiceTCP, proto.CapAgent, proto.CapKeyEndorse}, s.inviteCaps()...), ServerID: s.st.serverID, User: user, Time: s.now(),
 		Agent: sess.agent,
 	}
 	if sess.passive {

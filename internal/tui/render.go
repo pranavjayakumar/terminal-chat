@@ -62,9 +62,10 @@ func (m *Model) waitingText(x client.Message) string {
 	switch x.Wait {
 	case client.WaitKeyChange:
 		if x.Author == m.me.ID {
-			// No command: trusting a key the server says is mine would
-			// hand its devices every channel key (#94 review).
-			return "🔒 sent under an SSH key of yours this device doesn't trust"
+			// No one-tap accept: trusting a key the server says is mine
+			// would hand its devices every channel key (#94 review). The
+			// user names the key, from the other computer (#146).
+			return "🔒 sent under an SSH key of yours this device doesn't trust · yours? /endorse-key (see /help)"
 		}
 		// The command first, so a narrow pane still shows it.
 		n := m.atName(x.Author)

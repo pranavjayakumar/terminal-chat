@@ -487,6 +487,10 @@ func (c *Client) PendingKeys(user uint64) []string {
 // requeued. With only, fps may be some of the pending ones; otherwise it
 // must be all of them. ErrPendingChanged if they aren't what is pending.
 func (c *Client) AcceptKeyChanges(user uint64, fps []string, only bool) error {
+	if user == c.Me().ID {
+		// Never on a prompt (#94, #146): the server could invent the key.
+		return ErrOwnKeyAccept
+	}
 	sid, ok := c.cacheServerID()
 	if !ok {
 		return errors.New("not synced with the server yet")

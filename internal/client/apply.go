@@ -155,6 +155,11 @@ func (c *Client) applySnapshot(s *session, sn proto.Snapshot) error {
 				return err
 			}
 		}
+		for _, e := range sn.Endorse {
+			if err := storeEndorse(tx, e); err != nil {
+				return err
+			}
+		}
 		for _, k := range sn.Keys {
 			if err := c.storeBundle(tx, 0, k.Bundle, k.Seq); err != nil {
 				return err
@@ -485,6 +490,12 @@ func (c *Client) applyKind(tx *sql.Tx, ev proto.Event, me uint64, u *Update, new
 			return nil
 		}
 		return storeDevice(tx, d)
+	case proto.KKeyEndorse:
+		var d proto.KeyEndorseArgs
+		if !decode(&d) {
+			return nil
+		}
+		return storeEndorse(tx, d.Endorse)
 	case proto.KDeviceRevoke:
 		var d proto.DeviceRevokeArgs
 		if !decode(&d) {
