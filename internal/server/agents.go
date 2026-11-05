@@ -754,9 +754,10 @@ func (s *Server) opAgentKey(ctx context.Context, u proto.User, a proto.AgentKeyA
 	}
 	// Proof of possession: without it a member could register a victim's
 	// public key and so block their join and key-bound invites. Clients
-	// before the proof get this message instead.
+	// before the proof (v0.6.2 and older) get this message instead
+	// (PROTOCOL.md §11, the agent_key_proof exception).
 	if len(a.Proof) == 0 {
-		return nil, badRequest("agent.key needs a proof signed by the agent's key; update tc")
+		return nil, badRequest("this tc is too old to set up an agent on this server; run tc update, then try again")
 	}
 	if identity.VerifyAgentKey(pk.Marshal(), a.Proof, s.sid(), u.ID) != nil {
 		return nil, badRequest("the proof does not verify under that key")
