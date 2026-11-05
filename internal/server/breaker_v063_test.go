@@ -86,9 +86,11 @@ func TestSyncStuck_BreakSlowQUICLink(t *testing.T) {
 		}
 	}
 	// readLoop's ticker first runs 5 s after the session started; these
-	// checks stand in for it well before then.
+	// checks stand in for it before then. A second apart is still 5x stricter
+	// than the real 5 s tick, but leaves a loaded -race runner (macOS CI)
+	// time to finish a 16 KiB piece between checks.
 	for range 3 {
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(time.Second)
 		w := sess.writing.Load()
 		if w == 0 {
 			continue
