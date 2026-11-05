@@ -11,6 +11,12 @@ import "time"
 // sessions where both sides advertise it.
 const CapAgent = "agent1"
 
+// CapAgentKeyProof (server-advertised only) marks a server whose agent.key
+// requires AgentKeyArgs.Proof. A client checks it before agent.key so that
+// against an older server it says to update the server instead of failing
+// on a field that server doesn't know.
+const CapAgentKeyProof = "agent_key_proof"
+
 // Agent ops (PROTOCOL.md §15.2).
 const (
 	OpAgentRegister = "agent.register"

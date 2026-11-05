@@ -137,7 +137,7 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 	}
 	defer s.unregister(sess)
 	w := proto.Welcome{
-		Server: Version, Caps: append([]string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapVoice, proto.CapVoiceTCP, proto.CapAgent, proto.CapKeyEndorse}, s.inviteCaps()...), ServerID: s.st.serverID, User: user, Time: s.now(),
+		Server: Version, Caps: append([]string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapVoice, proto.CapVoiceTCP, proto.CapAgent, proto.CapAgentKeyProof, proto.CapKeyEndorse}, s.inviteCaps()...), ServerID: s.st.serverID, User: user, Time: s.now(),
 		Agent: sess.agent,
 	}
 	if sess.passive {
@@ -246,7 +246,11 @@ func (s *Server) redeem(ctx context.Context, a proto.Auth, pubkey []byte, fp str
 		if err != nil || used || uses < 1 || expires <= now {
 			return nil, fail(proto.ByeInviteInvalid, "invite is invalid, used or expired")
 		}
-		if msg, fps, err := s.redeemCheck(ctx, tx, stored, createdBy, target.Valid, fp); err != nil {
+		var targetID uint64
+		if target.Valid {
+			targetID = uint64(target.Int64)
+		}
+		if msg, fps, err := s.redeemCheck(ctx, tx, stored, createdBy, targetID, fp); err != nil {
 			return nil, err
 		} else if msg != "" {
 			hintFPs = fps
