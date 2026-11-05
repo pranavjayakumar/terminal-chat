@@ -247,6 +247,13 @@ What a malicious server can and cannot do today, and what closes each gap:
   which is a bigger change than this fix. An agent has one active device at a time (the server
   refuses a second); the owner's client revokes the old agent devices when it gives the agent a
   new key (`tc agent login`) or retires it, so they stop getting K after the next rotation.
+  An agent's key is never an owner's key: a KeyEndorse of a key an AgentEndorse names is ignored,
+  and a key a KeyEndorse pinned before the server let its AgentEndorse through is demoted to the
+  agent's when it does (malicious-server test `TestMaliciousAgentKeyEndorsedAsOwner`). The owner's
+  device that set the agent up keeps the AgentEndorse itself and refuses to endorse that key. Left
+  open: while a server withholds the AgentEndorse from a client, an owner's KeyEndorse of the agent
+  key (signed only if the owner is talked into endorsing that fingerprint on another of their
+  computers) counts there, and whatever the agent key endorsed or revoked meanwhile stays.
 - **Availability** is not defended: a server can drop, delay or withhold anything. Clients recover
   what they can fetch again (bundles by `key.fetch`, keys by `key.share`) and never fail open.
 

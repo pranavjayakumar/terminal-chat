@@ -38,7 +38,14 @@ const (
 	// not draining, during sync, before the session is a slow consumer.
 	syncHighWater = 1 << 20
 	syncStuck     = idleTimeout
-	presenceEvery = time.Second
+	// A sync the writer is waiting on must also move at least syncMinRate
+	// on average over each syncRateWindow, or a client reading a sliver
+	// every few seconds (never stuck for syncStuck) holds its sync, and
+	// the live events buffered behind it, forever. Far below any link a
+	// person would sync over (#182: ~11 KB/s QUIC links must finish).
+	syncMinRate    = 512 // bytes/s
+	syncRateWindow = 2 * time.Minute
+	presenceEvery  = time.Second
 	// maxSessionsPerUser bounds one account's concurrent sessions (devices,
 	// background listeners, tc send/tail), and its agent's (sessionKey).
 	maxSessionsPerUser = 32
@@ -60,6 +67,7 @@ type session struct {
 	queue    []outFrame
 	queued   int        // bytes in queue (not yet taken by the writer)
 	pending  []outFrame // live events buffered while sync replays (§6 step 1)
+	pendingB int        // bytes in pending
 	live     bool
 	closed   bool
 	wake     chan struct{}
@@ -100,8 +108,13 @@ type session struct {
 	unsent     func() (int, bool)
 	// wrote counts bytes written to the transport (progressConn);
 	// lastWrote is its value at the last check.
-	wrote        atomic.Int64
-	lastWrote    int64
+	wrote     atomic.Int64
+	lastWrote int64
+	// checkSyncRate's window, under rateMu: when it started (zero: none)
+	// and wrote then.
+	rateMu       sync.Mutex
+	rateFrom     time.Time
+	rateWrote    int64
 	dgBucket     bucket // only the datagram reader goroutine touches it
 	lastTyping   map[uint64]time.Time
 	lastKeyNeed  map[uint64]time.Time // under srv.mu
@@ -471,11 +484,12 @@ func (sess *session) pushLive(f outFrame) {
 		return
 	}
 	if !sess.live {
-		if len(sess.pending) >= proto.MaxQueue {
+		if len(sess.pending) >= proto.MaxQueue || sess.pendingB+len(f.payload) > maxQueueBytes {
 			sess.slowLocked()
 			return
 		}
 		sess.pending = append(sess.pending, f)
+		sess.pendingB += len(f.payload)
 		return
 	}
 	if len(sess.queue) >= proto.MaxQueue || sess.queued+len(f.payload) > maxQueueBytes {
@@ -502,7 +516,7 @@ func (sess *session) goLive(h uint64) {
 			sess.enqueueLocked(f)
 		}
 	}
-	sess.pending = nil
+	sess.pending, sess.pendingB = nil, 0
 	sess.live = true
 	sess.signal()
 }
@@ -587,9 +601,10 @@ func (sess *session) writerDone() {
 	sess.close()
 }
 
-// progressChunk: where the OS can't report a send backlog (QUIC), writes
-// go out in pieces this big, so checkStuck sees a long write on a slow link
-// moving instead of judging it by its age alone.
+// progressChunk: writes go out in pieces this big, so checkStuck sees a
+// long write on a slow link moving (QUIC, where the OS can't report a send
+// backlog, judges by nothing else) and checkSyncRate can measure a reader's
+// pace within a frame. On TCP a piece is one TLS record, as before.
 const progressChunk = 16 << 10
 
 // progressConn counts the bytes written to the transport in wrote.
@@ -599,11 +614,6 @@ type progressConn struct {
 }
 
 func (c progressConn) Write(p []byte) (int, error) {
-	if c.Kind() == "tcp" { // checkStuck watches the socket itself
-		n, err := c.Conn.Write(p)
-		c.wrote.Add(int64(n))
-		return n, err
-	}
 	total := 0
 	for len(p) > 0 {
 		n, err := c.Conn.Write(p[:min(len(p), progressChunk)])
@@ -643,6 +653,7 @@ func (sess *session) readLoop(ctx context.Context) {
 				}
 				if syncing {
 					sess.checkStuck(time.Now(), syncStuck)
+					sess.checkSyncRate(time.Now())
 				} else if sess.streamVoice {
 					sess.checkVoiceStuck(time.Now())
 				}
@@ -756,6 +767,9 @@ func (sess *session) handleReq(ctx context.Context, r proto.Req) {
 			sess.respond(r.ID, nil, proto.Errf(proto.ErrBadRequest, "sync already done"))
 			return
 		}
+		sess.rateMu.Lock() // a failed sync's window doesn't carry over
+		sess.rateFrom = time.Time{}
+		sess.rateMu.Unlock()
 		sess.syncing.Store(true)
 		res, err := sess.srv.sync(ctx, sess, r.Args)
 		sess.touch() // PINGs that arrived meanwhile are still unread

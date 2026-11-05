@@ -574,6 +574,34 @@ func (sess *session) checkStuck(now time.Time, limit time.Duration) {
 	sess.mu.Unlock()
 }
 
+// checkSyncRate (readLoop's ticker, while syncing) closes the session as a
+// slow consumer when, over a whole syncRateWindow in which the writer was
+// waiting on the client at every check, less than syncMinRate on average
+// reached the transport. A tick with the writer idle (the server, not the
+// client, is the bottleneck) starts a new window.
+func (sess *session) checkSyncRate(now time.Time) {
+	sess.rateMu.Lock() // tests call it beside the ticker
+	defer sess.rateMu.Unlock()
+	wrote := sess.wrote.Load()
+	if sess.rateFrom.IsZero() || sess.writing.Load() == 0 {
+		sess.rateFrom, sess.rateWrote = now, wrote
+		return
+	}
+	d := now.Sub(sess.rateFrom)
+	if d < syncRateWindow {
+		return
+	}
+	if wrote-sess.rateWrote >= int64(d.Seconds()*syncMinRate) {
+		sess.rateFrom, sess.rateWrote = now, wrote
+		return
+	}
+	sess.mu.Lock()
+	if !sess.closed {
+		sess.slowLocked()
+	}
+	sess.mu.Unlock()
+}
+
 // pushVoice queues a relayed frame for sess's writer; false = dropped.
 func (sess *session) pushVoice(it dgItem) bool {
 	now := time.Now()

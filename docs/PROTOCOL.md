@@ -114,10 +114,20 @@ Auth = {pubkey: bin, sig: bin, invite?: str, name?: str}
   without the token): `tc login` with it sends a HELLO without `invite`.
 
 The server waits 20 s for HELLO after the TLS handshake (≤ 10 s), then BYE
-`handshake_timeout` (hardware keys may wait for a touch). Connections that haven't
-authenticated yet are capped: at most 32 per source (an IPv4 /24, an IPv6 /64) and 512 in
-all; beyond either, a TCP connection is closed before the TLS handshake and a QUIC one
-right after it (no BYE). A connection stops counting once HELLO verified.
+`handshake_timeout` (hardware keys may wait for a touch). A TCP connection that sends no
+byte within 8 s of connecting is closed (a client sends its ClientHello at once).
+Connections that haven't authenticated yet are capped: at most 32 per IPv4 /24 or IPv6 /64
+(beyond that, a TCP connection is closed before the TLS handshake and a QUIC one right after
+it, no BYE), 64 per IPv6 /56, 128 per IPv6 /48 and 512 in all. When a /56, a /48 or the total
+is full, a newcomer evicts the oldest pending connection among the groups holding the most
+slots in it — /64s within a /56 or /48; IPv4 /24s and IPv6 /48s in the total — provided they
+hold more than the newcomer's own group; otherwise it is refused like above. An evicted
+connection is closed the same way, or its transport closed if it already finished TLS. A
+flood from a few prefixes therefore only displaces itself, and a client from a quiet prefix
+gets in; one spread over hundreds of prefixes (one connection each) can still age out pending
+connections faster than slow ones (a hardware-key touch) authenticate. A connection stops
+counting once HELLO verified. The server operator can change 512 and 32 (`tc server --max-pending`,
+`--max-pending-per-source`; the IPv6 /56 and /48 caps scale with the latter).
 
 ### 4.1 Invites
 
@@ -540,9 +550,13 @@ All sizes are UTF-8 bytes.
 - Each session's unsent output is capped at 8 MiB (sync output excluded); beyond that → BYE `slow_consumer`.
 - Sync output (§6) is paced by the client instead: the server produces it only while less
   than 1 MiB of it waits unsent, and reads nothing else from that client meanwhile (requests,
-  PINGs and EPHEMERALs wait until the sync's RES). A client may take as long as it likes to
-  read a catch-up, but one frame write that sees no progress for 45 s during sync → BYE
-  `slow_consumer`.
+  PINGs and EPHEMERALs wait until the sync's RES). A client may take its time to read a
+  catch-up, within two rules, either → BYE `slow_consumer`: one frame write that sees no
+  progress for 45 s during sync; and less than 512 B/s on average reaching the transport over
+  each 2-minute window in which the server was waiting on the client throughout (checked every
+  5 s; a check finding nothing being written starts a new window, as does a passing one). Live
+  events for the client that arrive before its sync completes wait for it, at most 1024 frames
+  and 8 MiB of payload; beyond → BYE `slow_consumer`.
 - At most 32 concurrent sessions per account (passive sessions included), and 32 more for its
   agent, counted apart so an agent can't use up its owner's; one more → BYE
   `too_many_sessions` after authentication.
@@ -1658,8 +1672,12 @@ endorsed agent key as an **agent key** of the user, not as one of the user's key
 certified by it are the agent's devices, verified without a key-change warning; an agent key
 never endorses keys or signs revokes, an agent's device never signs a device revoke for its
 owner, a key some AgentEndorse names is never a user's first (TOFU) key, and /verify never turns
-an agent key into a verified key of the user. Older clients don't know AgentEndorse and show the
-agent's key as a key change of its owner.
+an agent key into a verified key of the user. A KeyEndorse of a key that some AgentEndorse names
+is ignored, whichever the server sends first; a key that a KeyEndorse already pinned as the
+user's (the AgentEndorse withheld until then) becomes an agent key once a valid AgentEndorse
+for it arrives. The owner's client that sets the agent up keeps the AgentEndorse it signs
+itself, and `key.endorse` is never signed for a key an AgentEndorse of the user's names. Older
+clients don't know AgentEndorse and show the agent's key as a key change of its owner.
 
 An agent session is the owner (`user` is the owner's id) with these differences:
 - it never counts toward the owner's presence (no `presence` changes; its `typing` and `presence`

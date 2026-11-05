@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/identity"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
@@ -119,13 +120,19 @@ func (c *Client) EndorseKey(ctx context.Context, fp string) (EndorseResult, erro
 	if err != nil {
 		return res, err
 	}
+	errAgent := errors.New("that's your agent's key; it can't be made one of yours")
 	for _, k := range pinned {
 		if k.Fingerprint == fp {
 			if k.How == trust.Agent {
-				return res, errors.New("that's your agent's key; it can't be made one of yours")
+				return res, errAgent
 			}
 			return res, ErrKeyTrusted
 		}
+	}
+	// Not pinned as the agent's (yet), but an AgentEndorse of mine says it
+	// is: endorsing it would make the agent's key an owner's (§15.1).
+	if c.agentKeyOf(sid, me, fp, pinned) {
+		return res, errAgent
 	}
 	pend, err := c.trust.PendingKeyChanges(sid)
 	if err != nil {
@@ -168,4 +175,38 @@ func (c *Client) EndorseKey(ctx context.Context, fp string) (EndorseResult, erro
 	c.requeueKeyChange()
 	c.kickE2E() // messages waiting on the key decrypt in the next pass
 	return res, nil
+}
+
+// agentKeyOf reports whether a stored AgentEndorse for user me, signed by
+// one of my pinned keys that isn't an agent's, names the key fp.
+func (c *Client) agentKeyOf(sid e2ecrypto.ServerID, me uint64, fp string, pinned []trust.SSHKey) bool {
+	rows, err := c.db.Query(`SELECT endorse FROM device_endorse WHERE user = ?`, me)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw []byte
+		var s proto.Signed
+		if rows.Scan(&raw) != nil || proto.Unmarshal(raw, &s) != nil {
+			continue
+		}
+		ae, err := identity.PeekAgentEndorse(identity.Signed(s))
+		if err != nil || ae.ServerID != sid || ae.User != me {
+			continue
+		}
+		pk, err := ssh.ParsePublicKey(ae.AgentSSH)
+		if err != nil || ssh.FingerprintSHA256(pk) != fp {
+			continue
+		}
+		for _, k := range pinned {
+			if k.How == trust.Agent {
+				continue
+			}
+			if v, err := identity.Signed(s).VerifyAgentEndorse(sid, k.Wire); err == nil && v.User == me && bytes.Equal(v.AgentSSH, ae.AgentSSH) {
+				return true
+			}
+		}
+	}
+	return false
 }

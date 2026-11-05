@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -18,6 +20,10 @@ import (
 
 const (
 	handshakeTimeout = 10 * time.Second
+	// firstByteTimeout: a TCP client sends its ClientHello as soon as it
+	// connects, so one that sent nothing by now (after several retransmits
+	// on a lossy link) only holds a pending slot.
+	firstByteTimeout = 8 * time.Second
 	keepAlivePeriod  = 20 * time.Second
 	maxIdleTimeout   = 60 * time.Second
 )
@@ -42,6 +48,8 @@ type listenOpts struct {
 	ListenOpts
 	noQUIC           bool // tests: simulate blocked UDP
 	handshakeTimeout time.Duration
+	firstByteTimeout time.Duration
+	keyOf            func(net.Addr) []netip.Prefix // tests: the gate's grouping
 }
 
 type listener struct {
@@ -49,6 +57,7 @@ type listener struct {
 	quic    *quic.Listener // nil if disabled
 	tlsConf *tls.Config
 	timeout time.Duration
+	silent  time.Duration // firstByteTimeout
 	http    *connListener // nil unless ListenOpts.HTTP
 	gate    *gate
 
@@ -87,6 +96,9 @@ func listenOnce(addr string, cert tls.Certificate, o listenOpts) (Listener, erro
 	if o.handshakeTimeout == 0 {
 		o.handshakeTimeout = handshakeTimeout
 	}
+	if o.firstByteTimeout == 0 {
+		o.firstByteTimeout = firstByteTimeout
+	}
 	tlsConf := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS13,
@@ -101,8 +113,12 @@ func listenOnce(addr string, cert tls.Certificate, o listenOpts) (Listener, erro
 		tcp:     tcpLn,
 		tlsConf: tcpConf,
 		timeout: o.handshakeTimeout,
+		silent:  o.firstByteTimeout,
 		conns:   make(chan Conn),
 		gate:    newGate(o.MaxPending, o.MaxPendingPerSource),
+	}
+	if o.keyOf != nil {
+		l.gate.keyOf = o.keyOf
 	}
 	l.ctx, l.cancel = context.WithCancel(context.Background())
 	if o.HTTP {
@@ -193,7 +209,9 @@ func (l *listener) acceptTCP() {
 				_ = limitUnsent("", "", rc)
 			}
 		}
-		release, ok := l.gate.admit(raw.RemoteAddr())
+		// Closing raw also ends a session built on it, should eviction
+		// come after the TLS handshake.
+		release, ok := l.gate.admit(raw.RemoteAddr(), func() { raw.Close() })
 		if !ok {
 			raw.Close() // before any TLS work
 			continue
@@ -217,7 +235,8 @@ func (l *listener) acceptTCP() {
 func (l *listener) handshakeTCP(raw net.Conn, release func()) (Conn, error) {
 	ctx, cancel := l.handshakeCtx()
 	defer cancel()
-	tc := tls.Server(raw, l.tlsConf)
+	raw.SetReadDeadline(time.Now().Add(l.silent))
+	tc := tls.Server(&firstByteConn{Conn: raw}, l.tlsConf)
 	if err := tc.HandshakeContext(ctx); err != nil {
 		return nil, err
 	}
@@ -243,7 +262,7 @@ func (l *listener) acceptQUIC() {
 		if err != nil {
 			return // only fails once the listener is closed
 		}
-		release, ok := l.gate.admit(qc.RemoteAddr())
+		release, ok := l.gate.admit(qc.RemoteAddr(), func() { qc.CloseWithError(0, "busy") })
 		if !ok {
 			qc.CloseWithError(0, "busy")
 			continue
@@ -264,6 +283,23 @@ func (l *listener) acceptQUIC() {
 			l.deliver(&quicConn{Stream: st, conn: qc, release: release})
 		}()
 	}
+}
+
+// firstByteConn lifts the listener's first-byte read deadline once the
+// client has sent something; from then on the handshake timeout applies.
+// Reads come from one goroutine at a time (handshake, then the session).
+type firstByteConn struct {
+	net.Conn
+	got atomic.Bool
+}
+
+func (c *firstByteConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 && !c.got.Load() {
+		c.got.Store(true)
+		c.Conn.SetReadDeadline(time.Time{})
+	}
+	return n, err
 }
 
 // handshakeCtx is bounded by the handshake timeout and cancelled on Close.

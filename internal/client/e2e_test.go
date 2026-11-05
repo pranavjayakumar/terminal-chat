@@ -420,6 +420,93 @@ func headOf(t *testing.T, c *Client, ch uint64) uint32 {
 
 // ---- device trust ----
 
+// The server serves bob's KeyEndorse of his agent's key before his
+// AgentEndorse of it (and an endorsement the agent's key signs for another
+// key after both). The KeyEndorse used to pin the agent's key as Endorsed,
+// owner-level, in the same pass, so its own endorsement then pinned the
+// key it names. An AgentEndorse'd key is the agent's whatever the order.
+func TestE2EAgentKeyEndorsedFirst(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	b1 := newPeer(t, bob, nil)
+	ag := newPeer(t, bob, nil)  // the agent's key and device
+	mal := newPeer(t, bob, nil) // a key only the agent's key vouches for
+	ke, _ := identity.NewKeyEndorse(b1.ssh, testSID(), bob, ag.ssh.PublicKey(), time.Now())
+	ae, _ := identity.NewAgentEndorse(b1.ssh, testSID(), bob, ag.ssh.PublicKey(), time.Now())
+	byAgent, _ := identity.NewKeyEndorse(ag.ssh, testSID(), bob, mal.ssh.PublicKey(), time.Now())
+	f := startE2E(t, fs, proto.Snapshot{
+		Devs:    []proto.Device{{Cert: b1.cert}, {Cert: ag.cert}, {Cert: mal.cert}},
+		Endorse: []proto.Signed{proto.Signed(ke), proto.Signed(ae), proto.Signed(byAgent)},
+	}, proto.DevicesListRes{})
+	f.myKeys(c)
+	how := func(k ssh.Signer) trust.How {
+		ks, _ := c.Trust().PinnedKeys(testSID(), bob)
+		for _, p := range ks {
+			if p.Fingerprint == ssh.FingerprintSHA256(k.PublicKey()) {
+				return p.How
+			}
+		}
+		return ""
+	}
+	waitFor(t, "the agent's key pinned", func() bool { return how(ag.ssh) != "" })
+	c.e2eMu.Lock()
+	c.verifyDevices(testSID(), nil, alice)
+	c.e2eMu.Unlock()
+	if h := how(ag.ssh); h != trust.Agent {
+		t.Fatalf("the agent's key is pinned %q", h)
+	}
+	if h := how(mal.ssh); h != "" {
+		t.Fatalf("a key endorsed by the agent's key is pinned %q", h)
+	}
+}
+
+// The agent's key, pinned Endorsed while its AgentEndorse was withheld,
+// signs an AgentEndorse naming bob's real second key, served before the
+// AgentEndorse that demotes the agent's key: bob's key stays his.
+func TestE2EAgentKeyCantDemoteOwnerKey(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	b1 := newPeer(t, bob, nil)
+	b2 := newPeer(t, bob, nil) // bob's real second key
+	ag := newPeer(t, bob, nil)
+	ke2, _ := identity.NewKeyEndorse(b1.ssh, testSID(), bob, b2.ssh.PublicKey(), time.Now())
+	keAg, _ := identity.NewKeyEndorse(b1.ssh, testSID(), bob, ag.ssh.PublicKey(), time.Now())
+	f := startE2E(t, fs, proto.Snapshot{
+		Devs:    []proto.Device{{Cert: b1.cert}, {Cert: b2.cert}, {Cert: ag.cert}},
+		Endorse: []proto.Signed{proto.Signed(ke2), proto.Signed(keAg)},
+	}, proto.DevicesListRes{})
+	f.myKeys(c)
+	how := func(k ssh.Signer) trust.How {
+		ks, _ := c.Trust().PinnedKeys(testSID(), bob)
+		for _, p := range ks {
+			if p.Fingerprint == ssh.FingerprintSHA256(k.PublicKey()) {
+				return p.How
+			}
+		}
+		return ""
+	}
+	waitFor(t, "both pinned endorsed", func() bool { return how(b2.ssh) == trust.Endorsed && how(ag.ssh) == trust.Endorsed })
+	evil, _ := identity.NewAgentEndorse(ag.ssh, testSID(), bob, b2.ssh.PublicKey(), time.Now())
+	aeAg, _ := identity.NewAgentEndorse(b1.ssh, testSID(), bob, ag.ssh.PublicKey(), time.Now())
+	if err := c.tx(func(tx *sql.Tx) error {
+		if err := storeEndorse(tx, proto.Signed(evil)); err != nil {
+			return err
+		}
+		return storeEndorse(tx, proto.Signed(aeAg))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c.e2eMu.Lock()
+	c.verifyDevices(testSID(), nil, alice)
+	c.e2eMu.Unlock()
+	if h := how(ag.ssh); h != trust.Agent {
+		t.Fatalf("the agent's key is pinned %q", h)
+	}
+	if h := how(b2.ssh); h != trust.Endorsed {
+		t.Fatalf("bob's own key is pinned %q after the agent's key named it", h)
+	}
+}
+
 // bob's first key is pinned on first sight; a second key endorsed by it is
 // accepted; a third, unendorsed key is a pending key change; forged certs
 // and revokes count for nothing. The auto-created epoch 1 of alice's

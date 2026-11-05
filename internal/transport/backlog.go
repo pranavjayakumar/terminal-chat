@@ -21,7 +21,11 @@ func Unsent(c Conn) (n int, known bool) {
 	if !ok {
 		return 0, false
 	}
-	tc, ok := t.NetConn().(*net.TCPConn)
+	nc := t.NetConn()
+	if f, ok := nc.(*firstByteConn); ok {
+		nc = f.Conn
+	}
+	tc, ok := nc.(*net.TCPConn)
 	if !ok {
 		return 0, false
 	}

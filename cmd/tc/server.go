@@ -70,7 +70,14 @@ func cmdServer(args []string) error {
 	var mi optBool
 	fs.Var(&mi, "member-invites", fmt.Sprintf("let members invite people (never admins; at most %d live invites, %d uses, 7 days each); without the flag, keeps the last setting, on for a new server",
 		proto.MaxMemberInvites, proto.MaxMemberInviteUses))
+	maxPending := fs.Int("max-pending", transport.DefaultMaxPending,
+		"connections that haven't signed in yet, in all (when full, the source holding the most loses its oldest)")
+	maxPendingPerSource := fs.Int("max-pending-per-source", transport.DefaultMaxPendingPerSource,
+		"connections that haven't signed in yet, per IPv4 /24 or IPv6 /64 (an IPv6 /56 gets 2x, a /48 4x)")
 	fs.Parse(args)
+	if *maxPending < 1 || *maxPendingPerSource < 1 {
+		return errors.New("--max-pending and --max-pending-per-source must be at least 1")
+	}
 	memberInvites := new(bool)
 	*memberInvites = memberInvitesSetting(&mi, *data)
 
@@ -107,7 +114,8 @@ func cmdServer(args []string) error {
 		return err
 	}
 	defer srv.Close()
-	ln, err := transport.ListenWith(*listen, srv.Cert(), transport.ListenOpts{HTTP: true, HTTPCert: srv.HTTPCert()})
+	ln, err := transport.ListenWith(*listen, srv.Cert(), transport.ListenOpts{HTTP: true, HTTPCert: srv.HTTPCert(),
+		MaxPending: *maxPending, MaxPendingPerSource: *maxPendingPerSource})
 	if err != nil {
 		return err
 	}

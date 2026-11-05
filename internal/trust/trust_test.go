@@ -1534,3 +1534,34 @@ func TestRewindChain(t *testing.T) {
 		t.Fatalf("audit %+v %v", a, err)
 	}
 }
+
+// An Endorsed key that an AgentEndorse names becomes Agent; nothing moves
+// out of Agent, and anchors (TOFU, Verified) are never demoted.
+func TestEndorsedKeyBecomesAgent(t *testing.T) {
+	s, _ := newStore(t)
+	k1, k2, k3 := sshKey(t), sshKey(t), sshKey(t)
+	for _, p := range []struct {
+		k   key
+		how How
+	}{{k1, TOFU}, {k2, Endorsed}, {k3, Agent}} {
+		if err := s.PinKey(sidA, bob, p.k.fp, p.k.wire, p.how); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, k := range []key{k1, k2} {
+		if err := s.PinKey(sidA, bob, k.fp, k.wire, Agent); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, how := range []How{TOFU, Endorsed, Verified} {
+		if err := s.PinKey(sidA, bob, k3.fp, k3.wire, how); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := fps(s.PinnedKeys(sidA, bob))
+	for _, want := range []string{k1.fp + "/tofu", k2.fp + "/agent", k3.fp + "/agent"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("pinned %s lacks %s", got, want)
+		}
+	}
+}

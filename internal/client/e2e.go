@@ -605,19 +605,23 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 	// certify the agent's devices but never endorse keys or sign revokes.
 	pins := map[uint64][][]byte{}
 	ownPins := map[uint64][][]byte{}
+	endorsedPins := map[uint64][][]byte{} // pinned trust.Endorsed (in the store)
 	loadPins := func(u uint64) {
 		if _, ok := pins[u]; ok {
 			return
 		}
 		ks, _ := ts.PinnedKeys(sid, u)
-		p, o := [][]byte{}, [][]byte{}
+		p, o, e := [][]byte{}, [][]byte{}, [][]byte{}
 		for _, k := range ks {
 			p = append(p, k.Wire)
 			if k.How != trust.Agent {
 				o = append(o, k.Wire)
 			}
+			if k.How == trust.Endorsed {
+				e = append(e, k.Wire)
+			}
 		}
-		pins[u], ownPins[u] = p, o
+		pins[u], ownPins[u], endorsedPins[u] = p, o, e
 	}
 	pinsOf := func(u uint64) [][]byte { loadPins(u); return pins[u] }
 	ownerPins := func(u uint64) [][]byte { loadPins(u); return ownPins[u] }
@@ -680,8 +684,44 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 	}
 	agentSSH := map[string]bool{}
 	for _, e := range endorse {
-		if ae, err := identity.PeekAgentEndorse(e); err == nil {
+		if ae, err := identity.PeekAgentEndorse(e); err == nil && ae.ServerID == sid {
 			agentSSH[string(ae.AgentSSH)] = true
+		}
+	}
+	// A key an AgentEndorse names is the agent's, never one of its owner's,
+	// whatever KeyEndorse also names it: the server picks the order they
+	// arrive in, and an owner can be talked into endorsing a fingerprint.
+	// KeyEndorses for such keys are skipped below; one that an earlier pass
+	// applied, before the AgentEndorse arrived, is undone here, first, so
+	// nothing this pass verifies counts the key as the owner's.
+	for _, e := range endorse {
+		ae, err := identity.PeekAgentEndorse(e)
+		if err != nil || ae.ServerID != sid {
+			continue
+		}
+		u := ae.User
+		loadPins(u)
+		if !slices.ContainsFunc(endorsedPins[u], func(p []byte) bool { return bytes.Equal(p, ae.AgentSSH) }) {
+			continue
+		}
+		for _, p := range ownerPins(u) {
+			// Not by a key some AgentEndorse names: an agent key pinned
+			// Endorsed while its AgentEndorse was withheld mustn't demote
+			// the owner's real keys.
+			if agentSSH[string(p)] {
+				continue
+			}
+			v, err := e.VerifyAgentEndorse(sid, p)
+			if err != nil || v.User != u || !bytes.Equal(v.AgentSSH, ae.AgentSSH) {
+				continue
+			}
+			if fp, ok := fingerprint(ae.AgentSSH); ok && ts.PinKey(sid, u, fp, ae.AgentSSH, trust.Agent) == nil {
+				isKey := func(w []byte) bool { return bytes.Equal(w, ae.AgentSSH) }
+				ownPins[u] = slices.DeleteFunc(ownPins[u], isKey)
+				endorsedPins[u] = slices.DeleteFunc(endorsedPins[u], isKey)
+				changed = true
+			}
+			break
 		}
 	}
 	for round := 0; round < 8; round++ {
@@ -705,7 +745,7 @@ func (c *Client) verifyDevices(sid e2ecrypto.ServerID, mySSH []byte, me uint64) 
 				continue
 			}
 			ke, err := identity.PeekKeyEndorse(e)
-			if err != nil || ke.ServerID != sid || pinned(ke.User, ke.NewSSH) {
+			if err != nil || ke.ServerID != sid || pinned(ke.User, ke.NewSSH) || agentSSH[string(ke.NewSSH)] {
 				continue
 			}
 			for _, p := range ownerPins(ke.User) {
