@@ -2,34 +2,34 @@
   tc · 0 online         │  #general — team-wide chatter about everything that matte…   ⌕   ◉ 3    Thread #general                        ✕  
                         │                                                                                                                   
                         │   loading older messages…                                                                                         
-  ⌕ Jump to…        ⌥K  │                                                                                                                   
+  ⌕ Jump to…        ⌥K  │                                                                         ──────────────── Today ─────────────────  
                         │                                                                                                                   
-  Channels              │                                                                                                                   
-  # backend          3  │                                                                         ──────────────── Today ─────────────────  
-▎ # general             │                                                                                                                   
-  # secret          @1  │                                                                         │ bob  20:41                              
-                        │                                                                         │ can we get /poll? picking dinner        
-  Direct                │                                                                         │ took 43 messages                        
-  ◐ bob                 │                                                                         │ ↳ 2 replies                             
-   └ ◡◡ Juno 💤         │                                                                                                                   
-                        │  ────────────────────────────── Today ──────────────────────────────    ────────────── 2 replies ───────────────  
+  Channels              │                                                                         │ bob  20:41                              
+  # backend          3  │                                                                         │ can we get /poll? picking dinner        
+▎ # general             │                                                                         │ took 43 messages                        
+  # secret          @1  │                                                                         │ ↳ 2 replies                             
                         │                                                                                                                   
-                        │  │ bob  20:37                                                           │ alice                                   
-                        │  │ my manager replied to my 3-page proposal with "let's revisit       │ │ @rocky add /poll to tc                  
-                        │  │ after Q4 👍"                                                       │ │ 20:42 ✓                                 
-                        │                                                                       │                                           
-                        │  │ carol  20:38                                                       │ ┆ ▟▙ Rocky ⟡  20:42                       
-                        │  │ @rocky what is he really saying?                                   │ ┆ Rocky wants to open a draft PR on…      
-                        │                                                                         ┆ ▏ plan for /poll, about 15 min and      
-                        │  ┆ ▟▙ Rocky ⟡ · Alice's agent  20:39                                    ┆ ▏  ~$2:                                 
-                        │  ┆ translation: no, but politely.                                       ┆ ▏ proto poll op + vote event            
-                        │  ┆ "revisit after Q4" is where proposals go to rest.                    ┆ ▏ tests unit + e2e, then a draft P      
-                        │                                                                         ┆ ▏ R                                     
-                        │  │ alice                                                                ┆ why: alice asked in #general: "@r…      
-                        │  │ lol                                                                  ┆ ▐ 1 open it ▌                           
-                        │  │ 20:40 ✓                                                              ┆ ▐ 2 open, and don't ask again to…▌      
-                        │                                                                         ┆ ▐ 3 don't ▌                             
-                        │  │ bob  20:41                                                           ┆ only you can answer · select it, …      
+  Direct                │                                                                         ────────────── 2 replies ───────────────  
+  ◐ bob                 │                                                                                                                   
+   └ ◡◡ Juno 💤         │                                                                         │ alice                                   
+                        │  ────────────────────────────── Today ──────────────────────────────    │ @rocky add /poll to tc                  
+                        │                                                                         │ 20:42 ✓                                 
+                        │  │ bob  20:37                                                                                                     
+                        │  │ my manager replied to my 3-page proposal with "let's revisit       │ ┆ ▟▙ Rocky ⟡  20:42                       
+                        │  │ after Q4 👍"                                                       │ ┆ Rocky wants to open a draft PR on       
+                        │                                                                       │ ┆ tc: /poll                               
+                        │  │ carol  20:38                                                       │ ┆ ▏ plan for /poll, about 15 min          
+                        │  │ @rocky what is he really saying?                                   │ ┆ ┊ and ~$2:                              
+                        │                                                                         ┆ ▏ proto poll op + vote event            
+                        │  ┆ ▟▙ Rocky ⟡ · Alice's agent  20:39                                    ┆ ▏ tests unit + e2e, then a draft        
+                        │  ┆ translation: no, but politely.                                       ┆ ┊ PR                                    
+                        │  ┆ "revisit after Q4" is where proposals go to rest.                    ┆ why: alice asked in #general:           
+                        │                                                                         ┆ "@rocky add /poll to tc"                
+                        │  │ alice                                                                ┆ ▐ 1 open it ▌                           
+                        │  │ lol                                                                  ┆ ▐ 2 open, and don't ask again to…▌      
+                        │  │ 20:40 ✓                                                              ┆ ▐ 3 don't ▌                             
+                        │                                                                         ┆ only you can answer · select it,        
+                        │  │ bob  20:41                                                           ┆ then 1–3                                
                         │  │ can we get /poll? picking dinner took 43 messages                                                              
                         │  │ ↳ 2 replies                                                            ▟▙ Rocky is editing poll.go…            
                         │                                                                                                                   
