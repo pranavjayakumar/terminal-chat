@@ -146,7 +146,10 @@ func TestChaosRotations(t *testing.T) {
 			}
 			time.Sleep(time.Duration(50+rand.IntN(150)) * time.Millisecond)
 		}
-		fctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		// The same 180 s as retry below: under constant kills dave's
+		// reconnect backoff reaches the client's 30 s cap, and on a loaded
+		// -race machine a flush needed more than 60 s of it.
+		fctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 		defer cancel()
 		if err := dave.Flush(fctx); err != nil {
 			t.Errorf("dave flush: %v", err)
