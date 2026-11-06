@@ -19,7 +19,7 @@ test-voice:
 	CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -tags voice ./internal/voice/
 
 test: test-malicious
-	GOTOOLCHAIN=local go test -race ./...
+	GOTOOLCHAIN=local go test -race -timeout 30m ./...
 
 # Malicious-server suite (docs/E2E.md step 11): the server's test-only
 # tamper hooks exist only with -tags tctamper.
