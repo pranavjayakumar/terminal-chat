@@ -59,7 +59,8 @@ func connected(ctx context.Context) (*client.Client, error) {
 		return nil, err
 	}
 	go c.Run(ctx)
-	deadline := time.After(15 * time.Second)
+	deadline := time.After(connectWait)
+	syncing := time.After(syncWait)
 	for {
 		st := c.Status()
 		if st.State == client.Online {
@@ -74,12 +75,21 @@ func connected(ctx context.Context) (*client.Client, error) {
 			c.Close()
 			return nil, ctx.Err()
 		case <-deadline:
+			// A fresh sync over a slow link can take a while; it's progress
+			// (the server ends one that moves too slowly, §9).
+			if st := c.Status(); st.State == client.Syncing {
+				deadline = syncing
+				continue
+			}
 			c.Close()
 			return nil, offlineError(c.Config().Addr, st.Err)
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
 }
+
+// connectWait bounds reaching the server; syncWait bounds a sync in progress.
+var connectWait, syncWait = 15 * time.Second, 3 * time.Minute
 
 // offlineError explains why the client never got online. The server
 // refusing a session for the account's session cap isn't a network problem.
