@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -190,6 +191,21 @@ func (m *Model) selectFooter() string {
 	keys = append(keys, "m menu")
 	full := strings.Join(keys, " · ") + " · Esc"
 	if strWidth(full) < m.dims().inputW {
+		// q and l join only when the rest still fits (the menu lists them)
+		var more []string
+		if sel.Failed == "" && quotable(sel) {
+			more = append(more, "q quote")
+		}
+		if sel.Failed == "" && !sel.Deleted && len(msgLinks(sel.Body)) > 0 {
+			more = append(more, "l link")
+		}
+		for _, k := range more {
+			n := len(keys)
+			try := append(slices.Clone(keys[:n-1]), k, keys[n-1])
+			if f := strings.Join(try, " · ") + " · Esc"; strWidth(f) < m.dims().inputW {
+				keys, full = try, f
+			}
+		}
 		return full
 	}
 	// Narrow: just the key letters, Esc last so leaving is always visible.
@@ -222,6 +238,15 @@ func (m *Model) submit() tea.Cmd {
 		return nil
 	}
 	body := strings.TrimRight(v, " \t\n")
+	if m.editing == 0 {
+		if body == "++" && v[0] == '+' {
+			return m.quickReact()
+		}
+		if cmd, ok := m.trySubst(v, body); ok {
+			return cmd
+		}
+		body = unescapeShortcut(body)
+	}
 	if !strings.HasPrefix(v, "/") || strings.HasPrefix(v, "//") || m.editing != 0 {
 		keep, changed := "", false
 		if m.editing != 0 {
@@ -280,6 +305,7 @@ func (m *Model) submit() tea.Cmd {
 }
 
 func (m *Model) clearInput() {
+	m.dropWriteHints()
 	m.input.Reset()
 	m.layoutInput()
 }
@@ -639,6 +665,8 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 			return nil, errors.New("usage: /share-pane [pane id or label]")
 		}
 		return m.sharePane(c.rest)
+	case "links":
+		return nil, m.showLinks()
 	case "pins":
 		ch, err := needChan()
 		if err != nil {

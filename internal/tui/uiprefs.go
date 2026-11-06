@@ -32,7 +32,10 @@ type uiPrefs struct {
 	NoMotion  bool   `json:"no_motion,omitempty"`
 	// Emoji is the frequently used list, most used first; nil until the
 	// first pick, so a fresh install shows freqSeed.
-	Emoji      []emojiUse `json:"emoji,omitempty"`
+	Emoji []emojiUse `json:"emoji,omitempty"`
+	// Reacts are the reactions I added lately, newest first (the react
+	// prompt's 1–5 and ++).
+	Reacts     []string `json:"reacts,omitempty"`
 	path       string
 	loadFailed bool
 }
@@ -76,6 +79,15 @@ func loadUIPrefs(path string) uiPrefs {
 	})
 	if len(p.Emoji) > maxFreq {
 		p.Emoji = p.Emoji[:maxFreq]
+	}
+	seenR := map[string]bool{}
+	p.Reacts = slices.DeleteFunc(p.Reacts, func(e string) bool {
+		drop := !gridSafe(e) || seenR[e]
+		seenR[e] = true
+		return drop
+	})
+	if len(p.Reacts) > maxRecentReacts {
+		p.Reacts = p.Reacts[:maxRecentReacts]
 	}
 	switch p.Sidebar {
 	case sbNormal, sbWide, sbIcons:

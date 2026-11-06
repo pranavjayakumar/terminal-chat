@@ -311,16 +311,38 @@ func (m *Model) drawText(g *grower, x client.Message, bw int, at func(int) int, 
 			if g.full() {
 				break
 			}
-			for _, l := range wrapSpans(parseInline(ln, m.me.Name), bw) {
+			// "> " lines are a quote: a dim bar per level and dim text.
+			depth, rest := quoteDepth(ln)
+			bars := min(depth, 3)
+			for bars > 0 && bw-2*bars < 4 {
+				bars--
+			}
+			fg := textFg
+			if depth > 0 {
+				fg = th.dim
+			}
+			spans := parseInline(rest, m.me.Name)
+			var urls []string // the line's links in order, for their wrapped pieces
+			for _, sp := range spans {
+				if sp.f&fURL != 0 {
+					urls = append(urls, sp.text)
+				}
+			}
+			ui, used := 0, 0
+			for _, l := range wrapSpans(spans, bw-2*bars) {
 				if g.full() {
 					break
 				}
-				w := 0
+				w := 2 * bars
 				for _, sp := range l {
 					w += strWidth(sp.text)
 				}
 				y := g.row()
 				xx := at(w)
+				for range bars {
+					g.c.put(xx, y, "▎", fgc(th.faint), "")
+					xx += 2
+				}
 				for _, sp := range l {
 					f, act := sp.f, ""
 					if f&fChannel != 0 {
@@ -331,7 +353,21 @@ func (m *Model) drawText(g *grower, x client.Message, bw int, at func(int) int, 
 							f &^= fChannel
 						}
 					}
-					xx = g.c.put(xx, y, sp.text, m.spanStyle(f, textFg), act)
+					if f&fURL != 0 && ui < len(urls) {
+						// A long link wraps into pieces: each names the whole URL.
+						u := urls[ui]
+						if strings.HasPrefix(u[used:], sp.text) {
+							if safeURL(u) {
+								act = "url|" + u
+							}
+							if used += len(sp.text); used >= len(u) {
+								ui, used = ui+1, 0
+							}
+						} else {
+							ui = len(urls) // lost track: no more links on this line
+						}
+					}
+					xx = g.c.put(xx, y, sp.text, m.spanStyle(f, fg), act)
 				}
 				lastY, lastEnd, lastCode = y, xx, false
 			}

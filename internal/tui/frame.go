@@ -20,6 +20,7 @@ func (m *Model) View() string {
 	}
 	c := m.frame()
 	m.spare, m.lastCanvas = m.lastCanvas, c
+	m.st.enc.links = m.opt.Hyperlinks
 	m.lastFrame = c.encode(m.st.enc)
 	return m.lastFrame
 }
@@ -322,7 +323,7 @@ func (m *Model) blitRow(c *canvas, r prow, o int, p *pane, key string, x, y, w i
 		if a := r.b.acts[src.act]; a != "" && idx != "" {
 			kind, rest, _ := strings.Cut(a, "|")
 			dst.act = c.act(kind + ":" + idx + ":" + rest)
-			dst.hover = true
+			dst.hover = kind != "url" // a click on a link selects its message, like the text around it
 		} else if idx != "" {
 			dst.act = c.act("msg:" + idx)
 		}

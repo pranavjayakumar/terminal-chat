@@ -40,6 +40,7 @@ var commandTable = []cmdSpec{
 	{name: "dm", args: "@a @b", desc: "direct message (@me: your notes, where reminders land)"},
 	{name: "search", args: "terms", desc: "search; Enter jumps"},
 	{name: "pins", desc: "pinned messages here; Enter jumps"},
+	{name: "links", desc: "links posted here lately; Enter opens, y copies"},
 	{name: "read-all", desc: "mark every channel read"},
 	{name: "highlight", args: "word…", desc: "mark messages with these words like a mention (none: list)"},
 	{name: "unhighlight", args: "word…", desc: "stop highlighting"},
@@ -72,6 +73,9 @@ var commandTable = []cmdSpec{
 	{name: "sounds", args: "[CUE] on|off", desc: "cues: mention message ring huddle join mic; /sounds volume N"},
 	{name: "settings", desc: "theme, density, sidebar, notifications, devices"},
 	{name: "theme", args: "[name]", desc: "switch theme (none: list them)"},
+	{help: "++", desc: "the whole message: react to the last message with your last reaction"},
+	{help: "s/old/new", desc: "the whole message: fix your last message here (Enter twice)"},
+	{help: `\++  \s/…`, desc: "send ++ or s/… as text"},
 	{help: "//text", desc: "send text starting with /"},
 	// In the keys part of /help ("Alt-A, /activity" and so on).
 	{name: "activity", desc: "mentions, replies, reactions, DMs", helpHidden: true},

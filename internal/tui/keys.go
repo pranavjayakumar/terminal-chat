@@ -38,6 +38,8 @@ const (
 	kSelMenu    = "m"      // the message menu
 	kSelMine    = "E"      // select my newest message
 	kSelCode    = "Y"      // copy only the code blocks
+	kSelQuote   = "q"      // quote into the input
+	kSelLink    = "l"      // open the message's link (o unfolds agent steps)
 	kBackChan   = "ctrl+^" // Ctrl-6: the previous channel (vim's alternate file)
 	kHuddle     = "alt+h"  // join or leave this channel's huddle
 	kConfirmYes = "y"

@@ -408,6 +408,11 @@ func (m *Model) emojiKey(k tea.KeyMsg) tea.Cmd {
 		m.setPickQuery("")
 		return nil
 	default:
+		if k.Type == tea.KeyRunes && !k.Alt && !k.Paste && len(k.Runes) == 1 && k.Runes[0] >= '1' && k.Runes[0] <= '9' {
+			if cmd, ok := m.pickRecent(int(k.Runes[0] - '0')); ok {
+				return cmd
+			}
+		}
 		if k.Type == tea.KeyRunes && !k.Alt && key != kSwitcher {
 			m.setPickQuery(e.query + string(k.Runes))
 		} else if k.Type == tea.KeySpace {
@@ -469,6 +474,9 @@ func (m *Model) currentTarget() client.Message {
 // reactWith toggles my reaction emoji on message x.
 func (m *Model) reactWith(x client.Message, emoji string) tea.Cmd {
 	id, mine := x.ID, slices.Contains(x.Reactions[emoji], m.me.ID)
+	if !mine {
+		m.noteReact(emoji)
+	}
 	return m.call("react", func(ctx context.Context) error {
 		if mine {
 			return m.c.Unreact(ctx, id, emoji)
@@ -699,7 +707,23 @@ func (m *Model) pickSearch(c *canvas, x, y, w int, k float64, pbg rgb, act strin
 	q := m.emo.query
 	if q == "" {
 		c.put(tx, y, "▏", fgc(mix(bg, th.accent, k)).on(bg), "")
-		c.put(tx+1, y, truncate("search · rocket, party, :+1:", room-1), fgc(mix(bg, th.faint, k)).on(bg), "")
+		tx++
+		if m.emo.react && k >= 0.4 {
+			// the recent reactions, one key each
+			end := x + w - 1
+			for i, e := range m.recentReacts() {
+				if tx+4 > end {
+					break
+				}
+				nx := c.put(tx, y, strconv.Itoa(i+1), fgb(mix(bg, th.accent, k)).on(bg), "")
+				tx = c.put(nx+1, y, e, fgc(th.fg).on(bg), "") + 1
+			}
+			if left := end - tx; left >= 8 {
+				c.put(tx, y, truncate("· search", left), fgc(mix(bg, th.faint, k)).on(bg), "")
+			}
+			return
+		}
+		c.put(tx, y, truncate("search · rocket, party, :+1:", room-1), fgc(mix(bg, th.faint, k)).on(bg), "")
 		return
 	}
 	// The end of a long query stays in view.
