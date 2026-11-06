@@ -85,7 +85,7 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 	disabled := s.disabled[u.ID]
 	// huddle.leave is exempt: refusing a cleanup would leave a ghost listener.
 	var limited bool
-	if op == proto.OpRead {
+	if op == proto.OpRead && sess.agent == nil { // an agent keeps its own buckets (§15.1)
 		limited = !s.take(s.rlimits, u.ID, 60, 5)
 	} else {
 		limited = (writeOps[op] || op == proto.OpHuddleJoin) && !s.allowWriteSess(sess)

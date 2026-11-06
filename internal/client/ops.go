@@ -387,6 +387,9 @@ func (c *Client) pushReads(s *session) {
 		if s.fire(proto.OpRead, proto.ReadArgs{Chan: ch, Seq: seq}) != nil {
 			return
 		}
+		c.mu.Lock()
+		c.readSent[ch] = time.Now()
+		c.mu.Unlock()
 	}
 }
 

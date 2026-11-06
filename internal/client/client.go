@@ -395,6 +395,9 @@ func (c *Client) Close() error {
 	c.cancel()
 	c.mu.Lock()
 	done := c.runDone
+	for _, t := range c.readTimers {
+		t.Stop()
+	}
 	c.mu.Unlock()
 	if done != nil {
 		<-done

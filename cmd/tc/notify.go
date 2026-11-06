@@ -133,8 +133,14 @@ func sendWait(ctx context.Context, c interface {
 		}
 		break
 	}
-	if err != nil {
-		c.DiscardFailed(id)
+	if err != nil && c.DiscardFailed(id) != nil {
+		// Not failed (a key arrived just now, or the server hasn't
+		// answered): it's still queued, so say so rather than "not sent".
+		qctx, qcancel := context.WithTimeout(ctx, time.Millisecond)
+		defer qcancel()
+		if errors.Is(c.FlushLocal(qctx, id), context.DeadlineExceeded) {
+			return fmt.Errorf("%w; the message is still queued and goes out the next time tc runs here", err)
+		}
 	}
 	return err
 }

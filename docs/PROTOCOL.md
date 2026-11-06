@@ -25,7 +25,7 @@ TLS handshake first and cancels the other. No persisted preference.
 TLS 1.3 only (`MinVersion = VersionTLS13`). QUIC 0-RTT and TLS early data are disabled.
 
 The server's QUIC stateless reset key (RFC 9000 §10.3) is derived from its TLS private key
-(SHA-256 over a fixed label and the PKCS#8 key), so it survives restarts: after a crash the
+(SHA-256 over a fixed label and the PKCS#8 key; resets are off if that encoding fails), so it survives restarts: after a crash the
 restarted server resets connections it no longer knows, and clients reconnect at once instead of
 waiting out the idle timeout.
 
@@ -549,7 +549,7 @@ All sizes are UTF-8 bytes.
 | `emoji` | ≤ 64 B, no whitespace |
 
 - Rate limits (token buckets per user, `rate_limited` beyond): `send` burst 30, refill 3/s; `read`
-  has its own bucket of burst 60, refill 5/s (so read markers in a busy channel never starve other
+  has its own bucket of burst 60, refill 5/s (agent sessions: their write bucket, §15.1) (so read markers in a busy channel never starve other
   writes; clients send at most one per channel per second); all other write ops share a bucket of
   burst 60, refill 5/s.
 - `search.q` ≤ 256 B; only the first 8 terms are used.
