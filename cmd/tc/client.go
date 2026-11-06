@@ -224,6 +224,12 @@ func cmdTail(args []string) error {
 // Encrypted messages arrive decrypted; one still waiting for its key is
 // printed once it opens (it comes again in Updates().New).
 func tail(ctx context.Context, c *client.Client, ch uint64, w io.Writer) error {
+	// Sync never brings a channel's older messages to a member added later
+	// (PROTOCOL.md §6), so the cache alone can miss them. Best effort: a slow
+	// or failed fetch still leaves the cache and the live stream.
+	hctx, hcancel := context.WithTimeout(ctx, 10*time.Second)
+	c.History(hctx, ch, 0)
+	hcancel()
 	seen := map[uint64]bool{}
 	for _, m := range c.Messages(ch, 20) {
 		if m.ID != 0 {
