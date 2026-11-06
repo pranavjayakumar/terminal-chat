@@ -421,6 +421,7 @@ func nearest256(c rgb) int {
 type encoder struct {
 	prof   termenv.Profile
 	color  bool
+	links  bool // OSC 8 hyperlinks for "url:" actions (the terminal takes them)
 	cache  map[rgb][2]string
 	pinned map[rgb]int // 256 colors: a theme's surfaces, kept distinct
 }
@@ -442,6 +443,9 @@ func (e *encoder) pinSurfaces(th *theme) {
 		e.pinned[c], prev = i, i
 	}
 }
+
+// osc8Close ends an OSC 8 hyperlink.
+const osc8Close = "\x1b]8;;\x1b\\"
 
 func newEncoder(p termenv.Profile, color bool) *encoder {
 	return &encoder{prof: p, color: color, cache: map[rgb][2]string{}}
@@ -507,10 +511,30 @@ func (c *canvas) encode(e *encoder) string {
 		}
 		var cur key
 		first := true
+		link, linkAct, actURL := "", uint16(0), ""
 		for x := 0; x < c.w; x++ {
 			cl := c.at(x, y)
 			if cl.w == 0 {
 				continue
+			}
+			if e.links {
+				u := ""
+				if cl.act != 0 {
+					if cl.act != linkAct {
+						linkAct, actURL = cl.act, linkOf(c.acts[cl.act])
+					}
+					u = actURL
+				}
+				if u != link {
+					if link != "" {
+						b.WriteString(osc8Close)
+					}
+					if u != "" {
+						// one id per URL: a link wrapped over rows hovers as one
+						b.WriteString("\x1b]8;id=" + linkID(u) + ";" + u + "\x1b\\")
+					}
+					link = u
+				}
 			}
 			k := key{cl.fg, cl.bg, cl.ul, cl.attr}
 			if e.color && e.prof == termenv.ANSI && cl.attr&aMonoRev != 0 {
@@ -557,6 +581,9 @@ func (c *canvas) encode(e *encoder) string {
 				// put the cursor where the next cell starts either way.
 				b.WriteString("\x1b[" + strconv.Itoa(next+1) + "G")
 			}
+		}
+		if link != "" {
+			b.WriteString(osc8Close)
 		}
 		b.WriteString("\x1b[0m")
 	}

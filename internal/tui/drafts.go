@@ -88,6 +88,7 @@ func (m *Model) syncDraft() {
 	} else {
 		prev := m.dk
 		m.setDraft(prev, val)
+		m.dropWriteHints() // an offer belongs to the input it was made in
 		m.dk = key
 		m.hideComp() // a restored draft doesn't bring back a popup
 		if d := m.freshDraft(key); d != "" || prev.ch != 0 {

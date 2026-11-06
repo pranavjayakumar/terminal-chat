@@ -279,9 +279,24 @@ func (m *Model) drawSideItem(c *canvas, it sideItem, y, sb int, mini bool) {
 		return
 	}
 	x := c.put(2, y, it.icon, fgc(it.iconFg), act)
+	// The row under the pointer offers mute / unmute left of its badge, so
+	// a click on the badge still opens the channel (the sidebar never takes
+	// keys: ⌥K has Mute #x for the keyboard).
 	bw := 0
 	if it.badge != "" {
 		bw = strWidth(it.badge) + 1
+	}
+	if muteAct := "sbmute:" + strconv.FormatUint(it.ch, 10); (m.hover == act || m.hover == muteAct) &&
+		(m.mode == modeNormal || m.mode == modeSelect) {
+		mute := "mute"
+		if it.muted {
+			mute = "unmute"
+		}
+		if mx := sb - 2 - bw - len(mute); mx-(x+1) >= 5 { // room for it and a bit of the name
+			c.put(mx, y, mute, fgc(th.dim).on(bg), muteAct)
+			c.tag(mx, y, len(mute), 1, muteAct, true, true)
+			bw += len(mute) + 1
+		}
 	}
 	room := sb - 2 - (x + 1) - bw
 	lab := truncate(it.label, room)

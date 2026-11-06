@@ -313,7 +313,7 @@ type emojiUse struct {
 
 // freqList is the frequently used emoji, the most used first.
 func (m *Model) freqList() []string {
-	if m.ui.Emoji == nil {
+	if len(m.ui.Emoji) == 0 {
 		return freqSeed
 	}
 	out := make([]string, 0, len(m.ui.Emoji))

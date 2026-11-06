@@ -203,13 +203,14 @@ type Model struct {
 	lastCanvas *canvas // the last frame, for clicks and the theme cross-fade
 	spare      *canvas // the frame before it, reused for the next
 	lastFrame  string
-	reuseFrame bool     // nothing changed since lastFrame (pointer motion)
-	blinkIdle  bool     // the cursor blink loop stopped after blinkFor without keys
-	sbForce    string   // Ctrl-B's choice below sbIconsBelow columns, this session only
-	prevCh     uint64   // the channel open before this one (catchup.go)
-	jumping    bool     // openChannel for a jump: no divider placement, no mark
-	recent     []uint64 // channels left lately, newest first, this session only
-	ag         agentUI  // personal agents (agent.go)
+	reuseFrame bool        // nothing changed since lastFrame (pointer motion)
+	blinkIdle  bool        // the cursor blink loop stopped after blinkFor without keys
+	sbForce    string      // Ctrl-B's choice below sbIconsBelow columns, this session only
+	prevCh     uint64      // the channel open before this one (catchup.go)
+	jumping    bool        // openChannel for a jump: no divider placement, no mark
+	recent     []uint64    // channels left lately, newest first, this session only
+	ag         agentUI     // personal agents (agent.go)
+	wr         inputOffers // the input's one-shot offers (writing.go)
 }
 
 // ---- tea messages ----
@@ -1301,6 +1302,7 @@ const blinkFor = 5 * time.Second
 
 func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 	m.skipIntro() // a key ends the intro and still does its job
+	defer m.staleOffers()
 	if m.blinkIdle && !m.fx.off {
 		m.blinkIdle = false
 		return tea.Batch(m.input.Cursor.BlinkCmd(), m.handleKey0(k))
@@ -1352,8 +1354,7 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 	case modeActivity:
 		return m.activityKey(k)
 	case modeList:
-		m.listKey(keyName(k))
-		return nil
+		return m.listKey(keyName(k))
 	case modeHelp:
 		m.helpKey(key)
 		return nil
@@ -1428,6 +1429,9 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 	switch {
 	case key == kApproval:
 		return m.jumpToApproval()
+	case key == kTab && m.wrapArmed():
+		m.wrapPaste()
+		return nil
 	case key == kTab && m.tabComplete():
 		return nil
 	case isSwitcher(key):
@@ -1521,9 +1525,19 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 		// A paste (or a burst that may be one) never opens the popup, so a
 		// pasted line followed by Enter is sent, not completed.
 		m.closeComp()
+		if m.input.Value() != before {
+			m.dropWriteHints()
+			if k.Paste {
+				if before == "" {
+					m.wr.pasteVal = m.input.Value() // the whole input was pasted
+				}
+				m.offerWrap(before)
+			}
+		}
 	} else {
 		m.input, cmd = m.input.Update(k)
 		if m.input.Value() != before {
+			m.dropWriteHints()
 			m.refreshComp()
 		} else {
 			m.hideComp() // a cursor move never opens it, so ↑/↓ and Enter stay theirs
@@ -1870,6 +1884,11 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 	case kSelView:
 		m.openViewer(sel)
 		return nil, true
+	case kSelQuote:
+		m.quoteSelected(sel)
+		return nil, true
+	case kSelLink:
+		return m.openSelectedLink(sel), true
 	case kSelMenu, kEnter:
 		m.openMsgMenu()
 		return nil, true

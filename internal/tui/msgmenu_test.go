@@ -68,11 +68,11 @@ func TestMsgMenuItems(t *testing.T) {
 		pick func()
 		want []string
 	}{
-		{func() { selectID(t, m, 103) }, []string{"Reply in thread", "React", "Edit", "Copy text", "View full", "Pin", "Delete"}},
-		{func() { selectID(t, m, 104) }, []string{"Reply in thread", "React", "Copy text", "View full", "Pin"}},
-		{func() { selectID(t, m, 102) }, []string{"Reply in thread", "React", "Copy text", "Copy code", "View full", "Pin"}},
+		{func() { selectID(t, m, 103) }, []string{"Reply in thread", "React", "Quote", "Edit", "Copy text", "View full", "Pin", "Delete"}},
+		{func() { selectID(t, m, 104) }, []string{"Reply in thread", "React", "Quote", "Copy text", "View full", "Pin"}},
+		{func() { selectID(t, m, 102) }, []string{"Reply in thread", "React", "Quote", "Copy text", "Copy code", "View full", "Pin"}},
 		{func() { selectID(t, m, 106) }, []string{"Copy text"}},
-		{func() { selectLocal(t, m, 7) }, []string{"Copy text", "View full"}},
+		{func() { selectLocal(t, m, 7) }, []string{"Quote", "Copy text", "View full"}},
 		{func() { selectLocal(t, m, 8) }, []string{"Retry send", "Copy text", "Discard"}},
 	}
 	for i, c := range cases {

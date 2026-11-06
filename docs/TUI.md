@@ -165,6 +165,19 @@ tc mark) comes from one table, `internal/tui/icons.go`, in three packs:
 - Every user-controlled string goes through `sanitize.Text`/`sanitize.Line` before it reaches the canvas.
 - Markdown-lite only: ```` ``` ```` fenced blocks (a panel with a header row, no wrap reflow, horizontal
   truncation with `…`), inline `` `code` ``, `**bold**`, `_italic_`, URLs underlined. No headings, no tables.
+- Quotes: a line starting `> ` (or a lone `>`) draws as a quote: a faint `▎` gutter per level (`> > ` is two, three
+  at most, fewer when the column is too narrow) and the rest dim, wrapped inside the gutter; inline markdown still
+  applies after the marker. Only `> ` counts, so `>>> prompts`, `->` and `>_<` stay text; a `> ` line inside a
+  fenced block stays code.
+- Links: http(s) URLs (printable ASCII, a host, no `user:pass@`, at most 2048 bytes) also go out as OSC 8
+  hyperlinks, so the terminal can open them (often with ⌘/Ctrl-click); a link wrapped over several rows names the
+  whole URL on each piece. The escape is added only when encoding the frame, so it never touches width math.
+  Only terminals known to take OSC 8 get it (iTerm2, WezTerm, Ghostty, kitty, VS Code, foot, Alacritty, Windows
+  Terminal, VTE ≥ 0.50), never inside tmux, screen, zellij or herdr; `TC_LINKS=on|off` overrides. Elsewhere the
+  link is plain underlined text. A plain click on a link selects its message (no hover tint); `l` opens it with
+  `open` (macOS) or `xdg-open` (Linux), run directly with the URL as one argument (no shell), http/https only;
+  over SSH, or on Linux with neither `DISPLAY` nor `WAYLAND_DISPLAY`, it copies the link instead. Each link
+  carries an `id=` (a hash of the URL) so a wrapped one hovers as one.
 - `@me` mentions in the accent; a message that mentions me gets an accent bar and a faint accent tint, one
   that only contains a highlight word a warn-colored bar.
 - Themes: fifteen built in, for any skin (graphite default, sky, mint, rose, lilac, ember, phosphor, the light paper,
@@ -217,7 +230,7 @@ bottom hint falls back to `←↑↓→ move · Tab category · esc` (its previe
 | `Alt-H` | leave the open channel's huddle when in it, else join it (switching from one elsewhere, like `/huddle`); any skin |
 | `PgUp/PgDn`, mouse wheel | scroll history (fetches older via History at top) |
 | `↑` on empty input | select messages mode (↑/↓ moves selection) |
-| in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (emoji picker; typing filters, so `+ +1 Enter` and `+ :tada: Enter` still work), `y` copy body (OSC 52), `Y` copy only the code blocks, without fences (several: a blank line apart; none: a notice), `E` select my newest message loaded here, `v` view full, `p` pin / unpin (notice "pinned" / "unpinned"), `m` or `Enter` message menu (below), `Esc` leave |
+| in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (emoji picker; typing filters, so `+ +1 Enter` and `+ :tada: Enter` still work), `y` copy body (OSC 52), `Y` copy only the code blocks, without fences (several: a blank line apart; none: a notice), `E` select my newest message loaded here, `v` view full, `p` pin / unpin (notice "pinned" / "unpinned"), `q` quote it into the input (below), `l` open its link (one link opens; several open a list where `Enter` opens and `y` copies; none: a notice), `m` or `Enter` message menu (below), `Esc` leave. The footer shows `q quote` and `l link` only when they fit with the rest (the menu always has both). `q` and `l` used to leave select mode and type the letter; now they act, so press `Esc` (or `↓` past the newest) before typing |
 | `Esc` | close the completion popup / thread / palette / dialog / select mode; never quits |
 | `Ctrl-C` twice (the second while `press ⌃C again to quit` (`Ctrl+C` off macOS) shows, 4 s), or `/quit` | quit |
 | `F1` or `/help` | keyboard sheet: Navigate, Messages, Write, Huddle, App, then every command (`?` is just text, so messages can start with it) |
@@ -228,7 +241,7 @@ bottom hint falls back to `←↑↓→ move · Tab category · esc` (its previe
 **Message menu** (`⋯` on the hover toolbar, or `m` / `Enter` in select mode): a small floating panel by the
 button, in the skin's frame (Modern rounded, Retro double line with a shadow) with the icon pack's icons.
 Its rows run the select-mode keys and show them on the right: `↩ Reply in thread` (r), `☺ React` (+),
-`✎ Edit` (e, own), `⧉ Copy text` (y), `‹› Copy code` (Y, when it has a fenced block), `View full` (v),
+`▪ Quote` (q, any message with text, unsent ones too), `✎ Edit` (e, own), `⧉ Copy text` (y), `‹› Copy code` (Y, when it has a fenced block), `▣ Open link` (l, when it has one), `View full` (v),
 `¶ Pin` / `Unpin` (p), `✕ Delete` (d, own, error color, still asks to
 confirm). Only rows that do something show: a deleted message gets `Copy text`, an unsent one `Copy text` and `View full`, a failed one
 `Retry send` (r), `Copy text` and `Discard` (d). `↑/↓` move, `Enter` runs, the letters run directly, `Esc`,
@@ -241,7 +254,7 @@ side holds every row, the roomier side gets a shorter menu that scrolls. It work
 
 `/join #x`, `/leave`, `/create #x [--private [--plaintext]]`, `/add @user`, `/topic text`, `/dm @a @b` (`/dm @me` or my own name: my notes, also in `Option-K`; `@me` is always me, even if an account is named `me`; after `/dm` the popup offers `@me` and my name),
 `/invite` (admin; prints code), `/invite --for @user` (admin; add-key invite for a new computer of theirs), `/away [status]`, `/back`, `/search terms` (results list; Enter jumps), `/pins` (overlay of this channel's pinned messages, newest pin first, as `author · preview`; Enter jumps, Esc closes),
-`/activity`, `/read-all` (every channel's read marker to its newest message; `marked N channels read`, or `nothing unread`; refused while syncing), `/highlight [word…]`, `/unhighlight word…`, `/group name @a @b…` (admin), `/groups`,
+`/links` (this channel's links from its newest 500 top-level messages (thread replies aren't listed, even with the thread pane focused), newest first, one row each as `name  url`, 100 at most; `Enter` opens, `y` copies, `Esc` closes; links in code blocks don't count), `/activity`, `/read-all` (every channel's read marker to its newest message; `marked N channels read`, or `nothing unread`; refused while syncing), `/highlight [word…]`, `/unhighlight word…`, `/group name @a @b…` (admin), `/groups`,
 `/remind <when> <text>`, `/reminders`, `/remind-delete id`, `/snippet path[:range] [message]`,
 `/share-pane [pane]` (herdr only), `/verify @user [--github login]`, `/accept-key @user`, `/endorse-key [SHA256:…]` (trust another SSH key of yours; no argument: show this computer's; both in a wide viewer where `y` copies the key or the command to run on the other computer, and a fingerprint that isn't 50 characters is refused as cut off), `/members`,
 `/alarm`, `/alarm-clear #name`, `/alarm-recover [#name]`, `/devices [@user]`, `/device-revoke id`, `/disable @user` (admin), `/quit`.
@@ -287,6 +300,32 @@ a click picks a row. It fades and rises in unless animations are off, and is nev
 `--plaintext` opts out, e.g. for a private channel webhooks post into (webhooks can't post into encrypted
 channels). Private channels made by older tc versions (whose `/create --private` didn't encrypt) stay unencrypted
 until someone runs `/encrypt` there (earlier messages are then marked legacy); their header has no 🔒.
+
+## Writing shortcuts
+
+- **Quote** (`q` in select mode, or the menu's Quote): the message goes into the input as `> ` lines (blank lines
+  as `>`), after any draft, with the cursor on a fresh line below for the reply; at most 10 lines, then `> …`.
+  Deleted and undecryptable messages say "nothing to quote". Mentions inside a quote still count as
+  mentions when it is sent (as in Slack): quoting `@oncall …` pings them again, so trim it if that isn't meant.
+- **Quick reactions**: reacting (`+`, `☺`, `☺+`), the picker's search box shows the five reactions I added most
+  recently as `1 🎉  2 🚀 …` (topped up from frequently used; kept in `ui.json` as `"reacts"`); with an empty
+  search `1`–`5` react with one at once (only the ones drawn: a narrow picker shows fewer, and the rest search). Once something is typed, digits search (`+1`, `100`); to find 💯
+  type `:100` or `hundred`. Inserting (`⌥E`) never takes digits as picks.
+- **`++`**: when the whole message is `++`, the newest message here (the thread, when its pane has the focus;
+  sent, not deleted) gets my most recent reaction (a fresh install: 👍) and nothing is sent; already reacted:
+  a notice. `\++` sends `++`; `c++` or `++ more` are ordinary text.
+- **Paste a log**: a bracketed paste of 3 lines or more that isn't already code (no ```` ``` ```` in it, not inside
+  an open fence, not a `/command`'s argument) shows `⇥ wraps the paste in a ``` code block`; `Tab` puts the
+  pasted lines between fences, each on its own line, with the cursor on a fresh line below. Any other key that changes the input (or a channel switch)
+  withdraws the offer, and `Tab` completes as usual again. Shorter pastes and typed text are never offered.
+- **`s/old/new`** (or `s/old/new/`): when the whole input is that, `old` (no `/` or newline in either part) occurs
+  in my newest message here (editable, not deleted), and the whole input wasn't pasted, the first `Enter` shows
+  `⏎ again fixes your last message: “old” → “new” · \s/… sends it as text`; the second replaces the first
+  occurrence and saves the edit (`fixed your last message`). Changing the input, or a newer message of mine (or
+  an edit of it) arriving in between, asks again. While that newest message is still sending, Enter says so and
+  keeps the input (it is never sent as text). When the
+  conditions don't hold it is an ordinary message; `\s/old/new` always sends `s/old/new`. A fix that would leave
+  the message empty is refused (delete it with `d`).
 
 ## Emoji
 
@@ -428,6 +467,10 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
   the open channel and the reader is still at the bottom in normal mode, the channel gets its divider and
   placement then (read markers don't move while syncing).
 - `/read-all` (palette: `Mark all read`) marks every channel read and drops their pending notifications.
+- Mute from the sidebar: the row under the pointer (normal or wide sidebar, normal or select mode) shows
+  `mute` (`unmute` for a muted one) left of its badge, so a click on the badge still opens the channel; a click sets `/notify off` for it or back to the default
+  (mentions when the default level is off). The sidebar takes no keys (it never has the focus), so the keyboard
+  way stays `⌥K` › `Mute #x` / `Unmute #x` for the open channel; icon mode has no room for the button.
 - Unread counts in the sidebar (dim; a DM's in the accent); `@N` in the accent when there's a mention, pulsing
   briefly when it grows (bot messages never make a mention). Both stop at `99+`.
 - Notifications: see "Notifications & herdr" below.

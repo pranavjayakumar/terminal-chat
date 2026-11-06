@@ -150,6 +150,9 @@ func Run(ctx context.Context, c *client.Client, version string) error {
 	o.Font = osFont
 	o.Touches = underlineStyles(os.Getenv)
 	o.FontFallback = symbolsFallback(os.Getenv)
+	o.Hyperlinks = hyperlinks(os.Getenv)
+	o.OpenURL = defaultOpenURL
+	o.NoBrowser = runtime.GOOS != "darwin" && os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == ""
 	o.UpdateCheck = func() string {
 		return release.Check(ctx, c.Home(), version, release.NewSource(), time.Now())
 	}
@@ -227,6 +230,14 @@ type Options struct {
 	// FontFallback: the terminal draws tc Symbols from the installed font
 	// (symbolsFallback), so Auto may pick that pack.
 	FontFallback bool
+	// Hyperlinks: URLs in messages go out as OSC 8 links (hyperlinks()).
+	Hyperlinks bool
+	// OpenURL opens an http(s) link in the browser; nil (tests) or over
+	// SSH: l and /links copy the link instead.
+	OpenURL func(context.Context, string) error
+	// NoBrowser: a Linux session with no display, where xdg-open would
+	// start and fail later; links are copied instead.
+	NoBrowser bool
 
 	// AgentDir is my agent's home (internal/agent/home) on this machine;
 	// "": tc doesn't know of one (tests).

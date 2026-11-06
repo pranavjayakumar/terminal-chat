@@ -22,11 +22,12 @@ var keyGroups = []keyGroup{
 	}},
 	{"Messages", [][2]string{
 		{"↑", "select (empty input)"}, {"m ⏎", "message menu"}, {"r", "reply in thread"}, {"+", "react (emoji picker)"}, {"e", "edit yours"},
-		{"d", "delete yours"}, {"y", "copy"}, {"Y", "copy code only"}, {"E", "your newest"}, {"p", "pin / unpin"}, {"v", "view full"}, {"r d", "failed: retry, discard"},
+		{"d", "delete yours"}, {"y", "copy"}, {"Y", "copy code only"}, {"E", "your newest"}, {"p", "pin / unpin"}, {"v", "view full"}, {"q", "quote"}, {"l", "open link"}, {"r d", "failed: retry, discard"},
 	}},
 	{"Write", [][2]string{
 		{"⏎", "send"}, {"⌥⏎", "new line"}, {"⌃J", "new line"}, {"@", "mention someone"}, {"#", "link a channel"},
-		{"/", "commands"}, {"⌥E", "emoji picker"}, {":fi", "emoji by name"}, {"⇥", "complete"}, {"⌃U", "clear draft"}, {"esc esc", "clear draft"},
+		{"/", "commands"}, {"⌥E", "emoji picker"}, {":fi", "emoji by name"}, {"⇥", "complete"}, {"⇥", "after a paste: wrap in ```"},
+		{"++", "react like last time"}, {"s/a/b", "fix your last message"}, {"⌃U", "clear draft"}, {"esc esc", "clear draft"},
 	}},
 	{"Huddle", [][2]string{
 		{"⌥H", "join / leave here"}, {"/huddle", "join here"}, {"⌃T hold", "push to talk"}, {"⌃T tap", "open mic on / off"}, {"/leave-huddle", "leave"},

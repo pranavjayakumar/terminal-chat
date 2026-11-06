@@ -22,7 +22,7 @@ func (m *Model) hoverMsg() (string, int, bool) {
 		return "", 0, false
 	}
 	switch kind {
-	case "msg", "tb", "react", "addreact", "thread", "copy", "chanlink", "fold", "appr":
+	case "msg", "tb", "react", "addreact", "thread", "copy", "chanlink", "fold", "appr", "url":
 	default:
 		return "", 0, false
 	}
@@ -220,6 +220,12 @@ func (m *Model) click(a string) tea.Cmd {
 	case "toast":
 		m.clearNotice()
 		return nil
+	case "sbmute":
+		id, err := strconv.ParseUint(rest, 10, 64)
+		if err != nil {
+			return nil
+		}
+		return m.toggleMute(id)
 	case "chan":
 		id, err := strconv.ParseUint(rest, 10, 64)
 		if err != nil {
@@ -324,7 +330,7 @@ func (m *Model) click(a string) tea.Cmd {
 		}
 		m.leaveSelect()
 		return m.openChannel(id)
-	case "msg":
+	case "msg", "url":
 		if m.mode == modeSelect && m.focus() == p && p.sel == i {
 			m.leaveSelect()
 			return nil
