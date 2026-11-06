@@ -252,6 +252,7 @@ type fakeChat struct {
 	chans []client.ChannelView
 	msgs  []client.Message
 	sent  []string
+	older []client.Message // the server's history beyond the cache
 }
 
 func (f *fakeChat) Me() proto.User                 { return f.me }
@@ -303,6 +304,18 @@ func (f *fakeChat) SendVia(ch uint64, body string, thread uint64, via string) er
 	return nil
 }
 func (f *fakeChat) Flush(context.Context) error { return nil }
+func (f *fakeChat) History(_ context.Context, ch, _ uint64) (bool, error) {
+	var keep []client.Message
+	for _, m := range f.older {
+		if m.Chan == ch {
+			f.msgs = append([]client.Message{m}, f.msgs...)
+		} else {
+			keep = append(keep, m)
+		}
+	}
+	f.older = keep
+	return false, nil
+}
 
 func msg(id, ch, author, thread uint64, body string) client.Message {
 	return client.Message{Message: proto.Message{ID: id, Chan: ch, Author: author, Thread: thread, Body: body, Time: 1}}
@@ -337,6 +350,12 @@ func TestVisitor(t *testing.T) {
 	}
 	if out, err = call(ToolReadChannel, `{"chan":"#general"}`); err != nil || !strings.Contains(out, "bob: deploy is green") {
 		t.Fatalf("read: %q %v", out, err)
+	}
+	// QA v0.6.4: messages only the server has (the owner was added later)
+	// are fetched, not just the cache.
+	f.older = []client.Message{msg(90, 10, 2, 0, "from before you joined")}
+	if out, err = call(ToolReadChannel, `{"chan":"#general"}`); err != nil || !strings.Contains(out, "from before you joined") {
+		t.Fatalf("read with history: %q %v", out, err)
 	}
 	if out, err = call(ToolReadThread, `{"chan":"general","thread":100}`); err != nil || !strings.Contains(out, "fizan: nice") {
 		t.Fatalf("thread: %q %v", out, err)

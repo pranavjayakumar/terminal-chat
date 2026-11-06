@@ -59,7 +59,8 @@ func connected(ctx context.Context) (*client.Client, error) {
 		return nil, err
 	}
 	go c.Run(ctx)
-	deadline := time.After(15 * time.Second)
+	deadline := time.After(connectWait)
+	syncing := time.After(syncWait)
 	for {
 		st := c.Status()
 		if st.State == client.Online {
@@ -74,15 +75,33 @@ func connected(ctx context.Context) (*client.Client, error) {
 			c.Close()
 			return nil, ctx.Err()
 		case <-deadline:
-			c.Close()
-			addr := sanitize.Line(c.Config().Addr)
-			if st.Err != "" {
-				return nil, fmt.Errorf("can't reach the server at %s: it may be down or blocked by a firewall; try again later or ask your admin (%s)", addr, st.Err)
+			// A fresh sync over a slow link can take a while; it's progress
+			// (the server ends one that moves too slowly, §9).
+			if st := c.Status(); st.State == client.Syncing {
+				deadline = syncing
+				continue
 			}
-			return nil, fmt.Errorf("can't reach the server at %s: it may be down or blocked by a firewall; try again later or ask your admin", addr)
+			c.Close()
+			return nil, offlineError(c.Config().Addr, st.Err)
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+}
+
+// connectWait bounds reaching the server; syncWait bounds a sync in progress.
+var connectWait, syncWait = 15 * time.Second, 3 * time.Minute
+
+// offlineError explains why the client never got online. The server
+// refusing a session for the account's session cap isn't a network problem.
+func offlineError(addr, errText string) error {
+	addr = sanitize.Line(addr)
+	if errText == (&client.ByeError{Code: proto.ByeTooManySessions}).Error() {
+		return fmt.Errorf("the server refused another session: your account already has the most it allows open at once (tc, tc tail, other computers); close some and try again (%s)", errText)
+	}
+	if errText != "" {
+		return fmt.Errorf("can't reach the server at %s: it may be down or blocked by a firewall; try again later or ask your admin (%s)", addr, errText)
+	}
+	return fmt.Errorf("can't reach the server at %s: it may be down or blocked by a firewall; try again later or ask your admin", addr)
 }
 
 // stoppedError explains why the client gave up for good. Status carries
@@ -224,6 +243,12 @@ func cmdTail(args []string) error {
 // Encrypted messages arrive decrypted; one still waiting for its key is
 // printed once it opens (it comes again in Updates().New).
 func tail(ctx context.Context, c *client.Client, ch uint64, w io.Writer) error {
+	// Sync never brings a channel's older messages to a member added later
+	// (PROTOCOL.md §6), so the cache alone can miss them. Best effort: a slow
+	// or failed fetch still leaves the cache and the live stream.
+	hctx, hcancel := context.WithTimeout(ctx, 10*time.Second)
+	c.History(hctx, ch, 0)
+	hcancel()
 	seen := map[uint64]bool{}
 	for _, m := range c.Messages(ch, 20) {
 		if m.ID != 0 {

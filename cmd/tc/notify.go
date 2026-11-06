@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/sanitize"
 )
 
@@ -104,10 +105,13 @@ func postTo(ctx context.Context, target, body string) error {
 
 // sendWait queues body and waits for that message only: a row the server
 // rejected in an earlier run (still shown as failed in the TUI) must not
-// fail this one.
+// fail this one. A message it reports as not sent is dropped from the
+// outbox, so a later tc (which requeues messages that waited for a key)
+// never delivers it behind the user's back.
 func sendWait(ctx context.Context, c interface {
 	SendLocal(ch uint64, body string, thread uint64) (int64, error)
 	FlushLocal(ctx context.Context, ids ...int64) error
+	DiscardFailed(local int64) error
 }, ch uint64, body string) error {
 	id, err := c.SendLocal(ch, body, 0)
 	if err != nil {
@@ -115,7 +119,30 @@ func sendWait(ctx context.Context, c interface {
 	}
 	fctx, fcancel := context.WithTimeout(ctx, 20*time.Second)
 	defer fcancel()
-	return c.FlushLocal(fctx, id)
+	for {
+		err = c.FlushLocal(fctx, id)
+		// A new computer gets the channel key from a member's key.share a
+		// moment later; the client requeues the message when it arrives.
+		if err == nil || !strings.Contains(err.Error(), client.NoKeyReason) {
+			break
+		}
+		select {
+		case <-fctx.Done():
+		case <-time.After(250 * time.Millisecond):
+			continue
+		}
+		break
+	}
+	if err != nil && c.DiscardFailed(id) != nil {
+		// Not failed (a key arrived just now, or the server hasn't
+		// answered): it's still queued, so say so rather than "not sent".
+		qctx, qcancel := context.WithTimeout(ctx, time.Millisecond)
+		defer qcancel()
+		if errors.Is(c.FlushLocal(qctx, id), context.DeadlineExceeded) {
+			return fmt.Errorf("%w; the message is still queued and goes out the next time tc runs here", err)
+		}
+	}
+	return err
 }
 
 // tailBuffer keeps the last n lines written to it (bounded in bytes too).

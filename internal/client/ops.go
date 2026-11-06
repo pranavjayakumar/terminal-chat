@@ -345,11 +345,40 @@ func (c *Client) MarkRead(ch, seq uint64) error {
 	c.post(Update{Channels: true})
 	c.mu.Lock()
 	s := c.sess
+	if s == nil || c.readTimers[ch] != nil { // offline: pushReads; pending: it sends the newest
+		c.mu.Unlock()
+		return nil
+	}
+	if wait := readEvery - time.Since(c.readSent[ch]); wait > 0 {
+		c.readTimers[ch] = time.AfterFunc(wait, func() { c.flushRead(ch) })
+		c.mu.Unlock()
+		return nil
+	}
+	c.readSent[ch] = time.Now()
 	c.mu.Unlock()
-	if s != nil {
+	_ = s.fire(proto.OpRead, proto.ReadArgs{Chan: ch, Seq: seq})
+	return nil
+}
+
+// readEvery spaces one channel's read markers: the TUI marks a busy channel
+// read on every arriving message, and each marker is a server write and a
+// read.update event.
+const readEvery = time.Second
+
+// flushRead sends ch's newest read marker if the server hasn't confirmed it.
+func (c *Client) flushRead(ch uint64) {
+	c.mu.Lock()
+	delete(c.readTimers, ch)
+	s := c.sess
+	c.readSent[ch] = time.Now()
+	c.mu.Unlock()
+	if s == nil || c.ctx.Err() != nil {
+		return
+	}
+	var seq uint64
+	if c.db.QueryRow(`SELECT seq FROM reads WHERE chan = ? AND dirty = 1`, ch).Scan(&seq) == nil {
 		_ = s.fire(proto.OpRead, proto.ReadArgs{Chan: ch, Seq: seq})
 	}
-	return nil
 }
 
 // pushReads sends read markers the server hasn't confirmed yet.
@@ -358,6 +387,9 @@ func (c *Client) pushReads(s *session) {
 		if s.fire(proto.OpRead, proto.ReadArgs{Chan: ch, Seq: seq}) != nil {
 			return
 		}
+		c.mu.Lock()
+		c.readSent[ch] = time.Now()
+		c.mu.Unlock()
 	}
 }
 

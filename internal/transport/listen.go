@@ -2,7 +2,9 @@ package transport
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
@@ -44,6 +46,23 @@ func quicConfig() *quic.Config {
 	}
 }
 
+// resetKey derives the QUIC stateless reset key from the server's TLS key, so
+// it survives restarts: after a crash, the restarted server answers packets
+// of connections it no longer knows with a stateless reset, and clients
+// reconnect at once instead of waiting out the idle timeout (RFC 9000 §10.3).
+func resetKey(cert tls.Certificate) *quic.StatelessResetKey {
+	der, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey)
+	if err != nil {
+		return nil // stateless resets off, as before
+	}
+	h := sha256.New()
+	h.Write([]byte("tc quic stateless reset key v1\x00"))
+	h.Write(der)
+	var k quic.StatelessResetKey
+	copy(k[:], h.Sum(nil))
+	return &k
+}
+
 type listenOpts struct {
 	ListenOpts
 	noQUIC           bool // tests: simulate blocked UDP
@@ -53,13 +72,22 @@ type listenOpts struct {
 }
 
 type listener struct {
-	tcp     net.Listener
-	quic    *quic.Listener // nil if disabled
-	tlsConf *tls.Config
-	timeout time.Duration
-	silent  time.Duration // firstByteTimeout
-	http    *connListener // nil unless ListenOpts.HTTP
-	gate    *gate
+	tcp  net.Listener
+	quic *quic.Listener // nil if disabled
+	qtr  *quic.Transport
+	udp  *net.UDPConn
+	// Like quic.ListenAddr: closing the listener leaves accepted QUIC
+	// connections up (the server says goodbye on them), and the transport
+	// and socket go when the last one does.
+	qmu        sync.Mutex
+	qlive      int
+	qclosed    bool
+	qcloseOnce sync.Once
+	tlsConf    *tls.Config
+	timeout    time.Duration
+	silent     time.Duration // firstByteTimeout
+	http       *connListener // nil unless ListenOpts.HTTP
+	gate       *gate
 
 	conns     chan Conn
 	ctx       context.Context // cancelled on Close
@@ -138,7 +166,18 @@ func listenOnce(addr string, cert tls.Certificate, o listenOpts) (Listener, erro
 		qc.MaxIncomingStreams = 1
 		qc.MaxIncomingUniStreams = -1
 		udpAddr := net.JoinHostPort(host, strconv.Itoa(port))
-		if l.quic, err = quic.ListenAddr(udpAddr, tlsConf, qc); err != nil {
+		ua, err := net.ResolveUDPAddr("udp", udpAddr)
+		if err == nil {
+			l.udp, err = net.ListenUDP("udp", ua)
+		}
+		if err == nil {
+			l.qtr = &quic.Transport{Conn: l.udp, StatelessResetKey: resetKey(cert)}
+			if l.quic, err = l.qtr.Listen(tlsConf, qc); err != nil {
+				l.qtr.Close()
+				l.udp.Close()
+			}
+		}
+		if err != nil {
 			l.cancel()
 			tcpLn.Close()
 			return nil, fmt.Errorf("listening on udp %s: %w", udpAddr, err)
@@ -171,10 +210,41 @@ func (l *listener) Close() error {
 		err = l.tcp.Close()
 		if l.quic != nil {
 			err = errors.Join(err, l.quic.Close())
+			l.qmu.Lock()
+			l.qclosed = true
+			idle := l.qlive == 0
+			l.qmu.Unlock()
+			if idle {
+				l.closeQUICTransport()
+			}
 		}
 		l.wg.Wait()
 	})
 	return err
+}
+
+func (l *listener) closeQUICTransport() {
+	l.qcloseOnce.Do(func() {
+		l.qtr.Close()
+		l.udp.Close()
+	})
+}
+
+// trackQUIC counts qc as live until it closes.
+func (l *listener) trackQUIC(qc *quic.Conn) {
+	l.qmu.Lock()
+	l.qlive++
+	l.qmu.Unlock()
+	go func() {
+		<-qc.Context().Done()
+		l.qmu.Lock()
+		l.qlive--
+		last := l.qclosed && l.qlive == 0
+		l.qmu.Unlock()
+		if last {
+			l.closeQUICTransport()
+		}
+	}()
 }
 
 // deliver hands c to Accept, or closes it if the listener shuts down first.
@@ -262,6 +332,7 @@ func (l *listener) acceptQUIC() {
 		if err != nil {
 			return // only fails once the listener is closed
 		}
+		l.trackQUIC(qc)
 		release, ok := l.gate.admit(qc.RemoteAddr(), func() { qc.CloseWithError(0, "busy") })
 		if !ok {
 			qc.CloseWithError(0, "busy")
