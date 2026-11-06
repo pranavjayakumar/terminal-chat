@@ -55,7 +55,11 @@ func TestSendIgnoresOlderRejectedRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := sendWait(ctx, c, general, "\x1b[31mRED\x1b[0m"); err == nil || !strings.Contains(err.Error(), proto.ErrBadRequest) {
+	id, err := c.SendLocal(general, "\x1b[31mRED\x1b[0m", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.FlushLocal(ctx, id); err == nil || !strings.Contains(err.Error(), proto.ErrBadRequest) {
 		t.Fatalf("raw control characters = %v, want bad_request", err)
 	}
 	c.Close()

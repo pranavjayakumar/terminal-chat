@@ -72,6 +72,9 @@ func (s Sec) Trusted() bool { return s == SecPlain || s == SecE2E }
 // such messages are requeued when the key arrives.
 const noKeyReason = "no key yet — waiting for a member"
 
+// NoKeyReason is noKeyReason for callers matching a FlushLocal error.
+const NoKeyReason = noKeyReason
+
 // rotateReason is the outbox failure when the channel needs a new key and
 // we couldn't make one (retry by hand).
 const rotateReason = "couldn't start a new key for this channel — retry"
