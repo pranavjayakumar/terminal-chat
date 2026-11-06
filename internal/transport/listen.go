@@ -72,10 +72,10 @@ type listenOpts struct {
 }
 
 type listener struct {
-	tcp     net.Listener
-	quic    *quic.Listener // nil if disabled
-	qtr     *quic.Transport
-	udp     *net.UDPConn
+	tcp  net.Listener
+	quic *quic.Listener // nil if disabled
+	qtr  *quic.Transport
+	udp  *net.UDPConn
 	// Like quic.ListenAddr: closing the listener leaves accepted QUIC
 	// connections up (the server says goodbye on them), and the transport
 	// and socket go when the last one does.
@@ -83,11 +83,11 @@ type listener struct {
 	qlive      int
 	qclosed    bool
 	qcloseOnce sync.Once
-	tlsConf *tls.Config
-	timeout time.Duration
-	silent  time.Duration // firstByteTimeout
-	http    *connListener // nil unless ListenOpts.HTTP
-	gate    *gate
+	tlsConf    *tls.Config
+	timeout    time.Duration
+	silent     time.Duration // firstByteTimeout
+	http       *connListener // nil unless ListenOpts.HTTP
+	gate       *gate
 
 	conns     chan Conn
 	ctx       context.Context // cancelled on Close
