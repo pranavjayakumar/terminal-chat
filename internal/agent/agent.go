@@ -115,14 +115,17 @@ type Supervisor struct {
 	quiets   map[string]*Quiet      // session key → a pause someone asked for (engage.go)
 	quieted  map[string]bool        // session key → the run called quiet
 	sorry    map[string]time.Time   // session key → when we last said "I was asleep"
-	status   Status
-	lastRun  time.Time
-	online   bool
-	started  bool
-	wg       sync.WaitGroup
-	actMu    sync.Mutex
-	dreaming bool
-	exeStamp string // TCBin's size and mtime when the home was last refreshed
+	// reserved is the caps of the runs going now (guestReserved: of those
+	// on the budget for others), not yet in the ledger.
+	reserved, guestReserved float64
+	status                  Status
+	lastRun                 time.Time
+	online                  bool
+	started                 bool
+	wg                      sync.WaitGroup
+	actMu                   sync.Mutex
+	dreaming                bool
+	exeStamp                string // TCBin's size and mtime when the home was last refreshed
 }
 
 func (s *Supervisor) defaults() {
@@ -333,7 +336,10 @@ func (s *Supervisor) backlog() []Ask {
 // in their thread.
 func (s *Supervisor) accept(ctx context.Context, a Ask) {
 	now := s.Now()
-	if a.Msg.Time < s.queue.since() || !s.queue.claim(a.Msg.ID, now) {
+	// queue.json forgets handled asks after handledFor: an older one
+	// (a restart's backlog scan of a quiet channel) may well have been
+	// answered, so it gets neither a run nor an apology.
+	if a.Msg.Time < s.queue.since() || now.Sub(time.UnixMilli(a.Msg.Time)) > handledFor || !s.queue.claim(a.Msg.ID, now) {
 		return
 	}
 	if s.stopAuto(a) {
