@@ -18,6 +18,7 @@ type VisitorChat interface {
 	Chat
 	SendVia(ch uint64, body string, thread uint64, via string) error
 	Flush(ctx context.Context) error
+	History(ctx context.Context, ch, before uint64) (more bool, err error)
 }
 
 // Visitor serves an outside Claude session from the owner's tc home. It
@@ -68,6 +69,9 @@ func (v *Visitor) Call(ctx context.Context, name string, raw json.RawMessage) (s
 		if err != nil {
 			return "", err
 		}
+		// The cache lacks older messages of a channel the owner was added
+		// to later and never opened in tc; best effort, the cache still answers.
+		v.Chat.History(ctx, cv.ID, 0)
 		return FormatMessages(v.Chat, v.Chat.Messages(cv.ID, Limit(a.Limit, 30, 200))), nil
 	case ToolReadThread:
 		var a struct {
