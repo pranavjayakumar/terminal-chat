@@ -52,7 +52,9 @@ func TestQUICResetAfterCrash(t *testing.T) {
 			t.Logf("connection ended after %v: %v", time.Since(start).Round(time.Millisecond), err)
 			return
 		case <-tick.C:
-			c.Write([]byte("x")) // like a queued send after the crash
+			// Like a queued send after the crash. quic-go answers only packets
+			// longer than 42 bytes with a reset; a REQ frame is.
+			c.Write(make([]byte, 100))
 		case <-deadline:
 			t.Fatal("client still thinks the crashed server's connection is alive after 5 s")
 		}
