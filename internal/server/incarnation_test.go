@@ -257,3 +257,30 @@ func TestIncarnationEdges(t *testing.T) {
 func incLine(st incState) string {
 	return fmt.Sprintf("v1 %x %x %d %x\n", st.serverID, st.inc, st.seq, st.mark)
 }
+
+// A second process on a running server's data dir (tc server invite) opens
+// and closes it: neither it nor the running server may change incarnation.
+func TestIncarnationSecondProcess(t *testing.T) {
+	dir := t.TempDir()
+	ts := startServerCfg(t, "tcp", Config{DataDir: dir})
+	alice := ts.register(t, "alice", true)
+	snap, _ := alice.syncFresh()
+	gen := generalID(t, snap)
+	inc := ts.inc.inc
+	for i := 0; i < 3; i++ {
+		alice.send(gen, "x")
+		other, err := New(Config{DataDir: dir, Logger: ts.log})
+		if err != nil {
+			t.Fatal(err)
+		}
+		alice.send(gen, "y")
+		if !bytes.Equal(other.inc.inc, inc) {
+			t.Fatal("second process started a new incarnation")
+		}
+		other.Close()
+	}
+	stopServer(ts)
+	if got := openInc(t, dir); !bytes.Equal(got, inc) {
+		t.Fatal("incarnation changed after a second process")
+	}
+}
