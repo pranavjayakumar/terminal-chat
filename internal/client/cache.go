@@ -181,13 +181,104 @@ func setMeta(q dbtx, k string, v any) error {
 	return err
 }
 
-// resetCache drops everything the server can resend; the outbox, unacknowledged
-// read markers and local-only state (drafts) survive.
-func resetCache(q dbtx, serverID []byte) error {
+// readStash holds unacknowledged read markers through a reset snapshot,
+// with the cursor of the sync that started it (meta reset_reads). The RES
+// says whether that cursor's history still stands: a marker from a history
+// a restore threw away names ids the server hands out again, so it would
+// mark new messages read (on every device, once pushed).
+type readStash struct {
+	Reads map[uint64]uint64 `msgpack:"reads"`
+	Since uint64            `msgpack:"since"`
+	Inc   []byte            `msgpack:"inc,omitempty"`
+}
+
+func loadReadStash(q dbtx) (*readStash, error) {
+	b, err := metaBytes(q, "reset_reads")
+	if err != nil || len(b) == 0 {
+		return nil, err
+	}
+	var st readStash
+	if err := proto.Unmarshal(b, &st); err != nil {
+		return nil, nil // unreadable: drop the markers, never guess
+	}
+	return &st, nil
+}
+
+// stashReads moves unacknowledged read markers into reset_reads, keeping
+// the cursor of the first reset if a crash interrupted one already.
+func stashReads(q dbtx, since uint64, inc []byte) error {
+	st, err := loadReadStash(q)
+	if err != nil {
+		return err
+	}
+	if st == nil {
+		st = &readStash{Since: since, Inc: inc}
+	}
+	if st.Reads == nil {
+		st.Reads = map[uint64]uint64{}
+	}
+	rows, err := q.Query(`SELECT chan, seq FROM reads WHERE dirty = 1`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var ch, seq uint64
+		if err := rows.Scan(&ch, &seq); err != nil {
+			rows.Close()
+			return err
+		}
+		st.Reads[ch] = max(st.Reads[ch], seq)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(st.Reads) == 0 {
+		_, err := q.Exec(`DELETE FROM meta WHERE k = 'reset_reads'`)
+		return err
+	}
+	b, err := proto.Marshal(st)
+	if err != nil {
+		return err
+	}
+	return setMeta(q, "reset_reads", b)
+}
+
+// unstashReads ends a reset at its sync RES: the stashed markers come back
+// unless the server's history is not the one they were set in (a cursor
+// past the head, or another incarnation).
+func unstashReads(q dbtx, head uint64, inc []byte) error {
+	st, err := loadReadStash(q)
+	if err != nil {
+		return err
+	}
+	if st != nil && head >= st.Since && (len(st.Inc) == 0 || len(inc) == 0 || bytes.Equal(st.Inc, inc)) {
+		for ch, seq := range st.Reads {
+			if err := setRead(q, ch, seq, true); err != nil {
+				return err
+			}
+		}
+	}
+	_, err = q.Exec(`DELETE FROM meta WHERE k = 'reset_reads'`)
+	return err
+}
+
+// resetCache drops everything the server can resend; the outbox and
+// local-only state (drafts) survive, and unacknowledged read markers wait in
+// reset_reads for unstashReads. since and inc are the cursor this session
+// synced from.
+func resetCache(q dbtx, serverID []byte, since uint64, inc []byte) error {
 	// Local-only state survives a reset of the same server; another server's
 	// ids mean nothing here.
 	old, err := metaBytes(q, "server_id")
 	if err != nil {
+		return err
+	}
+	if len(old) > 0 && !bytes.Equal(old, serverID) {
+		if _, err := q.Exec(`DELETE FROM meta WHERE k = 'reset_reads'`); err != nil {
+			return err
+		}
+	} else if err := stashReads(q, since, inc); err != nil {
 		return err
 	}
 	if len(old) > 0 && !bytes.Equal(old, serverID) {
@@ -201,7 +292,7 @@ func resetCache(q dbtx, serverID []byte) error {
 		}
 	}
 	for _, s := range []string{
-		`DELETE FROM users`, `DELETE FROM chans`, `DELETE FROM msgs`, `DELETE FROM rencs`, `DELETE FROM pins`, `DELETE FROM groups`, `DELETE FROM reads WHERE dirty = 0`,
+		`DELETE FROM users`, `DELETE FROM chans`, `DELETE FROM msgs`, `DELETE FROM rencs`, `DELETE FROM pins`, `DELETE FROM groups`, `DELETE FROM reads`,
 		`DELETE FROM devices`, `DELETE FROM device_endorse`, `DELETE FROM device_revokes`,
 		`DELETE FROM meta WHERE k IN ('devices_full', 'server_inc')`, `DELETE FROM epochs`, `DELETE FROM key_shares`, `DELETE FROM removed`,
 	} {

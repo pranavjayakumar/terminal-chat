@@ -174,7 +174,7 @@ func TestPinsClearedOnReset(t *testing.T) {
 	if got := c.pinIDs()[general]; len(got) != 1 {
 		t.Fatalf("pins = %v", got)
 	}
-	if err := resetCache(c.db, serverID); err != nil {
+	if err := resetCache(c.db, serverID, 0, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := c.pinIDs()[general]; len(got) != 0 {

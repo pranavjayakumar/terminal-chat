@@ -41,7 +41,7 @@ func (c *Client) syncHook(s *session) func(proto.Res) error {
 		reset := sr.Reset && !s.sawSnapshot
 		err := c.tx(func(tx *sql.Tx) error {
 			if reset {
-				if err := resetCache(tx, s.welcome.ServerID); err != nil {
+				if err := resetCache(tx, s.welcome.ServerID, s.syncSince, s.syncInc); err != nil {
 					return err
 				}
 			}
@@ -55,6 +55,15 @@ func (c *Client) syncHook(s *session) func(proto.Res) error {
 				}
 			case sr.Reset:
 				if err := setMeta(tx, "devices_full", 1); err != nil {
+					return err
+				}
+			}
+			if sr.Reset {
+				var inc []byte
+				if s.incarnation() {
+					inc = sr.Inc
+				}
+				if err := unstashReads(tx, sr.Head, inc); err != nil {
 					return err
 				}
 			}
@@ -120,7 +129,7 @@ func (c *Client) applySnapshot(s *session, sn proto.Snapshot) error {
 	u := Update{Reset: reset, Channels: true, Users: reset || len(sn.Users) > 0}
 	err := c.tx(func(tx *sql.Tx) error {
 		if reset {
-			if err := resetCache(tx, s.welcome.ServerID); err != nil {
+			if err := resetCache(tx, s.welcome.ServerID, s.syncSince, s.syncInc); err != nil {
 				return err
 			}
 		}

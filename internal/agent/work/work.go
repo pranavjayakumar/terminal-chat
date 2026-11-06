@@ -13,14 +13,20 @@ package work
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/skailama/tc/internal/agent/home"
@@ -308,6 +314,11 @@ func (w *Work) checkStaged(ctx context.Context, gitDir, dir string) error {
 	if err != nil {
 		return err
 	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
 	for _, rec := range strings.Split(ls, "\x00") {
 		meta, rel, ok := strings.Cut(rec, "\t")
 		if !ok {
@@ -321,15 +332,57 @@ func (w *Work) checkStaged(ctx context.Context, gitDir, dir string) error {
 		if safegit.Linked(path) {
 			return fmt.Errorf("%s is a hard link to a file elsewhere: refusing to commit it", rel)
 		}
-		got, err := w.git(ctx, gitDir, dir, false, "hash-object", "--no-filters", "--", rel)
+		// Read it the way the sandbox sees it: inside the worktree, through
+		// no symlink out of it. git (and hash-object) would follow a link
+		// swapped in for the file or a parent folder after the add, and
+		// find the same outside bytes the add read.
+		got, err := blobHashIn(root, rel, len(f[1]))
 		if err != nil {
-			return err
+			return fmt.Errorf("%s: %w: refusing to commit it", rel, err)
 		}
-		if strings.TrimSpace(got) != f[1] {
+		if got != f[1] {
 			return fmt.Errorf("%s changed while tc was committing it: try again once nothing is writing there", rel)
 		}
 	}
 	return nil
+}
+
+// blobHashIn is git's blob id (SHA-1, or SHA-256 for a 64-digit want) of
+// the plain, singly linked file rel under root.
+func blobHashIn(root *os.Root, rel string, want int) (string, error) {
+	fh, err := root.Open(filepath.FromSlash(rel))
+	if err != nil {
+		return "", fmt.Errorf("not a plain file in the worktree (a link out of it?): %w", err)
+	}
+	defer fh.Close()
+	fi, err := fh.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !fi.Mode().IsRegular() {
+		return "", errors.New("not a plain file in the worktree")
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Nlink > 1 {
+		return "", errors.New("a hard link to a file elsewhere")
+	}
+	var h hash.Hash
+	switch want {
+	case 40:
+		h = sha1.New()
+	case 64:
+		h = sha256.New()
+	default:
+		return "", fmt.Errorf("unknown object id length %d", want)
+	}
+	fmt.Fprintf(h, "blob %d\x00", fi.Size())
+	n, err := io.Copy(h, fh)
+	if err != nil {
+		return "", err
+	}
+	if n != fi.Size() {
+		return "", errors.New("changed while tc was reading it")
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // PreparePR commits whatever the agent left uncommitted in the worktree
