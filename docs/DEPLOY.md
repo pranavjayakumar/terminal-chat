@@ -145,6 +145,15 @@ not argv, so it isn't visible for the length of the join.
   that member). Tell your team before restoring, and that a restore is the only reason to accept.
   Messages and membership changes made after the backup are gone from the server; restore only the
   newest backup, and only when you must.
+- **Restore only `tc.db`** (stop tc, put the backup back as `/var/lib/tc/tc.db`, delete any
+  `tc.db-wal`/`tc.db-shm` beside it, start tc). The server notices that its database lost the
+  history it last wrote (it compares the log against `/var/lib/tc/incarnation`), logs "restored
+  from a backup?" and starts a new incarnation: every client discards its cached messages and
+  resyncs once, so nobody keeps messages that no longer exist or misses new ones that reuse their
+  ids. If you restore the whole data directory or a VM snapshot (so `incarnation` came back with
+  the database), also `rm /var/lib/tc/incarnation` before starting tc; otherwise clients that were
+  offline through the restore may show lost messages in place of new ones (needs servers and
+  clients ≥ the release with cap `incarnation`).
 
 ## Cutting a release (maintainers)
 
