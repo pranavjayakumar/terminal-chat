@@ -237,14 +237,32 @@ func (s *Supervisor) turn(ctx context.Context, a Ask, cfg home.Config, mode runn
 	r.live.set(proto.AgentThinking, "thinking…", "")
 	defer r.live.close()
 
+	// Runs going at once share what is left: each reserves its cap until
+	// its cost is in the ledger, so together they stay under the daily cap
+	// and others under theirs.
+	guest := a.guest()
+	s.mu.Lock()
 	now := s.Now()
-	capUSD := min(cfg.RunCapUSD, cfg.DailyCapUSD-s.ledger.Spent(now))
-	if a.guest() {
-		capUSD = min(capUSD, cfg.GuestCap()-s.ledger.GuestSpent(now))
+	capUSD := min(cfg.RunCapUSD, cfg.DailyCapUSD-s.ledger.Spent(now)-s.reserved)
+	if guest {
+		capUSD = min(capUSD, cfg.GuestCap()-s.ledger.GuestSpent(now)-s.guestReserved)
 	}
 	if capUSD < 0.01 {
 		capUSD = 0.01
 	}
+	s.reserved += capUSD
+	if guest {
+		s.guestReserved += capUSD
+	}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.reserved -= capUSD
+		if guest {
+			s.guestReserved -= capUSD
+		}
+		s.mu.Unlock()
+	}()
 	dir, deny := s.Dir, []string(nil)
 	if !a.Owner {
 		// Files in the working directory are readable without a prompt:

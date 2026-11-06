@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/skailama/tc/internal/agent/home"
+	"github.com/skailama/tc/internal/agent/runner"
 	"github.com/skailama/tc/internal/client"
 	"github.com/skailama/tc/internal/proto"
 )
@@ -65,5 +66,58 @@ func TestRefusalFlood_Break(t *testing.T) {
 	}
 	if refusals != 1 {
 		t.Fatalf("%d refusals for 10 asks past the cap in one place; posts %+v", refusals, h.chat.posts())
+	}
+}
+
+// Two guest runs at once (MaxRuns 2) must share what is left of the guest
+// pool, not each get all of it: together they could spend the owner's
+// headroom, which GuestCap promises they never can. The same goes for the
+// daily cap.
+func TestConcurrentRunsShareCap_Break(t *testing.T) {
+	cfg := cfgDefault()
+	cfg.DailyCapUSD, cfg.RunCapUSD, cfg.GuestCapUSD, cfg.AsksPerPerson = 2, 1, 1, 100
+	h := newHarness(t, cfg, nil)
+	if err := h.s.ledger.Add(Spend{T: time.Now().UnixMilli(), Asker: bobID, USD: 0.4, Kind: "ask", Guest: true}); err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	h.run.reply = func(req runner.Request, on func(runner.Event)) (runner.Result, error) {
+		<-release
+		return runner.Result{Session: req.Session, Text: "ok"}, nil
+	}
+	h.chat.say(bobID, general, 0, "@rocky one", 0)
+	h.chat.say(carolID, secret, 0, "@rocky two", 0)
+	h.waitFor("two runs", func() bool { return len(h.run.requests()) == 2 })
+	close(release)
+	total := 0.0
+	for _, r := range h.run.requests() {
+		total += r.MaxUSD
+	}
+	if total > 0.6+0.011 {
+		t.Fatalf("two guest runs may spend $%.2f together; only $0.60 of the guest pool is left", total)
+	}
+
+	// The owner's runs: the daily cap is shared the same way.
+	h.waitFor("guest answers", func() bool { return len(h.chat.posts()) == 2 })
+	h.run.mu.Lock()
+	h.run.reqs = nil
+	h.run.mu.Unlock()
+	release2 := make(chan struct{})
+	h.run.mu.Lock()
+	h.run.reply = func(req runner.Request, on func(runner.Event)) (runner.Result, error) {
+		<-release2
+		return runner.Result{Session: req.Session, Text: "ok"}, nil
+	}
+	h.run.mu.Unlock()
+	h.chat.say(ownerID, general, 0, "@rocky three", 0)
+	h.chat.say(ownerID, secret, 0, "@rocky four", 0)
+	h.waitFor("two owner runs", func() bool { return len(h.run.requests()) == 2 })
+	close(release2)
+	total = 0
+	for _, r := range h.run.requests() {
+		total += r.MaxUSD
+	}
+	if left := 2 - h.s.ledger.Spent(time.Now()); total > left+0.011 {
+		t.Fatalf("two owner runs may spend $%.2f together; $%.2f of the daily cap is left", total, left)
 	}
 }

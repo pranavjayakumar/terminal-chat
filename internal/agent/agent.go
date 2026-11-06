@@ -115,14 +115,17 @@ type Supervisor struct {
 	quiets   map[string]*Quiet      // session key → a pause someone asked for (engage.go)
 	quieted  map[string]bool        // session key → the run called quiet
 	sorry    map[string]time.Time   // session key → when we last said "I was asleep"
-	status   Status
-	lastRun  time.Time
-	online   bool
-	started  bool
-	wg       sync.WaitGroup
-	actMu    sync.Mutex
-	dreaming bool
-	exeStamp string // TCBin's size and mtime when the home was last refreshed
+	// reserved is the caps of the runs going now (guestReserved: of those
+	// on the budget for others), not yet in the ledger.
+	reserved, guestReserved float64
+	status                  Status
+	lastRun                 time.Time
+	online                  bool
+	started                 bool
+	wg                      sync.WaitGroup
+	actMu                   sync.Mutex
+	dreaming                bool
+	exeStamp                string // TCBin's size and mtime when the home was last refreshed
 }
 
 func (s *Supervisor) defaults() {
