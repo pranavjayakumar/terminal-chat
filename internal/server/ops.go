@@ -84,7 +84,12 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 	s.mu.Lock()
 	disabled := s.disabled[u.ID]
 	// huddle.leave is exempt: refusing a cleanup would leave a ghost listener.
-	limited := (writeOps[op] || op == proto.OpHuddleJoin) && !s.allowWriteSess(sess)
+	var limited bool
+	if op == proto.OpRead {
+		limited = !s.take(s.rlimits, u.ID, 60, 5)
+	} else {
+		limited = (writeOps[op] || op == proto.OpHuddleJoin) && !s.allowWriteSess(sess)
+	}
 	s.mu.Unlock()
 	if disabled {
 		return nil, proto.Errf(proto.ErrUnauthorized, "account disabled")

@@ -61,6 +61,7 @@ type Server struct {
 	presence     map[uint64]proto.Ephemeral // user -> last presence
 	limits       map[uint64]*bucket         // sends
 	wlimits      map[uint64]*bucket         // other write ops
+	rlimits      map[uint64]*bucket         // read markers: their own budget, so a busy channel can't starve writes
 	disabled     map[uint64]bool
 	// Agents (agents.go): owner → active agent, access list, agent DM,
 	// connected agent sessions; agent sessions' own rate buckets.
@@ -124,6 +125,7 @@ func New(cfg Config) (*Server, error) {
 		presence: map[uint64]proto.Ephemeral{},
 		limits:   map[uint64]*bucket{},
 		wlimits:  map[uint64]*bucket{},
+		rlimits:  map[uint64]*bucket{},
 		disabled: map[uint64]bool{},
 		agents:   map[uint64]proto.Agent{}, agentAccess: map[uint64]map[uint64]int64{},
 		chanE2E: map[uint64]bool{}, agentDMs: map[uint64]uint64{}, agentOnline: map[uint64]int{},

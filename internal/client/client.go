@@ -227,6 +227,8 @@ type Client struct {
 	users        map[uint64]proto.User
 	typing       map[uint64]map[uint64]time.Time
 	typingTimers map[uint64]*time.Timer
+	readTimers   map[uint64]*time.Timer // MarkRead: a coalesced marker is due (ops.go)
+	readSent     map[uint64]time.Time
 	presence     map[uint64]Presence
 	away         *proto.Ephemeral // our own presence to restore after reconnect
 	typed        map[uint64]time.Time
@@ -357,7 +359,7 @@ func Open(home string) (*Client, error) {
 	}
 	c := &Client{
 		home: home, cfg: cfg, db: db, trust: ts, users: users,
-		typing: map[uint64]map[uint64]time.Time{}, typingTimers: map[uint64]*time.Timer{}, presence: map[uint64]Presence{},
+		typing: map[uint64]map[uint64]time.Time{}, typingTimers: map[uint64]*time.Timer{}, readTimers: map[uint64]*time.Timer{}, readSent: map[uint64]time.Time{}, presence: map[uint64]Presence{},
 		typed:   map[uint64]time.Time{},
 		updates: make(chan Update, 1), obKick: make(chan struct{}, 1),
 		obChanged: make(chan struct{}), timing: defaultTiming,
