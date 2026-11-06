@@ -60,3 +60,20 @@ func TestQUICResetAfterCrash(t *testing.T) {
 		}
 	}
 }
+
+// Closing the listener must leave accepted QUIC connections up, like
+// quic.ListenAddr did: server.Serve closes the listener first and sends its
+// goodbye on the sessions afterwards. Closing the whole transport at once
+// dropped them silently.
+func TestQUICListenerCloseKeepsConns(t *testing.T) {
+	ln, cert := newServer(t, listenOpts{})
+	c, s := connect(t, ln, Pin(cert), DialQUIC)
+	ln.Close()
+	if _, err := s.Write([]byte("bye")); err != nil {
+		t.Fatalf("write after listener close: %v", err)
+	}
+	got := make([]byte, 3)
+	if _, err := io.ReadFull(c, got); err != nil || string(got) != "bye" {
+		t.Fatalf("client read %q, %v", got, err)
+	}
+}

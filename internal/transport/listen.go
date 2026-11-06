@@ -76,6 +76,13 @@ type listener struct {
 	quic    *quic.Listener // nil if disabled
 	qtr     *quic.Transport
 	udp     *net.UDPConn
+	// Like quic.ListenAddr: closing the listener leaves accepted QUIC
+	// connections up (the server says goodbye on them), and the transport
+	// and socket go when the last one does.
+	qmu        sync.Mutex
+	qlive      int
+	qclosed    bool
+	qcloseOnce sync.Once
 	tlsConf *tls.Config
 	timeout time.Duration
 	silent  time.Duration // firstByteTimeout
@@ -202,11 +209,42 @@ func (l *listener) Close() error {
 		l.cancel()
 		err = l.tcp.Close()
 		if l.quic != nil {
-			err = errors.Join(err, l.quic.Close(), l.qtr.Close(), l.udp.Close())
+			err = errors.Join(err, l.quic.Close())
+			l.qmu.Lock()
+			l.qclosed = true
+			idle := l.qlive == 0
+			l.qmu.Unlock()
+			if idle {
+				l.closeQUICTransport()
+			}
 		}
 		l.wg.Wait()
 	})
 	return err
+}
+
+func (l *listener) closeQUICTransport() {
+	l.qcloseOnce.Do(func() {
+		l.qtr.Close()
+		l.udp.Close()
+	})
+}
+
+// trackQUIC counts qc as live until it closes.
+func (l *listener) trackQUIC(qc *quic.Conn) {
+	l.qmu.Lock()
+	l.qlive++
+	l.qmu.Unlock()
+	go func() {
+		<-qc.Context().Done()
+		l.qmu.Lock()
+		l.qlive--
+		last := l.qclosed && l.qlive == 0
+		l.qmu.Unlock()
+		if last {
+			l.closeQUICTransport()
+		}
+	}()
 }
 
 // deliver hands c to Accept, or closes it if the listener shuts down first.
@@ -294,6 +332,7 @@ func (l *listener) acceptQUIC() {
 		if err != nil {
 			return // only fails once the listener is closed
 		}
+		l.trackQUIC(qc)
 		release, ok := l.gate.admit(qc.RemoteAddr(), func() { qc.CloseWithError(0, "busy") })
 		if !ok {
 			qc.CloseWithError(0, "busy")
