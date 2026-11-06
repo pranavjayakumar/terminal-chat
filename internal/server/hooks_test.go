@@ -242,7 +242,9 @@ func frozenClock(s *Server) {
 func noIPLimit(s *Server) { s.hk.ips = newIPLimiter(s.cfg.Now, 1e9, 1e9, 10) }
 
 func TestHookRateLimit(t *testing.T) {
-	ts := startHookServer(t)
+	// Frozen: on a loaded machine the hookBurst posts can take over a second,
+	// and the refilled token let the over-limit post through.
+	ts := startHookServer(t, frozenClock)
 	alice := ts.register(t, "alice", false)
 	snap, _ := alice.syncFresh()
 	h := alice.createHook(generalID(t, snap), "ci")
