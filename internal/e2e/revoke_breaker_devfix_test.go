@@ -166,10 +166,14 @@ func TestRevokeOfflineSealedOutbox_BreakDevfix(t *testing.T) {
 // which tryDevice records as devErr, so its encrypted sends fail at once
 // and for good (failErr) though the device is registered.
 func TestRevokeSelfTwoLiveProcesses_BreakDevfix(t *testing.T) {
-	_, _, alice, _, bob, dm, ctx := revokeSetup(t)
+	_, _, alice, _, bob, dm, _ := revokeSetup(t)
 	a := alice.Me().ID
 	sid := alice.sid(t)
 	for i := range 10 {
+		// A context per cycle: the ten cycles take ~45 s idle, and on a
+		// loaded runner they outlived the 60 s one revokeSetup returns.
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
 		other := reopen(t, alice.home)
 		eventually(t, "other online", func() bool { return other.online() && other.DeviceError() == nil })
 		cur, err := alice.Trust().DeviceKeys(sid, a)

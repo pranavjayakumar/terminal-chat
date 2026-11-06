@@ -19,18 +19,36 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.25"
       - run: test -z "$(gofmt -l ./cmd ./internal)" || (gofmt -l ./cmd ./internal; exit 1)
       - run: go vet ./...
       - run: go vet -tags tctamper ./...
-      - run: go test -race ./...
-      - run: go test -race -tags tctamper ./internal/e2e
+      # Explicit timeouts: internal/e2e takes ~9 min under -race on a busy
+      # runner, close to go test's 10 min default.
+      - run: go test -race -timeout 30m ./...
       - run: make build && ls -lh bin/tc
+  # The malicious-server suite (-tags tctamper, docs/E2E.md step 11) in its
+  # own job, so it runs beside the main suite instead of after it.
+  malicious:
+    strategy:
+      matrix:
+        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest","macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25"
+      - run: go test -race -timeout 30m -tags tctamper ./internal/e2e
   # Voice flavor (docs/VOICE.md): cgo + libopus, -tags voice. The default
   # job above stays CGO_ENABLED=0.
   voice:
@@ -41,10 +59,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.25"
       - name: libopus
@@ -58,7 +76,7 @@ jobs:
         env: { CGO_ENABLED: "1" }
       - run: go build -tags voice ./...
         env: { CGO_ENABLED: "1" }
-      - run: go test -race -tags voice ./internal/voice/ ./internal/client/ ./internal/tui/ ./internal/e2e/ ./cmd/tc/
+      - run: go test -race -timeout 30m -tags voice ./internal/voice/ ./internal/client/ ./internal/tui/ ./internal/e2e/ ./cmd/tc/
         env: { CGO_ENABLED: "1" }
       # The release packaging path (static libopus from source), for this
       # runner's OS/arch, so release.yml's voice job is exercised on every PR.

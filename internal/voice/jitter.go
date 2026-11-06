@@ -142,6 +142,13 @@ func (j *jitter) scan() (n int, lowest uint32, end bool) {
 
 // pop yields the next 20 ms of this stream.
 func (j *jitter) pop() (OutKind, []byte) {
+	if j.playedSome && j.played == math.MaxUint32 {
+		// The seq space is used up (2.7 years at 50 frames/s, so only a
+		// hostile sender gets here): playout wrapping to 0 would play older
+		// seqs again. push already refuses every seq now.
+		j.reset()
+		return OutSilence, nil
+	}
 	if !j.started {
 		n, lowest, end := j.scan()
 		// Adapt only at talk-spurt starts so playout never stretches
@@ -181,7 +188,7 @@ func (j *jitter) pop() (OutKind, []byte) {
 		return OutSilence, nil
 	}
 	j.lost++
-	if n := j.at(j.next); n.ok && n.seq == j.next {
+	if n := j.at(j.next); j.next != 0 && n.ok && n.seq == j.next {
 		j.fec++
 		return OutFEC, n.data
 	}
@@ -206,12 +213,17 @@ func (j *jitter) trim() {
 		return
 	}
 	keep := uint32(j.target)
-	for seq := j.next; seq != high-keep+1; seq++ {
-		if s := j.at(seq); s.ok && s.seq == seq {
+	// Clear by slot, not by walking the seqs: a peer that sends one frame
+	// far behind the rest of a spurt makes the span up to 2^31 seqs, which
+	// walked one by one kept the audio path busy for seconds per pop.
+	newNext := high - keep + 1
+	span := newNext - j.next
+	for i := range j.ring {
+		if s := &j.ring[i]; s.ok && s.seq-j.next < span {
 			*s = slot{}
 			j.trimmed++
 		}
 	}
-	j.next = high - keep + 1
+	j.next = newNext
 	j.played = j.next - 1
 }

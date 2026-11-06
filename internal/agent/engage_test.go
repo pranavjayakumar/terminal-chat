@@ -316,8 +316,12 @@ func TestQuietWakeOnMessage(t *testing.T) {
 	h.waitFor("wake run", func() bool { return len(h.run.requests()) == runs+1 })
 	h.s.wakeQuiets(context.Background())
 	time.Sleep(50 * time.Millisecond)
-	if n := len(h.run.requests()); n != runs+1 {
-		t.Fatalf("%d runs for one message", n-runs)
+	if reqs := h.run.requests(); len(reqs) != runs+1 {
+		var ps []string
+		for _, r := range reqs[runs:] {
+			ps = append(ps, short(r.Prompt, 200))
+		}
+		t.Fatalf("%d runs for one message: %q", len(reqs)-runs, ps)
 	}
 	if p := h.run.requests()[runs].Prompt; !strings.Contains(p, quietOverMark) || !strings.Contains(p, "ok you can talk") {
 		t.Fatalf("prompt: %s", p)

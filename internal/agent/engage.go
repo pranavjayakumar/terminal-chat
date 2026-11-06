@@ -255,7 +255,14 @@ func (s *Supervisor) wakeQuiets(ctx context.Context) {
 		}
 		s.engage(key, time.Duration(cfg.EngageMinutes)*time.Minute, false)
 		msg, spoke := s.sinceQuiet(q)
-		if msg.ID == 0 || (q.Then == "" && !spoke) {
+		// Claim what was said, as accept does: a wake (from any update, or
+		// housekeeping) can run after the message reached the cache but
+		// before its own update is handled, which then found the quiet over
+		// and the agent engaged and answered it again as a follow-up. If
+		// it was already answered (an @mention during the quiet), only a
+		// "then" still calls for a turn.
+		answered := spoke && !s.queue.claim(msg.ID, now)
+		if msg.ID == 0 || (q.Then == "" && (!spoke || answered)) {
 			continue
 		}
 		// The run answers what was said meanwhile as whoever said it: the

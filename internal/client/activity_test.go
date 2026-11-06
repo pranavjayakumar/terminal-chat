@@ -3,8 +3,10 @@ package client
 import (
 	"database/sql"
 	"fmt"
+	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -317,12 +319,18 @@ func TestActivityIsFastOn10kMessages(t *testing.T) {
 		t.Fatalf("only %d messages", n)
 	}
 	c.Activity(100) // warm the page cache like a running client has
+	// Each run counts as the lesser of its wall time and the process's CPU
+	// time: on a loaded machine (two -race suites side by side) wall time
+	// went to 2.5-5 s against a 2 s budget while the CPU the call used
+	// stayed at ~1 s; idle, CPU can exceed wall (parallel GC), so wall
+	// stands. A slower query plan or a Go-side scan still costs CPU.
 	best := time.Hour
 	var items []ActivityItem
 	for i := 0; i < 5; i++ {
-		start := time.Now()
+		runtime.GC()
+		start, cpu := time.Now(), cpuTime(t)
 		items = c.Activity(100)
-		best = min(best, time.Since(start))
+		best = min(best, time.Since(start), cpuTime(t)-cpu)
 	}
 	if len(items) != 100 {
 		t.Fatalf("got %d items", len(items))
@@ -332,6 +340,15 @@ func TestActivityIsFastOn10kMessages(t *testing.T) {
 	if best > budget {
 		t.Fatalf("Activity took %v, want < %v", best, budget)
 	}
+}
+
+// cpuTime is the user+system CPU this process has used.
+func cpuTime(t *testing.T) time.Duration {
+	var r syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &r); err != nil {
+		t.Fatal(err)
+	}
+	return time.Duration(r.Utime.Nano() + r.Stime.Nano())
 }
 
 func BenchmarkActivity10k(b *testing.B) {

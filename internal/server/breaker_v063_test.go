@@ -86,11 +86,18 @@ func TestSyncStuck_BreakSlowQUICLink(t *testing.T) {
 		}
 	}
 	// readLoop's ticker first runs 5 s after the session started; these
-	// checks stand in for it before then. A second apart is still 5x stricter
-	// than the real 5 s tick, but leaves a loaded -race runner (macOS CI)
-	// time to finish a 16 KiB piece between checks.
+	// checks stand in for it before then. Each one waits until bytes have
+	// moved since the previous check instead of sleeping a fixed gap: "still
+	// moving" is the condition under test, and a loaded -race runner (macOS
+	// CI) went a whole second without finishing a 16 KiB piece. The old code
+	// closed the session on the first check past syncStuck however much had
+	// moved, so this still catches it.
 	for range 3 {
-		time.Sleep(time.Second)
+		for deadline := time.Now().Add(10 * time.Second); sess.writing.Load() == 0 || sess.wrote.Load() == sess.lastWrote; time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatal("the slow reader stopped draining")
+			}
+		}
 		w := sess.writing.Load()
 		if w == 0 {
 			continue
