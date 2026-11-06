@@ -52,20 +52,16 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 	}
 	switch {
 	case cfg.Paused:
-		s.reply(a.Chan, a.Thread, "I'm paused right now 💤")
-		s.activity(a, "refused", "paused", 0)
+		s.refuse(a, "I'm paused right now 💤", "paused")
 		return
 	case allOut:
-		s.reply(a.Chan, a.Thread, "out of juice for today 🪫 back tomorrow")
-		s.activity(a, "refused", "daily cap reached", 0)
+		s.refuse(a, "out of juice for today 🪫 back tomorrow", "daily cap reached")
 		return
 	case guestOut:
-		s.reply(a.Chan, a.Thread, "I'm out of juice for others today 🪫 back tomorrow")
-		s.activity(a, "refused", "cap for others reached", 0)
+		s.refuse(a, "I'm out of juice for others today 🪫 back tomorrow", "cap for others reached")
 		return
 	case asksOut:
-		s.reply(a.Chan, a.Thread, fmt.Sprintf("that's your %d asks for today, try me tomorrow", cfg.AsksPerPerson))
-		s.activity(a, "refused", "asks per person reached", 0)
+		s.refuse(a, fmt.Sprintf("that's your %d asks for today, try me tomorrow", cfg.AsksPerPerson), "asks per person reached")
 		return
 	}
 	s.refreshHome()
@@ -178,6 +174,17 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 	}
 }
 
+// refuse says no to an ask it can't run. Each refusal is logged, but one
+// reply per person per conversation covers sorryEvery (as the stale
+// apology): someone who keeps asking past a cap can't make the agent post
+// once per message they send.
+func (s *Supervisor) refuse(a Ask, text, why string) {
+	if s.sorryDue(fmt.Sprintf("refused %s u%d", a.Key, a.Asker), s.Now()) {
+		s.reply(a.Chan, a.Thread, text)
+	}
+	s.activity(a, "refused", why, 0)
+}
+
 // MaxWindow caps the context window rollover counts against: on a 1M
 // window, half is far past where a chat thread stays sharp and cheap.
 const MaxWindow = 200_000
@@ -230,14 +237,32 @@ func (s *Supervisor) turn(ctx context.Context, a Ask, cfg home.Config, mode runn
 	r.live.set(proto.AgentThinking, "thinking…", "")
 	defer r.live.close()
 
+	// Runs going at once share what is left: each reserves its cap until
+	// its cost is in the ledger, so together they stay under the daily cap
+	// and others under theirs.
+	guest := a.guest()
+	s.mu.Lock()
 	now := s.Now()
-	capUSD := min(cfg.RunCapUSD, cfg.DailyCapUSD-s.ledger.Spent(now))
-	if a.guest() {
-		capUSD = min(capUSD, cfg.GuestCap()-s.ledger.GuestSpent(now))
+	capUSD := min(cfg.RunCapUSD, cfg.DailyCapUSD-s.ledger.Spent(now)-s.reserved)
+	if guest {
+		capUSD = min(capUSD, cfg.GuestCap()-s.ledger.GuestSpent(now)-s.guestReserved)
 	}
 	if capUSD < 0.01 {
 		capUSD = 0.01
 	}
+	s.reserved += capUSD
+	if guest {
+		s.guestReserved += capUSD
+	}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.reserved -= capUSD
+		if guest {
+			s.guestReserved -= capUSD
+		}
+		s.mu.Unlock()
+	}()
 	dir, deny := s.Dir, []string(nil)
 	if !a.Owner {
 		// Files in the working directory are readable without a prompt:
