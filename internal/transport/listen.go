@@ -2,7 +2,9 @@ package transport
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
@@ -44,6 +46,23 @@ func quicConfig() *quic.Config {
 	}
 }
 
+// resetKey derives the QUIC stateless reset key from the server's TLS key, so
+// it survives restarts: after a crash, the restarted server answers packets
+// of connections it no longer knows with a stateless reset, and clients
+// reconnect at once instead of waiting out the idle timeout (RFC 9000 §10.3).
+func resetKey(cert tls.Certificate) *quic.StatelessResetKey {
+	der, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey)
+	if err != nil {
+		return nil // stateless resets off, as before
+	}
+	h := sha256.New()
+	h.Write([]byte("tc quic stateless reset key v1\x00"))
+	h.Write(der)
+	var k quic.StatelessResetKey
+	copy(k[:], h.Sum(nil))
+	return &k
+}
+
 type listenOpts struct {
 	ListenOpts
 	noQUIC           bool // tests: simulate blocked UDP
@@ -55,6 +74,8 @@ type listenOpts struct {
 type listener struct {
 	tcp     net.Listener
 	quic    *quic.Listener // nil if disabled
+	qtr     *quic.Transport
+	udp     *net.UDPConn
 	tlsConf *tls.Config
 	timeout time.Duration
 	silent  time.Duration // firstByteTimeout
@@ -138,7 +159,18 @@ func listenOnce(addr string, cert tls.Certificate, o listenOpts) (Listener, erro
 		qc.MaxIncomingStreams = 1
 		qc.MaxIncomingUniStreams = -1
 		udpAddr := net.JoinHostPort(host, strconv.Itoa(port))
-		if l.quic, err = quic.ListenAddr(udpAddr, tlsConf, qc); err != nil {
+		ua, err := net.ResolveUDPAddr("udp", udpAddr)
+		if err == nil {
+			l.udp, err = net.ListenUDP("udp", ua)
+		}
+		if err == nil {
+			l.qtr = &quic.Transport{Conn: l.udp, StatelessResetKey: resetKey(cert)}
+			if l.quic, err = l.qtr.Listen(tlsConf, qc); err != nil {
+				l.qtr.Close()
+				l.udp.Close()
+			}
+		}
+		if err != nil {
 			l.cancel()
 			tcpLn.Close()
 			return nil, fmt.Errorf("listening on udp %s: %w", udpAddr, err)
@@ -170,7 +202,7 @@ func (l *listener) Close() error {
 		l.cancel()
 		err = l.tcp.Close()
 		if l.quic != nil {
-			err = errors.Join(err, l.quic.Close())
+			err = errors.Join(err, l.quic.Close(), l.qtr.Close(), l.udp.Close())
 		}
 		l.wg.Wait()
 	})
