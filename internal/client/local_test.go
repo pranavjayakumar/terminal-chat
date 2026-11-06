@@ -100,18 +100,18 @@ func TestDraftsCappedAtMessageSize(t *testing.T) {
 
 func TestDraftsSurviveResetUnlessServerChanged(t *testing.T) {
 	c, _ := localClient(t)
-	if err := resetCache(c.db, serverID); err != nil { // first sync: nothing to compare with
+	if err := resetCache(c.db, serverID, 0, nil); err != nil { // first sync: nothing to compare with
 		t.Fatal(err)
 	}
 	c.SetDraft(general, 0, "keep me")
-	if err := resetCache(c.db, serverID); err != nil {
+	if err := resetCache(c.db, serverID, 0, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := c.Draft(general, 0); got != "keep me" {
 		t.Fatalf("draft after a reset of the same server = %q", got)
 	}
 	// Another server: its channel ids mean something else.
-	if err := resetCache(c.db, bytes.Repeat([]byte{9}, 16)); err != nil {
+	if err := resetCache(c.db, bytes.Repeat([]byte{9}, 16), 0, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := c.Draft(general, 0); got != "" {

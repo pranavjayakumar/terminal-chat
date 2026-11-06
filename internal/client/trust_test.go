@@ -84,7 +84,7 @@ func TestCacheResetLeavesTrustStore(t *testing.T) {
 	check(c.Trust(), "after reset snapshot")
 
 	// The reset helper directly, on top of the live store.
-	if err := resetCache(c.db, serverID); err != nil {
+	if err := resetCache(c.db, serverID, 0, nil); err != nil {
 		t.Fatal(err)
 	}
 	check(c.Trust(), "after resetCache")

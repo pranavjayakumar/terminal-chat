@@ -138,7 +138,7 @@ func TestHighlightsAddRemovePersist(t *testing.T) {
 		t.Fatalf("after remove: %v", got)
 	}
 	// A snapshot reset replaces server data, not the user's keywords.
-	if err := resetCache(c.db, serverID); err != nil {
+	if err := resetCache(c.db, serverID, 0, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := c.Highlights(); !slices.Equal(got, []string{"oncall"}) {

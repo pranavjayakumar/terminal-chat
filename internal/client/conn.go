@@ -59,6 +59,10 @@ type session struct {
 	// read goroutine only
 	syncing     bool
 	sawSnapshot bool
+	// syncSince and syncInc are the cursor this session's sync sent; set
+	// before the read goroutine starts.
+	syncSince uint64
+	syncInc   []byte
 
 	// E2E: our login key, our device keys once loaded, and devReady,
 	// closed once the server has our device (e2e.go). devTried closes
@@ -565,6 +569,11 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 	}
 
 	s := newSession(conn, codec, w, c.timing.recvTimeout)
+	since, sid, inc, spErr := c.syncPoint()
+	s.syncSince = since
+	if s.incarnation() {
+		s.syncInc = inc
+	}
 	c.setStatus(Status{State: Syncing, Transport: conn.Kind()})
 	sctx, scancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
@@ -580,12 +589,9 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 		c.keepalive(s)
 	}()
 
-	since, sid, inc, err := c.syncPoint()
+	err = spErr
 	if err == nil {
-		args := proto.SyncArgs{Since: since, ServerID: sid}
-		if s.incarnation() {
-			args.Inc = inc
-		}
+		args := proto.SyncArgs{Since: since, ServerID: sid, Inc: s.syncInc}
 		_, err = s.call(sctx, proto.OpSync, args, c.syncHook(s))
 	}
 	if err == nil && pinSID != nil {

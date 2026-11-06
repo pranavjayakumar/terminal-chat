@@ -366,13 +366,13 @@ func TestActivitySeenPersistsAndOnlyMovesForward(t *testing.T) {
 		t.Fatalf("after reopen: %d", got)
 	}
 	// Same server's snapshot reset keeps it; another server's ids mean nothing.
-	if err := resetCache(c.db, serverID); err != nil {
+	if err := resetCache(c.db, serverID, 0, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := c.ActivitySeen(); got != 5000 {
 		t.Fatalf("after a reset of the same server: %d", got)
 	}
-	if err := resetCache(c.db, []byte("another server")); err != nil {
+	if err := resetCache(c.db, []byte("another server"), 0, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := c.ActivitySeen(); got != 0 {

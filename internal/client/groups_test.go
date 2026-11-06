@@ -76,7 +76,7 @@ func TestGroupsClearedOnResetAndWipe(t *testing.T) {
 	c, _ := localClient(t)
 	seedLocal(t, c)
 	setGroup(t, c, "oncall", alice)
-	if err := resetCache(c.db, serverID); err != nil {
+	if err := resetCache(c.db, serverID, 0, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := c.Groups(); len(got) != 0 {
