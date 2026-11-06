@@ -52,20 +52,16 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 	}
 	switch {
 	case cfg.Paused:
-		s.reply(a.Chan, a.Thread, "I'm paused right now 💤")
-		s.activity(a, "refused", "paused", 0)
+		s.refuse(a, "I'm paused right now 💤", "paused")
 		return
 	case allOut:
-		s.reply(a.Chan, a.Thread, "out of juice for today 🪫 back tomorrow")
-		s.activity(a, "refused", "daily cap reached", 0)
+		s.refuse(a, "out of juice for today 🪫 back tomorrow", "daily cap reached")
 		return
 	case guestOut:
-		s.reply(a.Chan, a.Thread, "I'm out of juice for others today 🪫 back tomorrow")
-		s.activity(a, "refused", "cap for others reached", 0)
+		s.refuse(a, "I'm out of juice for others today 🪫 back tomorrow", "cap for others reached")
 		return
 	case asksOut:
-		s.reply(a.Chan, a.Thread, fmt.Sprintf("that's your %d asks for today, try me tomorrow", cfg.AsksPerPerson))
-		s.activity(a, "refused", "asks per person reached", 0)
+		s.refuse(a, fmt.Sprintf("that's your %d asks for today, try me tomorrow", cfg.AsksPerPerson), "asks per person reached")
 		return
 	}
 	s.refreshHome()
@@ -176,6 +172,17 @@ func (s *Supervisor) answer(ctx context.Context, a Ask) {
 		}
 		_ = s.Memory.Commit(fmt.Sprintf("memory: %s in %s", s.askerName(a), where))
 	}
+}
+
+// refuse says no to an ask it can't run. Each refusal is logged, but one
+// reply per person per conversation covers sorryEvery (as the stale
+// apology): someone who keeps asking past a cap can't make the agent post
+// once per message they send.
+func (s *Supervisor) refuse(a Ask, text, why string) {
+	if s.sorryDue(fmt.Sprintf("refused %s u%d", a.Key, a.Asker), s.Now()) {
+		s.reply(a.Chan, a.Thread, text)
+	}
+	s.activity(a, "refused", why, 0)
 }
 
 // MaxWindow caps the context window rollover counts against: on a 1M

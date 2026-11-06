@@ -333,7 +333,10 @@ func (s *Supervisor) backlog() []Ask {
 // in their thread.
 func (s *Supervisor) accept(ctx context.Context, a Ask) {
 	now := s.Now()
-	if a.Msg.Time < s.queue.since() || !s.queue.claim(a.Msg.ID, now) {
+	// queue.json forgets handled asks after handledFor: an older one
+	// (a restart's backlog scan of a quiet channel) may well have been
+	// answered, so it gets neither a run nor an apology.
+	if a.Msg.Time < s.queue.since() || now.Sub(time.UnixMilli(a.Msg.Time)) > handledFor || !s.queue.claim(a.Msg.ID, now) {
 		return
 	}
 	if s.stopAuto(a) {

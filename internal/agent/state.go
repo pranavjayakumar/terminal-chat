@@ -225,6 +225,9 @@ func openQueue(stateDir string, now time.Time) (*queue, error) {
 	return q, nil
 }
 
+// handledFor is how long queue.json remembers a handled ask.
+const handledFor = 72 * time.Hour
+
 // claim marks an ask handled; false if it already was.
 func (q *queue) claim(id uint64, now time.Time) bool {
 	q.mu.Lock()
@@ -233,7 +236,7 @@ func (q *queue) claim(id uint64, now time.Time) bool {
 		return false
 	}
 	q.st.Handled[id] = now.UnixMilli()
-	cut := now.Add(-72 * time.Hour).UnixMilli()
+	cut := now.Add(-handledFor).UnixMilli()
 	for k, t := range q.st.Handled {
 		if t < cut {
 			delete(q.st.Handled, k)
