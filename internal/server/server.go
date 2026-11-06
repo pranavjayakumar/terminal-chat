@@ -73,6 +73,7 @@ type Server struct {
 	awlimits    map[uint64]*bucket
 
 	remindWake chan struct{} // nudges the reminder scheduler
+	inc        *incarnation  // incarnation.go
 }
 
 // New opens (or creates) the data directory: database and TLS identity.
@@ -143,6 +144,18 @@ func New(cfg Config) (*Server, error) {
 		st.close()
 		return nil, err
 	}
+	inc, why, err := openIncarnation(context.Background(), cfg.DataDir, st.db, st.serverID)
+	if err != nil {
+		st.close()
+		return nil, err
+	}
+	s.inc = inc
+	switch why {
+	case "restored":
+		cfg.Logger.Warn("the database doesn't hold the last events this server wrote (restored from a backup?): starting a new incarnation; clients will resync from scratch")
+	case "unreadable", "other server":
+		cfg.Logger.Warn("incarnation file "+why+": starting a new incarnation; clients will resync from scratch", "file", inc.path)
+	}
 	return s, nil
 }
 
@@ -153,7 +166,12 @@ func (s *Server) Cert() tls.Certificate { return s.cert }
 func (s *Server) Pin() string { return s.pin }
 
 // Close closes the database. Call after Serve returns.
-func (s *Server) Close() error { return s.st.close() }
+func (s *Server) Close() error {
+	if err := s.inc.record(context.Background(), s.st.db); err != nil {
+		s.log.Warn("recording incarnation", "err", err)
+	}
+	return s.st.close()
+}
 
 func (s *Server) now() int64 { return s.cfg.Now().UnixMilli() }
 
@@ -343,6 +361,11 @@ func (s *Server) Serve(ctx context.Context, ln transport.Listener) error {
 	go func() {
 		defer wg.Done()
 		s.remindLoop(rctx)
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.incLoop(rctx)
 	}()
 	if hl := transport.HTTPListener(ln); hl != nil {
 		defer s.serveHTTP(ctx, hl)()

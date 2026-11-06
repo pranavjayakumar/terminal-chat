@@ -11,13 +11,18 @@ import (
 )
 
 // syncPoint returns what to send in sync: a cache without a server_id has
-// never been snapshotted, so it always asks for one.
-func (c *Client) syncPoint() (since uint64, serverID []byte, err error) {
+// never been snapshotted, so it always asks for one. inc is the server
+// incarnation last_seq belongs to (cap incarnation); empty for a cache synced
+// before the server had one.
+func (c *Client) syncPoint() (since uint64, serverID, inc []byte, err error) {
 	if serverID, err = metaBytes(c.db, "server_id"); err != nil || len(serverID) == 0 {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
-	since, err = metaUint(c.db, "last_seq")
-	return since, serverID, err
+	if since, err = metaUint(c.db, "last_seq"); err != nil {
+		return 0, nil, nil, err
+	}
+	inc, err = metaBytes(c.db, "server_inc")
+	return since, serverID, inc, err
 }
 
 // syncHook runs on the read goroutine when the sync RES arrives, i.e. after
@@ -50,6 +55,13 @@ func (c *Client) syncHook(s *session) func(proto.Res) error {
 				}
 			case sr.Reset:
 				if err := setMeta(tx, "devices_full", 1); err != nil {
+					return err
+				}
+			}
+			// The server resets a cursor from another incarnation, so
+			// last_seq now belongs to this one.
+			if len(sr.Inc) > 0 && s.incarnation() {
+				if err := setMeta(tx, "server_inc", sr.Inc); err != nil {
 					return err
 				}
 			}
@@ -630,4 +642,8 @@ func (c *Client) clearTyping(ch, user uint64, u *Update) {
 		}
 		u.Typing[ch] = true
 	}
+}
+
+func (s *session) incarnation() bool {
+	return slices.Contains(s.welcome.Caps, proto.CapIncarnation)
 }

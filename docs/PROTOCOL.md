@@ -71,7 +71,7 @@ The server key never rotates in v1; rotating means re-issuing invites.
 Effective caps = intersection of HELLO and WELCOME caps, except the server-advertised ones:
 a client never sends those in HELLO and they apply whenever WELCOME has them (`hooks`, `pins`,
 `groups`, `remind`, `team_invites`, `invite_manage`, `key_invites` and `member_invites` §4.1,
-`key_endorse` §13.2, `agent_key_proof` §15.2; `key_hint` §4.1 goes the other way, HELLO only;
+`key_endorse` §13.2, `agent_key_proof` §15.2, `incarnation` §6; `key_hint` §4.1 goes the other way, HELLO only;
 `passive` §4.3 echoes a HELLO request). Protocol version is the ALPN.
 
 ## 4. Handshake & authentication
@@ -279,7 +279,7 @@ session **before** the RES. The `seq` in a RES is informational: clients advance
 
 | op | args | data |
 |---|---|---|
-| `sync` | `{since: u64, server_id?: bin16}` | `{head: u64, reset: bool}` (see §6) |
+| `sync` | `{since: u64, server_id?: bin16, inc?: bin16}` | `{head: u64, reset: bool, inc?: bin16}` (see §6; `inc`: cap `incarnation`) |
 | `send` | `{chan, body: str, nonce: bin16, thread?: u64, enc?: bin}` | `{msg: u64}` (`enc`: e2e channels, §13.5) |
 | `edit` | `{msg, body: str, enc?: bin}` | `{seq}` (`enc`: e2e channels, §13.5) |
 | `delete` | `{msg, enc?: bin}` | `{seq}` (`enc`: e2e channels, §13.5) |
@@ -438,11 +438,12 @@ Edits and deletes rewrite the log so replay never resurrects replaced text
 
 ### Sync algorithm
 
-After WELCOME the client sends `sync {since: last_seq, server_id}`.
+After WELCOME the client sends `sync {since: last_seq, server_id, inc?}`.
 
 1. The server registers the session as a live subscriber, then records
    H = current head. Live events with seq > H are buffered.
 2. **Snapshot path** — if `since == 0`, `server_id` differs from the server's,
+   `inc` is present and differs from the server's incarnation (below),
    `since > H`, or `H − since > 10,000`: send SNAPSHOT parts (each ≤ 1 MiB) with
    users, groups, visible channels, read markers and the last 50 messages per channel,
    then RES `{head: H, reset: true}`. With `reset` the client discards its local
@@ -456,6 +457,33 @@ sends BYE `slow_consumer`; the client reconnects and syncs.
 
 Clients apply events idempotently (`seq ≤ last_seq` → ignore) and persist
 `last_seq` only after applying.
+
+**Incarnation** (cap `incarnation`, server-advertised). Seqs, and so message ids, are
+unique only within one unbroken history of the log. A server restored from a backup
+hands out the seqs after the backup point again, so a cursor from the lost history
+that the restored log has since passed would replay into reused ids (a `since > H`
+cursor is reset anyway). The server therefore has a 16-byte **incarnation** id,
+returned as `inc` in every sync RES, and it starts a new one when it finds its
+database is not the history it last ran on. A client with the cap stores `inc`
+with `last_seq` (in the transaction that applies the sync RES) and sends it back
+as `sync.inc`; a different `inc` takes the snapshot path. A client without a
+stored `inc` (a cache synced before the cap, or against a server without it)
+omits it and is treated as before; it only sends `inc` to servers advertising
+the cap and stores it only from them. `inc` is opaque: compare bytes, nothing else.
+
+How the server notices (implementation, not wire contract): next to the database
+it keeps a file `incarnation` holding the id, the server_id, the newest seq it
+has seen in the log (recorded at start, every second while it runs, and at
+shutdown) and a hash of that event's seq, kind, time and actor, which never
+change (§6 *Edited and deleted text* rewrites only `data`). At start, if the
+file is missing or malformed, names another server_id, or the log lacks that
+event or holds a different one at that seq, it starts a new random incarnation
+(every client resyncs once). This catches restoring the database alone, however
+it was copied (`sqlite3 .backup`, `cp`, `VACUUM INTO`), even if an older server
+wrote past the recorded seq in between. It cannot catch restoring the database
+**together with** the `incarnation` file from the same moment (a whole-directory
+or VM snapshot), nor a backup taken less than a second before a crash; deleting
+the file after such a restore forces a new incarnation.
 
 ### 6.1 Reminders
 
