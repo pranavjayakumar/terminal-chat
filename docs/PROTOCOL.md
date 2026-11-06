@@ -443,7 +443,7 @@ After WELCOME the client sends `sync {since: last_seq, server_id, inc?}`.
 1. The server registers the session as a live subscriber, then records
    H = current head. Live events with seq > H are buffered.
 2. **Snapshot path** — if `since == 0`, `server_id` differs from the server's,
-   `inc` is present and differs from the server's incarnation (below),
+   `inc` is non-empty and differs from the server's incarnation (below),
    `since > H`, or `H − since > 10,000`: send SNAPSHOT parts (each ≤ 1 MiB) with
    users, groups, visible channels, read markers and the last 50 messages per channel,
    then RES `{head: H, reset: true}`. With `reset` the client discards its local
@@ -469,7 +469,9 @@ with `last_seq` (in the transaction that applies the sync RES) and sends it back
 as `sync.inc`; a different `inc` takes the snapshot path. A client without a
 stored `inc` (a cache synced before the cap, or against a server without it)
 omits it and is treated as before; it only sends `inc` to servers advertising
-the cap and stores it only from them. `inc` is opaque: compare bytes, nothing else.
+the cap and stores it only from them. `inc` is opaque: compare bytes, nothing else
+(servers send 16 bytes; a server doesn't check the length of `sync.inc`, any other value
+just doesn't match).
 
 How the server notices (implementation, not wire contract): next to the database
 it keeps a file `incarnation` holding the id, the server_id, the newest seq it
