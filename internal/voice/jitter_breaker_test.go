@@ -40,3 +40,30 @@ func FuzzJitter(f *testing.F) {
 		}
 	})
 }
+
+// A frame far behind the rest of a spurt that hasn't started yet makes the
+// trim span up to 2^31 seqs. trim clears by ring slot: it used to walk the
+// span one seq at a time (seconds per pop, which the fuzzer reported as a
+// hung worker). Playout jumps to the newest frames, in order.
+func TestJitterTrimFarBehind(t *testing.T) {
+	j := newJitter()
+	now := time.Unix(1_800_000_000, 0)
+	const high = 1 << 31
+	for seq := uint32(high - 8); seq <= high; seq++ {
+		j.push(seq, binary.BigEndian.AppendUint32(nil, seq), false, now)
+	}
+	j.push(1, binary.BigEndian.AppendUint32(nil, 1), false, now)
+	// The fixed trim is 16 slot checks; the old walk took 2–20 s. A second
+	// is far from both, even on a loaded -race runner.
+	start := time.Now()
+	k, d := j.pop()
+	if el := time.Since(start); el > time.Second {
+		t.Fatalf("one pop took %v", el)
+	}
+	if k != OutFrame || binary.BigEndian.Uint32(d) != high-uint32(j.target)+1 {
+		t.Fatalf("pop %v %x, want the oldest of the newest %d", k, d, j.target)
+	}
+	if j.trimmed != uint64(1+9-j.target) {
+		t.Fatalf("trimmed %d", j.trimmed)
+	}
+}
