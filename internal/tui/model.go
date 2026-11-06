@@ -1302,6 +1302,7 @@ const blinkFor = 5 * time.Second
 
 func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 	m.skipIntro() // a key ends the intro and still does its job
+	defer m.staleOffers()
 	if m.blinkIdle && !m.fx.off {
 		m.blinkIdle = false
 		return tea.Batch(m.input.Cursor.BlinkCmd(), m.handleKey0(k))
@@ -1527,7 +1528,9 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 		if m.input.Value() != before {
 			m.dropWriteHints()
 			if k.Paste {
-				m.wr.pasteVal = m.input.Value()
+				if before == "" {
+					m.wr.pasteVal = m.input.Value() // the whole input was pasted
+				}
 				m.offerWrap(before)
 			}
 		}

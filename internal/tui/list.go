@@ -16,13 +16,25 @@ type listState struct {
 	rows  []string
 	sel   int
 	urls  []string // a list of links (/links, l): Enter opens the row's, y copies it
+	back  mode     // where closing returns (modeNormal, or modeSelect for l)
+}
+
+// closeList leaves the list for the mode it came from.
+func (m *Model) closeList() {
+	m.mode = m.list.back
+	if m.mode == modeSelect {
+		if _, ok := m.selected(); !ok {
+			m.leaveSelect()
+		}
+		m.updatePlaceholder()
+	}
 }
 
 func (m *Model) listKey(key string) tea.Cmd {
 	s := &m.list
 	switch key {
 	case kEnter:
-		m.mode = modeNormal
+		m.closeList()
 		if s.sel < len(s.urls) {
 			return m.openLink(s.urls[s.sel])
 		}
@@ -31,7 +43,7 @@ func (m *Model) listKey(key string) tea.Cmd {
 			return m.copyCmd(s.urls[s.sel])
 		}
 	case kEsc, "q":
-		m.mode = modeNormal
+		m.closeList()
 	case kUp, "ctrl+p":
 		s.sel = max(s.sel-1, 0)
 	case kDown, "ctrl+n":

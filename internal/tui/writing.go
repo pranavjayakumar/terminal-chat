@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net/url"
 	"os/exec"
 	"regexp"
@@ -33,8 +34,10 @@ type inputOffers struct {
 	wrapVal          string
 	wrapFrom, wrapTo int
 	// s/old/new waiting for a second Enter.
-	subVal string
-	dk     draftKey // where the offer was made
+	subVal  string
+	subID   uint64 // the message the hint previewed, and its text then
+	subOrig string
+	dk      draftKey // where the offer was made
 
 	pasteVal string // the input right after the last paste
 }
@@ -52,6 +55,18 @@ func (m *Model) dropWriteHints() {
 func (m *Model) offerHint(s string) {
 	m.setHint(s)
 	m.wr.hint, m.wr.dk = m.notice, m.dk
+}
+
+// staleOffers takes down an offer's hint once the input no longer holds
+// what it was made for (a picker insert, a completion, a quote).
+func (m *Model) staleOffers() {
+	w := &m.wr
+	if w.hint == "" || m.notice != w.hint {
+		return
+	}
+	if v := m.input.Value(); w.dk != m.dk || (w.wrapVal != "" && v != w.wrapVal) || (w.subVal != "" && v != w.subVal) {
+		m.dropWriteHints()
+	}
 }
 
 func (m *Model) offerLive() bool {
@@ -145,6 +160,9 @@ func (m *Model) recentReacts() []string {
 			out = append(out, e)
 		}
 	}
+	if len(out) == 0 {
+		out = freqSeed[:1] // never empty: ++ takes the first
+	}
 	return out[:min(len(out), maxRecentReacts)]
 }
 
@@ -162,13 +180,41 @@ func (m *Model) noteReact(e string) {
 // pickRecent reacts with recent reaction n (1-based) from the picker.
 func (m *Model) pickRecent(n int) (tea.Cmd, bool) {
 	rs := m.recentReacts()
-	if !m.emo.react || m.emo.query != "" || n < 1 || n > len(rs) {
+	if !m.emo.react || m.emo.query != "" || n < 1 || n > min(len(rs), m.recentShown()) {
 		return nil, false
 	}
 	e := rs[n-1]
 	m.closePicker(true)
 	m.noteEmoji(e)
 	return m.reactWith(m.currentTarget(), e), true
+}
+
+// recentShown is how many recent reactions the picker's search row has
+// room for (pickSearch draws them the same way), so a digit never picks one
+// that isn't on screen.
+func (m *Model) recentShown() int {
+	e := &m.emo
+	if !e.open || ease(m.progress(e.at, dToast)) < 0.4 {
+		return 0
+	}
+	b := m.pickSize(m.geo())
+	if b.cols < 1 {
+		return 0
+	}
+	w := b.r.x1 - b.r.x0 // the search box: inside the frame's padding, or the whole width
+	x := 0
+	if b.framed {
+		x, w = 2, w-4
+	}
+	tx, end, n := x+4, x+w-1, 0
+	for range maxRecentReacts {
+		if tx+4 > end {
+			break
+		}
+		tx += 5
+		n++
+	}
+	return n
 }
 
 // lastReactable is the newest message in p that takes a reaction.
@@ -259,8 +305,8 @@ func (m *Model) wrapPaste() {
 		b.WriteString("\n")
 	}
 	b.WriteString("```\n" + strings.Trim(ins, "\n") + "\n```")
-	if post != "" && !strings.HasPrefix(post, "\n") {
-		b.WriteString("\n")
+	if !strings.HasPrefix(post, "\n") {
+		b.WriteString("\n") // the cursor lands below the fence, not on it
 	}
 	b.WriteString(post)
 	m.dropWriteHints()
@@ -303,18 +349,23 @@ func (m *Model) trySubst(v, body string) (tea.Cmd, bool) {
 	}
 	p := m.focus()
 	x, ok := m.lastOwn(p)
-	if !ok || x.ID == 0 || !x.Sec.Trusted() {
+	if !ok || !x.Sec.Trusted() {
 		return nil, false
 	}
 	orig := sanitize.Text(x.Body)
 	if !strings.Contains(orig, old) {
 		return nil, false
 	}
-	if !(m.offerLive() && m.wr.subVal == v) {
+	if x.ID == 0 {
+		// Typed right after sending: the fix waits, it is never sent as text.
+		m.setInfo("your last message is still sending — Enter again once it has")
+		return nil, true
+	}
+	if !(m.offerLive() && m.wr.subVal == v && m.wr.subID == x.ID && m.wr.subOrig == orig) {
 		m.dropWriteHints()
-		m.offerHint(m.kn.of("⏎ again fixes your last message: “" + truncate(sanitize.Line(old), 16) + "” → “" +
-			truncate(sanitize.Line(repl), 16) + "” · \\s/… sends it as text"))
-		m.wr.subVal = v
+		m.offerHint(m.kn.of("⏎ again fixes your last message: ") + "“" + truncate(sanitize.Line(old), 16) + "” → “" +
+			truncate(sanitize.Line(repl), 16) + "” · \\s/… sends it as text")
+		m.wr.subVal, m.wr.subID, m.wr.subOrig = v, x.ID, orig
 		return nil, true
 	}
 	m.dropWriteHints()
@@ -400,6 +451,13 @@ func linkOf(a string) string {
 	return parts[3]
 }
 
+// linkID is a short stable OSC 8 id for u.
+func linkID(u string) string {
+	h := fnv.New64a()
+	h.Write([]byte(u))
+	return strconv.FormatUint(h.Sum64(), 36)
+}
+
 // hyperlinks reports whether the terminal takes OSC 8 links. Only ones
 // known to (unknown ones may print the sequence), never inside a
 // multiplexer; TC_LINKS=on|off overrides.
@@ -436,7 +494,7 @@ func (m *Model) openLink(u string) tea.Cmd {
 		return nil
 	}
 	open := m.opt.OpenURL
-	if open == nil || m.opt.SSH {
+	if open == nil || m.opt.SSH || m.opt.NoBrowser {
 		return m.copyCmd(u)
 	}
 	ctx := m.ctx
@@ -469,7 +527,8 @@ func defaultOpenURL(_ context.Context, u string) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting %s: %w", name, err)
 	}
-	// xdg-open may live as long as the browser it starts: reap it whenever.
+	// xdg-open may live as long as the browser it starts, so nothing waits
+	// for it here; this goroutine only reaps it and ends when it exits.
 	go func() { _ = cmd.Wait() }()
 	return nil
 }
@@ -487,7 +546,7 @@ func (m *Model) openSelectedLink(sel client.Message) tea.Cmd {
 	case 1:
 		return m.openLink(links[0])
 	}
-	m.list = listState{title: m.kn.of("Links in this message · ⏎ open · y copy"), rows: links, urls: links}
+	m.list = listState{title: m.kn.of("Links in this message · ⏎ open · y copy"), rows: links, urls: links, back: modeSelect}
 	m.mode = modeList
 	return nil
 }
@@ -523,7 +582,7 @@ func (m *Model) showLinks() error {
 		m.setInfo("no links in the recent messages here")
 		return nil
 	}
-	m.list = listState{title: m.kn.of("Links in " + m.chanTitle(m.active) + " · ⏎ open · y copy"), rows: rows, urls: urls}
+	m.list = listState{title: "Links in " + m.chanTitle(m.active) + m.kn.of(" · ⏎ open · y copy"), rows: rows, urls: urls}
 	m.mode = modeList
 	return nil
 }
@@ -562,7 +621,7 @@ func (m *Model) toggleMute(ch uint64) tea.Cmd {
 	if muted {
 		m.setInfo("unmuted " + m.chanTitle(ch))
 	} else {
-		m.setInfo("muted " + m.chanTitle(ch) + " · no popups or sounds")
+		m.setInfo("muted " + m.chanTitle(ch) + " · no popups or sounds · click unmute to undo")
 	}
 	return nil
 }

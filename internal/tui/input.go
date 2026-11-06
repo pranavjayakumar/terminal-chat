@@ -191,7 +191,7 @@ func (m *Model) selectFooter() string {
 	keys = append(keys, "m menu")
 	full := strings.Join(keys, " · ") + " · Esc"
 	if strWidth(full) < m.dims().inputW {
-		// q and l join only when the rest still fits (the menu lists them)
+		// q and l join only when the rest still fits (the menu has both)
 		var more []string
 		if sel.Failed == "" && quotable(sel) {
 			more = append(more, "q quote")

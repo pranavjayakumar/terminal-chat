@@ -47,7 +47,7 @@ func (m *Model) menuItems(x msgView) []msgMenuItem {
 		out = append(out, msgMenuItem{icReply, "Reply in thread", kSelReply, false}, msgMenuItem{icReact, "React", kSelReact, false})
 	}
 	if x.quote {
-		out = append(out, msgMenuItem{icThread, "Quote", kSelQuote, false})
+		out = append(out, msgMenuItem{icNotes, "Quote", kSelQuote, false})
 	}
 	if x.live && x.mine && x.trusted {
 		out = append(out, msgMenuItem{icEdit, "Edit", kSelEdit, false})
@@ -55,6 +55,9 @@ func (m *Model) menuItems(x msgView) []msgMenuItem {
 	out = append(out, msgMenuItem{icCopy, "Copy text", kSelCopy, false})
 	if x.code {
 		out = append(out, msgMenuItem{icCode, "Copy code", kSelCode, false})
+	}
+	if x.link {
+		out = append(out, msgMenuItem{icImage, "Open link", kSelLink, false})
 	}
 	if !x.deleted {
 		out = append(out, msgMenuItem{icFile, "View full", kSelView, false})
@@ -73,7 +76,7 @@ func (m *Model) menuItems(x msgView) []msgMenuItem {
 }
 
 // msgView is what the menu needs to know about a message.
-type msgView struct{ failed, live, deleted, mine, trusted, pinned, code, quote bool }
+type msgView struct{ failed, live, deleted, mine, trusted, pinned, code, quote, link bool }
 
 // openMsgMenu opens the menu on the selected message.
 func (m *Model) openMsgMenu() {
@@ -111,6 +114,7 @@ func (m *Model) fillMsgMenu() {
 		pinned:  sel.Pinned,
 		code:    !sel.Deleted && codeOnly(sel.Body) != "",
 		quote:   quotable(sel),
+		link:    quotable(sel) && len(msgLinks(sel.Body)) > 0,
 	})
 	m.mm.sel = min(m.mm.sel, len(m.mm.items)-1)
 	_, m.mm.ref, _ = strings.Cut(msgRef("", p.sel, sel), ":")

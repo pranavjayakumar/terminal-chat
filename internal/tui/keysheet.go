@@ -26,7 +26,7 @@ var keyGroups = []keyGroup{
 	}},
 	{"Write", [][2]string{
 		{"⏎", "send"}, {"⌥⏎", "new line"}, {"⌃J", "new line"}, {"@", "mention someone"}, {"#", "link a channel"},
-		{"/", "commands"}, {"⌥E", "emoji picker"}, {":fi", "emoji by name"}, {"⇥", "complete"}, {"⇥ after paste", "wrap it in ```"},
+		{"/", "commands"}, {"⌥E", "emoji picker"}, {":fi", "emoji by name"}, {"⇥", "complete"}, {"⇥", "after a paste: wrap in ```"},
 		{"++", "react like last time"}, {"s/a/b", "fix your last message"}, {"⌃U", "clear draft"}, {"esc esc", "clear draft"},
 	}},
 	{"Huddle", [][2]string{

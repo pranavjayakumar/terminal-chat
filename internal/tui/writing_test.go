@@ -113,6 +113,13 @@ func TestQuickReactPicker(t *testing.T) {
 		if sz[0] >= 80 && !strings.Contains(v, "1 🎉") {
 			t.Fatalf("%v: recent row missing:\n%s", sz, v)
 		}
+		if m.recentShown() < 2 {
+			press(m, "2")
+			if m.mode != modeEmoji || m.emo.query != "2" {
+				t.Fatalf("%v: a digit not on screen picked (query %q)", sz, m.emo.query)
+			}
+			continue
+		}
 		press(m, "2")
 		if m.mode == modeEmoji || !f.called("react 🚀") {
 			t.Fatalf("%v: 2 didn't react 🚀 (mode %v, calls %v)", sz, m.mode, f.calls)
@@ -176,7 +183,7 @@ func TestPasteWrap(t *testing.T) {
 		}
 		checkView(t, m, "offer")
 		press(m, "tab")
-		want := "look:\n```\npanic: boom\n  at a.go:1\n  at b.go:2\n```"
+		want := "look:\n```\npanic: boom\n  at a.go:1\n  at b.go:2\n```\n"
 		if got := m.input.Value(); got != want {
 			t.Fatalf("%v: wrapped %q, want %q", sz, got, want)
 		}
@@ -323,17 +330,17 @@ func TestOSC8Links(t *testing.T) {
 			m.main.scroll, m.main.place = 0, false
 			v := m.View()
 			checkView(t, m, "links")
-			open := strings.Count(v, "\x1b]8;;http")
+			open := strings.Count(v, ";http")
 			if !on && open != 0 {
 				t.Fatalf("%v: links without support", sz)
 			}
 			if on && sz[0] >= 40 {
-				if open < 2 || strings.Count(v, "\x1b]8;;"+long+"\x1b\\") != open {
+				if open < 2 || strings.Count(v, "\x1b]8;id="+linkID(long)+";"+long+"\x1b\\") != open {
 					t.Fatalf("%v: %d links, each piece must name the whole URL\n%s", sz, open, ansi.Strip(v))
 				}
 				// every line closes what it opens
 				for i, l := range strings.Split(v, "\n") {
-					if strings.Count(l, "\x1b]8;;h") != strings.Count(l, "\x1b]8;;\x1b\\") {
+					if strings.Count(l, "\x1b]8;id=") != strings.Count(l, "\x1b]8;;\x1b\\") {
 						t.Fatalf("%v: line %d leaves a link open", sz, i)
 					}
 				}
@@ -387,10 +394,15 @@ func TestOpenLink(t *testing.T) {
 	if m.mode != modeList || len(m.list.urls) != 2 {
 		t.Fatalf("mode %v urls %v", m.mode, m.list.urls)
 	}
-	press(m, "down", "enter")
-	if got := rec.got(); got[len(got)-1] != "http://two.example/x" || m.mode != modeNormal {
+	press(m, "esc")
+	if m.mode != modeSelect || m.main.msgs[m.main.sel].ID != 700 {
+		t.Fatalf("Esc from the list: mode %v", m.mode)
+	}
+	press(m, "l", "down", "enter")
+	if got := rec.got(); got[len(got)-1] != "http://two.example/x" || m.mode != modeSelect {
 		t.Fatalf("opened %v mode %v", got, m.mode)
 	}
+	press(m, "esc")
 	// Over SSH it copies instead.
 	m.opt.SSH = true
 	selectID(t, m, 101)
@@ -464,5 +476,54 @@ func TestSidebarMute(t *testing.T) {
 		if v := checkView(t, m, "left"); strings.Contains(sidebarRow(t, v, "backend"), "mute") {
 			t.Fatalf("%v: button stayed", sz)
 		}
+	}
+}
+
+func TestPlusPlusEmptyPrefs(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	m.ui.Emoji, m.ui.Reacts = []emojiUse{}, nil // every stored entry dropped on load
+	typeVia(m, "++")
+	press(m, "enter")
+	if !f.called("react " + freqSeed[0]) {
+		t.Fatalf("calls %v", f.calls)
+	}
+}
+
+func TestSubstEdgeCases(t *testing.T) {
+	// My newest message is still sending: never sent as text.
+	m, f := newTestModelFake(t, 80, 24)
+	f.msgs[10] = f.msgs[10][:len(f.msgs[10])-1] // drop the failed one; "pending one" is newest
+	m.reloadPane(&m.main)
+	typeVia(m, "s/pending/sent")
+	press(m, "enter")
+	if len(f.sent) != 0 || len(f.edits) != 0 || !strings.Contains(m.notice, "still sending") || m.input.Value() == "" {
+		t.Fatalf("pending: sent %v edits %v notice %q", f.sent, f.edits, m.notice)
+	}
+	// Typed s/a/ with the replacement pasted: still a fix.
+	m, f = newTestModelFake(t, 80, 24)
+	onlySent(m, f)
+	typeVia(m, "s/nice/")
+	pasteUp(m, "great")
+	press(m, "enter")
+	if !strings.Contains(m.notice, "again fixes") {
+		t.Fatalf("typed+pasted: notice %q sent %v", m.notice, f.sent)
+	}
+	// A new message of mine between the two Enters asks again.
+	f.msgs[10] = append(f.msgs[10], client.Message{Message: proto.Message{ID: 900, Chan: 10, Author: 1, Body: "so nice", Time: 1 << 50}})
+	m.reloadPane(&m.main)
+	press(m, "enter")
+	if len(f.edits) != 0 || !strings.Contains(m.notice, "again fixes") {
+		t.Fatalf("target changed but edited: %v", f.edits)
+	}
+	press(m, "enter")
+	if len(f.edits) != 1 || f.edits[0] != "so great" {
+		t.Fatalf("edits %v", f.edits)
+	}
+	// An offer's hint goes when the input changes another way.
+	pasteUp(m, "x\ny\nz")
+	m.input.SetValue("other")
+	press(m, "left")
+	if strings.Contains(m.notice, "code block") {
+		t.Fatalf("stale hint: %q", m.notice)
 	}
 }

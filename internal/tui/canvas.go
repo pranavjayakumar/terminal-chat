@@ -530,7 +530,8 @@ func (c *canvas) encode(e *encoder) string {
 						b.WriteString(osc8Close)
 					}
 					if u != "" {
-						b.WriteString("\x1b]8;;" + u + "\x1b\\")
+						// one id per URL: a link wrapped over rows hovers as one
+						b.WriteString("\x1b]8;id=" + linkID(u) + ";" + u + "\x1b\\")
 					}
 					link = u
 				}
