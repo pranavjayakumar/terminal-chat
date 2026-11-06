@@ -198,8 +198,14 @@ func TestRevokeSelfRepeatedNoBackoff(t *testing.T) {
 	eventually(t, "online", alice.online)
 	sid := alice.sid(t)
 	a := alice.Me().ID
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
+	// Each cycle's time back, judged together: a fixed 3 s per cycle failed
+	// on loaded runners (scheduling, not backoff). With the bug the waits
+	// before reconnecting double from 125–250 ms, so cycles 4–6 wait at
+	// least 2+4+8 s on top of whatever the fastest cycle took; without it,
+	// load would have to slow each of them by 4 s on average to reach that.
+	var took []time.Duration
 	for i := range 7 {
 		cur, err := alice.Trust().DeviceKeys(sid, a)
 		if err != nil {
@@ -222,11 +228,17 @@ func TestRevokeSelfRepeatedNoBackoff(t *testing.T) {
 			if alice.online() && ok && !d.Revoked {
 				break
 			}
-			if time.Since(start) > 3*time.Second {
+			if time.Since(start) > 30*time.Second {
 				t.Fatalf("cycle %d: not back as a new device after %s", i, time.Since(start))
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
+		took = append(took, time.Since(start))
+	}
+	fastest, last3 := slices.Min(took), took[4]+took[5]+took[6]
+	t.Logf("cycles back in %v", took)
+	if last3-3*fastest >= 12*time.Second {
+		t.Fatalf("the last three cycles took %v beyond the fastest (%v): the reconnect backoff grows (%v)", last3-3*fastest, fastest, took)
 	}
 }
 
