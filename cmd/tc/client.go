@@ -75,14 +75,23 @@ func connected(ctx context.Context) (*client.Client, error) {
 			return nil, ctx.Err()
 		case <-deadline:
 			c.Close()
-			addr := sanitize.Line(c.Config().Addr)
-			if st.Err != "" {
-				return nil, fmt.Errorf("can't reach the server at %s: it may be down or blocked by a firewall; try again later or ask your admin (%s)", addr, st.Err)
-			}
-			return nil, fmt.Errorf("can't reach the server at %s: it may be down or blocked by a firewall; try again later or ask your admin", addr)
+			return nil, offlineError(c.Config().Addr, st.Err)
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+}
+
+// offlineError explains why the client never got online. The server
+// refusing a session for the account's session cap isn't a network problem.
+func offlineError(addr, errText string) error {
+	addr = sanitize.Line(addr)
+	if errText == (&client.ByeError{Code: proto.ByeTooManySessions}).Error() {
+		return fmt.Errorf("the server refused another session: your account already has the most it allows open at once (tc, tc tail, other computers); close some and try again (%s)", errText)
+	}
+	if errText != "" {
+		return fmt.Errorf("can't reach the server at %s: it may be down or blocked by a firewall; try again later or ask your admin (%s)", addr, errText)
+	}
+	return fmt.Errorf("can't reach the server at %s: it may be down or blocked by a firewall; try again later or ask your admin", addr)
 }
 
 // stoppedError explains why the client gave up for good. Status carries
