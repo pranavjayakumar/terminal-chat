@@ -376,11 +376,15 @@ type ReadUpdate struct {
 type SyncArgs struct {
 	Since    uint64 `msgpack:"since"`
 	ServerID []byte `msgpack:"server_id,omitempty"`
+	// Inc (cap incarnation) is the incarnation the cursor Since belongs to.
+	Inc []byte `msgpack:"inc,omitempty"`
 }
 
 type SyncRes struct {
 	Head  uint64 `msgpack:"head"`
 	Reset bool   `msgpack:"reset"`
+	// Inc (cap incarnation) is the server's incarnation; Head belongs to it.
+	Inc []byte `msgpack:"inc,omitempty"`
 }
 
 type SendArgs struct {

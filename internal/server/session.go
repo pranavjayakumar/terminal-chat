@@ -155,7 +155,7 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 	}
 	defer s.unregister(sess)
 	w := proto.Welcome{
-		Server: Version, Caps: append([]string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapVoice, proto.CapVoiceTCP, proto.CapAgent, proto.CapAgentKeyProof, proto.CapKeyEndorse}, s.inviteCaps()...), ServerID: s.st.serverID, User: user, Time: s.now(),
+		Server: Version, Caps: append([]string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapVoice, proto.CapVoiceTCP, proto.CapAgent, proto.CapAgentKeyProof, proto.CapKeyEndorse, proto.CapIncarnation}, s.inviteCaps()...), ServerID: s.st.serverID, User: user, Time: s.now(),
 		Agent: sess.agent,
 	}
 	if sess.passive {
@@ -870,9 +870,10 @@ func (s *Server) sync(ctx context.Context, sess *session, args proto.Raw) (proto
 	}
 
 	u := sess.user.ID
-	reset := a.Since == 0 || !bytes.Equal(a.ServerID, s.st.serverID) || a.Since > h || h-a.Since > proto.SnapshotGap
+	reset := a.Since == 0 || !bytes.Equal(a.ServerID, s.st.serverID) || a.Since > h || h-a.Since > proto.SnapshotGap ||
+		len(a.Inc) > 0 && !bytes.Equal(a.Inc, s.inc.inc)
 	if reset {
-		return proto.SyncRes{Head: h, Reset: true}, s.sendSnapshot(ctx, tx, sess, h)
+		return proto.SyncRes{Head: h, Reset: true, Inc: s.inc.inc}, s.sendSnapshot(ctx, tx, sess, h)
 	}
 	tx.Rollback()
 	// Pages are read without the snapshot (pushSync may wait on the
@@ -902,7 +903,7 @@ func (s *Server) sync(ctx context.Context, sess *session, args proto.Raw) (proto
 		}
 		since = evs[len(evs)-1].Seq
 	}
-	return proto.SyncRes{Head: h}, nil
+	return proto.SyncRes{Head: h, Inc: s.inc.inc}, nil
 }
 
 const snapshotPart = 512 << 10

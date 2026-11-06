@@ -580,9 +580,13 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 		c.keepalive(s)
 	}()
 
-	since, sid, err := c.syncPoint()
+	since, sid, inc, err := c.syncPoint()
 	if err == nil {
-		_, err = s.call(sctx, proto.OpSync, proto.SyncArgs{Since: since, ServerID: sid}, c.syncHook(s))
+		args := proto.SyncArgs{Since: since, ServerID: sid}
+		if s.incarnation() {
+			args.Inc = inc
+		}
+		_, err = s.call(sctx, proto.OpSync, args, c.syncHook(s))
 	}
 	if err == nil && pinSID != nil {
 		// First successful sync with this address and pin: trust its id.

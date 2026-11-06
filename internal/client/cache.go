@@ -203,7 +203,7 @@ func resetCache(q dbtx, serverID []byte) error {
 	for _, s := range []string{
 		`DELETE FROM users`, `DELETE FROM chans`, `DELETE FROM msgs`, `DELETE FROM rencs`, `DELETE FROM pins`, `DELETE FROM groups`, `DELETE FROM reads WHERE dirty = 0`,
 		`DELETE FROM devices`, `DELETE FROM device_endorse`, `DELETE FROM device_revokes`,
-		`DELETE FROM meta WHERE k = 'devices_full'`, `DELETE FROM epochs`, `DELETE FROM key_shares`, `DELETE FROM removed`,
+		`DELETE FROM meta WHERE k IN ('devices_full', 'server_inc')`, `DELETE FROM epochs`, `DELETE FROM key_shares`, `DELETE FROM removed`,
 	} {
 		if _, err := q.Exec(s); err != nil {
 			return err
