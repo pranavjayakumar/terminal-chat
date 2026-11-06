@@ -32,12 +32,21 @@ func TestVoiceFrame(t *testing.T) {
 	defer b.Close()
 	pc := NewCodec(a)
 	go func() { _ = pc.WriteRaw(TEvent, []byte("chat")) }()
-	time.Sleep(50 * time.Millisecond)
-	start := time.Now()
-	if ok, _ := pc.TryWriteRaw(TVoice, d); ok {
-		t.Fatal("voice written past a blocked write")
+	// One byte read: the chat write holds the stream and is still blocked
+	// on the rest (a sleep left that to the scheduler).
+	if _, err := io.ReadFull(b, make([]byte, 1)); err != nil {
+		t.Fatal(err)
 	}
-	if time.Since(start) > 10*time.Millisecond {
+	// Nothing reads b until TryWriteRaw returns, so a TryWriteRaw that
+	// waited for the stream would never return: no wall-clock bound needed.
+	tried := make(chan bool, 1)
+	go func() { ok, _ := pc.TryWriteRaw(TVoice, d); tried <- ok }()
+	select {
+	case ok := <-tried:
+		if ok {
+			t.Fatal("voice written past a blocked write")
+		}
+	case <-time.After(10 * time.Second):
 		t.Fatal("TryWriteRaw waited")
 	}
 	go func() { _, _ = io.Copy(io.Discard, b) }()
