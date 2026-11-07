@@ -64,8 +64,9 @@ func Scrub(g *Grid) int {
 				if e <= s {
 					continue
 				}
-				maskCells(row, at[s], at[e-1]+1)
-				n++
+				if maskCells(row, at[s], at[e-1]+1) {
+					n++ // overlapping patterns count once
+				}
 			}
 		}
 	}
@@ -88,18 +89,22 @@ func rowText(row []Cell) (string, []int) {
 	return b.String(), at
 }
 
-// maskCells masks cells [x0, x1) of row, wide ones included whole.
-func maskCells(row []Cell, x0, x1 int) {
+// maskCells masks cells [x0, x1) of row, wide ones included whole, and
+// reports whether any was not masked already.
+func maskCells(row []Cell, x0, x1 int) bool {
 	if x0 > 0 && row[x0].W == 0 {
 		x0--
 	}
 	if x1 < len(row) && row[x1].W == 0 {
 		x1++
 	}
+	fresh := false
 	for x := x0; x < x1; x++ {
-		if row[x].S == " " && row[x].W == 1 {
+		if row[x].S == " " && row[x].W == 1 || row[x].S == Mask {
 			continue // keep the layout readable: spaces stay spaces
 		}
 		row[x].S, row[x].W = Mask, 1
+		fresh = true
 	}
+	return fresh
 }

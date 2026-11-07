@@ -53,10 +53,13 @@ type huddleState struct {
 }
 
 type participation struct {
-	ch     uint64
-	src    uint32
-	sess   *session
-	tcp    bool // voice rides the TCP fallback's frame stream
+	ch   uint64
+	src  uint32
+	sess *session
+	tcp  bool // voice rides the TCP fallback's frame stream
+	dg   transport.DatagramConn
+	// Pane sharing (watch.go).
+	pane   paneState
 	vs     *voice.Session
 	keys   *huddleKeys // nil in plaintext channels
 	cancel context.CancelFunc
@@ -297,7 +300,7 @@ func (c *Client) JoinHuddle(ctx context.Context, ch uint64) error {
 			return ErrVoiceKeys
 		}
 		keys = &huddleKeys{c: c, sid: sid, ch: ch, me: c.Me().ID, dev: dev.ID, parts: map[uint32]proto.Part{},
-			cache: map[[2]uint32]cachedKey{}}
+			cache: map[[3]uint32]cachedKey{}}
 		if _, err := rand.Read(keys.stream[:]); err != nil {
 			return err
 		}
@@ -333,7 +336,8 @@ func (c *Client) JoinHuddle(ctx context.Context, ch uint64) error {
 		_ = s.fire(proto.OpHuddleLeave, struct{}{})
 		return err
 	}
-	p := &participation{ch: ch, src: res.Src, sess: s, vs: vs, keys: keys, cancel: cancel, started: time.Now(), tcp: !udp}
+	p := &participation{ch: ch, src: res.Src, sess: s, vs: vs, keys: keys, cancel: cancel, started: time.Now(), tcp: !udp, dg: dg}
+	p.pane.ctx = rctx
 	// The roster with our src comes before the RES (§14.1); allow a little
 	// slack before calling ourselves dropped.
 	for i := 0; i < 20 && !c.rosterHas(ch, res.Src); i++ {
@@ -374,6 +378,10 @@ func (c *Client) JoinHuddle(ctx context.Context, ch uint64) error {
 			if err != nil {
 				return
 			}
+			if len(b) > 0 && proto.ScreenKind(b[0]) {
+				c.screenIn(p, b) // never the audio engine's
+				continue
+			}
 			vs.Receive(b)
 		}
 	}()
@@ -393,7 +401,8 @@ const (
 	tcpSendQueue = 4
 	tcpSendAge   = 60 * time.Millisecond
 	// voiceInLen bounds VOICE frames read but not yet taken by the huddle.
-	voiceInLen = 32
+	// A shared pane's keyframe arrives as a burst of chunks on the same path.
+	voiceInLen = 96
 )
 
 var errSendBusy = errors.New("voice: send queue full")
@@ -585,6 +594,7 @@ func (c *Client) endHuddle(p *participation, why error) bool {
 	c.hud.ended, c.hud.endedAt = why, time.Now()
 	c.hud.mu.Unlock()
 	p.cancel()
+	c.paneEnded(p)
 	_ = p.vs.Close()
 	c.post(Update{Huddle: true})
 	return true
@@ -823,6 +833,7 @@ func (c *Client) applyRoster(p *participation, parts []proto.Part) {
 	}
 	_ = p.vs.SetRoster(m)
 	c.rosterCues(p, parts)
+	c.paneRoster(p, parts)
 }
 
 // clearHuddles forgets rosters when the connection drops (the server
@@ -856,7 +867,7 @@ type huddleKeys struct {
 
 	mu     sync.Mutex
 	parts  map[uint32]proto.Part
-	cache  map[[2]uint32]cachedKey // (src, epoch); src 0 = our sender
+	cache  map[[3]uint32]cachedKey // (src, epoch, frameAudio|frameScreen); src 0 = our sender
 	headEp uint32
 	headAt time.Time
 	// grace is until when frames under the epoch before the head are
@@ -938,7 +949,7 @@ func (k *huddleKeys) prime() {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.moveHead(h.Epoch, now)
-	k.cache[[2]uint32{0, h.Epoch}] = cachedKey{s, now}
+	k.cache[[3]uint32{0, h.Epoch, frameAudio}] = cachedKey{s, now}
 }
 
 // member reports whether user is a current member of the channel.
@@ -957,7 +968,7 @@ func (k *huddleKeys) setParts(parts []proto.Part) {
 	clear(k.cache)
 }
 
-func (k *huddleKeys) cached(key [2]uint32) (*e2ecrypto.VoiceSender, bool) {
+func (k *huddleKeys) cached(key [3]uint32) (*e2ecrypto.VoiceSender, bool) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if ck, ok := k.cache[key]; ok && time.Since(ck.at) < keyTTL {
@@ -966,7 +977,7 @@ func (k *huddleKeys) cached(key [2]uint32) (*e2ecrypto.VoiceSender, bool) {
 	return nil, false
 }
 
-func (k *huddleKeys) put(key [2]uint32, s *e2ecrypto.VoiceSender) {
+func (k *huddleKeys) put(key [3]uint32, s *e2ecrypto.VoiceSender) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.cache[key] = cachedKey{s, time.Now()}
@@ -1032,7 +1043,27 @@ func (k *huddleKeys) moveHead(epoch uint32, now time.Time) {
 	k.headEp, k.headAt = epoch, now
 }
 
-func (k *huddleKeys) Send() (uint32, *e2ecrypto.VoiceSender, bool) {
+// Frame kinds keyed apart in the cache: a huddle's audio and its shared
+// pane derive different sender keys from the same frame keys.
+const (
+	frameAudio  = 0
+	frameScreen = 1
+)
+
+func (k *huddleKeys) Send() (uint32, *e2ecrypto.VoiceSender, bool) { return k.send(frameAudio) }
+
+func (k *huddleKeys) Recv(src, epoch uint32) (*e2ecrypto.VoiceSender, bool) {
+	return k.recv(src, epoch, frameAudio)
+}
+
+func newSender(kind uint32, vk e2ecrypto.Key, dev e2ecrypto.DevID, stream [e2ecrypto.VoiceStreamSize]byte) (*e2ecrypto.VoiceSender, error) {
+	if kind == frameScreen {
+		return e2ecrypto.NewScreenSender(vk, dev, stream)
+	}
+	return e2ecrypto.NewVoiceSender(vk, dev, stream)
+}
+
+func (k *huddleKeys) send(kind uint32) (uint32, *e2ecrypto.VoiceSender, bool) {
 	k.mu.Lock()
 	blocked := k.blocked
 	k.mu.Unlock()
@@ -1043,22 +1074,22 @@ func (k *huddleKeys) Send() (uint32, *e2ecrypto.VoiceSender, bool) {
 	if !ok {
 		return 0, nil, false
 	}
-	if s, ok := k.cached([2]uint32{0, head}); ok {
+	if s, ok := k.cached([3]uint32{0, head, kind}); ok {
 		return head, s, true
 	}
 	vk, ok := k.epochKey(head, k.me)
 	if !ok {
 		return 0, nil, false
 	}
-	s, err := e2ecrypto.NewVoiceSender(vk, k.dev, k.stream)
+	s, err := newSender(kind, vk, k.dev, k.stream)
 	if err != nil {
 		return 0, nil, false
 	}
-	k.put([2]uint32{0, head}, s)
+	k.put([3]uint32{0, head, kind}, s)
 	return head, s, true
 }
 
-func (k *huddleKeys) Recv(src, epoch uint32) (*e2ecrypto.VoiceSender, bool) {
+func (k *huddleKeys) recv(src, epoch, kind uint32) (*e2ecrypto.VoiceSender, bool) {
 	head, ok := k.head()
 	// The newest verified epoch and the one before, so a rotation
 	// mid-sentence doesn't cut anyone off (§14.3) — checked before the
@@ -1072,7 +1103,7 @@ func (k *huddleKeys) Recv(src, epoch uint32) (*e2ecrypto.VoiceSender, bool) {
 	if epoch != head && !inGrace {
 		return nil, false
 	}
-	if s, ok := k.cached([2]uint32{src, epoch}); ok {
+	if s, ok := k.cached([3]uint32{src, epoch, kind}); ok {
 		return s, true
 	}
 	// Voice keys are group-symmetric: whoever holds K can speak as anyone
@@ -1100,10 +1131,10 @@ func (k *huddleKeys) Recv(src, epoch uint32) (*e2ecrypto.VoiceSender, bool) {
 	if !ok {
 		return nil, false
 	}
-	s, err := e2ecrypto.NewVoiceSender(vk, dev, [e2ecrypto.VoiceStreamSize]byte(p.Stream))
+	s, err := newSender(kind, vk, dev, [e2ecrypto.VoiceStreamSize]byte(p.Stream))
 	if err != nil {
 		return nil, false
 	}
-	k.put([2]uint32{src, epoch}, s)
+	k.put([3]uint32{src, epoch, kind}, s)
 	return s, true
 }
