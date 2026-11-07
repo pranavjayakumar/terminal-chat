@@ -73,9 +73,10 @@ func (c *Client) sendLocal(ch uint64, body string, thread uint64, via string) (i
 	return id, nil
 }
 
-// RetryFailed requeues a failed outbox message (same nonce). A failed send
-// stored nothing, so an encrypted one is encrypted afresh for the channel
-// as it is now.
+// RetryFailed requeues a failed outbox message (same nonce). An encrypted
+// one is encrypted afresh for the channel as it is now; if an earlier send
+// was stored after all (lost RES), the conflict that brings is settled by
+// storedEarlier.
 func (c *Client) RetryFailed(local int64) error {
 	return c.editOutbox(`UPDATE outbox SET failed = '', msg = 0, enc = NULL, encnonce = NULL
 		WHERE id = ? AND failed != '' RETURNING chan`, local)
@@ -245,8 +246,33 @@ func (c *Client) sendEntry(ctx context.Context, s *session, e outboxEntry) error
 			stale, e.enc = e.enc, nil
 			continue
 		}
+		if errors.As(err, &pe) && pe.Code == proto.ErrConflict && c.storedEarlier(e) {
+			if _, err := c.db.Exec(`DELETE FROM outbox WHERE id = ?`, e.id); err != nil {
+				return err
+			}
+			c.outboxChanged(e.chan_, nil)
+			return nil
+		}
 		return err
 	}
+}
+
+// storedEarlier reports whether a conflict for encrypted entry e means an
+// earlier send of it was stored after all (#195): its RES was lost, it was
+// then failed locally (key change, alarm) and retried, which encrypts
+// afresh (§13.4), so the same nonce came with other bytes. The nonce is
+// ours and random, so the conflict alone says that much; to be sure, the
+// cache must also hold that message, verified as ours: same channel and
+// thread, the entry's signed time and text, not older than its first send.
+func (c *Client) storedEarlier(e outboxEntry) bool {
+	if e.sent == 0 {
+		return false
+	}
+	var id uint64
+	err := c.db.QueryRow(`SELECT id FROM msgs WHERE chan = ? AND thread = ? AND author = ? AND sec = ?
+		AND sts = ? AND body = ? AND deleted = 0 AND id >= ? LIMIT 1`,
+		e.chan_, e.thread, c.Me().ID, SecE2E, e.time, e.body, e.sent).Scan(&id)
+	return err == nil
 }
 
 // outboxLoop sends the outbox oldest first, one at a time, which keeps

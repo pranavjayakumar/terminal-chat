@@ -1164,7 +1164,12 @@ while queued and not yet handed to the server is re-encrypted if the
 verified head or the members changed meanwhile. A client that can't get K for the epoch (no box, no
 share yet, can't rotate) marks the message failed ("no key yet — waiting for
 a member"), sends `key.need`, and requeues it when the key arrives; a failed
-message the user retries is encrypted afresh. It never
+message the user retries is encrypted afresh. A message failed locally
+after it was handed to the server (e.g. held for a key change after a lost
+RES) may have been stored, so its retry can get `conflict` (same nonce,
+other bytes): the client then counts it as delivered if it holds that
+message verified as its own (same channel, thread, Plain `ts` and body, id
+not before its first send), and otherwise leaves it failed. It never
 sends plaintext into a channel that is, or that it once saw as, encrypted
 (also not after a downgrade alarm, §13), refuses to send into (or flush
 queued messages into) a channel with an alarm, never sends a plaintext
