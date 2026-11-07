@@ -622,6 +622,11 @@ func (c *Client) connect(ctx context.Context) (online bool, err error) {
 			defer wg.Done()
 			c.outboxLoop(sctx, s)
 		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.uploadLoop(sctx, s)
+		}()
 		if s.e2e() {
 			wg.Add(1)
 			go func() {

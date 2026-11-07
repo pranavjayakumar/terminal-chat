@@ -35,6 +35,12 @@ type Config struct {
 	// MemberInvites lets non-admins create, list and revoke their own
 	// invites, within proto.MaxMember* limits (cap member_invites).
 	MemberInvites bool
+	// MaxUpload is the largest file in bytes (0: proto.DefaultMaxUpload);
+	// BlobQuota the room for all files together (0: DefaultBlobQuota).
+	MaxUpload int64
+	BlobQuota int64
+	// UserQuota is the room for one user's files (0: DefaultUserQuota).
+	UserQuota int64
 }
 
 // Server is a running tc server.
@@ -46,6 +52,8 @@ type Server struct {
 	log  *slog.Logger
 	hk   *hookState
 	hud  *huddles
+	// blobs is the on-disk store of uploaded files (blobs.go).
+	blobs *blobStore
 	// tamper holds the malicious-server test hooks; an empty struct unless
 	// built with -tags tctamper (tamper_on.go).
 	tamper tamperState
@@ -72,6 +80,8 @@ type Server struct {
 	agentOnline map[uint64]int
 	alimits     map[uint64]*bucket
 	awlimits    map[uint64]*bucket
+	blimits     map[uint64]*bucket // blob.put chunks
+	glimits     map[uint64]*bucket // blob.get chunks
 
 	remindWake chan struct{} // nudges the reminder scheduler
 	inc        *incarnation  // incarnation.go
@@ -131,8 +141,14 @@ func New(cfg Config) (*Server, error) {
 		agents:   map[uint64]proto.Agent{}, agentAccess: map[uint64]map[uint64]int64{},
 		chanE2E: map[uint64]bool{}, agentDMs: map[uint64]uint64{}, agentOnline: map[uint64]int{},
 		alimits: map[uint64]*bucket{}, awlimits: map[uint64]*bucket{},
+		blimits: map[uint64]*bucket{}, glimits: map[uint64]*bucket{},
+		blobs:      &blobStore{dir: filepath.Join(cfg.DataDir, "blobs")},
 		remindWake: make(chan struct{}, 1),
 		hud:        newHuddles(),
+	}
+	if err := os.MkdirAll(s.blobs.dir, 0o700); err != nil {
+		st.close()
+		return nil, fmt.Errorf("creating blob dir: %w", err)
 	}
 	if s.hk, err = newHookState(cfg.DataDir, func() time.Time { return s.cfg.Now() }); err != nil {
 		st.close()
@@ -368,6 +384,11 @@ func (s *Server) Serve(ctx context.Context, ln transport.Listener) error {
 	go func() {
 		defer wg.Done()
 		s.incLoop(rctx)
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.blobLoop(rctx)
 	}()
 	if hl := transport.HTTPListener(ln); hl != nil {
 		defer s.serveHTTP(ctx, hl)()

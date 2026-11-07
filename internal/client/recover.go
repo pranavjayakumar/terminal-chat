@@ -202,7 +202,7 @@ func (c *Client) recoverOnce(ctx context.Context, s *session, sid e2ecrypto.Serv
 	// again; the enc names its bundle, so ones sealed under a discarded
 	// epoch stay invalid.
 	above := binary.BigEndian.AppendUint32(nil, got.Ancestor)
-	c.db.Exec(`UPDATE msgs SET sec = ?, body = '' WHERE chan = ? AND sec = ? AND deleted = 0 AND enc IS NOT NULL
+	c.db.Exec(`UPDATE msgs SET sec = ?, body = '', files = NULL WHERE chan = ? AND sec = ? AND deleted = 0 AND enc IS NOT NULL
 		AND substr(enc, 2, 4) > ?`, SecWaiting, want.Chan, SecInvalid, above)
 	c.mu.Lock()
 	delete(c.probed, want.Chan)

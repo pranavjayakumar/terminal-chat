@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/skailama/tc/internal/client"
+	"github.com/skailama/tc/internal/media"
 	"github.com/skailama/tc/internal/proto"
 	"github.com/skailama/tc/internal/sanitize"
 	"github.com/skailama/tc/internal/snippet"
@@ -166,6 +167,8 @@ func cmdSend(args []string) error {
 	raw := fs.Bool("raw", false, "don't wrap piped input in a code block")
 	file := fs.String("file", "", "send a file as a code block: path[:start[-end]] (message text goes above it)")
 	ctxLines := fs.Int("context", snippet.DefaultContext, "lines of context around a single --file line")
+	var attach multiFlag
+	fs.Var(&attach, "attach", "attach a file (any type, end-to-end encrypted like messages); repeat for more")
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		return errUsage
 	}
@@ -175,6 +178,14 @@ func cmdSend(args []string) error {
 	// Like piped input: `tc send '#ci' "$(make 2>&1)"` often carries colors,
 	// which the server would reject as control characters.
 	body := sanitize.StripANSI(strings.Join(fs.Args(), " "))
+	if len(attach) > 0 {
+		if *file != "" {
+			return errors.New("--attach and --file don't go together")
+		}
+		ctx, cancel := signalContext()
+		defer cancel()
+		return attachTo(ctx, target, body, attach)
+	}
 	if *file != "" {
 		if *ctxLines < 0 {
 			return errors.New("--context must be 0 or more")
@@ -200,6 +211,44 @@ func cmdSend(args []string) error {
 	ctx, cancel := signalContext()
 	defer cancel()
 	return postTo(ctx, target, body)
+}
+
+// multiFlag collects a repeatable string flag.
+type multiFlag []string
+
+func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
+func (m *multiFlag) Set(s string) error { *m = append(*m, s); return nil }
+
+// attachTo sends paths as one message with caption into target and waits
+// until it is delivered (uploads included). One refused for good is
+// dropped, like sendWait does with text.
+func attachTo(ctx context.Context, target, caption string, paths []string) error {
+	c, err := connected(ctx)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	ch, err := resolve(ctx, c, target)
+	if err != nil {
+		return err
+	}
+	if c.MaxUpload() == 0 {
+		return errors.New("this server doesn't take files yet (it needs a tc update)")
+	}
+	id, err := c.SendFiles(ch, 0, caption, paths...)
+	if err != nil {
+		return err
+	}
+	if err := c.WaitUpload(ctx, id); err != nil {
+		if c.DiscardFailed(id) == nil {
+			return err
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("%w; the upload goes on the next time tc runs here", err)
+		}
+		return err
+	}
+	return nil
 }
 
 // pipedBody prepares stdin for sending: strips terminal control sequences
@@ -309,6 +358,17 @@ func printMsg(w io.Writer, c *client.Client, m client.Message) {
 		body = "⚠ unauthenticated (legacy): " + body
 	case m.Sec == client.SecLegacyClaimed:
 		body = "⚠ unauthenticated (legacy, server-claimed): " + body
+	}
+	if len(m.Files) > 0 && !m.Deleted && m.Sec.Trusted() {
+		if m.Body == client.FallbackBody(m.Files) {
+			body = ""
+		}
+		for _, f := range m.Files {
+			if body != "" {
+				body += "\n"
+			}
+			body += "📎 " + sanitize.Line(media.SafeName(f.Name)) + " · " + media.Size(f.Size)
+		}
 	}
 	if m.Thread != 0 {
 		name += " ↳"

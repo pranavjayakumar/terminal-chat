@@ -62,7 +62,7 @@ The server key never rotates in v1; rotating means re-issuing invites.
 | Type | Name | Dir | Payload |
 |---|---|---|---|
 | 0x01 | HELLO | C→S | `{client: str, caps: [str], auth: Auth}` |
-| 0x05 | WELCOME | S→C | `{server: str, caps: [str], server_id: bin16, user: User, time: i64}` |
+| 0x05 | WELCOME | S→C | `{server: str, caps: [str], server_id: bin16, user: User, time: i64, agent?: Agent, max_upload?: u64}` (`agent` §15.1, `max_upload` §16) |
 | 0x10 | REQ | C→S | `{id: u32, op: str, args: map}` |
 | 0x11 | RES | S→C | `{id: u32, ok: bool, data?: any, err?: {code: str, msg: str, retry_after_ms?: u32}}` (`retry_after_ms`: cap `retry_after`, §5) |
 | 0x20 | EVENT | S→C | `Event` (persistent, carries `seq`) |
@@ -76,7 +76,7 @@ The server key never rotates in v1; rotating means re-issuing invites.
 Effective caps = intersection of HELLO and WELCOME caps, except the server-advertised ones:
 a client never sends those in HELLO and they apply whenever WELCOME has them (`hooks`, `pins`,
 `groups`, `remind`, `team_invites`, `invite_manage`, `key_invites` and `member_invites` §4.1,
-`key_endorse` §13.2, `agent_key_proof` §15.2, `incarnation` §6; `key_hint` §4.1 goes the other way, HELLO only;
+`key_endorse` §13.2, `agent_key_proof` §15.2, `incarnation` §6, `blob1` §16; `key_hint` §4.1 goes the other way, HELLO only;
 `passive` §4.3 echoes a HELLO request; `retry_after` §5 is an ordinary negotiated cap).
 Protocol version is the ALPN.
 
@@ -295,7 +295,7 @@ session **before** the RES. The `seq` in a RES is informational: clients advance
 | op | args | data |
 |---|---|---|
 | `sync` | `{since: u64, server_id?: bin16, inc?: bin16}` | `{head: u64, reset: bool, inc?: bin16}` (see §6; `inc`: cap `incarnation`) |
-| `send` | `{chan, body: str, nonce: bin16, thread?: u64, enc?: bin}` | `{msg: u64}` (`enc`: e2e channels, §13.5) |
+| `send` | `{chan, body: str, nonce: bin16, thread?: u64, enc?: bin, files?: [File]}` | `{msg: u64}` (`enc`: e2e channels, §13.5; `files`: cap `blob1`, §16.2) |
 | `edit` | `{msg, body: str, enc?: bin}` | `{seq}` (`enc`: e2e channels, §13.5) |
 | `delete` | `{msg, enc?: bin}` | `{seq}` (`enc`: e2e channels, §13.5) |
 | `react` / `unreact` | `{msg, emoji: str, enc?: bin}` | `{seq}` (`enc`: e2e channels, §13.5) |
@@ -542,7 +542,7 @@ Channel = {id, name, kind: "public"|"private"|"dm", topic, members: [u64], creat
 Message = {id, chan, author, body, thread: u64 (0 = top level), time,
            edited: i64 (0 = never), deleted: bool, reactions: {emoji: [u64]}, enc?: bin,
            edit_enc?: bin, del_enc?: bin, renc?: [{user: u64, emoji: str, enc: bin}], mid?: bin16,
-           agent?: str}   (agent: §15.3)
+           agent?: str, via?: str, files?: [File]}   (agent, via: §15.3; files: §16.2)
 ```
 
 `Message.enc` (omitted when absent) is the encrypted payload of a message in an
@@ -1127,7 +1127,7 @@ ct    = XChaCha20-Poly1305(mk, nonce, pad256(msgpack Plain), AD = "tc-msg-v1" ||
 sig   = Ed25519(dev, "tc-sig-v1\x00" || server_id || chan || enc[0:61] || ct)
 mid   = H(enc)[:16]
 pad256(p) = p || 0x80 || 0x00* up to a multiple of 256
-Plain = {t: "msg",   ts: i64, body: str, thread_ref?: bin16}
+Plain = {t: "msg",   ts: i64, body: str, thread_ref?: bin16, files?: [File]}   // files: §16.2
       | {t: "edit",  ts: i64, body: str, ref: bin16, v: u32}
       | {t: "del",   ts: i64, ref: bin16}
       | {t: "react", ts: i64, ref: bin16, emoji: str, add: bool}
@@ -1882,3 +1882,127 @@ the last one goes, and after `sync` for each agent online.
 
 `icon` ≤ 32 B · `text` ≤ 16 KiB · `enc` ≤ 17 KiB · access list ≤ 256 channels · `status` ≤ 128 B ·
 `agent` ephemerals ≤ 4/s per session · 1 active agent device (it counts toward the owner's 8).
+
+## 16. Files and images (cap `blob1`)
+
+Server-advertised (§3): a server that stores files lists `blob1` in WELCOME and says how large
+a file may be in `WELCOME.max_upload` (plaintext bytes; the operator's `--max-upload`, default
+25 MiB). Clients don't send it in HELLO. A file is uploaded as a **blob** (opaque bytes the
+client sealed, §16.3) tied to one channel, then attached to one message; the message carries
+what it takes to read it. Deleting the message deletes the blob.
+
+### 16.1 Ops
+
+| op | args | data |
+|---|---|---|
+| `blob.put` | `{blob: bin16, chan: u64, size: u64, off: u64, data: bin}` | `{have: u64}` |
+| `blob.get` | `{blob: bin16, off: u64, len?: u32}` | `{size: u64, data: bin}` |
+
+**blob.put** uploads part of one of the caller's blobs. `blob` is an id the client picks (16
+random bytes), `size` the blob's total size, `data` ≤ 256 KiB (`too_large`). `size` must be what
+a file of at most `max_upload` bytes seals to (§16.3; a larger one → `too_large`, one no file
+seals to → `bad_request`), and `off + len(data) > size` → `bad_request`. Every put requires the
+caller to be a current member of `chan` (`forbidden`; a member removed mid-upload can't finish).
+The first put of an unknown id creates the blob: `off` must be 0 (else `not_found`, e.g. a resumed
+upload the server collected meanwhile — start again); the caller may hold at most 20 blobs not
+attached yet, together at most 10 × the sealed size of `max_upload` (`conflict`); the caller's
+blobs, attached or not, must fit the per-user quota (`--user-quota`, default 1 GiB; `too_large`),
+and all blobs together the server's (`--blob-quota`, default 10 GiB; `too_large`). Quotas count
+each blob as at least 4096 bytes. A put of a known id must come from its uploader (else
+`not_found`) with the same `chan` and `size` (`conflict`). `data` is written only when `off`
+equals how far the blob got; either way the result's `have` is how far the blob is now, so a
+client resumes after a reconnect by sending a put without data and continuing from `have`, and a
+retried chunk whose RES was lost writes nothing twice. A server that lost the end of a blob in a
+crash reports the shorter `have`. Puts of an attached blob change nothing.
+
+**blob.get** reads up to `len` bytes (default and at most 256 KiB) of a blob from `off`. The
+blob must be complete and attached to a message that isn't deleted, in a public channel or one
+the caller is currently a member of (like `history`); anything else — unknown, pending, deleted,
+another private channel's — is `not_found`. `off > size` → `bad_request`; `off = size` gives
+empty `data`. `size` is the blob's size.
+
+Agent sessions (§15) can't use either op (`forbidden`). Neither op is a write op for the shared
+bucket (§9); transfers have their own per-user buckets (§16.4, `rate_limited`, checked before
+anything else). Clients wait and retry a `rate_limited` or `internal` chunk.
+
+### 16.2 Attaching
+
+`send` takes `files: [File]` (≤ 10, each blob once; `bad_request`):
+
+```
+File = {blob: bin16, name?: str, size?: u64, mime?: str, key?: bin32, hash?: bin32,
+        thumb?: bin, w?: u32, h?: u32}
+```
+
+`name` is the file's name (1–255 B, one line, §10 rules, no leading or trailing space; clients
+send a safe name, §16.5), `size` its plaintext size (absent: 0, an empty file; over
+`max_upload` → `too_large`), `mime` its type as the sender sniffed it (a bare `type/subtype`,
+both parts non-empty, ≤ 127 B of `[a-z0-9.+_-]` and the one `/`; advisory only), `key` the file
+key (§16.3), `hash` SHA-256 of the plaintext, `thumb` a JPEG preview of an image (all of a
+message's thumbnails together ≤ 32 KiB, else `too_large`), `w`/`h` the image's size in pixels.
+`File` is closed under `blob1`: a field added later needs a new cap (servers store the fields
+above and drop others).
+
+- **Plaintext channel:** `Message.files` carries every field; `name`, `mime`, `key` and `hash`
+  are required (`bad_request`). The file is still sealed with its key (uniform, and the blob
+  store only ever holds ciphertext), but the server can read the key.
+- **Encrypted channel (§13):** each `File` in `send` and `Message.files` carries `blob` only
+  (anything else → `bad_request`); the full `File`s travel in the sealed, signed Plain:
+  `{t: "msg", ts, body, thread_ref?, files?: [File]}` (§13.4), which must still fit `enc`
+  (senders drop thumbnails first). The server learns the blob ids, their sizes and which message
+  holds them, nothing else.
+
+Inside `send`'s transaction each blob must be the sender's, uploaded for this `chan`, complete
+and not attached yet (`bad_request`; a blob the server no longer has at all → `not_found`, and the
+client uploads it again); in a plaintext channel its size must be what `size` seals to. Webhook
+and agent sends can't attach (`forbidden`). `body` stays required: a client sends a caption or,
+without one, `"📎 " + names` so clients without `blob1` show something. Send idempotency (§5)
+covers `files` too (same nonce, other files → `conflict`). `edit` never changes files (an
+encrypted edit's Plain carries none). Deleting the message deletes its blobs (their rows in the
+same transaction as `msg.delete`, their bytes right after; a crash in between leaves bytes
+without a row, removed by the hourly sweep), drops `files` from the stored message and scrubs
+them from its `msg.new` event; `history`, snapshots and `search` return `files` as stored. Blobs
+never attached are collected 24 h after their last `blob.put`.
+
+Receivers accept a message's files only if each has a 16-byte `blob`, 32-byte `key` and `hash`,
+a non-empty one-line `name`, a `mime` as above and `size` ≤ 2 GiB, thumbnails within 32 KiB
+together, at most 10 files; in an encrypted channel only from a verified Plain whose blob ids
+equal `Message.files`' (same order: the server attaches, serves and deletes exactly those), and
+an invalid or waiting message shows none. Files that fail are dropped; the text stays.
+
+### 16.3 File encryption
+
+Every file, in every channel, is sealed by its sender with its own random 32-byte key `fk`
+(never reused) as a chunked XChaCha20-Poly1305 stream:
+
+```
+n       = max(1, ceil(size / 65536))
+nonce_i = 0^15 || i (u64 BE) || final (1 for chunk n-1, else 0)
+ct_i    = XChaCha20-Poly1305(fk, nonce_i, pt_i, AD = "tc-file-v1")   // pt_i: 65536 B, the last 0..65536 B
+blob    = ct_0 || ct_1 || … || ct_{n-1}                               // size + 16·n bytes
+```
+
+A receiver fetches the blob, checks `blob.get`'s `size` against `size + 16·n`, opens the chunks
+in order and fails on any chunk that doesn't open in its place (a swapped, reordered or altered
+chunk), a stream that ends before a chunk marked final or goes on after it (truncation,
+extension), more plaintext than `size`, or a SHA-256 other than `hash`. A server can withhold a
+file, never change one.
+
+### 16.4 Limits
+
+blob id 16 B · `data`/`len` ≤ 256 KiB · file ≤ `max_upload` (default 25 MiB) · ≤ 10 files per
+message · thumbnails ≤ 32 KiB per message · `name` ≤ 255 B · `mime` ≤ 127 B · ≤ 20 pending
+blobs per user, ≤ 10 × the largest blob pending · per user ≤ `--user-quota` (default 1 GiB) ·
+all blobs ≤ `--blob-quota` (default 10 GiB) · each blob counts ≥ 4096 B · pending blobs collected
+24 h after their last put · transfer buckets per user, in chunks: `blob.put` burst 400
+(100 MiB), refill 40/s; `blob.get` burst 400, refill 80/s.
+
+### 16.5 Client rules
+
+Clients treat everything in a `File` as hostile: names are made safe before they are shown or
+used (directories, control, bidi, invisible and unassigned characters, leading dots and dashes
+removed; never empty), a download is saved under that name in the user's downloads folder, never
+over an existing file (`name (1).ext`), never executable, only after its checks pass; nothing is
+opened or run by itself, and a type is never trusted to decide that something may run. Images
+are decoded only after their header says they have at most 40 MP (received thumbnails: 1 MP).
+

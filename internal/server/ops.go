@@ -115,6 +115,10 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 		return withArgs(args, func(a proto.MsgArgs) (any, error) { return s.opPin(ctx, u, a, op == proto.OpPin) })
 	case proto.OpPinsList:
 		return withArgs(args, func(a proto.ChanArgs) (any, error) { return s.opPinsList(ctx, u, a) })
+	case proto.OpBlobPut:
+		return withArgs(args, func(a proto.BlobPutArgs) (any, error) { return s.opBlobPut(ctx, sess, a) })
+	case proto.OpBlobGet:
+		return withArgs(args, func(a proto.BlobGetArgs) (any, error) { return s.opBlobGet(ctx, sess, a) })
 	case proto.OpGroupSet:
 		return withArgs(args, func(a proto.GroupSetArgs) (any, error) { return s.opGroupSet(ctx, u, a) })
 	case proto.OpGroupsList:
@@ -297,6 +301,19 @@ func (s *Server) send(ctx context.Context, sess *session, u proto.User, a proto.
 	if sess == nil || !sess.agentCap {
 		a.Via = ""
 	}
+	var files []byte
+	if len(a.Files) > 0 {
+		if hook != nil || sess != nil && sess.agent != nil {
+			return nil, proto.Errf(proto.ErrForbidden, "only people attach files")
+		}
+		if err := checkFiles(a.Files, s.maxUpload()); err != nil {
+			return nil, err
+		}
+		var err error
+		if files, err = proto.Marshal(a.Files); err != nil {
+			return nil, err
+		}
+	}
 	sid := s.sid()
 	var res proto.SendRes
 	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
@@ -310,13 +327,14 @@ func (s *Server) send(ctx context.Context, sess *session, u proto.User, a proto.
 		// enc that was stored under an older epoch must still find it.
 		var id, ch, thread uint64
 		var body string
-		var enc []byte
+		var enc, oldFiles []byte
 		var edited int64
 		var deleted bool
-		err := tx.QueryRowContext(ctx, `SELECT id, chan, thread, body, enc, edited, deleted FROM messages WHERE author = ? AND nonce = ?`,
-			u.ID, a.Nonce).Scan(&id, &ch, &thread, &body, &enc, &edited, &deleted)
+		err := tx.QueryRowContext(ctx, `SELECT id, chan, thread, body, enc, edited, deleted, files FROM messages WHERE author = ? AND nonce = ?`,
+			u.ID, a.Nonce).Scan(&id, &ch, &thread, &body, &enc, &edited, &deleted, &oldFiles)
 		if err == nil {
-			if ch != a.Chan || thread != a.Thread || (edited == 0 && !deleted && (body != a.Body || !bytes.Equal(enc, a.Enc))) {
+			if ch != a.Chan || thread != a.Thread || (edited == 0 && !deleted && (body != a.Body || !bytes.Equal(enc, a.Enc))) ||
+				!deleted && !bytes.Equal(oldFiles, files) {
 				return nil, proto.Errf(proto.ErrConflict, "nonce reused for a different message")
 			}
 			res.Msg = id
@@ -375,7 +393,7 @@ func (s *Server) send(ctx context.Context, sess *session, u proto.User, a proto.
 		}
 		now := s.now()
 		m := proto.Message{Chan: a.Chan, Author: u.ID, Body: a.Body, Thread: a.Thread, Time: now, Enc: a.Enc, Mid: mid,
-			Agent: s.agentHandleLocked(sess), Via: a.Via}
+			Agent: s.agentHandleLocked(sess), Via: a.Via, Files: a.Files}
 		ev, err := appendEvent(ctx, tx, proto.KMsgNew, a.Chan, u.ID, 0, now, m)
 		if err != nil {
 			return nil, err
@@ -384,8 +402,11 @@ func (s *Server) send(ctx context.Context, sess *session, u proto.User, a proto.
 		if err := patchEventData(ctx, tx, &ev, m); err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO messages (id, chan, author, body, thread, time, nonce, enc, mid, agent, via) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			m.ID, m.Chan, m.Author, m.Body, m.Thread, m.Time, a.Nonce, a.Enc, mid, m.Agent, m.Via); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO messages (id, chan, author, body, thread, time, nonce, enc, mid, agent, via, files) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			m.ID, m.Chan, m.Author, m.Body, m.Thread, m.Time, a.Nonce, a.Enc, mid, m.Agent, m.Via, files); err != nil {
+			return nil, err
+		}
+		if err := attachFiles(ctx, tx, a.Files, head.e2e, m.ID, u.ID, a.Chan); err != nil {
 			return nil, err
 		}
 		res.Msg = m.ID
@@ -466,7 +487,9 @@ func (s *Server) opEdit(ctx context.Context, u proto.User, a proto.EditArgs) (an
 func (s *Server) opDelete(ctx context.Context, u proto.User, a proto.DeleteArgs) (any, error) {
 	sid := s.sid()
 	var res proto.SeqRes
+	var blobs [][]byte
 	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {
+		blobs = nil
 		m, err := getMessage(ctx, tx, a.Msg)
 		if err != nil {
 			return nil, errNotFound
@@ -494,8 +517,11 @@ func (s *Server) opDelete(ctx context.Context, u proto.User, a proto.DeleteArgs)
 		if err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE messages SET body = '', enc = NULL, edit_enc = NULL, del_enc = ?, deleted = 1 WHERE id = ?`,
+		if _, err := tx.ExecContext(ctx, `UPDATE messages SET body = '', enc = NULL, edit_enc = NULL, del_enc = ?, deleted = 1, files = NULL WHERE id = ?`,
 			a.Enc, m.ID); err != nil {
+			return nil, err
+		}
+		if blobs, err = dropMsgBlobs(ctx, tx, m.ID); err != nil {
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM reactions WHERE msg = ?`, m.ID); err != nil {
@@ -507,13 +533,16 @@ func (s *Server) opDelete(ctx context.Context, u proto.User, a proto.DeleteArgs)
 			return nil, err
 		}
 		evs = append(evs, unpin...)
-		m.Body, m.Enc, m.EditEnc, m.DelEnc, m.Deleted = "", nil, nil, a.Enc, true
+		m.Body, m.Enc, m.EditEnc, m.DelEnc, m.Deleted, m.Files = "", nil, nil, a.Enc, true, nil
 		if err := scrubMessageEvents(ctx, tx, m, 0); err != nil {
 			return nil, err
 		}
 		res.Seq = ev.Seq
 		return evs, nil
 	})
+	if err == nil {
+		s.removeBlobFiles(blobs)
+	}
 	return res, err
 }
 

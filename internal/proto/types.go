@@ -161,6 +161,9 @@ type Welcome struct {
 	Time     int64    `msgpack:"time"`
 	// Agent is the agent this session logs in as (HELLO agent, §15.1).
 	Agent *Agent `msgpack:"agent,omitempty"`
+	// MaxUpload (cap blob1) is the largest file the server takes, in
+	// plaintext bytes (§16).
+	MaxUpload uint64 `msgpack:"max_upload,omitempty"`
 }
 
 type Req struct {
@@ -322,6 +325,9 @@ type Message struct {
 	// Via says what posted it for its author (cap agent1, §15.3): "mcp" for
 	// an outside Claude session. The sender's claim, signed in e2e.
 	Via string `msgpack:"via,omitempty"`
+	// Files are the attached files (cap blob1, §16); in an e2e channel
+	// only their blob ids, the rest is in the sealed Plain.
+	Files []File `msgpack:"files,omitempty"`
 }
 
 // ReactEnc is one encrypted reaction: user reacted with tag, proven by enc.
@@ -399,6 +405,8 @@ type SendArgs struct {
 	Enc []byte `msgpack:"enc,omitempty"`
 	// Via (cap agent1) becomes Message.Via.
 	Via string `msgpack:"via,omitempty"`
+	// Files (cap blob1) attaches uploaded blobs (§16.2).
+	Files []File `msgpack:"files,omitempty"`
 }
 
 type SendRes struct {

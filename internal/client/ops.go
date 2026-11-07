@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"time"
 
@@ -42,6 +43,13 @@ func (c *Client) SendLocal(ch uint64, body string, thread uint64) (int64, error)
 }
 
 func (c *Client) sendLocal(ch uint64, body string, thread uint64, via string) (int64, error) {
+	return c.queueOutbox(c.db, outboxEntry{chan_: ch, thread: thread, body: body, time: time.Now().UnixMilli(), via: via})
+}
+
+// queueOutbox checks and stores a new outbox entry (with a fresh nonce),
+// encrypting it now if it goes into an encrypted channel and we can.
+func (c *Client) queueOutbox(q dbtx, e outboxEntry) (int64, error) {
+	ch, body := e.chan_, e.body
 	if ch == 0 || body == "" {
 		return 0, errors.New("send: empty channel or body")
 	}
@@ -51,7 +59,7 @@ func (c *Client) sendLocal(ch uint64, body string, thread uint64, via string) (i
 	if err := c.sendAllowed(ch); err != nil {
 		return 0, err
 	}
-	e := outboxEntry{nonce: make([]byte, 16), chan_: ch, thread: thread, body: body, time: time.Now().UnixMilli(), via: via}
+	e.nonce = make([]byte, 16)
 	rand.Read(e.nonce)
 	if c.needsEnc(ch) {
 		// The server can't check encrypted text (§10): receivers would
@@ -65,11 +73,13 @@ func (c *Client) sendLocal(ch uint64, body string, thread uint64, via string) (i
 		e.enc = c.sealOffline(e)
 	}
 	var id int64
-	if err := c.db.QueryRow(`INSERT INTO outbox (nonce, chan, thread, body, time, enc, encnonce, via) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		RETURNING id`, e.nonce, ch, thread, body, e.time, e.enc, e.encNonce, via).Scan(&id); err != nil {
+	if err := q.QueryRow(`INSERT INTO outbox (nonce, chan, thread, body, time, enc, encnonce, via, files, upload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		RETURNING id`, e.nonce, ch, e.thread, body, e.time, e.enc, e.encNonce, e.via, encodeFiles(e.files), e.upload).Scan(&id); err != nil {
 		return 0, fmt.Errorf("queueing message: %w", err)
 	}
-	c.outboxChanged(ch, nil)
+	if q == dbtx(c.db) {
+		c.outboxChanged(ch, nil)
+	}
 	return id, nil
 }
 
@@ -78,6 +88,9 @@ func (c *Client) sendLocal(ch uint64, body string, thread uint64, via string) (i
 // was stored after all (lost RES), the conflict that brings is settled by
 // storedEarlier.
 func (c *Client) RetryFailed(local int64) error {
+	if local < 0 {
+		return c.retryUpload(-local)
+	}
 	return c.editOutbox(`UPDATE outbox SET failed = '', msg = 0, enc = NULL, encnonce = NULL
 		WHERE id = ? AND failed != '' RETURNING chan`, local)
 }
@@ -85,6 +98,9 @@ func (c *Client) RetryFailed(local int64) error {
 // DiscardFailed drops a failed outbox message (the cache uses
 // secure_delete, so its text doesn't linger in free pages).
 func (c *Client) DiscardFailed(local int64) error {
+	if local < 0 {
+		return c.discardUpload(-local)
+	}
 	return c.editOutbox(`DELETE FROM outbox WHERE id = ? AND failed != '' RETURNING chan`, local)
 }
 
@@ -197,7 +213,7 @@ func permanent(code string) bool {
 func (c *Client) sendEntry(ctx context.Context, s *session, e outboxEntry) error {
 	if !c.needsEnc(e.chan_) {
 		_, err := s.call(ctx, proto.OpSend,
-			proto.SendArgs{Chan: e.chan_, Body: e.body, Nonce: e.nonce, Thread: e.thread, Via: e.sendVia(s)}, c.sentHook(e))
+			proto.SendArgs{Chan: e.chan_, Body: e.body, Nonce: e.nonce, Thread: e.thread, Via: e.sendVia(s), Files: e.files}, c.sentHook(e))
 		return err
 	}
 	if !s.e2e() {
@@ -240,7 +256,7 @@ func (c *Client) sendEntry(ctx context.Context, s *session, e outboxEntry) error
 			e.enc = enc
 		}
 		_, err := s.call(ctx, proto.OpSend,
-			proto.SendArgs{Chan: e.chan_, Nonce: e.nonce, Thread: e.thread, Enc: e.enc, Via: e.sendVia(s)}, c.sentHook(e))
+			proto.SendArgs{Chan: e.chan_, Nonce: e.nonce, Thread: e.thread, Enc: e.enc, Via: e.sendVia(s), Files: blobIDs(e.files)}, c.sentHook(e))
 		var pe *proto.Error
 		if attempt < 2 && errors.As(err, &pe) && pe.Code == proto.ErrStaleEpoch {
 			stale, e.enc = e.enc, nil
@@ -321,6 +337,9 @@ func (c *Client) outboxLoop(ctx context.Context, s *session) {
 		}
 		switch {
 		case err == nil:
+		case reason != "" && errors.As(err, &perr) && perr.Code == proto.ErrNotFound && c.requeueUpload(e):
+			// The server collected the blobs before the message went out:
+			// they go up again from the staged copies.
 		case reason != "":
 			if _, err := c.db.Exec(`UPDATE outbox SET failed = ?, msg = 0 WHERE id = ?`, reason, e.id); err == nil {
 				e.failed = reason
@@ -388,6 +407,9 @@ func (c *Client) sentHook(e outboxEntry) func(proto.Res) error {
 		}
 		if _, err := c.db.Exec(`DELETE FROM outbox WHERE id = ?`, e.id); err != nil {
 			return err
+		}
+		for _, f := range e.files {
+			os.Remove(c.stagedPath(f.Blob)) // the blob is attached: no re-upload needed
 		}
 		c.outboxChanged(e.chan_, nil)
 		return nil

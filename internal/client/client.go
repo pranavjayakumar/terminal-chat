@@ -239,6 +239,8 @@ type Client struct {
 	updates   chan Update
 
 	obKick    chan struct{}
+	upKick    chan struct{} // a new or retried upload (files.go)
+	up        upProgress
 	obMu      sync.Mutex
 	obChanged chan struct{} // closed and replaced on every outbox change
 
@@ -366,7 +368,7 @@ func Open(home string) (*Client, error) {
 		home: home, cfg: cfg, db: db, trust: ts, users: users,
 		typing: map[uint64]map[uint64]time.Time{}, typingTimers: map[uint64]*time.Timer{}, readTimers: map[uint64]*time.Timer{}, readSent: map[uint64]time.Time{}, presence: map[uint64]Presence{},
 		typed:   map[uint64]time.Time{},
-		updates: make(chan Update, 1), obKick: make(chan struct{}, 1),
+		updates: make(chan Update, 1), obKick: make(chan struct{}, 1), upKick: make(chan struct{}, 1),
 		obChanged: make(chan struct{}), timing: defaultTiming,
 		e2eKick: make(chan struct{}, 1), keyNeeds: make(chan proto.Ephemeral, 32),
 		e2eSoft: map[uint64]string{}, needSent: map[uint64]time.Time{}, shared: map[shareKey]time.Time{},

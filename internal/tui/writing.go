@@ -40,6 +40,14 @@ type inputOffers struct {
 	dk      draftKey // where the offer was made
 
 	pasteVal string // the input right after the last paste
+
+	// A dragged-in file path or an over-long paste (files.go): Tab sends
+	// attachPaths, or attachText as paste.txt, and drops runes
+	// [attachFrom, attachTo) of attachVal from the input.
+	attachVal            string
+	attachFrom, attachTo int
+	attachPaths          []string
+	attachText           string
 }
 
 // dropWriteHints ends any offer (the input changed or moved elsewhere).
@@ -64,7 +72,7 @@ func (m *Model) staleOffers() {
 	if w.hint == "" || m.notice != w.hint {
 		return
 	}
-	if v := m.input.Value(); w.dk != m.dk || (w.wrapVal != "" && v != w.wrapVal) || (w.subVal != "" && v != w.subVal) {
+	if v := m.input.Value(); w.dk != m.dk || (w.wrapVal != "" && v != w.wrapVal) || (w.subVal != "" && v != w.subVal) || (w.attachVal != "" && v != w.attachVal) {
 		m.dropWriteHints()
 	}
 }

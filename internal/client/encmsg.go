@@ -92,6 +92,8 @@ type plainMsg struct {
 	Agent string `msgpack:"agent,omitempty"`
 	// Via is Message.Via, signed: in e2e channels only this one counts.
 	Via string `msgpack:"via,omitempty"`
+	// Files are the attached files, with their keys (§16.2).
+	Files []proto.File `msgpack:"files,omitempty"`
 }
 
 var zeroRef = make([]byte, e2ecrypto.IDSize)
@@ -288,12 +290,19 @@ func (c *Client) prepMsg(q dbtx, m *proto.Message, memo *keyMemo) (Sec, []byte) 
 func (c *Client) judge(q dbtx, m *proto.Message, memo *keyMemo) (sec Sec, mid []byte, sts int64, keep bool) {
 	sid, hasSID := qServerID(q)
 	if m.Enc == nil {
+		if m.Deleted || !validFiles(m.Files) {
+			m.Files = nil // malformed: shown as text only, never offered for download
+		}
 		if m.Deleted || !c.chanIsE2E(q, sid, hasSID, m.Chan) {
 			return SecPlain, nil, 0, false
 		}
 		return c.plainSec(q, m.Chan, m.ID), nil, 0, false
 	}
+	srv := blobIDs(m.Files)
 	sec, mid, sts = c.judgeEnc(q, sid, hasSID, m, memo)
+	if sec == SecWaiting {
+		m.Files = srv
+	}
 	if sec == SecInvalid {
 		m.Body = ""
 	}
@@ -313,23 +322,29 @@ func (c *Client) judge(q dbtx, m *proto.Message, memo *keyMemo) (sec Sec, mid []
 
 func (c *Client) judgeEnc(q dbtx, sid e2ecrypto.ServerID, hasSID bool, m *proto.Message, memo *keyMemo) (Sec, []byte, int64) {
 	body := m.Body
-	m.Body = ""
+	// The server's files of an encrypted message are blob ids only; what
+	// counts is the sealed Plain's.
+	srvFiles := blobIDs(m.Files)
+	m.Body, m.Files = "", nil
 	if _, err := e2ecrypto.ParseEnc(m.Enc); err != nil || body != "" {
 		return SecInvalid, nil, 0
 	}
 	mid := e2ecrypto.MID(m.Enc)
 	// The same bytes judged before, for the same message, keep their
 	// verdict (history refetches).
-	var oldEnc []byte
+	var oldEnc, oldFiles []byte
 	var oldSec Sec
 	var oldBody string
 	var oldCh, oldAuthor, oldThread uint64
 	var oldSTS int64
-	if q.QueryRow(`SELECT enc, sec, body, chan, author, thread, sts FROM msgs WHERE id = ?`, m.ID).
-		Scan(&oldEnc, &oldSec, &oldBody, &oldCh, &oldAuthor, &oldThread, &oldSTS) == nil &&
+	if q.QueryRow(`SELECT enc, sec, body, chan, author, thread, sts, files FROM msgs WHERE id = ?`, m.ID).
+		Scan(&oldEnc, &oldSec, &oldBody, &oldCh, &oldAuthor, &oldThread, &oldSTS, &oldFiles) == nil &&
 		bytes.Equal(oldEnc, m.Enc) && oldSec != SecWaiting &&
 		oldCh == m.Chan && oldAuthor == m.Author && oldThread == m.Thread {
 		m.Body = oldBody
+		if len(oldFiles) > 0 {
+			_ = proto.Unmarshal(oldFiles, &m.Files)
+		}
 		return oldSec, mid[:], oldSTS
 	}
 	// First mid wins: the server can't replay an enc as a second message.
@@ -368,7 +383,12 @@ func (c *Client) judgeEnc(q dbtx, sid e2ecrypto.ServerID, hasSID bool, m *proto.
 			return SecInvalid, mid[:], 0
 		}
 	}
-	m.Body = p.Body
+	m.Body, m.Files = p.Body, p.Files
+	if !sameBlobs(p.Files, srvFiles) || !validFiles(p.Files) {
+		// The server attaches (and deletes) the blobs it lists: files it
+		// doesn't hold for this message aren't this message's (§16.2).
+		m.Files = nil
+	}
 	// Attribution only ever leans toward the agent (§15.3): the signed
 	// claim wins, a server's claim alone still marks it, and anything an
 	// agent's device signed is the agent's.
@@ -402,8 +422,12 @@ func (c *Client) saveMsg(q dbtx, m *proto.Message, replace bool, memo *keyMemo) 
 	}
 	editEnc, renc := m.EditEnc, m.Renc
 	sec, mid, sts, keep := c.judge(q, m, memo)
-	if sec == SecInvalid || sec == SecWaiting {
-		m.Body = ""
+	switch sec {
+	case SecInvalid:
+		m.Body, m.Files = "", nil
+	case SecWaiting:
+		// Kept: the server's blob ids, to check the Plain's against later.
+		m.Body, m.Files = "", blobIDs(m.Files)
 	}
 	if keep {
 		return sec, nil // the verified copy stays
@@ -429,7 +453,7 @@ func (c *Client) saveMsg(q dbtx, m *proto.Message, replace bool, memo *keyMemo) 
 	if mid != nil {
 		// Lowest id wins whatever the arrival order: a copy of this enc
 		// under a later id is a replay.
-		if _, err := q.Exec(`UPDATE msgs SET sec = ?, body = '' WHERE mid = ? AND id > ? AND sec != ?`,
+		if _, err := q.Exec(`UPDATE msgs SET sec = ?, body = '', files = NULL WHERE mid = ? AND id > ? AND sec != ?`,
 			SecInvalid, mid, m.ID, SecInvalid); err != nil {
 			return sec, err
 		}
@@ -543,14 +567,14 @@ func (c *Client) reopenMsgs(sid e2ecrypto.ServerID, chans []proto.Channel) {
 		if sec == SecWaiting {
 			continue
 		}
-		body := m.Body
+		body, files := m.Body, m.Files
 		if sec != SecE2E {
-			body, sts = "", 0
+			body, sts, files = "", 0, nil
 		}
 		// Only the row we judged: an event applied meanwhile (a delete, a
 		// refetch with other bytes or metadata) wins.
-		res, err := c.db.Exec(`UPDATE msgs SET body = ?, sec = ?, sts = ? WHERE id = ? AND sec = ? AND deleted = 0
-			AND enc = ? AND chan = ? AND author = ? AND thread = ?`, body, sec, sts, m.ID, SecWaiting, m.Enc, m.Chan, m.Author, m.Thread)
+		res, err := c.db.Exec(`UPDATE msgs SET body = ?, files = ?, sec = ?, sts = ? WHERE id = ? AND sec = ? AND deleted = 0
+			AND enc = ? AND chan = ? AND author = ? AND thread = ?`, body, encodeFiles(files), sec, sts, m.ID, SecWaiting, m.Enc, m.Chan, m.Author, m.Thread)
 		if n, _ := rowsAffected(res); err != nil || n == 0 {
 			continue
 		}
@@ -627,7 +651,7 @@ func (c *Client) seal(sid e2ecrypto.ServerID, dev *e2ecrypto.DeviceKeys, ep trus
 	if ep.Key == nil {
 		return nil, failErr{noKeyReason}
 	}
-	p := plainMsg{T: "msg", TS: e.time, Body: e.body, Agent: c.AgentHandle(), Via: e.via}
+	p := plainMsg{T: "msg", TS: e.time, Body: e.body, Agent: c.AgentHandle(), Via: e.via, Files: slices.Clone(e.files)}
 	if e.thread != 0 {
 		ref, err := c.threadRef(e.chan_, e.thread)
 		if err != nil {
@@ -636,6 +660,11 @@ func (c *Client) seal(sid e2ecrypto.ServerID, dev *e2ecrypto.DeviceKeys, ep trus
 		p.ThreadRef = ref
 	}
 	raw, err := proto.Marshal(p)
+	for err == nil && len(raw) > e2ecrypto.MaxPlainSize && dropThumb(p.Files) {
+		// Queued when the channel wasn't encrypted (no size check then):
+		// previews go before the message would.
+		raw, err = proto.Marshal(p)
+	}
 	if err != nil {
 		return nil, err
 	}

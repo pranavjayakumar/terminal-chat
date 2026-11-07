@@ -451,6 +451,9 @@ func newEncoder(p termenv.Profile, color bool) *encoder {
 	return &encoder{prof: p, color: color, cache: map[rgb][2]string{}}
 }
 
+// maxColorCache bounds the encoder's color cache (a theme has a few dozen).
+const maxColorCache = 4096
+
 func (e *encoder) seq(c rgb, bg bool) string {
 	if bg && e.prof == termenv.ANSI {
 		return "" // 16 colors can't hold the theme's surfaces: keep the terminal's own
@@ -469,6 +472,11 @@ func (e *encoder) seq(c rgb, bg bool) string {
 		}
 		if col != nil {
 			k = [2]string{col.Sequence(false), col.Sequence(true)}
+		}
+		if len(e.cache) >= maxColorCache {
+			// Image previews bring hundreds of colors each: start over
+			// rather than grow without bound.
+			clear(e.cache)
 		}
 		e.cache[c] = k
 	}

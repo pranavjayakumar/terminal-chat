@@ -36,6 +36,7 @@ internal/tui/        Bubble Tea UI
 internal/alert/      notification policy engine (levels, coalescing, caps, rings), shared by tui and background
 internal/background/ tc background: passive notifier while tc is closed, ui.lock handover, LaunchAgent/systemd unit
 internal/sanitize/   terminal-safe text rendering
+internal/media/      file type sniffing, image thumbnails (40 MP cap), safe file names, sizes (pure)
 internal/iconfont/   tc Symbols icon font (embedded; source assets/iconfont, generator scripts/iconfont.py), tc fonts
 internal/release/    GitHub Releases: latest tag, SSHSIG-signed checksums (signers.go), https-only download, atomic self-replace, daily check
 internal/e2e/        real client against real server over loopback

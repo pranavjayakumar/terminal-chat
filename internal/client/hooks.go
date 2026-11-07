@@ -66,6 +66,9 @@ func migrateE2E(db *sql.DB) error {
 		{"outbox", "via", "TEXT NOT NULL DEFAULT ''"},
 		{"outbox", "enc", "BLOB"},
 		{"outbox", "encnonce", "BLOB"},
+		{"msgs", "files", "BLOB"},
+		{"outbox", "files", "BLOB"},
+		{"outbox", "upload", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		var n int
 		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, c[0], c[1]).Scan(&n); err != nil {

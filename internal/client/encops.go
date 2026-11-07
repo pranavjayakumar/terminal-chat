@@ -149,7 +149,7 @@ func (c *Client) invalidateSuperseded(ch uint64, epoch uint32, seq uint64) bool 
 		return false
 	}
 	prev := binary.BigEndian.AppendUint32([]byte{e2ecrypto.EncVersion}, epoch-1)
-	r, err := c.db.Exec(`UPDATE msgs SET sec = ?, body = '' WHERE chan = ? AND sec = ? AND id > ? AND substr(enc, 1, 5) = ?`,
+	r, err := c.db.Exec(`UPDATE msgs SET sec = ?, body = '', files = NULL WHERE chan = ? AND sec = ? AND id > ? AND substr(enc, 1, 5) = ?`,
 		SecInvalid, ch, SecE2E, seq, prev)
 	if err != nil {
 		return false
@@ -330,7 +330,7 @@ func (c *Client) saveDeleted(q dbtx, m *proto.Message, old msgRow, hadOld bool, 
 		}
 	}
 	sec := c.deleteVerdict(q, sid, hasSID, m.Chan, m.ID, m.Author, ref, m.DelEnc, 0, memo)
-	m.Body, m.Enc, m.Reactions, m.Edited = "", nil, nil, 0
+	m.Body, m.Enc, m.Reactions, m.Edited, m.Files = "", nil, nil, 0, nil
 	if err := storeMsg(q, *m, sec, old.mid, true); err != nil {
 		return sec, err
 	}
@@ -356,7 +356,7 @@ func (c *Client) applyDelete(q dbtx, d proto.MsgDelete, seq uint64) error {
 		sec = c.deleteVerdict(q, sid, hasSID, row.ch, row.id, row.author, row.mid, d.Enc, seq, nil)
 	}
 	// mid stays: replies keep naming it as their thread root.
-	if _, err := q.Exec(`UPDATE msgs SET body = '', enc = NULL, eenc = NULL, epend = NULL, denc = ?, deleted = 1,
+	if _, err := q.Exec(`UPDATE msgs SET body = '', files = NULL, enc = NULL, eenc = NULL, epend = NULL, denc = ?, deleted = 1,
 		sec = ?, reactions = '{}' WHERE id = ?`, d.Enc, sec, d.Msg); err != nil {
 		return err
 	}

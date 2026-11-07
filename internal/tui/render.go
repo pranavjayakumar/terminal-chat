@@ -473,11 +473,16 @@ type renderKey struct {
 	header  bool
 	sec     client.Sec        // a waiting message changes when it decrypts
 	wait    client.WaitReason // ...or when why it waits changes
+	files   int               // attached files
+	up      int64             // an upload's progress, in percent
 }
 
 func keyFor(m client.Message, w int, header bool) renderKey {
 	k := renderKey{id: m.ID, local: m.Local, edited: m.Edited, deleted: m.Deleted, pending: m.Pending,
-		failed: m.Failed, replies: m.Replies, pinned: m.Pinned, width: w, header: header, sec: m.Sec, wait: m.Wait}
+		failed: m.Failed, replies: m.Replies, pinned: m.Pinned, width: w, header: header, sec: m.Sec, wait: m.Wait, files: len(m.Files)}
+	if m.UpTotal > 0 {
+		k.up = m.UpSent * 100 / m.UpTotal
+	}
 	if len(m.Reactions) > 0 {
 		keys := make([]string, 0, len(m.Reactions))
 		for e, us := range m.Reactions {
