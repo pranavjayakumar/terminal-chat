@@ -254,6 +254,10 @@ func TestHerdrCLI(t *testing.T) {
 	if got := readArgv(t, log); !slices.Equal(got, []string{"pane", "read", "w1:p2", "--source", "recent", "--lines", "60", "--format", "text"}) {
 		t.Fatalf("argv %q", got)
 	}
+	_, _ = h.CapturePane(context.Background(), "w1:p3")
+	if got := readArgv(t, log); !slices.Equal(got, []string{"pane", "read", "w1:p3", "--source", "visible", "--format", "ansi"}) {
+		t.Fatalf("argv %q", got)
+	}
 	if DetectHerdr(fakeEnv(map[string]string{"HERDR_ENV": "1"}, "herdr")) != nil {
 		t.Fatal("detected without a pane id")
 	}
