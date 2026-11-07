@@ -85,6 +85,9 @@ type session struct {
 	voice    bool     // both sides advertised proto.CapVoice
 	voiceTCP bool     // the client advertised proto.CapVoiceTCP too
 	passive  bool     // proto.CapPassive: no presence, typing or huddles
+	// retryAfter: both sides advertised proto.CapRetryAfter, so a
+	// rate_limited RES carries retry_after_ms.
+	retryAfter bool
 	// agentCap: both sides advertised proto.CapAgent. agent is set on an
 	// agent session (HELLO agent, §15.1): it never counts as the user
 	// being online and sees only its DM and access list's messages.
@@ -155,7 +158,7 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 	}
 	defer s.unregister(sess)
 	w := proto.Welcome{
-		Server: Version, Caps: append([]string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapVoice, proto.CapVoiceTCP, proto.CapAgent, proto.CapAgentKeyProof, proto.CapKeyEndorse, proto.CapIncarnation}, s.inviteCaps()...), ServerID: s.st.serverID, User: user, Time: s.now(),
+		Server: Version, Caps: append([]string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapVoice, proto.CapVoiceTCP, proto.CapAgent, proto.CapAgentKeyProof, proto.CapKeyEndorse, proto.CapIncarnation, proto.CapRetryAfter}, s.inviteCaps()...), ServerID: s.st.serverID, User: user, Time: s.now(),
 		Agent: sess.agent,
 	}
 	if sess.passive {
@@ -195,6 +198,7 @@ func (s *Server) handshake(ctx context.Context, sess *session) (proto.User, stri
 	sess.voice = slices.Contains(h.Caps, proto.CapVoice)
 	sess.voiceTCP = sess.voice && slices.Contains(h.Caps, proto.CapVoiceTCP)
 	sess.passive = slices.Contains(h.Caps, proto.CapPassive)
+	sess.retryAfter = slices.Contains(h.Caps, proto.CapRetryAfter)
 	sess.agentCap = slices.Contains(h.Caps, proto.CapAgent)
 	exp, err := sess.conn.Exporter()
 	if err != nil {
@@ -789,6 +793,10 @@ func (sess *session) handleReq(ctx context.Context, r proto.Req) {
 		return
 	}
 	data, err := sess.srv.dispatch(ctx, sess, r.Op, r.Args)
+	var pe *proto.Error
+	if !sess.retryAfter && errors.As(err, &pe) && pe.RetryAfterMs != 0 {
+		err = proto.Errf(pe.Code, pe.Msg) // the client didn't ask for the hint
+	}
 	sess.respond(r.ID, data, err)
 }
 

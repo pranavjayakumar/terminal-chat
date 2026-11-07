@@ -292,6 +292,9 @@ type timing struct {
 	devWait                       time.Duration // how long an encrypted send waits for device registration
 	poisonWait                    time.Duration // how long a provably bad box waits for a key.share before rotating past it
 	historyPages                  int           // pages one History call walks at most (ops.go)
+	// sendPace spaces sends once the server rate limited one (outboxLoop):
+	// its send bucket refills 3/s (§9), plus a margin for network jitter.
+	sendPace time.Duration
 }
 
 var defaultTiming = timing{
@@ -300,6 +303,7 @@ var defaultTiming = timing{
 	dial: 15 * time.Second, handshake: 30 * time.Second, retry: 2 * time.Second,
 	type_: 6 * time.Second, keyNeed: 30 * time.Second, autoEpoch: time.Minute,
 	devWait: 15 * time.Second, poisonWait: 2 * time.Minute, historyPages: 50,
+	sendPace: 350 * time.Millisecond,
 }
 
 // DefaultHome is $TC_HOME, else ~/.config/tc.

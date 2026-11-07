@@ -42,6 +42,7 @@ const (
 	kSelLink    = "l"      // open the message's link (o unfolds agent steps)
 	kBackChan   = "ctrl+^" // Ctrl-6: the previous channel (vim's alternate file)
 	kHuddle     = "alt+h"  // join or leave this channel's huddle
+	kMute       = "alt+m"  // mute / unmute the open channel; in the palette, the highlighted one
 	kConfirmYes = "y"
 	kTalk       = "ctrl+t" // only inside a voice huddle (huddle.go)
 	kSettings   = "ctrl+," // only where the terminal reports it (kitty keys); /settings works everywhere

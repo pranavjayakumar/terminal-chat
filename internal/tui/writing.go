@@ -589,8 +589,9 @@ func (m *Model) showLinks() error {
 
 // ---- sidebar mute ----
 
-// toggleMute mutes a channel from the sidebar's hover button, or puts it
-// back to the default level (mentions, when the default is off).
+// toggleMute mutes a channel from the sidebar's hover button or ⌥M (the
+// open channel, or the palette's highlighted one), or puts it back to the
+// default level (mentions, when the default is off).
 func (m *Model) toggleMute(ch uint64) tea.Cmd {
 	nb, ok := m.notifyBackend()
 	if !ok {
@@ -621,7 +622,15 @@ func (m *Model) toggleMute(ch uint64) tea.Cmd {
 	if muted {
 		m.setInfo("unmuted " + m.chanTitle(ch))
 	} else {
-		m.setInfo("muted " + m.chanTitle(ch) + " · no popups or sounds · click unmute to undo")
+		// Name only a key that acts on this channel once the palette closes.
+		undo := "click unmute to undo"
+		switch {
+		case ch == m.active:
+			undo = m.kn.of("⌥M") + " undoes"
+		case m.mode == modeSwitcher:
+			undo = m.kn.of("⌥M") + " on its row undoes"
+		}
+		m.setInfo("muted " + m.chanTitle(ch) + " · no popups or sounds · " + undo)
 	}
 	return nil
 }

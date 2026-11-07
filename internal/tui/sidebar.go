@@ -281,7 +281,7 @@ func (m *Model) drawSideItem(c *canvas, it sideItem, y, sb int, mini bool) {
 	x := c.put(2, y, it.icon, fgc(it.iconFg), act)
 	// The row under the pointer offers mute / unmute left of its badge, so
 	// a click on the badge still opens the channel (the sidebar never takes
-	// keys: ⌥K has Mute #x for the keyboard).
+	// keys: ⌥M mutes the open channel, or the palette's highlighted one).
 	bw := 0
 	if it.badge != "" {
 		bw = strWidth(it.badge) + 1
