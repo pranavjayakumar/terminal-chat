@@ -544,18 +544,22 @@ func (s *Server) rotateTx(ctx context.Context, tx *sql.Tx, u proto.User, ch uint
 		capped = !rev
 	}
 	if capped {
-		if now-head.time < rotateChanEveryMs {
-			return none, proto.RateLimited(time.Duration(rotateChanEveryMs-(now-head.time))*time.Millisecond,
-				"nothing changed since the channel's last rotation")
-		}
 		var last sql.NullInt64
 		if err := tx.QueryRowContext(ctx, `SELECT MAX(time) FROM epochs WHERE chan = ? AND by_user = ?`,
 			ch, u.ID).Scan(&last); err != nil {
 			return none, err
 		}
-		if last.Valid && now-last.Int64 < rotateEveryMs {
-			return none, proto.RateLimited(time.Duration(rotateEveryMs-(now-last.Int64))*time.Millisecond,
-				"nothing changed since your last rotation")
+		// The hint covers both caps, so waiting it out is enough.
+		var mine int64
+		if last.Valid {
+			mine = rotateEveryMs - (now - last.Int64)
+		}
+		wait := time.Duration(max(rotateChanEveryMs-(now-head.time), mine)) * time.Millisecond
+		if now-head.time < rotateChanEveryMs {
+			return none, proto.RateLimited(wait, "nothing changed since the channel's last rotation")
+		}
+		if mine > 0 {
+			return none, proto.RateLimited(wait, "nothing changed since your last rotation")
 		}
 	}
 

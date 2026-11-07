@@ -278,8 +278,8 @@ Every REQ gets exactly one RES with the same `id`. Client chooses ids. Error cod
 too_large, unknown_op, internal`, and `stale_epoch` (§13.8).
 
 **Retry hint** (cap `retry_after`, negotiated: the client puts it in HELLO, the server in
-WELCOME). In such a session a `rate_limited` error from a §9 token bucket or a key-rotation cap
-(§13.3) carries `retry_after_ms: u32` (≥ 1) in `err`: how long until the same request would
+WELCOME). In such a session a `rate_limited` error from a §9 token bucket (agent sessions: §15.1) or a key-rotation cap
+(§13.3) carries `retry_after_ms: u32` (1 to 30000) in `err`: how long until the same request would
 pass, as far as the server can tell then (another session of the same user may spend the token
 first). Other `rate_limited` errors (`agent.update`'s daily cap) carry none. A client clamps the
 hint to 30 s. Without the cap the field is never sent. tc's outbox, refused a `send`, waits the
@@ -591,7 +591,7 @@ All sizes are UTF-8 bytes.
 - Rate limits (token buckets per user, `rate_limited` beyond): `send` burst 30, refill 3/s; `read`
   has its own bucket of burst 60, refill 5/s (agent sessions: their write bucket, §15.1) (so read markers in a busy channel never starve other
   writes; clients send at most one per channel per second); all other write ops share a bucket of
-  burst 60, refill 5/s. A refused request spends no token; with cap `retry_after` its error says
+  burst 60, refill 5/s. The bucket that refuses a request spends no token from it; with cap `retry_after` its error says
   when a token is back (`retry_after_ms`, §5).
 - `search.q` ≤ 256 B; only the first 8 terms are used.
 - Presence updates: at most 1/s per session, and only broadcast when state or status changes.
@@ -960,7 +960,7 @@ after the current epoch's `key.epoch` (registered and revoked since, it
 leaves the state as it was, yet may hold K by `key.share`). The comparison is with the server's record, not with
 what the current bundle boxed, so never-boxed devices don't exempt
 anyone. Epoch 1, and epochs stored before `state` existed, are uncapped.
-With cap `retry_after` (§5) the refusal's `retry_after_ms` is the time left on the cap it hit.
+With cap `retry_after` (§5) the refusal's `retry_after_ms` is the time until both caps let the caller rotate.
 
 On success the server stores the bundle, sets `Channel.epoch`, appends a
 `key.epoch` event (actor = caller) and answers `{seq}`. Writes are

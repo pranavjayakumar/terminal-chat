@@ -309,9 +309,8 @@ func (c *Client) outboxLoop(ctx context.Context, s *session) {
 		case errors.Is(err, ErrOffline) || ctx.Err() != nil:
 			return
 		case errors.As(err, &perr) && perr.Code == proto.ErrRateLimited:
-			// Without a hint (an older server, or a cap that isn't the
-			// send bucket, like key.rotate's) wait the plain retry, which
-			// also covers those slower caps.
+			// Without a hint (an older server, whose key.rotate caps are
+			// seconds long too) wait the plain retry.
 			paced = true
 			d := perr.RetryAfter()
 			if d <= 0 {
