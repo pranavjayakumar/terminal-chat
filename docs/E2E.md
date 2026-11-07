@@ -50,11 +50,16 @@ sig = Ed25519(device signing key, header || ct)
 - `sig` stops members forging as each other (the symmetric key alone would allow it).
 - Edits/deletes must be signed by a device of the original author.
 - Ciphertext padded to 256-byte buckets.
+- Files (PROTOCOL.md §16): each file is sealed with its own random key as a chunked
+  XChaCha20-Poly1305 stream (chunk index and a final flag in the nonce, so truncation, extension
+  and reordering fail); its key, name, size, type, SHA-256 and thumbnail ride in the message's
+  sealed, signed Plain. The server stores the blob and learns its id, channel, uploader and size.
 
 ## What the server still sees
 
 Membership, timestamps, sizes (bucketed), thread links, reactions, read markers, channel names and
-topics. Search for encrypted channels is client-side over the local decrypted cache (SQLite FTS5);
+topics, and for files: how many a message attaches, their exact sealed sizes, and who downloads
+them when. Search for encrypted channels is client-side over the local decrypted cache (SQLite FTS5);
 the local cache is therefore sensitive — rely on disk encryption, documented.
 
 ## Multi-device & recovery

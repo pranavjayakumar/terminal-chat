@@ -32,7 +32,7 @@ FUZZTIME ?= 30s
 FUZZ := \
 	proto:FuzzDecode proto:FuzzClientArgs proto:FuzzDevices proto:FuzzKeyOps proto:FuzzParseLogin proto:FuzzParseDatagram voice:FuzzJitter \
 	sanitize:FuzzSanitize notify:FuzzOSCSeq \
-	e2ecrypto:FuzzParseEnc e2ecrypto:FuzzDecrypt e2ecrypto:FuzzUnpad e2ecrypto:FuzzOpenBoxes \
+	e2ecrypto:FuzzParseEnc e2ecrypto:FuzzDecrypt e2ecrypto:FuzzUnpad e2ecrypto:FuzzOpenBoxes e2ecrypto:FuzzOpenFile media:FuzzThumbnail \
 	identity:FuzzDeviceCert identity:FuzzKeyEndorse identity:FuzzDeviceRevoke identity:FuzzEpochBundle identity:FuzzInviteKey \
 	client:FuzzPlain client:FuzzKeyShare client:FuzzGitHubKeys
 
