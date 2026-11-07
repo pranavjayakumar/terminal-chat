@@ -54,7 +54,7 @@ type paneState struct {
 	mu       sync.Mutex
 	share    *paneShare
 	view     *paneView
-	watchers int   // participants watching us, by the last roster
+	watchers int // participants watching us, by the last roster
 	watchSet map[uint32]bool
 	// watchGen moves whenever someone starts watching (a src not in the
 	// last roster's set), even if someone else stopped meanwhile.
