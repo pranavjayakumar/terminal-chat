@@ -88,6 +88,7 @@ var agentRefused = map[string]bool{
 	proto.OpDeviceRevoke: true, proto.OpKeyEndorse: true, proto.OpChanEncrypt: true, proto.OpChanCreate: true,
 	proto.OpChanJoin: true, proto.OpChanLeave: true, proto.OpChanAdd: true, proto.OpChanRemove: true,
 	proto.OpChanTopic: true, proto.OpDMOpen: true, proto.OpHuddleJoin: true,
+	proto.OpBlobPut: true, proto.OpBlobGet: true,
 }
 
 var agentOps = map[string]bool{

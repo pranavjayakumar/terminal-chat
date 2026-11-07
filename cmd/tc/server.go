@@ -74,7 +74,14 @@ func cmdServer(args []string) error {
 		"connections that haven't signed in yet, in all (when full, the source holding the most loses its oldest)")
 	maxPendingPerSource := fs.Int("max-pending-per-source", transport.DefaultMaxPendingPerSource,
 		"connections that haven't signed in yet, per IPv4 /24 or IPv6 /64 (an IPv6 /56 gets 2x, a /48 4x)")
+	maxUpload := sizeFlag(proto.DefaultMaxUpload)
+	fs.Var(&maxUpload, "max-upload", "largest file people can send (e.g. 25MiB, 100MB)")
+	blobQuota := sizeFlag(server.DefaultBlobQuota)
+	fs.Var(&blobQuota, "blob-quota", "room for all sent files together, under <data>/blobs (e.g. 10GiB)")
 	fs.Parse(args)
+	if maxUpload < 1 || blobQuota < 1 {
+		return errors.New("--max-upload and --blob-quota must be at least 1 byte")
+	}
 	if *maxPending < 1 || *maxPendingPerSource < 1 {
 		return errors.New("--max-pending and --max-pending-per-source must be at least 1")
 	}
@@ -109,7 +116,8 @@ func cmdServer(args []string) error {
 	if err := os.WriteFile(filepath.Join(*data, memberInvitesFile), []byte(strconv.FormatBool(*memberInvites)), 0o600); err != nil {
 		return err
 	}
-	srv, err := server.New(server.Config{DataDir: *data, PublicAddr: pub, MemberInvites: *memberInvites})
+	srv, err := server.New(server.Config{DataDir: *data, PublicAddr: pub, MemberInvites: *memberInvites,
+		MaxUpload: int64(maxUpload), BlobQuota: int64(blobQuota)})
 	if err != nil {
 		return err
 	}
@@ -479,3 +487,37 @@ func defaultDataDir() string {
 }
 
 var errUsage = errors.New("usage")
+
+// sizeFlag is a byte count flag: plain bytes or with a unit (KB, MB, GB
+// powers of 1000; KiB, MiB, GiB and K, M, G powers of 1024).
+type sizeFlag int64
+
+func (f *sizeFlag) String() string { return strconv.FormatInt(int64(*f), 10) }
+
+func (f *sizeFlag) Set(s string) error {
+	n, err := parseSize(s)
+	if err != nil {
+		return err
+	}
+	*f = sizeFlag(n)
+	return nil
+}
+
+func parseSize(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	i := strings.IndexFunc(s, func(r rune) bool { return (r < '0' || r > '9') && r != '.' })
+	num, unit := s, ""
+	if i >= 0 {
+		num, unit = s[:i], strings.ToLower(strings.TrimSpace(s[i:]))
+	}
+	v, err := strconv.ParseFloat(num, 64)
+	if err != nil || v < 0 {
+		return 0, fmt.Errorf("bad size %q", s)
+	}
+	mult := map[string]float64{"": 1, "b": 1, "k": 1 << 10, "kib": 1 << 10, "kb": 1e3, "m": 1 << 20, "mib": 1 << 20, "mb": 1e6,
+		"g": 1 << 30, "gib": 1 << 30, "gb": 1e9, "t": 1 << 40, "tib": 1 << 40, "tb": 1e12}[unit]
+	if mult == 0 || v*mult > 1<<62 {
+		return 0, fmt.Errorf("bad size %q (use e.g. 25MiB or 10GB)", s)
+	}
+	return int64(v * mult), nil
+}
