@@ -65,6 +65,7 @@ func (m *Model) frame() *canvas {
 		m.drawBoot(c)
 	}
 	m.drawIntro(c)
+	m.drawLive(c) // we stream a pane: never hidden, whatever is open
 	if p := m.fx.themePrev; p != nil && m.running(m.fx.themeAt, dTheme) && p.w == c.w && p.h == c.h {
 		k := ease(m.progress(m.fx.themeAt, dTheme))
 		old := m.fx.skinSwap && k < 0.5 // a skin change keeps the old chrome until halfway
@@ -102,6 +103,10 @@ func (m *Model) drawMain(c *canvas, g geo) {
 	th := m.st.th
 	if m.mode == modeViewer && m.view.wide {
 		m.drawLines(c, 0, 0, m.w, g.statusY, m.viewerLines(m.w, g.statusY))
+		return
+	}
+	if m.mode == modeWatch {
+		m.drawWatch(c, g)
 		return
 	}
 	// header

@@ -31,6 +31,7 @@ var keyGroups = []keyGroup{
 	}},
 	{"Huddle", [][2]string{
 		{"⌥H", "join / leave here"}, {"/huddle", "join here"}, {"⌃T hold", "push to talk"}, {"⌃T tap", "open mic on / off"}, {"/leave-huddle", "leave"},
+		{"/pair", "stream a pane (esc stops)"}, {"⌥W", "watch the shared pane"},
 	}},
 	{"App", [][2]string{
 		{"/settings", "settings"}, {"/search", "search"}, {"F1", "this sheet"}, {"⌃C ⌃C", "quit"},

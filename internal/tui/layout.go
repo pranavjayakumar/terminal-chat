@@ -60,7 +60,7 @@ func sbWidth(mode string) int {
 // on narrow terminals and hidden on very narrow ones.
 func (m *Model) sbMode() string {
 	switch {
-	case m.mode == modeViewer && m.view.wide:
+	case m.mode == modeViewer && m.view.wide, m.mode == modeWatch:
 		return "" // text to copy: a mouse selection mustn't pick up the sidebar
 	case m.sbForce != "" && m.w < sbIconsBelow && m.w >= minSidebarCols:
 		if m.sbForce == sbHidden {
@@ -195,7 +195,7 @@ func (m *Model) threadWidth(w int) int {
 
 // menuBarShown: the Retro skin's menu bar takes row 0.
 func (m *Model) menuBarShown() bool {
-	return m.skin().menuBar && m.h >= 16 && m.w >= 20 && !(m.mode == modeViewer && m.view.wide)
+	return m.skin().menuBar && m.h >= 16 && m.w >= 20 && !(m.mode == modeViewer && m.view.wide) && m.mode != modeWatch
 }
 
 // columnWidth is the message column's width in a region of w columns.

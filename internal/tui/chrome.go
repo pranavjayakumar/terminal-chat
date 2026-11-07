@@ -115,6 +115,13 @@ func (m *Model) drawHuddleBar(c *canvas, g geo) {
 	}
 	var ctls []ctl
 	if h.in {
+		// first in line to go when the bar is narrow: ⌥W and /watch remain
+		switch {
+		case m.wt.sharing:
+			ctls = append(ctls, ctl{"unpair", "cmd:/unpair", fgb(th.err)})
+		case m.wt.live != 0:
+			ctls = append(ctls, ctl{"watch " + sanitize.Line(m.users[m.wt.live].Name), "cmd:/watch", fgb(th.info)})
+		}
 		if h.talking {
 			ctls = append(ctls, ctl{"mute", "cmd:/mute", fgc(th.dim)})
 		} else {

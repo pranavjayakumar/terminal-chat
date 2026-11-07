@@ -324,7 +324,11 @@ func (m *Model) searchLines(w, h int) []string {
 
 func (m *Model) panePickLines(w, h int) []string {
 	s := &m.share
-	out := []string{fit(m.st.overlayTitle.Render(truncate("share a pane — ↑/↓ pick, Enter previews, Esc cancels", w)), w)}
+	title := "share a pane — ↑/↓ pick, Enter previews, Esc cancels"
+	if s.pair {
+		title = "stream a pane live to your huddle — ↑/↓ pick, Enter starts, Esc cancels"
+	}
+	out := []string{fit(m.st.overlayTitle.Render(truncate(title, w)), w)}
 	start, end := window(len(s.panes), s.sel, h-1)
 	for i := start; i < end; i++ {
 		p := s.panes[i]

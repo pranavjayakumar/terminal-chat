@@ -25,6 +25,7 @@ const usage = `tc — terminal team chat
   tc send <#chan|@user|@your-agent> [message...]   (reads stdin if no message)
   tc send <#chan|@user> --file path[:start[-end]] [--context N] [message...]
   tc tail <#chan>            stream a channel
+  tc watch @user             watch the pane @user streams in a huddle (/pair; joins it; Esc leaves)
   tc notify [--to #chan|@user|@me] [--on-fail] -- <cmd...>
                              run a command, then post ✓/✗, time and output tail
   tc verify @user [--github login]

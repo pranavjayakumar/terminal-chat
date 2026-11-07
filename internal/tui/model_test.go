@@ -87,7 +87,7 @@ func checkView(t *testing.T, m *Model, step string) string {
 	pl := strings.Split(plain, "\n")
 	g := m.geo()
 	switch {
-	case m.overlayShown() || m.booting() || m.mode == modeViewer || m.introShown():
+	case m.overlayShown() || m.booting() || m.mode == modeViewer || m.mode == modeWatch || m.introShown():
 		// a dialog or the loading screen covers the input
 	case g.inY >= 0 && g.boxed:
 		top, bot := -1, -1

@@ -225,6 +225,7 @@ type shareState struct {
 	scroll int // lines up from the bottom
 	ch     uint64
 	root   uint64
+	pair   bool // picking the pane /pair streams (watch.go)
 }
 
 func (m *Model) sharePane(arg string) (tea.Cmd, error) {
@@ -346,6 +347,9 @@ func (m *Model) panePickKey(key string) tea.Cmd {
 		s.sel = min(s.sel+1, len(s.panes)-1)
 	case kEnter:
 		m.mode = modeNormal
+		if s.sel < len(s.panes) && s.pair {
+			return m.startPair(s.panes[s.sel])
+		}
 		if s.sel < len(s.panes) {
 			return m.readPane(s.panes[s.sel])
 		}

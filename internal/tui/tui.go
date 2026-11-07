@@ -129,12 +129,21 @@ type Backend interface {
 	SetAgentAccess(ctx context.Context, add, remove []uint64) ([]uint64, error)
 }
 
-var _ Backend = (*client.Client)(nil)
+var (
+	_ Backend      = (*client.Client)(nil)
+	_ WatchBackend = (*client.Client)(nil)
+)
 
 // Run shows the UI until the user quits or ctx is cancelled. The caller
 // runs c.Run(ctx) separately; the UI works from the cache while offline.
 // version is this build's release tag, for the update notice.
 func Run(ctx context.Context, c *client.Client, version string) error {
+	return RunWatch(ctx, c, version, "")
+}
+
+// RunWatch is Run that watches @watch's shared pane once they stream one in
+// a huddle we can join (tc watch @user); "" is plain Run.
+func RunWatch(ctx context.Context, c *client.Client, version, watch string) error {
 	env := notify.OSEnv()
 	o := Options{Out: os.Stdout, Notifier: notify.New(env, os.Stdout), AwayAfter: awayAfter(os.Getenv("TC_AWAY_MIN")), Version: version, ExtCopy: defaultExtCopy,
 		Tmux: os.Getenv("TMUX") != "", SSH: os.Getenv("SSH_TTY") != "" || os.Getenv("SSH_CONNECTION") != "",
@@ -168,6 +177,9 @@ func Run(ctx context.Context, c *client.Client, version string) error {
 	}
 	m := New(ctx, c, o)
 	defer m.Close()
+	if watch != "" {
+		m.SetWatchTarget(watch)
+	}
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion(), tea.WithReportFocus(),
 		tea.WithContext(ctx), tea.WithOutput(os.Stdout))
 	_, err := p.Run()

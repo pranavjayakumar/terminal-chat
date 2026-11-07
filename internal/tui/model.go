@@ -41,6 +41,7 @@ const (
 	modeDisable // disable.go
 	modeSettings
 	modeAgent // agentpanel.go
+	modeWatch // watch.go: a shared pane, full screen
 )
 
 // pane is a scrollable message list: a channel (root 0) or a thread.
@@ -84,6 +85,7 @@ func (p *pane) keepView(liveH int) {
 // Model is the Bubble Tea model.
 type Model struct {
 	hud    huddleUI // voice huddles (huddle.go)
+	wt     watchUI  // pane sharing in a huddle (watch.go)
 	nt     notifyUI // notification levels, rings (notifypolicy.go)
 	opened bool     // a channel has been opened; stops the first-start auto-open
 	c      Backend
@@ -989,6 +991,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if cmd, ok := m.huddleMsg(msg); ok {
 		return m, cmd
 	}
+	if cmd, ok := m.watchMsg(msg); ok {
+		return m, cmd
+	}
 	if cmd, ok := m.agentMsg(msg); ok {
 		return m, cmd
 	}
@@ -1104,7 +1109,11 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Huddle || msg.Reset || msg.Channels {
 			m.refreshHuddle()
 		}
-		return m, tea.Batch(m.applyUpdate(client.Update(msg)), m.huddleStarted(msg.HuddleStarted), m.waitUpdate())
+		var wcmd tea.Cmd
+		if msg.Watch || msg.Huddle || msg.Reset {
+			wcmd = m.refreshWatch()
+		}
+		return m, tea.Batch(m.applyUpdate(client.Update(msg)), m.huddleStarted(msg.HuddleStarted), wcmd, m.waitUpdate())
 	case updatesClosedMsg:
 		return m, nil
 	case errMsg:
@@ -1369,6 +1378,8 @@ func (m *Model) handleKey1(k tea.KeyMsg) tea.Cmd {
 		return m.settingsKey(key)
 	case modeAgent:
 		return m.agentPanelKey(k)
+	case modeWatch:
+		return m.watchKey(key)
 	case modeViewer:
 		if key == kSelCopy {
 			if m.view.copy != "" {
@@ -1456,6 +1467,8 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 		return m.backChannel()
 	case key == kHuddle && m.active != 0:
 		return m.huddleHere()
+	case key == kWatch:
+		return m.watchKeyNormal()
 	case menuKey(key) != "" && m.menuBarShown():
 		return m.menuAction(menuKey(key))
 	case key == kCtrlEnd || (key == kEnd && empty):
@@ -1481,8 +1494,12 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 	case key == kPgDown:
 		return m.scrollBy(m.focus(), -max(m.paneHeight(m.focus())-1, 1))
 	case key == kEsc:
-		// One Esc backs out one thing: an open mic first (we're
-		// broadcasting), then a ring, then the usual chain.
+		// One Esc backs out one thing: a pane we stream first, then an
+		// open mic (we're broadcasting either way), then a ring, then the
+		// usual chain.
+		if m.unpair() {
+			return nil
+		}
 		if m.micOff() {
 			return nil
 		}
