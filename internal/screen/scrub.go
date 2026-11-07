@@ -42,12 +42,28 @@ var (
 // it masked. A private key block is masked whole, rows from its BEGIN line
 // to its END line (or the bottom of the pane).
 func Scrub(g *Grid) int {
+	var s Scrubber
+	return s.Scrub(g)
+}
+
+// Scrubber is Scrub for a stream of pictures: the patterns run only on
+// rows whose text changed since the last picture (a pane mostly scrolls or
+// sits still, and matching every row ten times a second costs).
+type Scrubber struct {
+	seen, next map[string][][2]int // row text → byte ranges to mask
+}
+
+// Scrub is the package Scrub, remembering rows for the next picture.
+func (sc *Scrubber) Scrub(g *Grid) int {
 	n := 0
 	inKey := false
+	if sc.next == nil {
+		sc.next = map[string][][2]int{}
+	}
 	for y := range g.H {
 		row := g.Row(y)
 		text, at := rowText(row)
-		if inKey || pemBegin.MatchString(text) {
+		if inKey || strings.Contains(text, "PRIVATE KEY") && pemBegin.MatchString(text) {
 			if !inKey {
 				n++
 			}
@@ -55,22 +71,37 @@ func Scrub(g *Grid) int {
 			maskCells(row, 0, len(row))
 			continue
 		}
-		for _, re := range secretRes {
-			for _, m := range re.FindAllStringSubmatchIndex(text, -1) {
-				s, e := m[0], m[1]
-				if len(m) >= 4 && m[2] >= 0 {
-					s, e = m[2], m[3]
-				}
-				if e <= s {
-					continue
-				}
-				if maskCells(row, at[s], at[e-1]+1) {
-					n++ // overlapping patterns count once
-				}
+		ranges, ok := sc.seen[text]
+		if !ok {
+			ranges = secretRanges(text)
+		}
+		sc.next[text] = ranges
+		for _, r := range ranges {
+			if maskCells(row, at[r[0]], at[r[1]-1]+1) {
+				n++ // overlapping patterns count once
 			}
 		}
 	}
+	sc.seen, sc.next = sc.next, sc.seen
+	clear(sc.next)
 	return n
+}
+
+// secretRanges lists the byte ranges of text to mask.
+func secretRanges(text string) [][2]int {
+	var out [][2]int
+	for _, re := range secretRes {
+		for _, m := range re.FindAllStringSubmatchIndex(text, -1) {
+			s, e := m[0], m[1]
+			if len(m) >= 4 && m[2] >= 0 {
+				s, e = m[2], m[3]
+			}
+			if e > s {
+				out = append(out, [2]int{s, e})
+			}
+		}
+	}
+	return out
 }
 
 // rowText is row's text with, for every byte, the cell it came from.

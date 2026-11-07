@@ -235,6 +235,7 @@ func (ps *paneState) watcherCount() int {
 func (c *Client) shareLoop(ctx context.Context, p *participation, sh *paneShare, capture Capture) {
 	defer close(sh.done)
 	var prev *screen.Grid
+	var sc screen.Scrubber
 	seen, fails := 0, 0
 	interval := shareFast
 	var refresh time.Time
@@ -280,7 +281,7 @@ func (c *Client) shareLoop(ctx context.Context, p *participation, sh *paneShare,
 		}
 		fails = 0
 		g := screen.Parse(text, screen.MaxCols, screen.MaxRows)
-		sh.scrubbed.Store(int64(screen.Scrub(g)))
+		sh.scrubbed.Store(int64(sc.Scrub(g)))
 		now := time.Now()
 		if !force && prev != nil && g.Equal(prev) {
 			interval = min(interval*2, shareSlow)

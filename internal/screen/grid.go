@@ -1,5 +1,5 @@
 // Package screen is a shared terminal pane as cells (PROTOCOL.md §14.5,
-// docs/WATCH.md): parsing a captured pane, scrubbing secrets from it, and
+// docs/VOICE.md "Pane sharing"): parsing a captured pane, scrubbing secrets from it, and
 // the key/diff update codec and chunking that carry it to viewers.
 //
 // Everything a viewer decodes is hostile input: the codec bounds every

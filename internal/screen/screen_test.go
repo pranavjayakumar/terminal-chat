@@ -262,6 +262,17 @@ func TestScrub(t *testing.T) {
 	if strings.Contains(txt, "b3BlbnNz") || strings.Contains(txt, "PRIVATE") || !strings.Contains(txt, "after") || !strings.HasPrefix(txt, "ok") {
 		t.Fatalf("key block: %q", txt)
 	}
+	// The stream's scrubber remembers rows, and still masks every picture.
+	var sc Scrubber
+	for i := range 3 {
+		g := Parse(fmt.Sprintf("line %d\r\npassword=hunter22\r\n", i%2), 40, 2)
+		if sc.Scrub(g) != 1 || strings.Contains(g.Text(), "hunter22") {
+			t.Fatalf("picture %d: %q", i, g.Text())
+		}
+	}
+	if len(sc.seen) > 2 {
+		t.Fatalf("scrubber keeps %d rows", len(sc.seen))
+	}
 	g = Parse("go test ./... ok 1.2s", 60, 1)
 	if Scrub(g) != 0 {
 		t.Fatalf("scrubbed plain output: %q", g.Text())
