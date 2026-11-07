@@ -224,7 +224,7 @@ func handshake(conn transport.Conn, codec *proto.Codec, signer ssh.Signer, invit
 	if err != nil {
 		return proto.Welcome{}, err
 	}
-	hello := proto.Hello{Client: clientName, Caps: []string{proto.CapE2E, proto.CapKeyHint, proto.CapVoice, proto.CapVoiceTCP, proto.CapAgent, proto.CapRetryAfter},
+	hello := proto.Hello{Client: clientName, Caps: []string{proto.CapE2E, proto.CapKeyHint, proto.CapVoice, proto.CapVoiceTCP, proto.CapWatch, proto.CapAgent, proto.CapRetryAfter},
 		Auth: proto.Auth{Pubkey: signer.PublicKey().Marshal(), Sig: sig, Invite: invite, Name: name}, Agent: agent}
 	if passive {
 		hello.Caps = append(hello.Caps, proto.CapPassive)

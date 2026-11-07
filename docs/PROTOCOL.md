@@ -70,7 +70,7 @@ The server key never rotates in v1; rotating means re-issuing invites.
 | 0x22 | SNAPSHOT | S→C | `{users?: [User], chans?: [Channel], msgs?: [Message], read?: {chan: seq}, groups?: [Group], devs?, revoked?, revoked_seqs?, endorse?, keys?, agents?}` (one part; `groups` §8, `devs`/`revoked`/`revoked_seqs`/`endorse` §13.2, `keys` §13.6, `agents` §15.2) |
 | 0x30 | PING | both | `{t: i64}` |
 | 0x31 | PONG | both | `{t: i64}` (echo) |
-| 0x40 | VOICE | both | one voice datagram (§14.3 layout, raw bytes, **not** MessagePack) on a session without datagrams; cap `voice_tcp`, §14.4 |
+| 0x40 | VOICE | both | one voice or screen datagram (§14.3 layout, raw bytes, **not** MessagePack) on a session without datagrams; cap `voice_tcp`, §14.4 (screen kinds: cap `watch1`, §14.5) |
 | 0x7F | BYE | both | `{code: str, msg: str, keys?: [str]}` then close (`keys`: §4.1 key hint) |
 
 Effective caps = intersection of HELLO and WELCOME caps, except the server-advertised ones:
@@ -78,7 +78,8 @@ a client never sends those in HELLO and they apply whenever WELCOME has them (`h
 `groups`, `remind`, `team_invites`, `invite_manage`, `key_invites` and `member_invites` §4.1,
 `key_endorse` §13.2, `agent_key_proof` §15.2, `incarnation` §6, `blob1` §16; `key_hint` §4.1 goes the other way, HELLO only;
 `passive` §4.3 echoes a HELLO request; `retry_after` §5 is an ordinary negotiated cap).
-Protocol version is the ALPN.
+Protocol version is the ALPN. (`voice_tcp` §14.4 and
+`watch1` §14.5 are advertised by both sides and need `voice1` too.)
 
 ## 4. Handshake & authentication
 
@@ -609,8 +610,10 @@ All sizes are UTF-8 bytes.
   agent, counted apart so an agent can't use up its owner's; one more → BYE
   `too_many_sessions` after authentication.
 - `huddle.join` takes from the shared write-op bucket; `huddle.leave` doesn't. Datagrams have
-  their own per-session bucket (burst 100, refill 60/s). Voice limits (datagram size, relay queue,
-  huddle sizes) are in §14.
+  their own per-session bucket (burst 100, refill 60/s), and a shared pane's screen datagrams
+  another (burst 96, refill 48/s, §14.5). `huddle.share`/`huddle.watch` with `on: true` take from
+  the write-op bucket; with `false` they don't. Voice limits (datagram size, relay queue, huddle
+  sizes) are in §14.
 - Keepalive: the client sends PING after 20 s without sending anything. Either
   side closes after 45 s without receiving a frame. QUIC `MaxIdleTimeout` = 60 s.
   While a session is in a huddle the server also PINGs it every 2 s and ends its participation
@@ -1584,7 +1587,7 @@ whether or not their build can play audio (rosters are useful on their own).
 
 ```
 EPHEMERAL {kind: "huddle", chan: u64, parts: [Part]}     S→C only
-Part = {user: u64, src: u32, dev?: bin16, stream?: bin16}
+Part = {user: u64, src: u32, dev?: bin16, stream?: bin16, live?: bool, watch?: bool}   (live, watch: §14.5)
 ```
 
 The full roster of `chan`'s huddle, in join order; `parts` absent or empty = the huddle ended
@@ -1624,7 +1627,8 @@ off len field
 ```
 
 - Total size ≤ 512 bytes; Opus packets are 20 ms, 48 kHz, mono.
-- Other `kind` values are reserved: servers drop them, receivers ignore them.
+- Kinds 0x03 and 0x04 are a shared pane's chunks (cap `watch1`, §14.5): relayed by its rules, never
+  to an audio decoder. Other `kind` values are reserved: servers drop them, receivers ignore them.
 - **Server relay**, per datagram from a session: drop it unless the session is in a huddle,
   the header parses, `src` is the session's own, the kind is 0x02 in an encrypted channel and
   0x01 otherwise, the size is within limits and the session's token bucket (burst 100, refill
@@ -1706,6 +1710,117 @@ VOICE (0x40) payload = one datagram, byte for byte as in §14.3 (≤ 512 bytes)
   but the datagram bucket, no RES).
 - Clients without `voice_tcp`, or talking to a server without it, behave as before: no voice on
   TCP, `huddle.join` → `bad_request` "voice needs UDP". Old peers skip frame type 0x40 (§3).
+
+### 14.5 Pane sharing (cap `watch1`)
+
+While in a huddle, one participant may stream a terminal pane, read-only, to the participants who
+ask to watch it (design: docs/VOICE.md "Pane sharing"). Everything here exists only in sessions
+whose effective caps include `watch1` **and** `voice1` (`watch1` without `voice1` is not in
+effect): without it the server answers the ops with `unknown_op` and never relays screen kinds to
+or from the session. Servers advertise it unconditionally; clients advertise it whether or not
+they can capture a pane (anyone can watch).
+
+| op | args | data |
+|---|---|---|
+| `huddle.share` | `{on: bool}` | `{}` |
+| `huddle.watch` | `{on: bool}` | `{}` |
+
+- **huddle.share** `on` makes this session's participation the huddle's **live** one (the
+  streamer); `false` ends that. At most one per huddle: `on` while another participant is live →
+  `conflict`. Not in a huddle: `on` → `bad_request`, `false` → ok (no-op). Already in the asked
+  state → ok, nothing changes.
+- **huddle.watch** `on` asks for the live participant's screen datagrams (it may come before
+  anyone is live, and stays across streams until `false` or the participation ends). Not in a
+  huddle: `on` → `bad_request`, `false` → ok.
+- Both with `on: true` count as write ops for rate limits (§9); with `false` they never do, so
+  stopping a stream or a view is never refused.
+- Both end with the participation (§14.1: leave, disconnect, membership, revoke, liveness).
+- A change sends the huddle roster (§14.2) as any roster change does. `Part` gains two optional
+  flags, omitted when false:
+
+  ```
+  Part = {user, src, dev?, stream?, live?: bool, watch?: bool}
+  ```
+
+  `live`: the participant is streaming; `watch`: it asked to watch. Streamers use `watch` to send
+  a keyframe as soon as someone new watches; viewers use `live` to know who streams and under
+  which `src`. Clients without `watch1` ignore both fields (§3).
+
+**Screen datagrams.** Kinds 0x03 (plaintext channel) and 0x04 (encrypted channel) use §14.3's
+header byte for byte (`flags` 0 on send, ignored on receive; `seq` its own counter per
+participation, 0, 1, 2, …, separate from audio's; for 0x04 `epoch` and `ts` as in §14.3). They
+travel exactly like voice: QUIC datagrams, or VOICE frames (§14.4) on a session without datagrams,
+≤ 512 bytes. The payload (plaintext for 0x03, the AEAD plaintext for 0x04) is one **chunk**:
+
+```
+off len field
+0   4   update   update id: increases for the sender's whole participation (never reset when a
+                 stream stops and starts again); a resend of an update gets a new one
+4   1   index    0 … count−1
+5   1   count    1 … 255: chunks in this update
+6   n   data     1–472 bytes; every chunk but the last carries exactly 472
+```
+
+- **Server relay**, per screen datagram: drop it unless the sender's session has `watch1`, is in
+  a huddle and is that huddle's **live** participant, the header parses, `src` is its own, the
+  kind is 0x04 in an encrypted channel and 0x03 otherwise, the size is within limits and the
+  session's **screen** token bucket (burst 96, refill 48/s; apart from the voice bucket) has a
+  token. Otherwise forward the unchanged bytes to every other participant that asked to watch
+  (only those), never back to the sender. Per receiving session at most 128 screen datagrams wait
+  (apart from voice's 64), more are dropped; queued ones are discarded when the stream stops, the
+  viewer stops watching or either participation ends. On a stream session at most 64 wait, each
+  for at most 2 s, written after chat and after voice, and none is queued while 64 KiB or more of
+  other output waits or a write has been blocked 100 ms (§14.4's rules otherwise). The server
+  never parses past byte 10 and stores nothing.
+- **Encrypted chunks** (0x04) use the huddle's frame keys (§14.3) with a key of their own, so
+  their `seq` (the nonce) never meets the audio stream's:
+
+  ```
+  ssk   = HKDF-SHA256(vk, salt = none, info "tc-screen-send-v1" || dev || stream)
+  nonce = 0x00000000 || u64be(seq)
+  ct    = ChaCha20-Poly1305-Seal(ssk, nonce, chunk, AD = datagram[0:18])
+  ```
+
+  Senders seal under the newest verified, fresh epoch exactly as for audio (§14.3: stop while it
+  isn't, rotate, resume). Receivers apply every §14.3 receiver rule (kind matches the channel,
+  so no plaintext chunk in an encrypted channel; epoch window; roster and membership; verified,
+  unrevoked `dev`; AEAD; `|ts − now| ≤ 60 s`; a 64-entry replay window per `src`, kept apart
+  from that `src`'s audio window, since the two `seq`s are independent, and kept for the whole
+  participation: not reset when a stream restarts or a view reopens) and also drop
+  chunks whose `src` isn't the roster's `live` participant they watch.
+- **Updates.** Reassembled chunks form one update: a raw DEFLATE (RFC 1951) stream of at most
+  255 × 472 bytes, inflating to at most 2 MiB:
+
+  ```
+  u8  version (1)   u8 type (1 keyframe, 2 diff)   u32 key id   u32 diff number (0 in a keyframe)
+  u16 cols (1–400)  u16 rows (1–200)   u8 label length (≤ 64)   label (UTF-8)
+  u16 span count (≤ rows)   spans, rows strictly increasing
+  span = u16 row | u16 x | u16 cells (1 … cols − x) | u16 run count (≤ cells) | runs
+  run  = u8 attr | u24 fg if attr & 0x20 | u24 bg if attr & 0x40 | u16 text length | text (UTF-8)
+  attr bits: 0x01 bold, 0x02 faint, 0x04 italic, 0x08 underline, 0x10 reverse, 0x20 fg set,
+             0x40 bg set (0x80 must be 0)
+  ```
+
+  A keyframe is the whole grid (rows it omits are blank) and starts key id `k`; key ids, like
+  update ids and `seq`, keep increasing for the sender's whole participation, across streams.
+  Diffs of a keyframe are numbered from 1. An update with bytes after its last span, an unknown
+  `version` or any field out of range is malformed; a new update format therefore needs a new cap
+  (`watch2`), not just a version byte. A run's text is at most 32 bytes per cell of its span (senders replace a longer grapheme with U+FFFD).
+  A diff `n` of key `k` lists, per row that differs from keyframe `k`, the cells from the
+  first to the last difference, never splitting a wide character; diffs are cumulative
+  against their keyframe, never chained, so a lost diff costs nothing once a later one arrives.
+  A run's text is laid out from the span's `x` for the cells it fills (grapheme widths as a
+  terminal measures them), cut at the span's end; cells no text reaches are blank. Receivers
+  apply a keyframe newer than the newest one they applied from that `src` (also after its stream
+  restarts), and a diff only for their keyframe with a
+  number above the last one applied; anything else is ignored, and a malformed update dropped.
+  **Every cell's text is untrusted**: receivers sanitize it (§10) before laying it out, so no
+  escape sequence or control character can reach a terminal; senders do too.
+- **Pacing (sender's choice, not wire contract):** tc captures at most 10 times a second while
+  the pane changes, backing off to once a second when it doesn't, sends nothing while nobody
+  watches, a keyframe when someone starts watching, the current state again 1 s after the last
+  change and every 5 s after; at most 40 chunks a second (burst 80).
+- Sharing a pane is read-only: there is no op or datagram that sends input to the streamer.
 
 ## 15. Personal agents (cap `agent1`)
 

@@ -27,6 +27,7 @@ const usage = `tc — terminal team chat
   tc send <#chan|@user> --attach file [--attach file2] [caption...]
                              send files and images (sealed per file; end-to-end in encrypted channels)
   tc tail <#chan>            stream a channel
+  tc watch @user             watch the pane @user streams in a huddle (/pair; joins it; Esc leaves)
   tc notify [--to #chan|@user|@me] [--on-fail] -- <cmd...>
                              run a command, then post ✓/✗, time and output tail
   tc verify @user [--github login]

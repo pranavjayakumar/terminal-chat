@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/skailama/tc/internal/background"
@@ -12,7 +13,18 @@ import (
 	"github.com/skailama/tc/internal/tui"
 )
 
-func cmdChat() error {
+func cmdChat() error { return openChat("") }
+
+// cmdWatch is tc watch @user: chat, opening user's shared pane as soon as
+// they stream one in a huddle of ours (joining that huddle).
+func cmdWatch(args []string) error {
+	if len(args) != 1 || strings.TrimPrefix(args[0], "@") == "" {
+		return errUsage
+	}
+	return openChat(args[0])
+}
+
+func openChat(watch string) error {
 	c, err := client.Open(client.DefaultHome())
 	if errors.Is(err, client.ErrNotLoggedIn) {
 		fmt.Fprint(os.Stderr, "Not logged in. Ask an admin for an invite, then:\n\n  tc join <invite>\n\n"+
@@ -34,7 +46,7 @@ func cmdChat() error {
 		c.Close()
 		release()
 	}()
-	return tui.Run(ctx, c, version)
+	return tui.RunWatch(ctx, c, version, watch)
 }
 
 // holdUI marks a chat window open, which makes tc background let go of its

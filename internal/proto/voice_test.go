@@ -86,14 +86,22 @@ func FuzzParseDatagram(f *testing.F) {
 	f.Add(Datagram{Kind: DgAudio, Src: 1, Payload: []byte{1, 2}}.Marshal())
 	f.Add(Datagram{Kind: DgAudioEnc, Src: 1, Epoch: 2, Payload: make([]byte, 20)}.Marshal())
 	f.Add([]byte{})
+	f.Add(Datagram{Kind: DgScreen, Src: 1, Payload: []byte{1, 2}}.Marshal())
+	f.Add(Datagram{Kind: DgScreenEnc, Src: 1, Epoch: 2, Payload: make([]byte, 20)}.Marshal())
 	f.Fuzz(func(t *testing.T, b []byte) {
-		d, err := ParseDatagram(b)
 		k, src, rerr := RelayHeader(b)
-		if (err == nil) != (rerr == nil) {
-			t.Fatal("ParseDatagram and RelayHeader disagree")
+		d, err := ParseDatagram(b)
+		sd, serr := ParseScreenDatagram(b)
+		// The relay accepts exactly what one of the two parsers accepts,
+		// and never both: a screen chunk is never audio.
+		if (rerr == nil) != (err == nil || serr == nil) || err == nil && serr == nil {
+			t.Fatalf("parsers disagree: relay %v audio %v screen %v", rerr, err, serr)
 		}
-		if err != nil {
+		if rerr != nil {
 			return
+		}
+		if serr == nil {
+			d = sd
 		}
 		if k != d.Kind || src != d.Src {
 			t.Fatal("header mismatch")

@@ -17,3 +17,5 @@ type tamperState struct{}
 func (*tamperState) welcome(uint64, *proto.Welcome) {}
 
 func (*tamperState) out(_ uint64, f outFrame) []outFrame { return []outFrame{f} }
+
+func (*tamperState) datagram(_ uint64, b []byte) [][]byte { return [][]byte{b} }

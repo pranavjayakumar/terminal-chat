@@ -34,7 +34,8 @@ FUZZ := \
 	sanitize:FuzzSanitize notify:FuzzOSCSeq \
 	e2ecrypto:FuzzParseEnc e2ecrypto:FuzzDecrypt e2ecrypto:FuzzUnpad e2ecrypto:FuzzOpenBoxes e2ecrypto:FuzzOpenFile media:FuzzThumbnail \
 	identity:FuzzDeviceCert identity:FuzzKeyEndorse identity:FuzzDeviceRevoke identity:FuzzEpochBundle identity:FuzzInviteKey \
-	client:FuzzPlain client:FuzzKeyShare client:FuzzGitHubKeys
+	client:FuzzPlain client:FuzzKeyShare client:FuzzGitHubKeys \
+	screen:FuzzDecode screen:FuzzRoundTrip screen:FuzzReassemble
 
 fuzz:
 	@set -e; for t in $(FUZZ); do \

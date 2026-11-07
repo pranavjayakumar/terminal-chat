@@ -42,6 +42,18 @@ type Tamper struct {
 	// a rewrite, or several (inject; or hold frames back and return them
 	// later to reorder).
 	Out func(user uint64, f TamperFrame) []TamperFrame
+	// Datagram sees every relayed voice or screen datagram about to go to a
+	// session of user (as a QUIC datagram or a VOICE frame) and returns
+	// what to send instead, like Out.
+	Datagram func(user uint64, b []byte) [][]byte
+}
+
+func (t *tamperState) datagram(user uint64, b []byte) [][]byte {
+	h := t.p.Load()
+	if h == nil || h.Datagram == nil {
+		return [][]byte{b}
+	}
+	return h.Datagram(user, b)
 }
 
 type tamperState struct{ p atomic.Pointer[Tamper] }

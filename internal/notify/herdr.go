@@ -112,6 +112,16 @@ func (h *HerdrCLI) ReadPane(ctx context.Context, id string, n int) (string, erro
 	return ParseRead(b), nil
 }
 
+// CapturePane returns what a pane shows now (its visible rows) with SGR
+// colors, for streaming it (/pair). The text is untrusted terminal output.
+func (h *HerdrCLI) CapturePane(ctx context.Context, id string) (string, error) {
+	b, err := h.out(ctx, "pane", "read", id, "--source", "visible", "--format", "ansi")
+	if err != nil {
+		return "", err
+	}
+	return ParseRead(b), nil
+}
+
 // ParseRead accepts both the JSON envelope ({"result":{"text":...}}) and
 // the plain text herdr 0.9 prints when stdout isn't a terminal.
 func ParseRead(b []byte) string {

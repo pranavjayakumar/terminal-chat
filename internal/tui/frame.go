@@ -37,7 +37,11 @@ func (m *Model) frame() *canvas {
 		m.drawThreadPane(c, g)
 	}
 	m.drawDesktop(c, g)
-	if g.split && !m.thread.open() {
+	switch {
+	case m.mode == modeWatch:
+		// The shared pane takes every row above the status bar: no input
+		// (keys go to the viewer) over its last rows.
+	case g.split && !m.thread.open():
 		// The pane is sliding out: what follows stays left of it.
 		old := c.setClip(rect{0, 0, g.RX, m.h})
 		m.drawInput(c, g)
@@ -45,7 +49,7 @@ func (m *Model) frame() *canvas {
 		m.drawPicker(c, g)
 		m.drawMsgMenu(c, g)
 		c.setClip(old)
-	} else {
+	default:
 		m.drawInput(c, g)
 		m.drawPopup(c, g)
 		m.drawPicker(c, g)
@@ -65,6 +69,7 @@ func (m *Model) frame() *canvas {
 		m.drawBoot(c)
 	}
 	m.drawIntro(c)
+	m.drawLive(c) // we stream a pane: never hidden, whatever is open
 	if p := m.fx.themePrev; p != nil && m.running(m.fx.themeAt, dTheme) && p.w == c.w && p.h == c.h {
 		k := ease(m.progress(m.fx.themeAt, dTheme))
 		old := m.fx.skinSwap && k < 0.5 // a skin change keeps the old chrome until halfway
@@ -102,6 +107,10 @@ func (m *Model) drawMain(c *canvas, g geo) {
 	th := m.st.th
 	if m.mode == modeViewer && m.view.wide {
 		m.drawLines(c, 0, 0, m.w, g.statusY, m.viewerLines(m.w, g.statusY))
+		return
+	}
+	if m.mode == modeWatch {
+		m.drawWatch(c, g)
 		return
 	}
 	// header

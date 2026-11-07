@@ -482,6 +482,9 @@ type Update struct {
 	// Failed lists outbox messages that the server permanently rejected.
 	Failed []Message
 	Huddle bool // a huddle roster or our participation changed
+	// Watch: a shared pane we watch has a new picture, or our own pane
+	// stream started, stopped or changed (watch.go).
+	Watch bool
 	// HuddleStarted lists huddles that just started live (not the rosters
 	// a sync or chan.join hands us), by someone else: rings, popups.
 	HuddleStarted []HuddleStart
@@ -511,7 +514,7 @@ func (u *Update) msgs(ch uint64) {
 }
 
 func (u Update) empty() bool {
-	return !u.Status && !u.Channels && !u.Users && !u.Presence && !u.Reset && !u.Huddle && !u.Prefs && !u.Agents && len(u.HuddleStarted) == 0 && len(u.AgentStatus) == 0 &&
+	return !u.Status && !u.Channels && !u.Users && !u.Presence && !u.Reset && !u.Huddle && !u.Watch && !u.Prefs && !u.Agents && len(u.HuddleStarted) == 0 && len(u.AgentStatus) == 0 &&
 		len(u.Msgs) == 0 && len(u.Typing) == 0 && len(u.New) == 0 && len(u.Failed) == 0 && len(u.Revoked) == 0 && len(u.NewOwn) == 0
 }
 
@@ -522,6 +525,7 @@ func (u Update) merge(v Update) Update {
 	u.Presence = u.Presence || v.Presence
 	u.Reset = u.Reset || v.Reset
 	u.Huddle = u.Huddle || v.Huddle
+	u.Watch = u.Watch || v.Watch
 	u.Prefs = u.Prefs || v.Prefs
 	u.Agents = u.Agents || v.Agents
 	for k := range v.AgentStatus {

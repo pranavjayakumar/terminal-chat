@@ -115,6 +115,13 @@ func (m *Model) drawHuddleBar(c *canvas, g geo) {
 	}
 	var ctls []ctl
 	if h.in {
+		// first in line to go when the bar is narrow: ⌥W and /watch remain
+		switch {
+		case m.wt.sharing:
+			ctls = append(ctls, ctl{"unpair", "cmd:/unpair", fgb(th.err)})
+		case m.wt.live != 0:
+			ctls = append(ctls, ctl{"watch " + m.userName(m.wt.live), "cmd:/watch", fgb(th.info)})
+		}
 		if h.talking {
 			ctls = append(ctls, ctl{"mute", "cmd:/mute", fgc(th.dim)})
 		} else {
@@ -124,23 +131,6 @@ func (m *Model) drawHuddleBar(c *canvas, g geo) {
 	} else {
 		ctls = append(ctls, ctl{"join", "cmd:/huddle", fgb(th.info)})
 	}
-	leftW := 4 // ▎ ♪
-	if h.in {
-		leftW += 8 // ● live / ⊘ muted
-	}
-	right := 1
-	for _, k := range ctls {
-		right += strWidth(k.t) + 2
-	}
-	for len(ctls) > 0 && leftW+right > w {
-		right -= strWidth(ctls[0].t) + 2 // talk/mute goes first, then leave
-		ctls = ctls[1:]
-	}
-	rx := x0 + w - right + 2
-	for _, k := range ctls {
-		rx = c.put(rx, y, k.t, k.st, k.act) + 2
-	}
-	limit := x0 + w - right
 	c.put(x0, y, "▎", fgc(th.info), "")
 	x := c.put(x0+2, y, m.icon(icHuddle), fgc(th.info), "")
 	if w >= 34 {
@@ -174,6 +164,24 @@ func (m *Model) drawHuddleBar(c *canvas, g geo) {
 		// the same width either way, so nobody's meter shifts on a toggle
 		x += 1 + max(strWidth(m.icon(icMuted)+" muted"), strWidth(m.icon(icMic)+" live"))
 	}
+	// Controls on the right, after the fixed left part is drawn: they go
+	// (from the first) until they fit beside it, never over it.
+	right := 1
+	for _, k := range ctls {
+		right += strWidth(k.t) + 2
+	}
+	for len(ctls) > 0 && x+2+right > x0+w {
+		right -= strWidth(ctls[0].t) + 2
+		ctls = ctls[1:]
+	}
+	if len(ctls) == 0 {
+		right = 0
+	}
+	rx := x0 + w - right + 2
+	for _, k := range ctls {
+		rx = c.put(rx, y, k.t, k.st, k.act) + 2
+	}
+	limit := x0 + w - right
 	x += 2
 	who := h.hereWho
 	if h.in {

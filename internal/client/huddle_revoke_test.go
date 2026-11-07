@@ -28,7 +28,7 @@ func TestHuddleKeysRevokeOwed(t *testing.T) {
 	})
 
 	k := &huddleKeys{c: d.c, sid: testSID(), ch: dm, me: alice, dev: d.me.ID,
-		parts: map[uint32]proto.Part{}, cache: map[[2]uint32]cachedKey{}}
+		parts: map[uint32]proto.Part{}, cache: map[[3]uint32]cachedKey{}}
 	var stream [e2ecrypto.VoiceStreamSize]byte
 	k.setParts([]proto.Part{{Src: 7, User: alice, Dev: laptop.dev.ID[:], Stream: stream[:]},
 		{Src: 8, User: bob, Dev: d.b1.dev.ID[:], Stream: stream[:]}})

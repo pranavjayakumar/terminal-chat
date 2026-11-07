@@ -77,7 +77,27 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
   `♪ huddle m:ss  you ⣀⡠⠔⠊⢁ ● live  bob ⣀⣀ …  mute leave` (in it; `⊘ muted` while the mic is closed) or
   `join`. Meters are a braille line (one dot per sample, two per cell): yours rolls over 10 samples, others'
   over 4, on the animation tick while you are in the huddle. Voice reports who is talking, not how loud,
-  so a meter moves while that person talks and lies on the floor otherwise.
+  so a meter moves while that person talks and lies on the floor otherwise. While someone in your huddle
+  streams a pane the bar's first control is `watch @bob` (`unpair` while it is you), and a notice
+  says `@bob is streaming a pane · ⌥W watch` once. Controls drop (first one first) rather than overlap
+  the bar's left part.
+- Pane sharing (docs/VOICE.md "Pane sharing"): `/pair [pane]` streams a herdr pane, read-only, to your
+  huddle (no argument: the only other pane in your tab, else a picker; never tc's own pane); without
+  herdr (`HERDR_PANE_ID` unset) it says so. While you stream, a red `● LIVE build · 2 watching · 1 masked
+  · Esc stops` banner sits at the top right over everything (dialogs, the viewer, tiny panes: it shortens
+  to `● LIVE`, and to 8 columns when row 0 is the input; it says `/unpair` instead of `Esc stops` where
+  Esc would close something else first; clicking it stops); `Esc` on the chat or `/unpair` stops at once
+  (before the mic), also while `/pair` is still starting. If the pane goes away the stream stops and says
+  why. `/watch [@user]`, `⌥W` or the bar's `watch` opens the shared pane full screen; when that person
+  streams in another huddle than yours, the first `/watch` says so and only a second one leaves yours
+  ("left #a's huddle to watch @bob"). `tc watch @user` does the same from the shell: a sticky `waiting
+  for @bob to share a pane… Esc cancels` until they go live (30 s at most). It never opens over a dialog
+  (a notice says `⌥W` opens it). The viewer: a title row (`🔒` when the huddle is encrypted, who, `live`
+  or `ended`, then the pane's label as room allows), then the cells as the streamer sees them, sanitized,
+  over every row down to the status bar (no input box); it follows the pane's bottom (its prompt) until
+  you pan up; `←→↑↓`/`hjkl`/PgUp/PgDn pan, `End`/`G` follow again, `Home` the top-left, `y` copies the
+  text, `Esc` (or `⌥W`, `q`) leaves and drops the picture. When the stream stops the last picture stays,
+  marked `ended`.
 - Startup: a short logo intro while tc connects (see Skins › Intro).
 
 ## Skins
@@ -228,6 +248,7 @@ bottom hint falls back to `←↑↓→ move · Tab category · esc` (its previe
 | `Alt-Shift-↑/↓` | previous / next unread channel |
 | `Ctrl-6` (`Ctrl-^`) | back to the channel open before this one (again: forth; vim's alternate file); also the palette's `Previous channel` |
 | `Alt-H` | leave the open channel's huddle when in it, else join it (switching from one elsewhere, like `/huddle`); any skin |
+| `Alt-W` | watch the pane someone streams in your huddle (`/watch`); in the viewer: leave |
 | `Alt-M` (`⌥M`; macOS: Option as Meta) | mute the open channel (`/notify off`), or unmute it (back to the default level, mentions when that is off); the notice says `⌥M undoes` for the open channel (`⌥M on its row undoes` from the palette, `click unmute to undo` from a sidebar click on another one); in the palette it acts on the highlighted channel or DM row, or on the open channel from the `Mute #x` / `Unmute #x` row, and does nothing on other rows. A muted channel's palette row drops `N new` (mentions still show), as the sidebar does. Keysheet: App |
 | `PgUp/PgDn`, mouse wheel | scroll history (fetches older via History at top) |
 | `↑` on empty input | select messages mode (↑/↓ moves selection) |
@@ -289,11 +310,11 @@ a click picks a row. It fades and rises in unless animations are off, and is nev
 - The popup follows edits, not cursor moves: moving the cursor (←/→, ↑/↓ in a multi-line draft, Home/End)
   hides it and never opens it, so those keys and `Enter` keep their usual meaning. It also doesn't follow a
   draft into another channel or thread.
-- `Esc` closes it without touching the input; it stays closed until the input changes. `Tab` reopens it, completing at once when there is a single match. `Esc` order: popup, then the
-  open mic, then a ring, then the usual chain.
+- `Esc` closes it without touching the input; it stays closed until the input changes. `Tab` reopens it, completing at once when there is a single match. `Esc` order: popup, then a
+  pane you stream (`/pair`), then the open mic, then a ring, then the usual chain.
 - Pastes and multi-rune bursts never open it, so pasted text is sent by the first `Enter`. `//text`, text
   being edited (`e`) and plain messages never get the command menu.
-- Admin-only commands are hidden from non-admins; `/talk`, `/mute` and `/leave-huddle` are hidden in builds
+- Admin-only commands are hidden from non-admins; `/talk`, `/mute`, `/leave-huddle`, `/pair`, `/unpair` and `/watch` are hidden in builds
   without voice (`/huddle` stays: it explains how to get voice).
 - The command list and `/help` come from one table (`commandTable`, internal/tui/commands.go).
 

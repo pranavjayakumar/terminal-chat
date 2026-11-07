@@ -68,7 +68,7 @@ func TestHuddleKeys_BreakBlockedNeverClearsWhenFreshAgain(t *testing.T) {
 	d.c.mu.Unlock()
 
 	k := &huddleKeys{c: d.c, sid: testSID(), ch: dm, me: alice, dev: d.me.ID,
-		parts: map[uint32]proto.Part{}, cache: map[[2]uint32]cachedKey{}}
+		parts: map[uint32]proto.Part{}, cache: map[[3]uint32]cachedKey{}}
 	_, _ = rand.Read(k.stream[:])
 	p := &participation{ch: dm, src: 1, sess: s, keys: k}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -155,7 +155,7 @@ func TestHuddle_BreakStaleWatcherLeavesNewHuddle(t *testing.T) {
 
 	// p2: the huddle the user switched to, now current.
 	k := &huddleKeys{c: d.c, sid: testSID(), ch: dm, me: alice, dev: d.me.ID,
-		parts: map[uint32]proto.Part{}, cache: map[[2]uint32]cachedKey{}}
+		parts: map[uint32]proto.Part{}, cache: map[[3]uint32]cachedKey{}}
 	var stream [e2ecrypto.VoiceStreamSize]byte
 	k.stream = stream
 	ctx2, cancel2 := context.WithCancel(context.Background())
@@ -217,7 +217,7 @@ func TestHuddleKeys_BreakGraceOnFirstHeadRead(t *testing.T) {
 
 	// A fresh join, long after the rotation.
 	k := &huddleKeys{c: d.c, sid: testSID(), ch: dm, me: alice, dev: d.me.ID,
-		parts: map[uint32]proto.Part{}, cache: map[[2]uint32]cachedKey{}}
+		parts: map[uint32]proto.Part{}, cache: map[[3]uint32]cachedKey{}}
 	var stream [e2ecrypto.VoiceStreamSize]byte
 	k.setParts([]proto.Part{{Src: 7, User: bob, Dev: d.b1.dev.ID[:], Stream: stream[:]}})
 	k.prime()

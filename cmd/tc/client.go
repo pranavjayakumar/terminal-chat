@@ -45,6 +45,8 @@ func runClient(cmd string, args []string) error {
 		return cmdAgent(args)
 	case "mcp":
 		return cmdMCP(args)
+	case "watch":
+		return cmdWatch(args)
 	}
 	return errUsage
 }

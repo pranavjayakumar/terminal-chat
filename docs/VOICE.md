@@ -15,7 +15,7 @@ since. Wire format: PROTOCOL.md §14 (caps `voice1`, `voice_tcp`).
 - The default `tc` stays a static `CGO_ENABLED=0` binary. Audio needs C (libopus, an audio
   device layer), so it lives behind the build tag `voice`; everything else (server relay,
   protocol, huddle state, TUI indicator) is pure Go and always built.
-- Non-goals for v1: video, screen share, recording, server-side mixing, PSTN, more than 16
+- Non-goals for v1: video, screen share as video (a terminal pane as cells is "Pane sharing" below), recording, server-side mixing, PSTN, more than 16
   people in one huddle, per-sender signatures on frames.
 
 ## Huddle model
@@ -185,6 +185,10 @@ exactly like public-channel text. The TUI marks encrypted huddles with the lock 
 | per-receiver relay queue | 64 datagrams; full → drop newest |
 | per-receiver VOICE frame queue (TCP) | 8 frames, ≤ 150 ms old; chat first; none while ≥ 64 KiB of output waits or a write is stuck 100 ms |
 | client send queue | 16 frames ≤ 200 ms old (QUIC); 4 frames ≤ 60 ms old (TCP) |
+| shared panes per huddle | 1 (`huddle.share` → `conflict`) |
+| screen datagrams, per sender | own bucket: burst 96, refill 48/s (client: burst 80, 40/s) |
+| per-receiver screen queue | 128 datagrams (QUIC); 64 VOICE frames ≤ 2 s old, after chat and voice (TCP) |
+| one update | ≤ 255 chunks × 472 B compressed, ≤ 2 MiB inflated, ≤ 400×200 cells |
 
 ## UX (TUI + herdr)
 
@@ -321,6 +325,58 @@ Choice: **miniaudio via `github.com/gen2brain/malgo`** for capture/playback, **l
   `tc version` prints `(voice)` for it. CI builds and tests `-tags voice` on Ubuntu and macOS
   and runs the static release build for the runner's target on every push.
 
+## Pane sharing (cap `watch1`, `tc watch`)
+
+While in a huddle, one participant streams a terminal pane to the others, read-only: their Claude
+Code, a build, NetHack. Wire format: PROTOCOL.md §14.5. UX: docs/TUI.md ("Pane sharing").
+
+- **Cells, not video.** The streamer captures its herdr pane (`herdr pane read <id> --source
+  visible --format ansi`), parses it into a grid of cells (text + SGR colors and attributes; every
+  other escape sequence and control character dropped, text sanitized), masks secrets, and sends a
+  **keyframe** (the whole grid, deflate-compressed) then **cumulative diffs** against it: per row
+  that differs from the keyframe, the cells from the first to the last difference. A diff is never
+  relative to the previous diff, so a lost one costs nothing once the next arrives; only a lost
+  keyframe makes a viewer wait. A new keyframe goes out when the diff would be over half the
+  keyframe's size, the pane's size changes, or someone starts watching (the roster's `watch` flag).
+  Measured on a busy, full-width colored 160×50 pane: keyframe 1.5 KB (4 chunks), one-cell change
+  30 B; parse 0.36 ms, scrub 0.08 ms (rows already seen are remembered), encode 0.15 ms per picture.
+- **Pacing.** Up to 10 pictures a second while the pane changes, halving to one a second while it
+  doesn't; nothing captured or sent while nobody watches. The current state is sent again 1 s after
+  the last change and then every 5 s, so a viewer that lost a chunk catches up. At most 40 chunks a
+  second (burst 80) from the client; the server's own bucket is 48/s (burst 96), apart from voice's.
+  The capture is a `herdr` CLI call (~20 ms here), so a streaming client spends up to ~0.2 s of
+  CPU-wall per second at full rate, and ~20 ms per second when idle.
+- **Transport.** Screen datagrams (kinds 0x03/0x04) ride the huddle's path: QUIC datagrams, or VOICE
+  frames on the TCP fallback, each ≤ 512 bytes; an update is split into chunks of 472 bytes (at
+  most 255). The relay treats them like voice but with their own token bucket and queue (a
+  keyframe's burst never crowds out audio), only from the huddle's live participant, only to
+  participants that asked to watch, and on TCP behind chat and voice (≤ 64 queued, ≤ 2 s old). On the
+  TCP fallback the sender waits briefly for the stream instead of dropping a chunk (a lost chunk
+  loses an update, a late one doesn't).
+- **E2E.** In an encrypted channel chunks are sealed with the huddle's frame keys: the same `vk` as
+  voice, a sender key of its own (`ssk = HKDF(vk, "tc-screen-send-v1" || dev || stream)`) so screen
+  and audio nonces never meet, the header as AD, every receiver check voice has (epoch window,
+  roster, verified device, ±60 s `ts`, 64-entry replay window), and only from the `live` `src`. The
+  server sees who streams and who watches, and chunk sizes and timing, never a cell.
+- **One stream per huddle** (`huddle.share` → `conflict` for a second). It ends with `/unpair`, `Esc`,
+  leaving the huddle, the participation ending for any reason, or the pane going away (three failed
+  captures in a row).
+- **Secrets.** Before encoding, logical lines (rows joined across soft wraps, so a wrapped token is
+  caught and masked on every row) are scrubbed (`internal/screen/scrub.go`): AWS keys, GitHub,
+  GitLab, Slack, OpenAI/Anthropic, Stripe, Google and npm tokens, JWTs, tc webhook URLs, URL
+  passwords, `Authorization: Bearer …`, `password=`/`token:`-style assignments, and whole private key
+  blocks become `•` (also the base64 rows above an END line whose BEGIN scrolled off). The pane's label
+  (often the running command) is scrubbed too. Pattern-based, so best effort: the LIVE banner counts what it hid, and is the
+  real safeguard (you see that you're streaming, always).
+- **Viewer cost.** A client that isn't watching drops screen datagrams before parsing them (the
+  server doesn't send them anyway) and keeps no grid, so idle memory doesn't grow. Updates are
+  decoded on a goroutine of their own (8 queued at most), never on the receive loop that also
+  carries audio, and a run may hold at most 32 bytes of text per cell. A viewer holds the
+  keyframe, the current picture and at most 4 partial updates (≤ 120 KB each), dropped on `Esc`.
+- **Not in v1:** streaming without herdr (the tc host terminal, a command's output), more than one
+  stream per huddle, watching without joining the huddle, `/pair --drive` (input to the streamer),
+  recording.
+
 ## Threat model
 
 Attackers: a malicious or compromised server; a network attacker; a malicious channel member;
@@ -341,4 +397,7 @@ a removed member; a hostile client spamming datagrams.
 | Metadata | The server sees who is in which huddle, when, and frame sizes/timing (talk patterns; VBR sizes can leak some content). VBR leaks more than CBR; CBR is a possible opt-in later. |
 | Datagram flood / amplification | Only huddle participants can send; per-session token bucket; fixed max size; relay fan-out ≤ 15; bounded per-receiver queues with drop. A client can't make the server send to non-participants. |
 | Hostile datagram parser input | Fixed-layout header parsed with bounds checks, fuzzed (`FuzzParseDatagram`); the server never touches payloads. |
+| Server reads or forges a shared pane | Encrypted channels: chunks are sealed like voice (own sender key, header as AD); receivers drop plaintext kinds, unknown `src`s and anything that fails to open; the decoder bounds every size and sanitizes every cell. `TestWatchTamper` (tctamper) flips, forges, downgrades and replays chunks. Public channels: the server can read the pane, as it can read the chat. |
+| Hostile streamer drives a viewer's terminal | Cells carry text, never escapes: the streamer's parser drops every escape but SGR (turned into attributes), and the viewer sanitizes each cell again before drawing it; `FuzzDecode` checks no control character survives. |
+| Streaming a secret by accident | Secret scrubbing before encoding; an always-visible LIVE banner with what it hid; `Esc` stops at once; nothing is captured while nobody watches. |
 | Audio-device privacy | Mic is opened only while in a huddle and (push-to-talk) only captured while talking; leaving closes the device. |
