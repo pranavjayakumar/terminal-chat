@@ -360,7 +360,7 @@ func printMsg(w io.Writer, c *client.Client, m client.Message) {
 			if body != "" {
 				body += "\n"
 			}
-			body += "📎 " + media.SafeName(f.Name) + " · " + media.Size(f.Size)
+			body += "📎 " + sanitize.Line(media.SafeName(f.Name)) + " · " + media.Size(f.Size)
 		}
 	}
 	if m.Thread != 0 {

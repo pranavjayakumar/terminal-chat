@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"time"
 
@@ -297,6 +298,9 @@ func (c *Client) outboxLoop(ctx context.Context, s *session) {
 		}
 		switch {
 		case err == nil:
+		case reason != "" && errors.As(err, &perr) && perr.Code == proto.ErrNotFound && c.requeueUpload(e):
+			// The server collected the blobs before the message went out:
+			// they go up again from the staged copies.
 		case reason != "":
 			if _, err := c.db.Exec(`UPDATE outbox SET failed = ?, msg = 0 WHERE id = ?`, reason, e.id); err == nil {
 				e.failed = reason
@@ -343,6 +347,9 @@ func (c *Client) sentHook(e outboxEntry) func(proto.Res) error {
 		}
 		if _, err := c.db.Exec(`DELETE FROM outbox WHERE id = ?`, e.id); err != nil {
 			return err
+		}
+		for _, f := range e.files {
+			os.Remove(c.stagedPath(f.Blob)) // the blob is attached: no re-upload needed
 		}
 		c.outboxChanged(e.chan_, nil)
 		return nil

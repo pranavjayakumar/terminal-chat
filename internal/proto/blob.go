@@ -1,5 +1,7 @@
 package proto
 
+import "strings"
+
 // Files and images (PROTOCOL.md §16, cap blob1): a file is uploaded as an
 // opaque, already encrypted blob tied to one channel, then attached to a
 // message, which carries what it takes to read it (File).
@@ -76,6 +78,21 @@ type BlobGetArgs struct {
 	Blob []byte `msgpack:"blob"`
 	Off  uint64 `msgpack:"off"`
 	Len  uint32 `msgpack:"len,omitempty"`
+}
+
+// ValidMime reports whether m is a bare type/subtype of [a-z0-9.+_-] (no
+// parameters), at most MaxMime bytes (§16.2).
+func ValidMime(m string) bool {
+	typ, sub, ok := strings.Cut(m, "/")
+	if !ok || typ == "" || sub == "" || len(m) > MaxMime || strings.Contains(sub, "/") {
+		return false
+	}
+	for _, r := range m {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || strings.ContainsRune("/.+-_", r)) {
+			return false
+		}
+	}
+	return true
 }
 
 type BlobGetRes struct {

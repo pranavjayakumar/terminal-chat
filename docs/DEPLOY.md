@@ -142,9 +142,9 @@ not argv, so it isn't visible for the length of the join.
   would leave rows whose bytes are missing (downloads of those fail). The bytes are ciphertext:
   in encrypted channels the server never holds the keys; in plaintext channels the keys are in
   `tc.db`, so the two together are as sensitive as the database. Restore both together.
-  `tc server --max-upload 25MiB` caps one file and `--blob-quota 10GiB` all of them (uploads
-  past it are refused); `du -sh /var/lib/tc/blobs` shows the use. Uploads never attached to a
-  message are removed after 24 hours, and deleting a message deletes its files.
+  `tc server --max-upload 25MiB` caps one file, `--user-quota 1GiB` one person's files and
+  `--blob-quota 10GiB` all of them (uploads past them are refused); `du -sh /var/lib/tc/blobs` shows the use. Uploads never attached to a
+  message are removed 24 hours after their last chunk, and deleting a message deletes its files.
 - **Restoring a backup breaks end-to-end encrypted channels that changed keys after it was taken.**
   Clients pin each encrypted channel's key chain; a restored server shows an older one, which is
   exactly what a server hiding a membership change would do, so those channels go into a red

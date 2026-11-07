@@ -100,6 +100,23 @@ func Decode(b []byte) (image.Image, error) {
 	return img, nil
 }
 
+// MaxThumbPixels bounds a received thumbnail: tc makes them at most
+// ThumbSide a side, and a hostile 32 KiB one mustn't decode to gigabytes.
+const MaxThumbPixels = 1 << 20
+
+// DecodeThumb decodes a received thumbnail (PNG, JPEG or GIF) of at most
+// MaxThumbPixels.
+func DecodeThumb(b []byte) (image.Image, error) {
+	w, h, _, err := ImageSize(bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	if w*h > MaxThumbPixels {
+		return nil, ErrTooManyPixels
+	}
+	return Decode(b)
+}
+
 // Thumbnail makes a JPEG of at most MaxThumb bytes and ThumbSide pixels a
 // side from an image file's bytes, and returns the image's own size.
 func Thumbnail(b []byte) (thumb []byte, w, h int, err error) {
@@ -183,8 +200,10 @@ func SafeName(name string) string {
 		case r == '\t' || r == '\n' || r == '\r':
 			b.WriteRune(' ')
 		case r == utf8.RuneError, unicode.IsControl(r), unicode.Is(unicode.Cf, r), unicode.Is(unicode.Co, r),
-			unicode.Is(unicode.Zl, r), unicode.Is(unicode.Zp, r), r == 0x115F, r == 0x1160, r == 0x3164, r == 0xFFA0:
-			// dropped: controls, format (bidi, zero-width), private use, fillers
+			unicode.Is(unicode.Zl, r), unicode.Is(unicode.Zp, r), invisible(r):
+			// dropped: controls, format (bidi, zero-width), private use,
+			// invisible and unassigned characters (a filesystem may refuse
+			// the latter: APFS says "illegal byte sequence")
 		case strings.ContainsRune(`<>:"|?*`, r):
 			b.WriteRune('_')
 		case unicode.IsSpace(r):
@@ -214,6 +233,19 @@ func SafeName(name string) string {
 		name = "_" + name
 	}
 	return name
+}
+
+// invisible: characters that draw nothing (default-ignorable code points,
+// variation selectors, Hangul fillers, the braille blank) or that no
+// Unicode version tc knows assigns.
+func invisible(r rune) bool {
+	switch {
+	case unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r), unicode.Is(unicode.Variation_Selector, r),
+		r == 0x034F, r >= 0x180B && r <= 0x180F, r == 0x17B4, r == 0x17B5, r == 0x2800,
+		r == 0x115F, r == 0x1160, r == 0x3164, r == 0xFFA0:
+		return true
+	}
+	return !unicode.In(r, unicode.L, unicode.M, unicode.N, unicode.P, unicode.S, unicode.Zs)
 }
 
 // Windows device names, in case the file travels on.

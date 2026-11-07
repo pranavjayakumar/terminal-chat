@@ -78,9 +78,11 @@ func cmdServer(args []string) error {
 	fs.Var(&maxUpload, "max-upload", "largest file people can send (e.g. 25MiB, 100MB)")
 	blobQuota := sizeFlag(server.DefaultBlobQuota)
 	fs.Var(&blobQuota, "blob-quota", "room for all sent files together, under <data>/blobs (e.g. 10GiB)")
+	userQuota := sizeFlag(server.DefaultUserQuota)
+	fs.Var(&userQuota, "user-quota", "room for one person's sent files (e.g. 1GiB)")
 	fs.Parse(args)
-	if maxUpload < 1 || blobQuota < 1 {
-		return errors.New("--max-upload and --blob-quota must be at least 1 byte")
+	if maxUpload < 1 || blobQuota < 1 || userQuota < 1 {
+		return errors.New("--max-upload, --blob-quota and --user-quota must be at least 1 byte")
 	}
 	if *maxPending < 1 || *maxPendingPerSource < 1 {
 		return errors.New("--max-pending and --max-pending-per-source must be at least 1")
@@ -117,7 +119,7 @@ func cmdServer(args []string) error {
 		return err
 	}
 	srv, err := server.New(server.Config{DataDir: *data, PublicAddr: pub, MemberInvites: *memberInvites,
-		MaxUpload: int64(maxUpload), BlobQuota: int64(blobQuota)})
+		MaxUpload: int64(maxUpload), BlobQuota: int64(blobQuota), UserQuota: int64(userQuota)})
 	if err != nil {
 		return err
 	}

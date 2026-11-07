@@ -59,6 +59,16 @@ func (m *Model) menuItems(x msgView) []msgMenuItem {
 	if x.link {
 		out = append(out, msgMenuItem{icImage, "Open link", kSelLink, false})
 	}
+	if x.files > 0 {
+		save := "Save file"
+		if x.files > 1 {
+			save = "Save files"
+		}
+		out = append(out, msgMenuItem{icFile, save, kSelSave, false})
+		if x.files == 1 {
+			out = append(out, msgMenuItem{icImage, "Open file", kSelOpen, false})
+		}
+	}
 	if !x.deleted {
 		out = append(out, msgMenuItem{icFile, "View full", kSelView, false})
 	}
@@ -76,7 +86,10 @@ func (m *Model) menuItems(x msgView) []msgMenuItem {
 }
 
 // msgView is what the menu needs to know about a message.
-type msgView struct{ failed, live, deleted, mine, trusted, pinned, code, quote, link bool }
+type msgView struct {
+	failed, live, deleted, mine, trusted, pinned, code, quote, link bool
+	files                                                           int // files it can save
+}
 
 // openMsgMenu opens the menu on the selected message.
 func (m *Model) openMsgMenu() {
@@ -115,6 +128,7 @@ func (m *Model) fillMsgMenu() {
 		code:    !sel.Deleted && codeOnly(sel.Body) != "",
 		quote:   quotable(sel),
 		link:    quotable(sel) && len(msgLinks(sel.Body)) > 0,
+		files:   savable(sel),
 	})
 	m.mm.sel = min(m.mm.sel, len(m.mm.items)-1)
 	_, m.mm.ref, _ = strings.Cut(msgRef("", p.sel, sel), ":")

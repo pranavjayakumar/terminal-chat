@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/skailama/tc/internal/e2ecrypto"
@@ -54,7 +55,7 @@ func validFiles(fs []proto.File) bool {
 	for i, f := range fs {
 		if len(f.Blob) != proto.BlobIDSize || len(f.Key) != e2ecrypto.KeySize || len(f.Hash) != sha256.Size ||
 			f.Name == "" || len(f.Name) > proto.MaxFileName || !sanitize.Valid(f.Name) || strings.ContainsAny(f.Name, "\n\t") ||
-			f.Mime == "" || len(f.Mime) > proto.MaxMime || !sanitize.Valid(f.Mime) || f.Size > MaxDownload {
+			!proto.ValidMime(f.Mime) || f.Size > MaxDownload {
 			return false
 		}
 		for _, g := range fs[:i] {
@@ -79,13 +80,30 @@ func blobIDs(fs []proto.File) []proto.File {
 	return out
 }
 
+// dropThumb removes the first thumbnail in fs (in place); false when
+// none is left.
+func dropThumb(fs []proto.File) bool {
+	for i := range fs {
+		if fs[i].Thumb != nil {
+			fs[i].Thumb, fs[i].W, fs[i].H = nil, 0, 0
+			return true
+		}
+	}
+	return false
+}
+
+// sameBlobs: a and b list the same blob ids in the same order.
+func sameBlobs(a, b []proto.File) bool {
+	return slices.EqualFunc(a, b, func(x, y proto.File) bool { return bytes.Equal(x.Blob, y.Blob) })
+}
+
 // FallbackBody is the text of a message that attaches files without a
 // caption: what clients without files support show. The TUI hides it
 // under the files' cards.
 func FallbackBody(fs []proto.File) string {
 	names := make([]string, len(fs))
 	for i, f := range fs {
-		names[i] = media.SafeName(f.Name)
+		names[i] = sanitize.Line(media.SafeName(f.Name))
 	}
 	return "📎 " + strings.Join(names, ", ")
 }
@@ -198,7 +216,14 @@ func plainSize(body string, files []proto.File) int {
 // stageFile seals the file at path into the uploads dir and describes it.
 // thumbRoom is how many thumbnail bytes this message has left.
 func (c *Client) stageFile(path string, limit int64, thumbRoom int) (proto.File, error) {
-	st, err := os.Stat(path)
+	// Opened before it is checked (non-blocking: a FIFO swapped in can't
+	// hang us), so what is checked is what is read.
+	src, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return proto.File{}, err
+	}
+	defer src.Close()
+	st, err := src.Stat()
 	if err != nil {
 		return proto.File{}, err
 	}
@@ -209,11 +234,6 @@ func (c *Client) stageFile(path string, limit int64, thumbRoom int) (proto.File,
 		return proto.File{}, proto.Errf(proto.ErrTooLarge, fmt.Sprintf("%s is %s; the server takes up to %s",
 			sanitize.Line(filepath.Base(path)), media.Size(uint64(st.Size())), media.Size(uint64(limit))))
 	}
-	src, err := os.Open(path)
-	if err != nil {
-		return proto.File{}, err
-	}
-	defer src.Close()
 	head := make([]byte, media.SniffLen)
 	n, _ := io.ReadFull(src, head)
 	head = head[:n]
@@ -310,13 +330,32 @@ func (c *Client) uploadsChanged(ch uint64) {
 func (c *Client) uploadLoop(ctx context.Context, s *session) {
 	c.sweepFiles()
 	if !slices.Contains(s.welcome.Caps, proto.CapBlob) {
+		// Queued offline for a server that turns out not to take files.
+		rows, err := c.db.Query(`UPDATE uploads SET failed = ? WHERE failed = '' RETURNING chan`, "not sent: this server doesn't take files (it needs a tc update)")
+		if err == nil {
+			u := Update{}
+			for rows.Next() {
+				var ch uint64
+				if rows.Scan(&ch) == nil {
+					u.msgs(ch)
+				}
+			}
+			rows.Close()
+			c.post(u)
+		}
 		return
 	}
 	if s.welcome.MaxUpload > 0 {
 		_ = setMeta(c.db, "max_upload", s.welcome.MaxUpload)
 	}
 	for {
+		// Picked and marked running under up.mu, which discardUpload takes too.
+		c.up.mu.Lock()
 		up, err := scanUpload(c.db.QueryRow(`SELECT ` + uploadCols + ` FROM uploads WHERE failed = '' ORDER BY id LIMIT 1`))
+		if err == nil {
+			c.up.id, c.up.sent, c.up.size = up.id, 0, 0
+		}
+		c.up.mu.Unlock()
 		if errors.Is(err, sql.ErrNoRows) {
 			select {
 			case <-ctx.Done():
@@ -334,11 +373,16 @@ func (c *Client) uploadLoop(ctx context.Context, s *session) {
 		switch {
 		case errors.As(err, &ferr):
 			reason = ferr.reason
-		case errors.As(err, &perr) && permanent(perr.Code):
-			reason = sanitize.Line(perr.Error())
-		case err != nil && !errors.Is(err, ErrOffline) && ctx.Err() == nil && !isTransient(err):
-			reason = sanitize.Line(err.Error())
+		case errors.As(err, &perr):
+			if permanent(perr.Code) {
+				reason = sanitize.Line(perr.Error())
+			} // else rate limited or a server hiccup: wait and resume
+		case err != nil && !errors.Is(err, ErrOffline) && ctx.Err() == nil:
+			reason = sanitize.Line(err.Error()) // a local error (the staged file is unreadable)
 		}
+		c.up.mu.Lock()
+		c.up.id = 0
+		c.up.mu.Unlock()
 		switch {
 		case err == nil:
 		case reason != "":
@@ -363,9 +407,6 @@ func (c *Client) uploadLoop(ctx context.Context, s *session) {
 	}
 }
 
-// isTransient: a local error worth retrying (none so far).
-func isTransient(error) bool { return false }
-
 // runUpload puts each of up's blobs, then queues its message.
 func (c *Client) runUpload(ctx context.Context, s *session, up upload) error {
 	var total int64
@@ -373,13 +414,8 @@ func (c *Client) runUpload(ctx context.Context, s *session, up upload) error {
 		total += e2ecrypto.FileSealedSize(int64(f.Size))
 	}
 	c.up.mu.Lock()
-	c.up.id, c.up.sent, c.up.size = up.id, 0, total
+	c.up.sent, c.up.size = 0, total
 	c.up.mu.Unlock()
-	defer func() {
-		c.up.mu.Lock()
-		c.up.id = 0
-		c.up.mu.Unlock()
-	}()
 	var done int64
 	for _, f := range up.files {
 		size := e2ecrypto.FileSealedSize(int64(f.Size))
@@ -416,9 +452,8 @@ func (c *Client) runUpload(ctx context.Context, s *session, up upload) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	for _, f := range up.files {
-		os.Remove(c.stagedPath(f.Blob))
-	}
+	// The staged copies stay until the message is sent (sentHook): if the
+	// server collects the blobs first, the files go up again.
 	c.outboxChanged(up.ch, nil)
 	return nil
 }
@@ -545,15 +580,14 @@ func (c *Client) discardUpload(id int64) error {
 	if err != nil {
 		return err
 	}
-	if up.failed == "" {
-		c.up.mu.Lock()
-		running := c.up.id == id
+	c.up.mu.Lock()
+	if c.up.id == id {
 		c.up.mu.Unlock()
-		if running {
-			return errors.New("that file is uploading; wait for it, or retry if it fails")
-		}
+		return errors.New("that file is uploading; wait for it, or retry if it fails")
 	}
-	if _, err := c.db.Exec(`DELETE FROM uploads WHERE id = ?`, id); err != nil {
+	_, err = c.db.Exec(`DELETE FROM uploads WHERE id = ?`, id)
+	c.up.mu.Unlock()
+	if err != nil {
 		return err
 	}
 	for _, f := range up.files {
@@ -669,7 +703,17 @@ func (c *Client) Download(ctx context.Context, msg uint64, i int, dir string, pr
 	case err != nil || uint64(n) != f.Size || !bytes.Equal(sum[:], f.Hash):
 		return "", ErrFileCheck
 	}
-	return placeFile(tmp.Name(), dir, media.SafeName(f.Name))
+	name := media.SafeName(f.Name)
+	p, err := placeFile(tmp.Name(), dir, name)
+	if errors.Is(err, syscall.EILSEQ) {
+		// The filesystem refuses a character in it: a plain name instead.
+		ext := filepath.Ext(name)
+		if !asciiName(ext) {
+			ext = ""
+		}
+		p, err = placeFile(tmp.Name(), dir, "file"+ext)
+	}
+	return p, err
 }
 
 // cachedMessage is one cached message with its verdict.
@@ -702,6 +746,14 @@ func (c *Client) fetchBlob(ctx context.Context, blob []byte, size int64, w io.Wr
 			for off := range offs {
 				var g proto.BlobGetRes
 				err := c.call(ctx, proto.OpBlobGet, proto.BlobGetArgs{Blob: blob, Off: uint64(off)}, &g, nil)
+				for try := 1; try < 60 && retryable(err); try++ {
+					// Rate limited (a big download) or a server hiccup: wait, again.
+					select {
+					case <-ctx.Done():
+					case <-time.After(time.Duration(min(try, 8)) * 250 * time.Millisecond):
+					}
+					err = c.call(ctx, proto.OpBlobGet, proto.BlobGetArgs{Blob: blob, Off: uint64(off)}, &g, nil)
+				}
 				want := min(proto.MaxBlobChunk, size-off)
 				var pe *proto.Error
 				if err == nil && (g.Size != uint64(size) || int64(len(g.Data)) != want) ||
@@ -754,6 +806,58 @@ func (c *Client) fetchBlob(ctx context.Context, blob []byte, size int64, w io.Wr
 	return nil
 }
 
+// requeueUpload moves an outbox entry whose blobs the server no longer has
+// back to the uploads, if the staged copies are all still here. The send
+// nonce is new next time: the server stored nothing for this one.
+func (c *Client) requeueUpload(e outboxEntry) bool {
+	if len(e.files) == 0 {
+		return false
+	}
+	for _, f := range e.files {
+		if _, err := os.Stat(c.stagedPath(f.Blob)); err != nil {
+			return false
+		}
+	}
+	raw, err := proto.Marshal(e.files)
+	if err != nil {
+		return false
+	}
+	tx, err := c.db.Begin()
+	if err != nil {
+		return false
+	}
+	defer tx.Rollback()
+	// Same id as before (when it came from one): WaitUpload follows it.
+	if _, err := tx.Exec(`INSERT INTO uploads (id, chan, thread, body, files, time) VALUES (NULLIF(?, 0), ?, ?, ?, ?, ?)`,
+		e.upload, e.chan_, e.thread, e.body, raw, e.time); err != nil {
+		return false
+	}
+	if _, err := tx.Exec(`DELETE FROM outbox WHERE id = ?`, e.id); err != nil {
+		return false
+	}
+	if tx.Commit() != nil {
+		return false
+	}
+	c.outboxChanged(e.chan_, nil)
+	c.uploadsChanged(e.chan_)
+	return true
+}
+
+func asciiName(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+// retryable: a request error that goes away by waiting.
+func retryable(err error) bool {
+	var pe *proto.Error
+	return errors.As(err, &pe) && !permanent(pe.Code)
+}
+
 // placeFile moves tmp into dir as name, or "name (1).ext" and so on if
 // that exists: never over an existing file. It returns the path.
 func placeFile(tmp, dir, name string) (string, error) {
@@ -798,7 +902,7 @@ func placeFile(tmp, dir, name string) (string, error) {
 // Only files older than an hour, so it never races a SendFiles or Download.
 func (c *Client) sweepFiles() {
 	keep := map[string]bool{}
-	rows, err := c.db.Query(`SELECT files FROM uploads`)
+	rows, err := c.db.Query(`SELECT files FROM uploads UNION ALL SELECT files FROM outbox WHERE files IS NOT NULL`)
 	if err != nil {
 		return
 	}
@@ -813,6 +917,15 @@ func (c *Client) sweepFiles() {
 	}
 	rows.Close()
 	old := time.Now().Add(-time.Hour)
+	// A download cut short by a crash leaves its hidden temporary file
+	// (checked plaintext so far) next to where it would have gone.
+	if ents, err := os.ReadDir(DownloadsDir()); err == nil {
+		for _, e := range ents {
+			if info, err := e.Info(); err == nil && info.Mode().IsRegular() && strings.HasPrefix(e.Name(), ".tc-download-") && info.ModTime().Before(old) {
+				os.Remove(filepath.Join(DownloadsDir(), e.Name()))
+			}
+		}
+	}
 	for _, dir := range []string{c.uploadsDir(), filepath.Join(c.home, "downloads")} {
 		ents, _ := os.ReadDir(dir)
 		for _, e := range ents {

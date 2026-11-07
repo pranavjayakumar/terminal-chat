@@ -298,7 +298,11 @@ func (c *Client) judge(q dbtx, m *proto.Message, memo *keyMemo) (sec Sec, mid []
 		}
 		return c.plainSec(q, m.Chan, m.ID), nil, 0, false
 	}
+	srv := blobIDs(m.Files)
 	sec, mid, sts = c.judgeEnc(q, sid, hasSID, m, memo)
+	if sec == SecWaiting {
+		m.Files = srv
+	}
 	if sec == SecInvalid {
 		m.Body = ""
 	}
@@ -320,6 +324,7 @@ func (c *Client) judgeEnc(q dbtx, sid e2ecrypto.ServerID, hasSID bool, m *proto.
 	body := m.Body
 	// The server's files of an encrypted message are blob ids only; what
 	// counts is the sealed Plain's.
+	srvFiles := blobIDs(m.Files)
 	m.Body, m.Files = "", nil
 	if _, err := e2ecrypto.ParseEnc(m.Enc); err != nil || body != "" {
 		return SecInvalid, nil, 0
@@ -358,8 +363,7 @@ func (c *Client) judgeEnc(q dbtx, sid e2ecrypto.ServerID, hasSID bool, m *proto.
 		return sec, mid[:], 0
 	}
 	var p plainMsg
-	if proto.Unmarshal(raw, &p) != nil || p.T != "msg" || !validText(p.Body) || revokedAt(d, p.TS) ||
-		!validFiles(p.Files) {
+	if proto.Unmarshal(raw, &p) != nil || p.T != "msg" || !validText(p.Body) || revokedAt(d, p.TS) {
 		return SecInvalid, mid[:], 0
 	}
 	if m.Thread == 0 {
@@ -380,6 +384,11 @@ func (c *Client) judgeEnc(q dbtx, sid e2ecrypto.ServerID, hasSID bool, m *proto.
 		}
 	}
 	m.Body, m.Files = p.Body, p.Files
+	if !sameBlobs(p.Files, srvFiles) || !validFiles(p.Files) {
+		// The server attaches (and deletes) the blobs it lists: files it
+		// doesn't hold for this message aren't this message's (§16.2).
+		m.Files = nil
+	}
 	// Attribution only ever leans toward the agent (§15.3): the signed
 	// claim wins, a server's claim alone still marks it, and anything an
 	// agent's device signed is the agent's.
@@ -413,8 +422,12 @@ func (c *Client) saveMsg(q dbtx, m *proto.Message, replace bool, memo *keyMemo) 
 	}
 	editEnc, renc := m.EditEnc, m.Renc
 	sec, mid, sts, keep := c.judge(q, m, memo)
-	if sec == SecInvalid || sec == SecWaiting {
+	switch sec {
+	case SecInvalid:
 		m.Body, m.Files = "", nil
+	case SecWaiting:
+		// Kept: the server's blob ids, to check the Plain's against later.
+		m.Body, m.Files = "", blobIDs(m.Files)
 	}
 	if keep {
 		return sec, nil // the verified copy stays
@@ -638,7 +651,7 @@ func (c *Client) seal(sid e2ecrypto.ServerID, dev *e2ecrypto.DeviceKeys, ep trus
 	if ep.Key == nil {
 		return nil, failErr{noKeyReason}
 	}
-	p := plainMsg{T: "msg", TS: e.time, Body: e.body, Agent: c.AgentHandle(), Via: e.via, Files: e.files}
+	p := plainMsg{T: "msg", TS: e.time, Body: e.body, Agent: c.AgentHandle(), Via: e.via, Files: slices.Clone(e.files)}
 	if e.thread != 0 {
 		ref, err := c.threadRef(e.chan_, e.thread)
 		if err != nil {
@@ -647,6 +660,11 @@ func (c *Client) seal(sid e2ecrypto.ServerID, dev *e2ecrypto.DeviceKeys, ep trus
 		p.ThreadRef = ref
 	}
 	raw, err := proto.Marshal(p)
+	for err == nil && len(raw) > e2ecrypto.MaxPlainSize && dropThumb(p.Files) {
+		// Queued when the channel wasn't encrypted (no size check then):
+		// previews go before the message would.
+		raw, err = proto.Marshal(p)
+	}
 	if err != nil {
 		return nil, err
 	}

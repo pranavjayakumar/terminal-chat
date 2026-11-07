@@ -230,7 +230,7 @@ bottom hint falls back to `←↑↓→ move · Tab category · esc` (its previe
 | `Alt-H` | leave the open channel's huddle when in it, else join it (switching from one elsewhere, like `/huddle`); any skin |
 | `PgUp/PgDn`, mouse wheel | scroll history (fetches older via History at top) |
 | `↑` on empty input | select messages mode (↑/↓ moves selection) |
-| in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (emoji picker; typing filters, so `+ +1 Enter` and `+ :tada: Enter` still work), `y` copy body (OSC 52), `Y` copy only the code blocks, without fences (several: a blank line apart; none: a notice), `E` select my newest message loaded here, `v` view full, `p` pin / unpin (notice "pinned" / "unpinned"), `q` quote it into the input (below), `l` open its link (one link opens; several open a list where `Enter` opens and `y` copies; none: a notice), `m` or `Enter` message menu (below), `Esc` leave. The footer shows `q quote` and `l link` only when they fit with the rest (the menu always has both). `q` and `l` used to leave select mode and type the letter; now they act, so press `Esc` (or `↓` past the newest) before typing |
+| in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (emoji picker; typing filters, so `+ +1 Enter` and `+ :tada: Enter` still work), `y` copy body (OSC 52), `Y` copy only the code blocks, without fences (several: a blank line apart; none: a notice), `E` select my newest message loaded here, `v` view full, `p` pin / unpin (notice "pinned" / "unpinned"), `q` quote it into the input (below), `l` open its link (one link opens; several open a list where `Enter` opens and `y` copies; none: a notice), `s` save its files to `~/Downloads` (Files, below), `o` save and open its only file, `m` or `Enter` message menu (below), `Esc` leave. The footer shows `q quote` and `l link` only when they fit with the rest (the menu always has both). `q` and `l` used to leave select mode and type the letter; now they act, so press `Esc` (or `↓` past the newest) before typing |
 | `Esc` | close the completion popup / thread / palette / dialog / select mode; never quits |
 | `Ctrl-C` twice (the second while `press ⌃C again to quit` (`Ctrl+C` off macOS) shows, 4 s), or `/quit` | quit |
 | `F1` or `/help` | keyboard sheet: Navigate, Messages, Write, Huddle, App, then every command (`?` is just text, so messages can start with it) |
@@ -326,6 +326,29 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
   keeps the input (it is never sent as text). When the
   conditions don't hold it is an ordinary message; `\s/old/new` always sends `s/old/new`. A fix that would leave
   the message empty is refused (delete it with `d`).
+
+## Files
+
+- **Sending**: `/upload path [caption]` (the path may be quoted; `~/` and paths relative to the working
+  directory work), or drag a file into the input: a bracketed paste that is a path to a file (or several,
+  as terminals type them: quoted, `\ ` escapes, `file://`) shows `⇥ sends name as a file · keep typing to
+  send the path as text`, and `Tab` sends it (the path leaves the input; the rest stays). A paste over
+  64 KiB shows `⇥ sends the paste as a file (paste.txt, 120 KB)`. Scripts use
+  `tc send '#x' --attach file [caption]`. A file is sealed at once (the original may change afterwards)
+  and shows as a pending message with `uploading 40%`; it goes when online, resumes after a disconnect,
+  and fails like a message (`r` retry, `d` discard).
+- **Cards**: each file is a row `▣ name · 640×480 · 1.2 MB` (`▤` for other files; a click saves it)
+  under the caption; the `📎 name` stand-in text older clients see is hidden. An image with a thumbnail
+  also gets a block-art preview (at most 40×10 cells of `▀` colored from the thumbnail) above its card,
+  only with 256 or more colors. It is plain text to the renderer, so it fits any frame and works in tmux
+  and herdr. Real inline images (kitty graphics, iTerm2) are not drawn yet. Waiting, invalid and deleted
+  messages show no files.
+- **Saving**: `s` in select mode (or the menu's `Save file`) saves the message's files to `~/Downloads`
+  (`$TC_DOWNLOADS` overrides) under a safe name, never over an existing file (`cat (1).png`), and only
+  after the file checks out (else `the file failed its integrity check`). `o` (`Open file`) saves, then
+  opens it with the desktop's opener only if its extension is an image, PDF, text or media type **and**
+  its bytes sniff as that type; anything else stays saved with `open it yourself if you trust it`. Over
+  SSH or without a display `o` only saves. On macOS saved files carry the download quarantine flag.
 
 ## Emoji
 

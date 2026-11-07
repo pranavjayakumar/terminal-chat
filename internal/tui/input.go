@@ -183,6 +183,7 @@ func (m *Model) selectFooter() string {
 				keys = append(keys, "p pin")
 			}
 		}
+		keys = append(keys, fileKeysFor(sel)...)
 		keys = append(keys, "v view", "y copy")
 		if !sel.Deleted && codeOnly(sel.Body) != "" {
 			keys = append(keys, "Y code")
@@ -660,6 +661,8 @@ func (m *Model) runCommand(s string) (tea.Cmd, error) {
 		}), m.awayTick()), nil
 	case "snippet":
 		return m.shareSnippet(c.args)
+	case "upload":
+		return m.uploadCommand(c.rest)
 	case "share-pane":
 		if len(c.args) > 1 {
 			return nil, errors.New("usage: /share-pane [pane id or label]")

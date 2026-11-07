@@ -70,7 +70,7 @@ func TestFileTamper(t *testing.T) {
 		"empty":                nil,
 		"append bytes":         append(bytes.Clone(ct), 1, 2, 3),
 		"append a copy":        append(bytes.Clone(ct), ct[3*chunk:]...),
-		"swap two chunks":      append(append(append(bytes.Clone(ct[chunk:2*chunk]), ct[:chunk]...), ct[2*chunk:]...)),
+		"swap two chunks":      append(append(bytes.Clone(ct[chunk:2*chunk]), ct[:chunk]...), ct[2*chunk:]...),
 		"repeat a chunk":       append(append(bytes.Clone(ct[:chunk]), ct[:chunk]...), ct[2*chunk:]...),
 		"other file's blob":    sealBytes(t, other, pt),
 		"same key, other file": sealBytes(t, fk, pt[:FileChunk*2]),

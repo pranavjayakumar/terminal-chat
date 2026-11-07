@@ -1866,18 +1866,21 @@ what it takes to read it. Deleting the message deletes the blob.
 | `blob.get` | `{blob: bin16, off: u64, len?: u32}` | `{size: u64, data: bin}` |
 
 **blob.put** uploads part of one of the caller's blobs. `blob` is an id the client picks (16
-random bytes), `size` the blob's total size, `data` ≤ 256 KiB (`too_large`). The first put of
-an unknown id creates the blob: `off` must be 0 (else `not_found`, e.g. a resumed upload the
-server collected meanwhile — start again), the caller must be a member of `chan` (`forbidden`),
-`size` must be what a file of at most `max_upload` bytes seals to (§16.3; a larger one →
-`too_large`, one no file seals to → `bad_request`), the caller may hold at most 20 blobs not
-attached yet, together at most 10 × the largest blob (`conflict`), and all blobs together must
-fit the server's quota (`--blob-quota`, default 10 GiB; `too_large`). A put of a known id
-must come from its uploader (else `not_found`) with the same `chan` and `size` (`conflict`).
-`data` is written only when `off` equals how far the blob got; `off + len(data) > size` →
-`bad_request`. Either way the result's `have` is how far the blob is now, so a client resumes
-after a reconnect by sending a put without data and continuing from `have`; a retried chunk
-whose RES was lost writes nothing twice. Puts of an attached blob change nothing.
+random bytes), `size` the blob's total size, `data` ≤ 256 KiB (`too_large`). `size` must be what
+a file of at most `max_upload` bytes seals to (§16.3; a larger one → `too_large`, one no file
+seals to → `bad_request`), and `off + len(data) > size` → `bad_request`. Every put requires the
+caller to be a current member of `chan` (`forbidden`; a member removed mid-upload can't finish).
+The first put of an unknown id creates the blob: `off` must be 0 (else `not_found`, e.g. a resumed
+upload the server collected meanwhile — start again); the caller may hold at most 20 blobs not
+attached yet, together at most 10 × the sealed size of `max_upload` (`conflict`); the caller's
+blobs, attached or not, must fit the per-user quota (`--user-quota`, default 1 GiB; `too_large`),
+and all blobs together the server's (`--blob-quota`, default 10 GiB; `too_large`). Quotas count
+each blob as at least 4096 bytes. A put of a known id must come from its uploader (else
+`not_found`) with the same `chan` and `size` (`conflict`). `data` is written only when `off`
+equals how far the blob got; either way the result's `have` is how far the blob is now, so a
+client resumes after a reconnect by sending a put without data and continuing from `have`, and a
+retried chunk whose RES was lost writes nothing twice. A server that lost the end of a blob in a
+crash reports the shorter `have`. Puts of an attached blob change nothing.
 
 **blob.get** reads up to `len` bytes (default and at most 256 KiB) of a blob from `off`. The
 blob must be complete and attached to a message that isn't deleted, in a public channel or one
@@ -1885,9 +1888,9 @@ the caller is currently a member of (like `history`); anything else — unknown,
 another private channel's — is `not_found`. `off > size` → `bad_request`; `off = size` gives
 empty `data`. `size` is the blob's size.
 
-Agent sessions (§15) can't use either op (`forbidden`). Transfers have their own per-user
-buckets, in chunks: burst 400 (100 MiB), refill 40/s for `blob.put` and 80/s for `blob.get`
-(`rate_limited`). Neither op is a write op for the shared bucket (§9).
+Agent sessions (§15) can't use either op (`forbidden`). Neither op is a write op for the shared
+bucket (§9); transfers have their own per-user buckets (§16.4, `rate_limited`, checked before
+anything else). Clients wait and retry a `rate_limited` or `internal` chunk.
 
 ### 16.2 Attaching
 
@@ -1898,34 +1901,41 @@ File = {blob: bin16, name?: str, size?: u64, mime?: str, key?: bin32, hash?: bin
         thumb?: bin, w?: u32, h?: u32}
 ```
 
-`name` is the file's name (≤ 255 B, one line, §10 rules; clients send a safe name, §16.5),
-`size` its plaintext size, `mime` its type as the sender sniffed it (a bare `type/subtype`,
-≤ 127 B, `[a-z0-9.+_-]`; advisory only), `key` the file key (§16.3), `hash` SHA-256 of the
-plaintext, `thumb` a JPEG preview of an image (all of a message's thumbnails together ≤ 32 KiB,
-else `too_large`), `w`/`h` the image's size in pixels.
+`name` is the file's name (1–255 B, one line, §10 rules, no leading or trailing space; clients
+send a safe name, §16.5), `size` its plaintext size (absent: 0, an empty file; over
+`max_upload` → `too_large`), `mime` its type as the sender sniffed it (a bare `type/subtype`,
+both parts non-empty, ≤ 127 B of `[a-z0-9.+_-]` and the one `/`; advisory only), `key` the file
+key (§16.3), `hash` SHA-256 of the plaintext, `thumb` a JPEG preview of an image (all of a
+message's thumbnails together ≤ 32 KiB, else `too_large`), `w`/`h` the image's size in pixels.
+`File` is closed under `blob1`: a field added later needs a new cap (servers store the fields
+above and drop others).
 
 - **Plaintext channel:** `Message.files` carries every field; `name`, `mime`, `key` and `hash`
   are required (`bad_request`). The file is still sealed with its key (uniform, and the blob
   store only ever holds ciphertext), but the server can read the key.
 - **Encrypted channel (§13):** each `File` in `send` and `Message.files` carries `blob` only
   (anything else → `bad_request`); the full `File`s travel in the sealed, signed Plain:
-  `{t: "msg", ts, body, thread_ref?, files?: [File]}` (§13.4). The server learns the blob ids,
-  their sizes and which message holds them, nothing else.
+  `{t: "msg", ts, body, thread_ref?, files?: [File]}` (§13.4), which must still fit `enc`
+  (senders drop thumbnails first). The server learns the blob ids, their sizes and which message
+  holds them, nothing else.
 
 Inside `send`'s transaction each blob must be the sender's, uploaded for this `chan`, complete
-and not attached yet (`bad_request`); in a plaintext channel its size must be what `size` seals
-to. Webhook and agent sends can't attach (`forbidden`). `body` stays required: a client sends a
-caption or, without one, `"📎 " + names` so clients without `blob1` show something. Send
-idempotency (§5) covers `files` too (same nonce, other files → `conflict`). Deleting the message
-deletes its blobs (their rows in the same transaction as `msg.delete`, their bytes right after;
-a crash in between leaves bytes without a row, removed by the hourly sweep), drops `files` from
-the stored message and scrubs them from its `msg.new` event; `history`, snapshots and `search`
-return `files` as stored. Blobs never attached are collected 24 h after they were created.
+and not attached yet (`bad_request`; a blob the server no longer has at all → `not_found`, and the
+client uploads it again); in a plaintext channel its size must be what `size` seals to. Webhook
+and agent sends can't attach (`forbidden`). `body` stays required: a client sends a caption or,
+without one, `"📎 " + names` so clients without `blob1` show something. Send idempotency (§5)
+covers `files` too (same nonce, other files → `conflict`). `edit` never changes files (an
+encrypted edit's Plain carries none). Deleting the message deletes its blobs (their rows in the
+same transaction as `msg.delete`, their bytes right after; a crash in between leaves bytes
+without a row, removed by the hourly sweep), drops `files` from the stored message and scrubs
+them from its `msg.new` event; `history`, snapshots and `search` return `files` as stored. Blobs
+never attached are collected 24 h after their last `blob.put`.
 
 Receivers accept a message's files only if each has a 16-byte `blob`, 32-byte `key` and `hash`,
-a non-empty one-line `name` and a `mime`, thumbnails within 32 KiB together, at most 10 files;
-in an encrypted channel only from a verified Plain (an invalid or waiting message shows none).
-A malformed set is dropped (the text stays).
+a non-empty one-line `name`, a `mime` as above and `size` ≤ 2 GiB, thumbnails within 32 KiB
+together, at most 10 files; in an encrypted channel only from a verified Plain whose blob ids
+equal `Message.files`' (same order: the server attaches, serves and deletes exactly those), and
+an invalid or waiting message shows none. Files that fail are dropped; the text stays.
 
 ### 16.3 File encryption
 
@@ -1949,13 +1959,17 @@ file, never change one.
 
 blob id 16 B · `data`/`len` ≤ 256 KiB · file ≤ `max_upload` (default 25 MiB) · ≤ 10 files per
 message · thumbnails ≤ 32 KiB per message · `name` ≤ 255 B · `mime` ≤ 127 B · ≤ 20 pending
-blobs per user · pending uploads collected after 24 h · all blobs ≤ `--blob-quota`.
+blobs per user, ≤ 10 × the largest blob pending · per user ≤ `--user-quota` (default 1 GiB) ·
+all blobs ≤ `--blob-quota` (default 10 GiB) · each blob counts ≥ 4096 B · pending blobs collected
+24 h after their last put · transfer buckets per user, in chunks: `blob.put` burst 400
+(100 MiB), refill 40/s; `blob.get` burst 400, refill 80/s.
 
 ### 16.5 Client rules
 
 Clients treat everything in a `File` as hostile: names are made safe before they are shown or
-used (directories, control, bidi and invisible characters, leading dots and dashes removed;
-never empty), a download is saved under that name in the user's downloads folder, never over an
-existing file (`name (1).ext`), never executable, only after its checks pass; nothing is opened
-or run by itself, and a type is never trusted to decide that something may run. Images are
-decoded only after their header says they have at most 40 MP.
+used (directories, control, bidi, invisible and unassigned characters, leading dots and dashes
+removed; never empty), a download is saved under that name in the user's downloads folder, never
+over an existing file (`name (1).ext`), never executable, only after its checks pass; nothing is
+opened or run by itself, and a type is never trusted to decide that something may run. Images
+are decoded only after their header says they have at most 40 MP (received thumbnails: 1 MP).
+

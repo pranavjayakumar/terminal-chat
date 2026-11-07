@@ -22,7 +22,7 @@ var keyGroups = []keyGroup{
 	}},
 	{"Messages", [][2]string{
 		{"↑", "select (empty input)"}, {"m ⏎", "message menu"}, {"r", "reply in thread"}, {"+", "react (emoji picker)"}, {"e", "edit yours"},
-		{"d", "delete yours"}, {"y", "copy"}, {"Y", "copy code only"}, {"E", "your newest"}, {"p", "pin / unpin"}, {"v", "view full"}, {"q", "quote"}, {"l", "open link"}, {"r d", "failed: retry, discard"},
+		{"d", "delete yours"}, {"y", "copy"}, {"Y", "copy code only"}, {"E", "your newest"}, {"p", "pin / unpin"}, {"v", "view full"}, {"q", "quote"}, {"l", "open link"}, {"s o", "file: save, open"}, {"r d", "failed: retry, discard"},
 	}},
 	{"Write", [][2]string{
 		{"⏎", "send"}, {"⌥⏎", "new line"}, {"⌃J", "new line"}, {"@", "mention someone"}, {"#", "link a channel"},

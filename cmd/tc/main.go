@@ -54,7 +54,7 @@ const usage = `tc — terminal team chat
   tc users disable @user [--yes]
                              (admin) shut an account out for good, e.g. after a stolen SSH key
   tc server [--listen :7443] [--public host:port] [--data dir] [--member-invites=false]
-            [--max-pending 512] [--max-pending-per-source 32] [--max-upload 25MiB] [--blob-quota 10GiB]
+            [--max-pending 512] [--max-pending-per-source 32] [--max-upload 25MiB] [--blob-quota 10GiB] [--user-quota 1GiB]
   tc server invite [--uses N] [--ttl 72h] [--admin] [--key github:user] [--raw]
   tc fonts install|status|test|remove
                              tc's icon font, for sharper icons (Settings › Icons picks them)

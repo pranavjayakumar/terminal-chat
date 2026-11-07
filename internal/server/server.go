@@ -39,6 +39,8 @@ type Config struct {
 	// BlobQuota the room for all files together (0: DefaultBlobQuota).
 	MaxUpload int64
 	BlobQuota int64
+	// UserQuota is the room for one user's files (0: DefaultUserQuota).
+	UserQuota int64
 }
 
 // Server is a running tc server.

@@ -1072,6 +1072,11 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case snippetMsg:
 		m.gotSnippet(msg)
 		return m, nil
+	case savedMsg:
+		return m, m.gotSaved(msg)
+	case uploadQueuedMsg:
+		m.gotUploadQueued(msg)
+		return m, nil
 	case paneReadMsg:
 		m.gotPaneText(msg)
 		return m, nil
@@ -1429,6 +1434,8 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 	switch {
 	case key == kApproval:
 		return m.jumpToApproval()
+	case key == kTab && m.attachArmed():
+		return m.attachPaste()
 	case key == kTab && m.wrapArmed():
 		m.wrapPaste()
 		return nil
@@ -1531,7 +1538,9 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 				if before == "" {
 					m.wr.pasteVal = m.input.Value() // the whole input was pasted
 				}
-				m.offerWrap(before)
+				if !m.offerAttach(before) {
+					m.offerWrap(before)
+				}
 			}
 		}
 	} else {
@@ -1889,6 +1898,10 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 		return nil, true
 	case kSelLink:
 		return m.openSelectedLink(sel), true
+	case kSelSave:
+		return m.saveFiles(sel, -1, false), true
+	case kSelOpen:
+		return m.saveFiles(sel, -1, true), true
 	case kSelMenu, kEnter:
 		m.openMsgMenu()
 		return nil, true
