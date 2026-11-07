@@ -274,6 +274,15 @@ GitHub Actions: store the URL and pin as secrets `TC_HOOK_URL` and `TC_HOOK_PIN`
 
 Wire details: [docs/PROTOCOL.md §12](docs/PROTOCOL.md).
 
+## Upgrading
+
+`tc update` moves you to the newest signed release. Notes for mixed versions on one team:
+
+- **v0.6.3 added own-key endorsements** (an add-key invite, then `tc devices endorse`). A teammate
+  still on v0.6.2 sees your endorsed new key as "a member's key changed: @you" and can't send in your
+  shared encrypted channels until they run `/accept-key @you` (or update; v0.6.3+ clients check the
+  endorsement and follow it without asking). Ask teammates to `tc update` before you add a key.
+
 ## Development
 
 See [CLAUDE.md](CLAUDE.md). `make test` runs everything with the race detector; the wire
