@@ -280,14 +280,16 @@ func (c *Client) sendEntry(ctx context.Context, s *session, e outboxEntry) error
 // ours and random, so the conflict alone says that much; to be sure, the
 // cache must also hold that message, verified as ours: same channel and
 // thread, the entry's signed time and text, not older than its first send.
+// An earlier send in the clear (the channel was encrypted before its RES
+// came back) left a plaintext copy, which has no signed time to compare.
 func (c *Client) storedEarlier(e outboxEntry) bool {
 	if e.sent == 0 {
 		return false
 	}
 	var id uint64
-	err := c.db.QueryRow(`SELECT id FROM msgs WHERE chan = ? AND thread = ? AND author = ? AND sec = ?
-		AND sts = ? AND body = ? AND deleted = 0 AND id >= ? LIMIT 1`,
-		e.chan_, e.thread, c.Me().ID, SecE2E, e.time, e.body, e.sent).Scan(&id)
+	err := c.db.QueryRow(`SELECT id FROM msgs WHERE chan = ? AND thread = ? AND author = ?
+		AND (sec = ? AND sts = ? OR sec IN (?, ?, ?)) AND body = ? AND deleted = 0 AND id >= ? LIMIT 1`,
+		e.chan_, e.thread, c.Me().ID, SecE2E, e.time, SecPlain, SecLegacy, SecLegacyClaimed, e.body, e.sent).Scan(&id)
 	return err == nil
 }
 
@@ -355,13 +357,14 @@ func (c *Client) outboxLoop(ctx context.Context, s *session) {
 			return
 		case errors.As(err, &perr) && perr.Code == proto.ErrRateLimited:
 			// Without a hint (an older server, whose key.rotate caps are
-			// seconds long too) wait the plain retry.
+			// seconds long too) wait the plain retry. Never less than the
+			// pace: a server repeating a 1 ms hint must not make us spin.
 			paced = true
 			d := perr.RetryAfter()
 			if d <= 0 {
 				d = c.timing.retry
 			}
-			next = time.Now().Add(d)
+			next = time.Now().Add(max(d, c.timing.sendPace))
 		default: // server hiccup, local DB error
 			if !sleepUntil(ctx, time.Now().Add(c.timing.retry)) {
 				return

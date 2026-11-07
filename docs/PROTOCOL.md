@@ -284,7 +284,7 @@ WELCOME). In such a session a `rate_limited` error from a §9 token bucket (agen
 pass, as far as the server can tell then (another session of the same user may spend the token
 first). Other `rate_limited` errors (`agent.update`'s daily cap) carry none. A client clamps the
 hint to 30 s. Without the cap the field is never sent. tc's outbox, refused a `send`, waits the
-hint (2 s without one), then spaces its next sends by 350 ms (the 3/s refill plus a margin)
+hint (2 s without one, never less than 350 ms), then spaces its next sends by 350 ms (the 3/s refill plus a margin)
 until it has nothing left to send, so a long backlog drains at about the refill rate.
 
 `sync` MUST be the first REQ, once per connection. Other REQs before its RES → `bad_request`.
@@ -1199,7 +1199,8 @@ RES) may have been stored, so its retry can get `conflict` (same nonce,
 other bytes): the client then counts it as delivered if it holds that
 message verified as its own (same channel, thread, Plain `ts` and body,
 not edited or deleted, id above the last seq it had applied when it first
-tried to send it), and otherwise leaves it failed (fail-safe: an
+tried to send it; a copy sent in the clear before the channel was encrypted
+matches on channel, thread and body), and otherwise leaves it failed (fail-safe: an
 unmatched copy, e.g. one still waiting for its key, needs another retry). It never
 sends plaintext into a channel that is, or that it once saw as, encrypted
 (also not after a downgrade alarm, §13), refuses to send into (or flush
