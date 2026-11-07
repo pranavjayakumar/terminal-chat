@@ -221,13 +221,14 @@ bottom hint falls back to `←↑↓→ move · Tab category · esc` (its previe
 | `Enter` | send (completes instead while the completion popup is open, unless the `@`/`#` word already equals the highlighted item) |
 | `/`, `@`, `#`, `:` | completion popup above the input (see below; `:` under Emoji) |
 | `Tab` | complete from the popup; reopens it after `Esc` |
-| `Option-K` (`Alt-K`; also the `˚` macOS sends when Option types characters; `Ctrl-K` still works as a fallback) | command palette: tabs All · Channels · People · Commands · Settings (`Tab`/`Shift-Tab`); with no query the channels and DMs left lately this session come first under `Recent` (five at most, never the open one), then unread ones; the Commands group adds `Previous channel` (`⌃6`), `Mute #x` / `Unmute #x` (`/notify off` / `/notify default` for the open channel) and `Mark all read`; fuzzy search keeps the quick switcher's behavior (Enter opens the top channel or person; DMs created on demand); command rows run the slash command, or type it when it needs arguments; theme rows switch the theme |
+| `Option-K` (`Alt-K`; also the `˚` macOS sends when Option types characters; `Ctrl-K` still works as a fallback) | command palette: tabs All · Channels · People · Commands · Settings (`Tab`/`Shift-Tab`); with no query the channels and DMs left lately this session come first under `Recent` (five at most, never the open one), then unread ones; the Commands group adds `Previous channel` (`⌃6`), `Mute #x` / `Unmute #x` (`/notify off` / `/notify default` for the open channel; meta `⌥M`) and `Mark all read`; `⌥M` on a highlighted channel or DM row mutes or unmutes it without closing the palette (the row's description says `muted`; the footer shows `⌥M mute` / `⌥M unmute` while such a row is highlighted); fuzzy search keeps the quick switcher's behavior (Enter opens the top channel or person; DMs created on demand); command rows run the slash command, or type it when it needs arguments; theme rows switch the theme |
 | `Alt-A` | activity view (also `/activity`); `Ctrl-A` stays the textarea's line start |
 | `Option-E` (`Alt-E`; on macOS set Option as Meta: Option-E alone is the accent dead key) | emoji picker: inserts at the cursor; in select mode it reacts like `+`; again closes it |
 | `Alt-↑/↓` or `Ctrl-P/N` | previous / next channel (`Ctrl-P/N` move the completion popup's highlight while it is open) |
 | `Alt-Shift-↑/↓` | previous / next unread channel |
 | `Ctrl-6` (`Ctrl-^`) | back to the channel open before this one (again: forth; vim's alternate file); also the palette's `Previous channel` |
 | `Alt-H` | leave the open channel's huddle when in it, else join it (switching from one elsewhere, like `/huddle`); any skin |
+| `Alt-M` (`⌥M`; macOS: Option as Meta) | mute the open channel (`/notify off`), or unmute it (back to the default level, mentions when that is off); the notice says `⌥M undoes` for the open channel (`⌥M on its row undoes` from the palette, `click unmute to undo` from a sidebar click on another one); in the palette it acts on the highlighted channel or DM row, or on the open channel from the `Mute #x` / `Unmute #x` row, and does nothing on other rows. A muted channel's palette row drops `N new` (mentions still show), as the sidebar does. Keysheet: App |
 | `PgUp/PgDn`, mouse wheel | scroll history (fetches older via History at top) |
 | `↑` on empty input | select messages mode (↑/↓ moves selection) |
 | in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (emoji picker; typing filters, so `+ +1 Enter` and `+ :tada: Enter` still work), `y` copy body (OSC 52), `Y` copy only the code blocks, without fences (several: a blank line apart; none: a notice), `E` select my newest message loaded here, `v` view full, `p` pin / unpin (notice "pinned" / "unpinned"), `q` quote it into the input (below), `l` open its link (one link opens; several open a list where `Enter` opens and `y` copies; none: a notice), `s` save its files to `~/Downloads` (Files, below), `o` save and open its only file, `m` or `Enter` message menu (below), `Esc` leave. The footer shows `q quote` and `l link` only when they fit with the rest (the menu always has both). `q` and `l` used to leave select mode and type the letter; now they act, so press `Esc` (or `↓` past the newest) before typing |
@@ -438,6 +439,10 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
   can't be accepted (a fork that isn't a member's recovery, a chain sharing nothing with ours…) it says
   why and keeps nothing. `/alarm-recover #name` accepts exactly the last preview of that channel, once;
   without a preview it says to preview first, and if the chain moved since, it says to preview again.
+  Until then, messages a member sent after accepting first (under an epoch this device hasn't
+  verified) show as `🔒 waiting: accept the restore with /alarm-recover` (`🔒 /alarm-recover: accept the restore` where that doesn't fit), not as invalid (#198);
+  accepting judges them again, and anything sealed under a discarded epoch, or otherwise bad, shows
+  `⚠ invalid encrypted message (hidden)` as before.
 
 ## Devices
 
@@ -501,7 +506,8 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
 - Mute from the sidebar: the row under the pointer (normal or wide sidebar, normal or select mode) shows
   `mute` (`unmute` for a muted one) left of its badge, so a click on the badge still opens the channel; a click sets `/notify off` for it or back to the default
   (mentions when the default level is off). The sidebar takes no keys (it never has the focus), so the keyboard
-  way stays `⌥K` › `Mute #x` / `Unmute #x` for the open channel; icon mode has no room for the button.
+  way is `⌥M` (`Alt-M`): the open channel, or in the palette (`⌥K`) the highlighted channel or DM, which
+  says `muted` and keeps the palette open; icon mode has no room for the button.
 - Unread counts in the sidebar (dim; a DM's in the accent); `@N` in the accent when there's a mention, pulsing
   briefly when it grows (bot messages never make a mention). Both stop at `99+`.
 - Notifications: see "Notifications & herdr" below.

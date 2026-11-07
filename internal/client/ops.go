@@ -83,9 +83,10 @@ func (c *Client) queueOutbox(q dbtx, e outboxEntry) (int64, error) {
 	return id, nil
 }
 
-// RetryFailed requeues a failed outbox message (same nonce). A failed send
-// stored nothing, so an encrypted one is encrypted afresh for the channel
-// as it is now.
+// RetryFailed requeues a failed outbox message (same nonce). An encrypted
+// one is encrypted afresh for the channel as it is now; if an earlier send
+// was stored after all (lost RES), the conflict that brings is settled by
+// storedEarlier.
 func (c *Client) RetryFailed(local int64) error {
 	if local < 0 {
 		return c.retryUpload(-local)
@@ -261,17 +262,54 @@ func (c *Client) sendEntry(ctx context.Context, s *session, e outboxEntry) error
 			stale, e.enc = e.enc, nil
 			continue
 		}
+		if errors.As(err, &pe) && pe.Code == proto.ErrConflict && c.storedEarlier(e) {
+			if _, err := c.db.Exec(`DELETE FROM outbox WHERE id = ?`, e.id); err != nil {
+				return err
+			}
+			c.outboxChanged(e.chan_, nil)
+			return nil
+		}
 		return err
 	}
+}
+
+// storedEarlier reports whether a conflict for encrypted entry e means an
+// earlier send of it was stored after all (#195): its RES was lost, it was
+// then failed locally (key change, alarm) and retried, which encrypts
+// afresh (§13.4), so the same nonce came with other bytes. The nonce is
+// ours and random, so the conflict alone says that much; to be sure, the
+// cache must also hold that message, verified as ours: same channel and
+// thread, the entry's signed time and text, not older than its first send.
+func (c *Client) storedEarlier(e outboxEntry) bool {
+	if e.sent == 0 {
+		return false
+	}
+	var id uint64
+	err := c.db.QueryRow(`SELECT id FROM msgs WHERE chan = ? AND thread = ? AND author = ? AND sec = ?
+		AND sts = ? AND body = ? AND deleted = 0 AND id >= ? LIMIT 1`,
+		e.chan_, e.thread, c.Me().ID, SecE2E, e.time, e.body, e.sent).Scan(&id)
+	return err == nil
 }
 
 // outboxLoop sends the outbox oldest first, one at a time, which keeps
 // per-channel order. It stops when the session ends; the next session
 // resends whatever is left with the same nonces.
+//
+// Once the server refuses a send as rate_limited, the loop is paced until
+// the outbox empties: it waits out the server's retry_after_ms hint (or one
+// plain retry without it), then starts sends no faster than the server's send
+// refill rate (§9), so a long backlog drains at about that rate instead of
+// tripping the limit on every other send.
 func (c *Client) outboxLoop(ctx context.Context, s *session) {
+	var paced bool
+	var next time.Time
 	for {
+		if paced && !sleepUntil(ctx, next) {
+			return
+		}
 		e, err := scanOutbox(c.db.QueryRow(`SELECT ` + outboxCols + ` FROM outbox WHERE failed = '' ORDER BY id LIMIT 1`))
 		if errors.Is(err, sql.ErrNoRows) {
+			paced = false
 			select {
 			case <-ctx.Done():
 				return
@@ -284,6 +322,7 @@ func (c *Client) outboxLoop(ctx context.Context, s *session) {
 			_, err = c.db.Exec(`UPDATE outbox SET sent = COALESCE((SELECT v FROM meta WHERE k = 'last_seq'), 0) + 1
 				WHERE id = ? AND sent = 0`, e.id)
 		}
+		next = time.Now().Add(c.timing.sendPace)
 		if err == nil {
 			err = c.sendEntry(ctx, s, e)
 		}
@@ -314,15 +353,36 @@ func (c *Client) outboxLoop(ctx context.Context, s *session) {
 			}
 		case errors.Is(err, ErrOffline) || ctx.Err() != nil:
 			return
-		default: // rate limited, server hiccup, local DB error
-			t := time.NewTimer(c.timing.retry)
-			select {
-			case <-ctx.Done():
-				t.Stop()
+		case errors.As(err, &perr) && perr.Code == proto.ErrRateLimited:
+			// Without a hint (an older server, whose key.rotate caps are
+			// seconds long too) wait the plain retry.
+			paced = true
+			d := perr.RetryAfter()
+			if d <= 0 {
+				d = c.timing.retry
+			}
+			next = time.Now().Add(d)
+		default: // server hiccup, local DB error
+			if !sleepUntil(ctx, time.Now().Add(c.timing.retry)) {
 				return
-			case <-t.C:
 			}
 		}
+	}
+}
+
+// sleepUntil waits until t, or reports false if ctx ended first.
+func sleepUntil(ctx context.Context, t time.Time) bool {
+	d := time.Until(t)
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	tm := time.NewTimer(d)
+	defer tm.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-tm.C:
+		return true
 	}
 }
 

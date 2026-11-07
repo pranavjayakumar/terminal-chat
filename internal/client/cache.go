@@ -520,7 +520,7 @@ type outboxEntry struct {
 	// re-encrypting with the same encNonce (encmsg.go).
 	enc      []byte
 	encNonce []byte
-	sent     uint64 // 0: never handed to the server
+	sent     uint64 // last_seq+1 at the first send attempt (0: never attempted)
 	via      string
 	// files are the attached files with all their metadata (files.go);
 	// upload is the uploads row they came from.

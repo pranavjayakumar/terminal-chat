@@ -200,7 +200,11 @@ func (m *Model) drawBlock(x client.Message, k blockKey, mine, own bool) *canvas 
 	default:
 		switch x.Sec {
 		case client.SecWaiting:
-			line(m.waitingText(x), fgc(th.dim))
+			text := m.waitingText(x)
+			if x.Wait == client.WaitRestore && strWidth(text) > bw {
+				text = "🔒 /alarm-recover: accept the restore" // the command first when it can't all show
+			}
+			line(text, fgc(th.dim))
 		case client.SecInvalid:
 			line("⚠ invalid encrypted message (hidden)", fgb(th.err))
 		case client.SecInserted:

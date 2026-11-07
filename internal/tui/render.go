@@ -75,6 +75,8 @@ func (m *Model) waitingText(x client.Message) string {
 		return "🔒 waiting for the sender's device"
 	case client.WaitRoot:
 		return "🔒 waiting for the thread's first message"
+	case client.WaitRestore:
+		return "🔒 waiting: accept the restore with /alarm-recover"
 	}
 	return "🔒 waiting for key"
 }

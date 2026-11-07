@@ -55,7 +55,12 @@ func signalContext() (context.Context, context.CancelFunc) {
 
 // connected opens the client, runs it, and waits until it's online.
 func connected(ctx context.Context) (*client.Client, error) {
-	c, err := client.Open(client.DefaultHome())
+	return connectedAt(ctx, client.DefaultHome())
+}
+
+// connectedAt is connected for the account in home.
+func connectedAt(ctx context.Context, home string) (*client.Client, error) {
+	c, err := client.Open(home)
 	if err != nil {
 		return nil, err
 	}
@@ -341,6 +346,8 @@ func printMsg(w io.Writer, c *client.Client, m client.Message) {
 		body = "🔒 sent under an SSH key of yours this device doesn't trust (yours? see tc devices)"
 	case m.Sec == client.SecWaiting && m.Wait == client.WaitKeyChange:
 		body = "🔒 @" + name + "'s key changed: accept it with /accept-key @" + name + " in tc"
+	case m.Sec == client.SecWaiting && m.Wait == client.WaitRestore:
+		body = "🔒 waiting: accept the restore with /alarm-recover in tc"
 	case m.Sec == client.SecWaiting:
 		body = "🔒 waiting for key"
 	case m.Sec == client.SecInvalid:

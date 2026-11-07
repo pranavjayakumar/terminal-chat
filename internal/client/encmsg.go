@@ -758,7 +758,7 @@ func (c *Client) sealOffline(e outboxEntry) []byte {
 		return nil
 	}
 	ep, ok, err := c.trust.Epoch(sid, e.chan_, head.Epoch)
-	if err != nil || !ok || ep.Key == nil || !slices.Equal(ep.Roster, c.liveMembers(ch)) || c.revokedStale(sid, e.chan_, ep) {
+	if err != nil || !ok || ep.Key == nil || !slices.Equal(ep.Roster, c.liveMembers(ch)) || c.epochStale(sid, e.chan_, ep) {
 		return nil
 	}
 	dev, err := c.trust.DeviceKeys(sid, c.Me().ID)
@@ -773,7 +773,8 @@ func (c *Client) sealOffline(e outboxEntry) []byte {
 }
 
 // encCurrent reports whether a queued entry's enc is still for the
-// channel's verified head, whose roster is still the current members.
+// channel's verified head, whose roster is still the current members, and
+// which needs no rotation (epochStale).
 func (c *Client) encCurrent(e outboxEntry) bool {
 	h, err := e2ecrypto.ParseEnc(e.enc)
 	if err != nil {
@@ -793,7 +794,7 @@ func (c *Client) encCurrent(e outboxEntry) bool {
 	}
 	ep, ok, err := c.trust.Epoch(sid, e.chan_, head.Epoch)
 	// not rosterNow: an unconfirmed member must reach sealWith
-	return err == nil && ok && ep.Key != nil && slices.Equal(ep.Roster, c.liveMembers(ch)) && !c.revokedStale(sid, e.chan_, ep)
+	return err == nil && ok && ep.Key != nil && slices.Equal(ep.Roster, c.liveMembers(ch)) && !c.epochStale(sid, e.chan_, ep)
 }
 
 // sealEntry encrypts an outbox entry for sending (§13.4 "Sending"): it
@@ -830,6 +831,56 @@ func (c *Client) revokedStale(sid e2ecrypto.ServerID, ch uint64, ep trust.Epoch)
 	}
 	hit, err := c.trust.RevokedAfter(sid, ep.Roster, ep.Seq)
 	return err != nil || hit
+}
+
+// epochStale reports whether an entry should go through sealWith rather
+// than be sealed (or kept sealed) under ep: revokedStale, or a roster user
+// ep sealed nothing to has since gained a device this device verified
+// (#197; sealWith then tries one rotation, but seals under ep if it fails).
+func (c *Client) epochStale(sid e2ecrypto.ServerID, ch uint64, ep trust.Epoch) bool {
+	return c.revokedStale(sid, ch, ep) || c.boxlessGained(sid, ch, ep)
+}
+
+// boxlessGained reports whether a roster user other than us, none of
+// whose devices ep boxed, now has a verified active device. An honest
+// server refuses a bundle without a box for every member with a device
+// (§13.3), so that device came after ep: without a new epoch it reads
+// nothing until a member who is online answers its key.need, and a script
+// that only runs tc send never is. The rotation boxes every verified device
+// (commitBundle), so this asks for one rotation, not one per send, and its
+// backlink opens what was sealed under ep. Epochs recorded without Boxed
+// (before trust schema v11) don't say, so they never count. After a failed
+// try it stays quiet for timing.keyNeed, so a rotation that keeps failing
+// costs one attempt per interval, not one per message.
+func (c *Client) boxlessGained(sid e2ecrypto.ServerID, ch uint64, ep trust.Epoch) bool {
+	if ep.Boxed == nil {
+		return false
+	}
+	c.mu.Lock()
+	t, tried := c.boxlessTried[[2]uint64{ch, uint64(ep.Epoch)}]
+	c.mu.Unlock()
+	if tried && time.Since(t) < c.timing.keyNeed {
+		return false
+	}
+	me := c.Me().ID
+	for _, u := range ep.Roster {
+		if u == me {
+			continue
+		}
+		devs, err := c.trust.Devices(sid, u)
+		if err != nil {
+			return false
+		}
+		active, boxed := false, false
+		for _, d := range devs {
+			active = active || !d.Revoked
+			boxed = boxed || slices.Contains(ep.Boxed, d.ID)
+		}
+		if active && !boxed {
+			return true
+		}
+	}
+	return false
 }
 
 // sealWith is sealEntry for anything sealed with channel chID's current
@@ -884,6 +935,7 @@ func (c *Client) sealWith(ctx context.Context, s *session, chID uint64, prev []b
 	// it was signed by): when the chain is behind what the cache shows,
 	// catch up again a few times before calling it "no key".
 	const attempts = 4
+	refreshed := false // boxlessGained's rotation was tried
 	behind := func(attempt int) error {
 		if attempt == attempts-1 {
 			return failErr{noKeyReason}
@@ -945,6 +997,28 @@ func (c *Client) sealWith(ctx context.Context, s *session, chID uint64, prev []b
 			cur, _, _ := c.trust.Epoch(sid, ch.ID, head.Epoch)
 			rotate = !slices.Equal(cur.Roster, c.rosterNow(ch)) || (prev != nil && head.Epoch == prevEpoch) ||
 				c.revokedStale(sid, ch.ID, cur)
+			if !rotate && !refreshed && c.boxlessGained(sid, ch.ID, cur) {
+				// Best effort, once: cur is still safe to seal under (the
+				// new device just can't read it yet), so a failed rotation
+				// never holds the message back, nor uses up a pass.
+				refreshed = true
+				attempt--
+				if err := c.rotateOnce(ctx, s, sid, ch.ID); err == nil {
+					prev = nil
+				} else if errors.Is(err, ErrOffline) || ctx.Err() != nil {
+					return nil, ErrOffline
+				} else {
+					c.mu.Lock()
+					c.boxlessTried[[2]uint64{ch.ID, uint64(cur.Epoch)}] = time.Now()
+					c.mu.Unlock()
+					if !isStale(err) { // e.g. a rival's bundle still arriving
+						if err := behind(0); err != nil {
+							return nil, err
+						}
+					}
+				}
+				continue
+			}
 		}
 		if rotate && attempt < attempts-1 {
 			err := c.rotateOnce(ctx, s, sid, ch.ID)

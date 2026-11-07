@@ -33,7 +33,7 @@ var keyGroups = []keyGroup{
 		{"⌥H", "join / leave here"}, {"/huddle", "join here"}, {"⌃T hold", "push to talk"}, {"⌃T tap", "open mic on / off"}, {"/leave-huddle", "leave"},
 	}},
 	{"App", [][2]string{
-		{"/settings", "settings"}, {"/search", "search"}, {"F1", "this sheet"}, {"⌃C ⌃C", "quit"},
+		{"/settings", "settings"}, {"/search", "search"}, {"⌥M", "mute / unmute here"}, {"F1", "this sheet"}, {"⌃C ⌃C", "quit"},
 	}},
 	{"Agent", [][2]string{
 		{"⌥K Agent", "your agent's panel"}, {"⌥O", "jump to a waiting approval"}, {"1 2 3", "answer it (card selected)"},

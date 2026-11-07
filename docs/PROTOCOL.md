@@ -64,7 +64,7 @@ The server key never rotates in v1; rotating means re-issuing invites.
 | 0x01 | HELLO | C→S | `{client: str, caps: [str], auth: Auth}` |
 | 0x05 | WELCOME | S→C | `{server: str, caps: [str], server_id: bin16, user: User, time: i64, agent?: Agent, max_upload?: u64}` (`agent` §15.1, `max_upload` §16) |
 | 0x10 | REQ | C→S | `{id: u32, op: str, args: map}` |
-| 0x11 | RES | S→C | `{id: u32, ok: bool, data?: any, err?: {code: str, msg: str}}` |
+| 0x11 | RES | S→C | `{id: u32, ok: bool, data?: any, err?: {code: str, msg: str, retry_after_ms?: u32}}` (`retry_after_ms`: cap `retry_after`, §5) |
 | 0x20 | EVENT | S→C | `Event` (persistent, carries `seq`) |
 | 0x21 | EPHEMERAL | both | `{kind: str, ...}` (typing, presence; never stored) |
 | 0x22 | SNAPSHOT | S→C | `{users?: [User], chans?: [Channel], msgs?: [Message], read?: {chan: seq}, groups?: [Group], devs?, revoked?, revoked_seqs?, endorse?, keys?, agents?}` (one part; `groups` §8, `devs`/`revoked`/`revoked_seqs`/`endorse` §13.2, `keys` §13.6, `agents` §15.2) |
@@ -77,7 +77,8 @@ Effective caps = intersection of HELLO and WELCOME caps, except the server-adver
 a client never sends those in HELLO and they apply whenever WELCOME has them (`hooks`, `pins`,
 `groups`, `remind`, `team_invites`, `invite_manage`, `key_invites` and `member_invites` §4.1,
 `key_endorse` §13.2, `agent_key_proof` §15.2, `incarnation` §6, `blob1` §16; `key_hint` §4.1 goes the other way, HELLO only;
-`passive` §4.3 echoes a HELLO request). Protocol version is the ALPN.
+`passive` §4.3 echoes a HELLO request; `retry_after` §5 is an ordinary negotiated cap).
+Protocol version is the ALPN.
 
 ## 4. Handshake & authentication
 
@@ -275,6 +276,15 @@ the session then counts as online like any other.
 Every REQ gets exactly one RES with the same `id`. Client chooses ids. Error codes:
 `bad_request, unauthorized, forbidden, not_found, conflict, rate_limited,
 too_large, unknown_op, internal`, and `stale_epoch` (§13.8).
+
+**Retry hint** (cap `retry_after`, negotiated: the client puts it in HELLO, the server in
+WELCOME). In such a session a `rate_limited` error from a §9 token bucket (agent sessions: §15.1) or a key-rotation cap
+(§13.3) carries `retry_after_ms: u32` (1 to 30000) in `err`: how long until the same request would
+pass, as far as the server can tell then (another session of the same user may spend the token
+first). Other `rate_limited` errors (`agent.update`'s daily cap) carry none. A client clamps the
+hint to 30 s. Without the cap the field is never sent. tc's outbox, refused a `send`, waits the
+hint (2 s without one), then spaces its next sends by 350 ms (the 3/s refill plus a margin)
+until it has nothing left to send, so a long backlog drains at about the refill rate.
 
 `sync` MUST be the first REQ, once per connection. Other REQs before its RES → `bad_request`.
 
@@ -581,7 +591,8 @@ All sizes are UTF-8 bytes.
 - Rate limits (token buckets per user, `rate_limited` beyond): `send` burst 30, refill 3/s; `read`
   has its own bucket of burst 60, refill 5/s (agent sessions: their write bucket, §15.1) (so read markers in a busy channel never starve other
   writes; clients send at most one per channel per second); all other write ops share a bucket of
-  burst 60, refill 5/s.
+  burst 60, refill 5/s. The bucket that refuses a request spends no token from it; with cap `retry_after` its error says
+  when a token is back (`retry_after_ms`, §5).
 - `search.q` ≤ 256 B; only the first 8 terms are used.
 - Presence updates: at most 1/s per session, and only broadcast when state or status changes.
 - Each session's unsent output is capped at 8 MiB (sync output excluded); beyond that → BYE `slow_consumer`.
@@ -949,6 +960,7 @@ after the current epoch's `key.epoch` (registered and revoked since, it
 leaves the state as it was, yet may hold K by `key.share`). The comparison is with the server's record, not with
 what the current bundle boxed, so never-boxed devices don't exempt
 anyone. Epoch 1, and epochs stored before `state` existed, are uncapped.
+With cap `retry_after` (§5) the refusal's `retry_after_ms` is the time until both caps let the caller rotate.
 
 On success the server stores the bundle, sets `Channel.epoch`, appends a
 `key.epoch` event (actor = caller) and answers `{seq}`. Writes are
@@ -967,7 +979,11 @@ Boxes may be missing for some devices: clients seal only to devices they
 verified, and the rest get the key via `key.share` (§13.7). But every roster
 user who has an active device needs at least one box, so someone of theirs
 can answer `key.need` for their other devices; a user with no devices yet
-needs none.
+needs none. Such a user's first device therefore has no K until a member
+answers its `key.need` or rotates: a sender that verified the device
+rotates for it, best effort (§13.4 "Sending"), and `tc join` / `tc login` register the device right
+away so that the common case (joined, written to before the first `tc`
+run) gets a box in the first place.
 
 **key.fetch** `{chan, from: u32, to: u32}`: current members only (else
 `forbidden`, also for unknown channels); `1 ≤ from ≤ to` and `to − from < 256` (else `bad_request`).
@@ -1143,7 +1159,16 @@ only the creator, or any DM member), its roster isn't the current
 non-disabled members, or a device the client now knows to be revoked may
 hold its K: one it boxed, or any device of a roster user revoked after its
 `key.epoch` (clients don't rely on the server's `stale_epoch` for devices
-they know of). Once the channel has a verified epoch, the roster of
+they know of). Before a message or edit it also tries one rotation, best
+effort, when a roster user other than itself has a verified, non-revoked
+device but the current bundle boxed none of the devices it verified for
+that user (typically their first device, registered after the bundle):
+the new bundle boxes it, and its `back` opens what was sealed before.
+Unlike the cases above this one never holds a message back: if that
+rotation fails (other than by going offline), the message is sealed under
+the current epoch (still safe; the new device gets K by `key.share`), and
+the client doesn't try again for that epoch for a while. Bundles whose boxed
+devices the client didn't record don't count. Once the channel has a verified epoch, the roster of
 a new bundle (and who a sender seals to) is only the members the verified
 head's roster includes: a verified epoch is signed by a previous-roster
 member, while the member list is the server's word, so a user who appears
@@ -1161,10 +1186,18 @@ same plaintext and `ts` with the **same send nonce and the same enc nonce**
 tries again later. If the channel still needs a rotation after its last
 try, the message fails: it is never sealed to the old K. An entry encrypted
 while queued and not yet handed to the server is re-encrypted if the
-verified head or the members changed meanwhile. A client that can't get K for the epoch (no box, no
+verified head or the members changed meanwhile, or the head now calls
+for a rotation (including the best-effort one above). A client that can't get K for the epoch (no box, no
 share yet, can't rotate) marks the message failed ("no key yet — waiting for
 a member"), sends `key.need`, and requeues it when the key arrives; a failed
-message the user retries is encrypted afresh. It never
+message the user retries is encrypted afresh. A message failed locally
+after it was handed to the server (e.g. held for a key change after a lost
+RES) may have been stored, so its retry can get `conflict` (same nonce,
+other bytes): the client then counts it as delivered if it holds that
+message verified as its own (same channel, thread, Plain `ts` and body,
+not edited or deleted, id above the last seq it had applied when it first
+tried to send it), and otherwise leaves it failed (fail-safe: an
+unmatched copy, e.g. one still waiting for its key, needs another retry). It never
 sends plaintext into a channel that is, or that it once saw as, encrypted
 (also not after a downgrade alarm, §13), refuses to send into (or flush
 queued messages into) a channel with an alarm, never sends a plaintext

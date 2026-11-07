@@ -455,26 +455,31 @@ type bucket struct {
 
 // Sends: 30 burst, refilling 3/s. Other write ops (edit, react, channel
 // changes, read markers) share a separate, looser bucket.
-func (s *Server) allowSend(u uint64) bool  { return s.take(s.limits, u, 30, 3) }
-func (s *Server) allowWrite(u uint64) bool { return s.take(s.wlimits, u, 60, 5) }
+func (s *Server) allowSend(u uint64) bool { return s.take(s.limits, u, 30, 3) }
 
 // An agent session spends its own buckets, so a busy agent never slows its
-// owner down.
-func (s *Server) allowSendSess(sess *session, u uint64) bool {
+// owner down. Refused, they also say how long until a token is back
+// (retry_after_ms, §5).
+func (s *Server) allowSendSess(sess *session, u uint64) (bool, time.Duration) {
 	if sess != nil && sess.agent != nil {
-		return s.take(s.alimits, u, 30, 3)
+		return s.takeWait(s.alimits, u, 30, 3)
 	}
-	return s.allowSend(u)
+	return s.takeWait(s.limits, u, 30, 3)
 }
 
-func (s *Server) allowWriteSess(sess *session) bool {
+func (s *Server) allowWriteSess(sess *session) (bool, time.Duration) {
 	if sess.agent != nil {
-		return s.take(s.awlimits, sess.user.ID, 60, 5)
+		return s.takeWait(s.awlimits, sess.user.ID, 60, 5)
 	}
-	return s.allowWrite(sess.user.ID)
+	return s.takeWait(s.wlimits, sess.user.ID, 60, 5)
 }
 
 func (s *Server) take(m map[uint64]*bucket, u uint64, burst, perSec float64) bool {
+	ok, _ := s.takeWait(m, u, burst, perSec)
+	return ok
+}
+
+func (s *Server) takeWait(m map[uint64]*bucket, u uint64, burst, perSec float64) (bool, time.Duration) {
 	now := s.cfg.Now()
 	b := m[u]
 	if b == nil {
@@ -484,10 +489,10 @@ func (s *Server) take(m map[uint64]*bucket, u uint64, burst, perSec float64) boo
 	b.tokens = min(burst, b.tokens+now.Sub(b.last).Seconds()*perSec)
 	b.last = now
 	if b.tokens < 1 {
-		return false
+		return false, wait(b, perSec)
 	}
 	b.tokens--
-	return true
+	return true, 0
 }
 
 // UserCount returns the number of registered users.
