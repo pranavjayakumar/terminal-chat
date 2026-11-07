@@ -534,10 +534,15 @@ func (c *Client) retryUpload(id int64) error {
 
 func (c *Client) discardUpload(id int64) error {
 	up, err := scanUpload(c.db.QueryRow(`SELECT `+uploadCols+` FROM uploads WHERE id = ?`, id))
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return errors.New("no such upload")
+	if errors.Is(err, sql.ErrNoRows) {
+		// Uploaded already: its message may have failed in the outbox.
+		var ob int64
+		if c.db.QueryRow(`SELECT id FROM outbox WHERE upload = ? AND failed != ''`, id).Scan(&ob) == nil {
+			return c.DiscardFailed(ob)
 		}
+		return errors.New("no such upload")
+	}
+	if err != nil {
 		return err
 	}
 	if up.failed == "" {
