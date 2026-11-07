@@ -228,7 +228,7 @@ bottom hint falls back to `←↑↓→ move · Tab category · esc` (its previe
 | `Alt-Shift-↑/↓` | previous / next unread channel |
 | `Ctrl-6` (`Ctrl-^`) | back to the channel open before this one (again: forth; vim's alternate file); also the palette's `Previous channel` |
 | `Alt-H` | leave the open channel's huddle when in it, else join it (switching from one elsewhere, like `/huddle`); any skin |
-| `Alt-M` (`⌥M`; macOS: Option as Meta) | mute the open channel (`/notify off`), or unmute it (back to the default level, mentions when that is off); the notice says `⌥M undoes`; in the palette it acts on the highlighted channel instead. Keysheet: App |
+| `Alt-M` (`⌥M`; macOS: Option as Meta) | mute the open channel (`/notify off`), or unmute it (back to the default level, mentions when that is off); the notice says `⌥M undoes` for the open channel (`⌥M on its row undoes` from the palette, `click unmute to undo` from a sidebar click on another one); in the palette it acts on the highlighted channel or DM row, or on the open channel from the `Mute #x` / `Unmute #x` row, and does nothing on other rows. A muted channel's palette row drops `N new` (mentions still show), as the sidebar does. Keysheet: App |
 | `PgUp/PgDn`, mouse wheel | scroll history (fetches older via History at top) |
 | `↑` on empty input | select messages mode (↑/↓ moves selection) |
 | in select mode: `e` edit (own), `d` delete (own, confirm), `r` reply in thread, `+` react (emoji picker; typing filters, so `+ +1 Enter` and `+ :tada: Enter` still work), `y` copy body (OSC 52), `Y` copy only the code blocks, without fences (several: a blank line apart; none: a notice), `E` select my newest message loaded here, `v` view full, `p` pin / unpin (notice "pinned" / "unpinned"), `q` quote it into the input (below), `l` open its link (one link opens; several open a list where `Enter` opens and `y` copies; none: a notice), `m` or `Enter` message menu (below), `Esc` leave. The footer shows `q quote` and `l link` only when they fit with the rest (the menu always has both). `q` and `l` used to leave select mode and type the letter; now they act, so press `Esc` (or `↓` past the newest) before typing |
@@ -409,7 +409,7 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
   why and keeps nothing. `/alarm-recover #name` accepts exactly the last preview of that channel, once;
   without a preview it says to preview first, and if the chain moved since, it says to preview again.
   Until then, messages a member sent after accepting first (under an epoch this device hasn't
-  verified) show as `🔒 waiting: accept the restore with /alarm-recover`, not as invalid (#198);
+  verified) show as `🔒 waiting: accept the restore with /alarm-recover` (`🔒 /alarm-recover: accept the restore` where that doesn't fit), not as invalid (#198);
   accepting judges them again, and anything sealed under a discarded epoch, or otherwise bad, shows
   `⚠ invalid encrypted message (hidden)` as before.
 

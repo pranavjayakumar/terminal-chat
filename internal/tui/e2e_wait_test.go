@@ -66,7 +66,7 @@ func TestWaitingMessagesSayWhy(t *testing.T) {
 // chain says /alarm-recover opens it; a genuinely invalid one still says
 // invalid. Every frame fits, down to 20x6.
 func TestWaitingForRestore(t *testing.T) {
-	for _, sz := range [][2]int{{20, 6}, {34, 12}, {80, 24}, {200, 60}} {
+	for _, sz := range [][2]int{{20, 6}, {34, 12}, {40, 12}, {60, 16}, {80, 24}, {200, 60}} {
 		m, f := newTestModelFake(t, sz[0], sz[1])
 		e2eFake(f, client.E2EStatus{State: client.E2EAlarm, Epoch: 4, Detail: "fork: a second bundle for epoch 4"})
 		f.msgs[20] = []client.Message{
@@ -76,6 +76,9 @@ func TestWaitingForRestore(t *testing.T) {
 		run(m, m.applyUpdate(client.Update{Channels: true}))
 		run(m, m.openChannel(20))
 		v := ansi.Strip(checkView(t, m, "restore"))
+		if sz[0] >= 40 && !strings.Contains(v, "🔒 /alarm-recover") && !strings.Contains(v, "with /alarm-recover") {
+			t.Errorf("%dx%d: the command is cut off:\n%s", sz[0], sz[1], v)
+		}
 		if sz[0] < 80 {
 			continue
 		}

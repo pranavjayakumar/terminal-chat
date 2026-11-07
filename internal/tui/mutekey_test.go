@@ -76,4 +76,20 @@ func TestMuteKeyPaletteCommandRow(t *testing.T) {
 		}
 	}
 	checkView(t, m, "command row")
+
+	// The Mute #x row (meta ⌥M) acts on the open channel.
+	press(m, "esc")
+	press(m, "alt+k")
+	typeVia(m, "mute")
+	for m.palChan() == 0 && m.pal.sel < len(m.pal.shown)-1 {
+		m.pal.sel++
+	}
+	if it := m.pal.shown[m.pal.sel]; !strings.HasPrefix(it.label, "Mute ") {
+		t.Fatalf("highlighted %q, want the Mute row", it.label)
+	}
+	run(m, m.handleKey(altM))
+	if !m.muted(m.active) {
+		t.Fatal("⌥M on the Mute row didn't mute the open channel")
+	}
+	checkView(t, m, "mute row")
 }

@@ -622,9 +622,13 @@ func (m *Model) toggleMute(ch uint64) tea.Cmd {
 	if muted {
 		m.setInfo("unmuted " + m.chanTitle(ch))
 	} else {
+		// Name only a key that acts on this channel once the palette closes.
 		undo := "click unmute to undo"
-		if ch == m.active || m.mode == modeSwitcher { // where ⌥M acts on it again
+		switch {
+		case ch == m.active:
 			undo = m.kn.of("⌥M") + " undoes"
+		case m.mode == modeSwitcher:
+			undo = m.kn.of("⌥M") + " on its row undoes"
 		}
 		m.setInfo("muted " + m.chanTitle(ch) + " · no popups or sounds · " + undo)
 	}
