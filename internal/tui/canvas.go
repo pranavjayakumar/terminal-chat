@@ -162,6 +162,9 @@ func (c *canvas) put(x, y int, s string, st cstyle, act string) int {
 		if !utf8.ValidString(g) {
 			g, w = "\ufffd", 1 // never pass raw bytes to the terminal
 		}
+		if w > 2 && utf8.RuneCountInString(g) == 1 {
+			g, w = "�", 1 // one rune wider than 2 (⸺): never split it forever
+		}
 		if w > 2 {
 			// A cluster wider than a wide character (Prepend marks) is
 			// drawn one rune at a time, as terminals measure it.

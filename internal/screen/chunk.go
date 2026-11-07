@@ -36,7 +36,7 @@ func Chunks(id uint32, upd []byte) ([][]byte, error) {
 // at most partialTTL each, so lost chunks or a hostile stream can't grow it.
 const (
 	maxPartials = 4
-	partialTTL  = 5 * time.Second
+	partialTTL  = 10 * time.Second // a 255-chunk update at 40 chunks a second takes 6.4 s
 	recentDone  = 16
 )
 

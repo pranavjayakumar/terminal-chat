@@ -66,6 +66,7 @@ func (s *Server) opHuddleShare(sess *session, on bool) (any, error) {
 	} else {
 		p.h.live = nil
 	}
+	p.shareGen++
 	ch := p.h.ch
 	hs.mu.Unlock()
 	s.broadcastHuddlesLocked(changed{ch: nil})
@@ -90,6 +91,7 @@ func (s *Server) opHuddleWatch(sess *session, on bool) (any, error) {
 		return proto.Empty{}, nil
 	}
 	p.watch = on
+	p.watchGen++
 	ch := p.h.ch
 	hs.mu.Unlock()
 	// The roster tells the streamer someone started watching, so it sends
@@ -111,7 +113,7 @@ func relayScreen(hs *huddles, sess *session, p *participant, b []byte, now time.
 			continue
 		}
 		select {
-		case q.sess.scOut <- dgItem{b, p, q}:
+		case q.sess.scOut <- dgItem{b: b, from: p, to: q, shareGen: p.shareGen, watchGen: q.watchGen}:
 			hs.relayed.Add(1)
 		default:
 			hs.dropped.Add(1)
@@ -141,8 +143,7 @@ func (sess *session) startScreen(dg transport.DatagramConn) {
 				// Never deliver a chunk once its stream stopped or the
 				// viewer stopped watching (or either left).
 				hs.mu.RLock()
-				live := hs.bySess[sess] == it.to && hs.bySess[it.from.sess] == it.from &&
-					it.from.h.live == it.from && it.to.watch
+				live := screenLive(hs, sess, it)
 				hs.mu.RUnlock()
 				if !live {
 					hs.dropped.Add(1)
@@ -164,6 +165,15 @@ func (sess *session) startScreen(dg transport.DatagramConn) {
 			}
 		}
 	}()
+}
+
+// screenLive: it may still go to sess: both participations, the stream
+// and the watch it was queued for still run (a stop then restart in
+// between discards it). Caller holds hs.mu (read).
+func screenLive(hs *huddles, sess *session, it dgItem) bool {
+	return hs.bySess[sess] == it.to && hs.bySess[it.from.sess] == it.from &&
+		it.from.h.live == it.from && it.to.watch &&
+		it.from.shareGen == it.shareGen && it.to.watchGen == it.watchGen
 }
 
 // pushScreen queues a chunk for sess's stream writer; false = dropped.
@@ -205,8 +215,7 @@ func (sess *session) writeScreen(sq []voiceOut) bool {
 		}
 		sess.mu.Unlock()
 		hs.mu.RLock()
-		live := hs.bySess[sess] == v.it.to && hs.bySess[v.it.from.sess] == v.it.from &&
-			v.it.from.h.live == v.it.from && v.it.to.watch
+		live := screenLive(hs, sess, v.it)
 		hs.mu.RUnlock()
 		if !live || time.Since(v.at) > scMaxAge || transport.Backlogged(sess.conn) {
 			hs.dropped.Add(1)

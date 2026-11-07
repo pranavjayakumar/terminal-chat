@@ -22,9 +22,11 @@ import (
 const (
 	MaxCols = 400
 	MaxRows = 200
-	// maxCellBytes bounds one cell's text (real graphemes are under ~40
-	// bytes); MaxCols × maxCellBytes stays under a run's u16 length.
-	maxCellBytes = 128
+	// maxCellBytes bounds a grapheme's text per cell it fills (real ones
+	// stay well under: 3 combining marks, a long emoji ZWJ sequence over
+	// two cells); longer is U+FFFD. It also bounds what a viewer decodes:
+	// a span holds at most this much text per cell.
+	maxCellBytes = 32
 )
 
 // Attr is a cell's text attributes.
@@ -225,7 +227,7 @@ func layText(row []Cell, t string, st Style, maxCols int) []Cell {
 		var g string
 		var w int
 		g, t, w, state = uniseg.FirstGraphemeClusterInString(t, state)
-		if len(g) > maxCellBytes && w > 0 {
+		if w > 0 && len(g) > maxCellBytes*min(w, 2) {
 			// An endless joiner chain is one grapheme: cap it, so a row's
 			// text always fits an update's 16-bit run length.
 			g, w = "�", 1
@@ -233,6 +235,10 @@ func layText(row []Cell, t string, st Style, maxCols int) []Cell {
 		switch {
 		case w == 0:
 			continue
+		case w > 2 && utf8.RuneCountInString(g) == 1:
+			// One rune uniseg calls wider than 2 (⸺, ⸻): terminals
+			// disagree on it, so it isn't drawn (and isn't split forever).
+			g, w = "�", 1
 		case w > 2:
 			// Wider than a wide character: one rune at a time, as
 			// terminals measure it.

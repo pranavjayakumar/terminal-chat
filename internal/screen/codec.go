@@ -235,6 +235,13 @@ type Decoder struct {
 // caller must not change it.
 func (d *Decoder) Grid() *Grid { return d.cur }
 
+// Restart drops the picture but keeps the newest key id as a floor: the
+// same stream restarted keeps raising its ids, so only a newer keyframe
+// is taken (never one of the old stream, replayed).
+func (d *Decoder) Restart() {
+	d.key, d.cur, d.n, d.touched, d.label = nil, nil, 0, nil, ""
+}
+
 // Label is the pane's label, as the streamer named it (sanitized).
 func (d *Decoder) Label() string { return d.label }
 
@@ -262,7 +269,7 @@ func (d *Decoder) Apply(upd []byte) (bool, error) {
 		return false, ErrBadUpdate
 	}
 	switch {
-	case typ == typeKey && d.cur != nil && keyID <= d.keyID:
+	case typ == typeKey && keyID <= d.keyID:
 		return false, nil // a keyframe we have or one older
 	case typ == typeDiff && (d.cur == nil || keyID != d.keyID || n <= d.n || w != d.key.W || h != d.key.H):
 		return false, nil

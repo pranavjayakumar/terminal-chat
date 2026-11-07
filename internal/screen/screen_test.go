@@ -121,7 +121,7 @@ func TestLongGraphemes(t *testing.T) {
 	var d Decoder
 	roundTrip(t, &e, &d, g, false)
 	for _, c := range g.C {
-		if len(c.S) > maxCellBytes {
+		if len(c.S) > 2*maxCellBytes {
 			t.Fatalf("cell of %d bytes", len(c.S))
 		}
 	}

@@ -73,6 +73,12 @@ type paneState struct {
 	startMu sync.Mutex
 	stops   int
 	ended   bool
+	last    *paneShare // the newest loop started, running or not
+	// wins: a replay window per streaming src, for the whole
+	// participation: a stream stopped and restarted (same src, stream and
+	// keys) or a view closed and reopened must not reopen the window to
+	// the old stream's chunks. Only the receive goroutine touches it.
+	wins map[uint32]*replayWindow
 }
 
 type paneShare struct {
@@ -95,7 +101,6 @@ type paneView struct {
 	mu    sync.Mutex
 	src   uint32
 	asm   screen.Reassembler
-	win   replayWindow
 	ended bool
 	gen   uint64 // under mu and dmu: moves when the view starts over
 	stats WatchStats
@@ -211,12 +216,15 @@ func (c *Client) StartShare(ctx context.Context, label string, capture Capture) 
 	// encoder and, worse, the nonce counter.
 	p.pane.startMu.Lock()
 	defer p.pane.startMu.Unlock()
-	if old := c.stopShare(p, false); old != nil {
-		<-old.done
-	}
+	c.stopShare(p, false)
+	// Whatever loop ran last (stopped by us, StopShare or a failure) must
+	// be gone before the next one touches the encoder and nonce counter.
 	p.pane.mu.Lock()
-	stops := p.pane.stops
+	stops, last := p.pane.stops, p.pane.last
 	p.pane.mu.Unlock()
+	if last != nil {
+		<-last.done
+	}
 	if _, err := p.sess.call(ctx, proto.OpHuddleShare, proto.HuddleShareArgs{On: true}, nil); err != nil {
 		return err
 	}
@@ -234,7 +242,7 @@ func (c *Client) StartShare(ctx context.Context, label string, capture Capture) 
 	if p.pane.kick == nil {
 		p.pane.kick = make(chan struct{}, 1)
 	}
-	p.pane.share, p.pane.stopped = sh, nil
+	p.pane.share, p.pane.stopped, p.pane.last = sh, nil, sh
 	p.pane.mu.Unlock()
 	go c.shareLoop(sctx, p, sh, capture)
 	c.post(Update{Watch: true})
@@ -633,7 +641,8 @@ func (v *paneView) screenIn(p *participation, b []byte, now time.Time) ([]byte, 
 		v.stats.Unknown++
 		return nil, false
 	}
-	if !v.win.check(d.Seq) {
+	win := p.pane.window(d.Src)
+	if !win.check(d.Seq) {
 		v.stats.Replay++
 		return nil, false
 	}
@@ -654,7 +663,7 @@ func (v *paneView) screenIn(p *participation, b []byte, now time.Time) ([]byte, 
 			return nil, false
 		}
 	}
-	v.win.accept(d.Seq)
+	win.accept(d.Seq)
 	return v.asm.Add(chunk, now)
 }
 
@@ -703,8 +712,16 @@ func (c *Client) paneRoster(p *participation, parts []proto.Part) {
 			// The same person streams again (a new pane, or after a
 			// rejoin): start over from their next keyframe.
 			v.dmu.Lock()
+			if live.Src == v.src {
+				// Same participation: its key ids kept rising, so only a
+				// newer keyframe may start the picture again (an old
+				// stream's, replayed, never does).
+				v.dec.Restart()
+			} else {
+				v.dec = screen.Decoder{}
+			}
 			v.src, v.ended, v.ver, v.at = live.Src, false, v.ver+1, time.Time{}
-			v.dec, v.asm, v.win = screen.Decoder{}, screen.Reassembler{}, replayWindow{}
+			v.asm = screen.Reassembler{}
 			v.gen++ // updates still queued for the old stream are dropped
 			v.dmu.Unlock()
 			changed = true
@@ -738,6 +755,22 @@ func (c *Client) paneEnded(p *participation) {
 	if had {
 		c.post(Update{Watch: true})
 	}
+}
+
+// window is src's replay window (the receive goroutine only).
+func (ps *paneState) window(src uint32) *replayWindow {
+	if ps.wins == nil {
+		ps.wins = map[uint32]*replayWindow{}
+	}
+	w := ps.wins[src]
+	if w == nil {
+		if len(ps.wins) >= 64 { // srcs only come from the roster; bound anyway
+			clear(ps.wins)
+		}
+		w = &replayWindow{}
+		ps.wins[src] = w
+	}
+	return w
 }
 
 // replayWindow is a 64-chunk sliding window over a stream's seq, like

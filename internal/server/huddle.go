@@ -26,6 +26,9 @@ const (
 type dgItem struct {
 	b        []byte
 	from, to *participant
+	// screen chunks: the stream and the watch they were queued for
+	// (participant.shareGen, watchGen), so a stop and restart discards them.
+	shareGen, watchGen uint32
 }
 
 // voiceOps exist only in sessions that negotiated proto.CapVoice.
@@ -37,6 +40,9 @@ type participant struct {
 	dev, stream []byte
 	h           *huddle
 	watch       bool // asked for the shared pane's chunks (§14.5)
+	// shareGen, watchGen move on every huddle.share / huddle.watch change
+	// (under hs.mu).
+	shareGen, watchGen uint32
 }
 
 type huddle struct {
@@ -513,7 +519,7 @@ func (s *Server) relay(sess *session, b []byte) {
 			continue
 		}
 		select {
-		case q.sess.dgOut <- dgItem{b, p, q}:
+		case q.sess.dgOut <- dgItem{b: b, from: p, to: q}:
 			hs.relayed.Add(1)
 		default:
 			hs.dropped.Add(1)

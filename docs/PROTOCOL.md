@@ -1752,7 +1752,8 @@ off len field
   isn't, rotate, resume). Receivers apply every §14.3 receiver rule (kind matches the channel,
   so no plaintext chunk in an encrypted channel; epoch window; roster and membership; verified,
   unrevoked `dev`; AEAD; `|ts − now| ≤ 60 s`; a 64-entry replay window per `src`, kept apart
-  from that `src`'s audio window, since the two `seq`s are independent) and also drop
+  from that `src`'s audio window, since the two `seq`s are independent, and kept for the whole
+  participation: not reset when a stream restarts or a view reopens) and also drop
   chunks whose `src` isn't the roster's `live` participant they watch.
 - **Updates.** Reassembled chunks form one update: a raw DEFLATE (RFC 1951) stream of at most
   255 × 472 bytes, inflating to at most 2 MiB:
@@ -1771,13 +1772,14 @@ off len field
   update ids and `seq`, keep increasing for the sender's whole participation, across streams.
   Diffs of a keyframe are numbered from 1. An update with bytes after its last span, an unknown
   `version` or any field out of range is malformed; a new update format therefore needs a new cap
-  (`watch2`), not just a version byte. A run's text is at most 128 bytes per cell of its span.
+  (`watch2`), not just a version byte. A run's text is at most 32 bytes per cell of its span (senders replace a longer grapheme with U+FFFD).
   A diff `n` of key `k` lists, per row that differs from keyframe `k`, the cells from the
   first to the last difference, never splitting a wide character; diffs are cumulative
   against their keyframe, never chained, so a lost diff costs nothing once a later one arrives.
   A run's text is laid out from the span's `x` for the cells it fills (grapheme widths as a
   terminal measures them), cut at the span's end; cells no text reaches are blank. Receivers
-  apply a keyframe newer than the one they hold, and a diff only for their keyframe with a
+  apply a keyframe newer than the newest one they applied from that `src` (also after its stream
+  restarts), and a diff only for their keyframe with a
   number above the last one applied; anything else is ignored, and a malformed update dropped.
   **Every cell's text is untrusted**: receivers sanitize it (§10) before laying it out, so no
   escape sequence or control character can reach a terminal; senders do too.

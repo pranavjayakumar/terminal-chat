@@ -371,7 +371,7 @@ Code, a build, NetHack. Wire format: PROTOCOL.md §14.5. UX: docs/TUI.md ("Pane 
 - **Viewer cost.** A client that isn't watching drops screen datagrams before parsing them (the
   server doesn't send them anyway) and keeps no grid, so idle memory doesn't grow. Updates are
   decoded on a goroutine of their own (8 queued at most), never on the receive loop that also
-  carries audio, and a run may hold at most 128 bytes of text per cell. A viewer holds the
+  carries audio, and a run may hold at most 32 bytes of text per cell. A viewer holds the
   keyframe, the current picture and at most 4 partial updates (≤ 120 KB each), dropped on `Esc`.
 - **Not in v1:** streaming without herdr (the tc host terminal, a command's output), more than one
   stream per huddle, watching without joining the huddle, `/pair --drive` (input to the streamer),

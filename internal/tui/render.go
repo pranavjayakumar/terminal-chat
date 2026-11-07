@@ -31,6 +31,8 @@ func strWidth(s string) int {
 		switch {
 		case !utf8.ValidString(g):
 			n++
+		case w > 2 && utf8.RuneCountInString(g) == 1:
+			n++ // drawn as U+FFFD (canvas.put): one rune never splits further
 		case w > 2:
 			for _, r := range g {
 				n += strWidth(string(r))
