@@ -1456,6 +1456,8 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 		return m.backChannel()
 	case key == kHuddle && m.active != 0:
 		return m.huddleHere()
+	case key == kMute && m.active != 0:
+		return m.toggleMute(m.active)
 	case menuKey(key) != "" && m.menuBarShown():
 		return m.menuAction(menuKey(key))
 	case key == kCtrlEnd || (key == kEnd && empty):
