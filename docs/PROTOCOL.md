@@ -968,8 +968,8 @@ verified, and the rest get the key via `key.share` (§13.7). But every roster
 user who has an active device needs at least one box, so someone of theirs
 can answer `key.need` for their other devices; a user with no devices yet
 needs none. Such a user's first device therefore has no K until a member
-answers its `key.need` or rotates: the next sender rotates once for it
-(§13.4 "Sending"), and `tc join` / `tc login` register the device right
+answers its `key.need` or rotates: a sender that verified the device
+rotates for it, best effort (§13.4 "Sending"), and `tc join` / `tc login` register the device right
 away so that the common case (joined, written to before the first `tc`
 run) gets a box in the first place.
 
@@ -1147,13 +1147,16 @@ only the creator, or any DM member), its roster isn't the current
 non-disabled members, or a device the client now knows to be revoked may
 hold its K: one it boxed, or any device of a roster user revoked after its
 `key.epoch` (clients don't rely on the server's `stale_epoch` for devices
-they know of). It also tries one rotation, best effort, when a roster
-user other than itself whom the current bundle boxed nothing for now has a
-device it verified (their first device, registered after the bundle): the
-new bundle boxes it, and its `back` opens what was sealed before. Unlike
-the cases above this one never holds a message back: if that rotation
-fails, the message is sealed under the current epoch (still safe; the new
-device gets K by `key.share`). Once the channel has a verified epoch, the roster of
+they know of). Before a message or edit it also tries one rotation, best
+effort, when a roster user other than itself has a verified, non-revoked
+device but the current bundle boxed none of the devices it verified for
+that user (typically their first device, registered after the bundle):
+the new bundle boxes it, and its `back` opens what was sealed before.
+Unlike the cases above this one never holds a message back: if that
+rotation fails (other than by going offline), the message is sealed under
+the current epoch (still safe; the new device gets K by `key.share`), and
+the client doesn't try again for that epoch for a while. Bundles whose boxed
+devices the client didn't record don't count. Once the channel has a verified epoch, the roster of
 a new bundle (and who a sender seals to) is only the members the verified
 head's roster includes: a verified epoch is signed by a previous-roster
 member, while the member list is the server's word, so a user who appears
@@ -1171,7 +1174,8 @@ same plaintext and `ts` with the **same send nonce and the same enc nonce**
 tries again later. If the channel still needs a rotation after its last
 try, the message fails: it is never sealed to the old K. An entry encrypted
 while queued and not yet handed to the server is re-encrypted if the
-verified head or the members changed meanwhile. A client that can't get K for the epoch (no box, no
+verified head or the members changed meanwhile, or the head now calls
+for a rotation (including the best-effort one above). A client that can't get K for the epoch (no box, no
 share yet, can't rotate) marks the message failed ("no key yet — waiting for
 a member"), sends `key.need`, and requeues it when the key arrives; a failed
 message the user retries is encrypted afresh. It never
