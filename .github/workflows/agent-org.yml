@@ -1,0 +1,69 @@
+# Autonomous agent org (.github/agent-org/README.md): every few hours a
+# Claude Code agent merges the previous runs' green low-risk PRs, then
+# picks one task, builds it with tests on a branch and opens a PR.
+# It runs as the owner through AGENT_GH_TOKEN (a fine-grained PAT without
+# the Workflows permission, so it can never edit this directory's
+# workflows) and CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`).
+name: agent-org
+
+on:
+  schedule:
+    - cron: "23 */4 * * *" # every 4 hours
+  workflow_dispatch:
+
+concurrency:
+  group: agent-org
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  merge:
+    # Merge first, so the agent below starts from what earlier runs landed.
+    if: github.repository == 'pranavjayakumar/terminal-chat'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Merge green low-risk agent PRs
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: sh .github/agent-org/merge.sh
+
+  work:
+    needs: merge
+    if: github.repository == 'pranavjayakumar/terminal-chat'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.AGENT_GH_TOKEN }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25"
+          cache: false
+      - name: Commit identity
+        run: |
+          git config user.name "Pranav Jayakumar"
+          git config user.email "167646591+pranavjayakumar@users.noreply.github.com"
+      - uses: anthropics/claude-code-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8 # v1.0.250
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
+          GOTOOLCHAIN: local
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.AGENT_GH_TOKEN }}
+          prompt: |
+            Read .github/agent-org/PROMPT.md and follow it exactly. It is your
+            whole job for this run. Repository: ${{ github.repository }}.
+            Run id: ${{ github.run_id }}.
+          claude_args: >-
+            --max-turns 200
+            --allowedTools "Bash,Read,Write,Edit,Glob,Grep,Task,TodoWrite"
