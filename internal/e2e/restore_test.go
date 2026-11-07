@@ -250,6 +250,16 @@ func TestRestoreRecoverRollback(t *testing.T) {
 	// she can accept the same way, since alice (a member of her epoch 4)
 	// made it on top of the shared epoch 3.
 	eventually(t, "carol still in alarm", inAlarm(carol, ch))
+	// #198: until she accepts, what alice sent under the new epoch 4 shows
+	// as waiting for that, not as invalid.
+	eventually(t, "carol sees alice's message waiting for the restore", func() bool {
+		for _, m := range carol.Messages(ch, 50) {
+			if m.Author == alice.Me().ID && m.ID != 0 && !m.Deleted && m.Body == "" {
+				return m.Sec == client.SecWaiting && m.Wait == client.WaitRestore
+			}
+		}
+		return false
+	})
 	if err := carol.Send(ch, "blocked", 0); !errors.Is(err, client.ErrE2EAlarm) {
 		t.Fatalf("carol's send in alarm: %v", err)
 	}

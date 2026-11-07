@@ -407,6 +407,10 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
   can't be accepted (a fork that isn't a member's recovery, a chain sharing nothing with ours…) it says
   why and keeps nothing. `/alarm-recover #name` accepts exactly the last preview of that channel, once;
   without a preview it says to preview first, and if the chain moved since, it says to preview again.
+  Until then, messages a member sent after accepting first (under an epoch this device hasn't
+  verified) show as `🔒 waiting: accept the restore with /alarm-recover`, not as invalid (#198);
+  accepting judges them again, and anything sealed under a discarded epoch, or otherwise bad, shows
+  `⚠ invalid encrypted message (hidden)` as before.
 
 ## Devices
 
