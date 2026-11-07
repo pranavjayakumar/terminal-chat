@@ -76,6 +76,11 @@ CREATE TABLE IF NOT EXISTS drafts (
 	chan INTEGER NOT NULL, thread INTEGER NOT NULL, body TEXT NOT NULL, time INTEGER NOT NULL,
 	PRIMARY KEY (chan, thread));
 CREATE TABLE IF NOT EXISTS highlights (word TEXT PRIMARY KEY, time INTEGER NOT NULL);
+-- Files being uploaded (files.go): sealed copies wait in TC_HOME/uploads
+-- until their blobs are on the server, then an outbox entry sends the message.
+CREATE TABLE IF NOT EXISTS uploads (
+	id INTEGER PRIMARY KEY AUTOINCREMENT, chan INTEGER NOT NULL, thread INTEGER NOT NULL,
+	body TEXT NOT NULL, files BLOB NOT NULL, time INTEGER NOT NULL, failed TEXT NOT NULL DEFAULT '');
 -- Reactions other people added to my messages, from react.add events (the
 -- message itself only keeps who reacted, not when). Feeds the activity view.
 CREATE TABLE IF NOT EXISTS reacts (
@@ -388,7 +393,7 @@ func setMember(q dbtx, chanID, user uint64, in bool) error {
 
 // ---- messages ----
 
-const msgCols = `id, chan, author, body, thread, time, edited, deleted, reactions, agent, via`
+const msgCols = `id, chan, author, body, thread, time, edited, deleted, reactions, agent, via, files`
 
 // upsertMsg stores a message of a plaintext channel as is (tests; server
 // messages go through Client.saveMsg, which judges encrypted ones).
@@ -403,9 +408,19 @@ func storeMsg(q dbtx, m proto.Message, sec Sec, mid []byte, replace bool) error 
 	if !replace {
 		verb = "INSERT OR IGNORE"
 	}
-	_, err := q.Exec(verb+` INTO msgs (`+msgCols+`, enc, sec, mid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.Chan, m.Author, m.Body, m.Thread, m.Time, m.Edited, m.Deleted, encodeReactions(m.Reactions), m.Agent, m.Via, m.Enc, sec, mid)
+	_, err := q.Exec(verb+` INTO msgs (`+msgCols+`, enc, sec, mid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.Chan, m.Author, m.Body, m.Thread, m.Time, m.Edited, m.Deleted, encodeReactions(m.Reactions), m.Agent, m.Via,
+		encodeFiles(m.Files), m.Enc, sec, mid)
 	return err
+}
+
+// encodeFiles is msgs.files: msgpack []proto.File, NULL without files.
+func encodeFiles(f []proto.File) []byte {
+	if len(f) == 0 {
+		return nil
+	}
+	b, _ := proto.Marshal(f)
+	return b
 }
 
 func encodeReactions(r map[string][]uint64) string {
@@ -419,12 +434,16 @@ func encodeReactions(r map[string][]uint64) string {
 func scanMsg(sc interface{ Scan(...any) error }, extra ...any) (proto.Message, error) {
 	var m proto.Message
 	var reactions string
-	dst := append([]any{&m.ID, &m.Chan, &m.Author, &m.Body, &m.Thread, &m.Time, &m.Edited, &m.Deleted, &reactions, &m.Agent, &m.Via}, extra...)
+	var files []byte
+	dst := append([]any{&m.ID, &m.Chan, &m.Author, &m.Body, &m.Thread, &m.Time, &m.Edited, &m.Deleted, &reactions, &m.Agent, &m.Via, &files}, extra...)
 	if err := sc.Scan(dst...); err != nil {
 		return m, err
 	}
 	if reactions != "{}" {
 		_ = json.Unmarshal([]byte(reactions), &m.Reactions)
+	}
+	if len(files) > 0 {
+		_ = proto.Unmarshal(files, &m.Files)
 	}
 	return m, nil
 }
@@ -501,15 +520,23 @@ type outboxEntry struct {
 	// re-encrypting with the same encNonce (encmsg.go).
 	enc      []byte
 	encNonce []byte
-	sent     uint64 // 0: never handed to the server
+	sent     uint64 // last_seq+1 at the first send attempt (0: never attempted)
 	via      string
+	// files are the attached files with all their metadata (files.go);
+	// upload is the uploads row they came from.
+	files  []proto.File
+	upload int64
 }
 
-const outboxCols = `id, nonce, chan, thread, body, time, failed, msg, enc, encnonce, sent, via`
+const outboxCols = `id, nonce, chan, thread, body, time, failed, msg, enc, encnonce, sent, via, files, upload`
 
 func scanOutbox(sc interface{ Scan(...any) error }) (outboxEntry, error) {
 	var e outboxEntry
-	err := sc.Scan(&e.id, &e.nonce, &e.chan_, &e.thread, &e.body, &e.time, &e.failed, &e.msg, &e.enc, &e.encNonce, &e.sent, &e.via)
+	var files []byte
+	err := sc.Scan(&e.id, &e.nonce, &e.chan_, &e.thread, &e.body, &e.time, &e.failed, &e.msg, &e.enc, &e.encNonce, &e.sent, &e.via, &files, &e.upload)
+	if err == nil && len(files) > 0 {
+		err = proto.Unmarshal(files, &e.files)
+	}
 	return e, err
 }
 
@@ -537,7 +564,7 @@ func matchOutbox(q dbtx, m proto.Message) error {
 
 // wipe empties the whole cache, outbox included (new login).
 func wipe(q dbtx) error {
-	for _, t := range []string{"meta", "users", "chans", "msgs", "rencs", "reads", "outbox", "devices", "device_endorse", "device_revokes", "drafts", "highlights", "reacts", "epochs", "key_shares", "pins", "groups", "notify_prefs"} {
+	for _, t := range []string{"meta", "users", "chans", "msgs", "rencs", "reads", "outbox", "uploads", "devices", "device_endorse", "device_revokes", "drafts", "highlights", "reacts", "epochs", "key_shares", "pins", "groups", "notify_prefs"} {
 		if _, err := q.Exec(`DELETE FROM ` + t); err != nil {
 			return err
 		}

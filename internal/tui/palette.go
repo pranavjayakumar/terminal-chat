@@ -35,6 +35,7 @@ type palItem struct {
 	sw         *switchItem
 	run        string // "/cmd args" to run, "/cmd " to type, or an app action
 	tabs       string // which tabs list it: letters a c p m s
+	muteCh     uint64 // the Mute / Unmute row: ⌥M acts on this channel
 	score      int
 	order      int
 }
@@ -84,9 +85,9 @@ func (m *Model) palCommands() []palItem {
 			hud.label, hud.run = "Leave huddle", "/leave-huddle"
 		}
 		out = append(out, hud)
-		mute := palItem{group: "Commands", label: "Mute " + m.chanTitle(m.active), desc: "no popups or sounds; dimmed", meta: "/notify off", icon: "🔕", run: "/notify off", tabs: "am"}
+		mute := palItem{group: "Commands", label: "Mute " + m.chanTitle(m.active), desc: "no popups or sounds; dimmed", meta: m.kn.of("⌥M"), icon: "🔕", run: "/notify off", tabs: "am", muteCh: m.active}
 		if m.muted(m.active) {
-			mute.label, mute.desc, mute.meta, mute.run = "Unmute "+m.chanTitle(m.active), "back to the default level", "/notify default", "/notify default"
+			mute.label, mute.desc, mute.run = "Unmute "+m.chanTitle(m.active), "back to the default level", "/notify default"
 		}
 		out = append(out, mute)
 	}
@@ -168,8 +169,11 @@ func (m *Model) palItems() []palItem {
 		switch {
 		case s.mention:
 			it.meta = "@" + unreadCount(max(s.unread, 1))
-		case s.unread > 0:
+		case s.unread > 0 && !(s.ch != 0 && m.muted(s.ch)): // muted: not unread, as in the sidebar
 			it.meta = unreadCount(s.unread) + " new"
+		}
+		if s.ch != 0 && m.muted(s.ch) {
+			it.desc = strings.TrimPrefix(it.desc+" · muted", " · ")
 		}
 		out = append(out, it)
 	}
@@ -347,6 +351,18 @@ func (m *Model) switcherKey(k tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 		return m.palRun(p.shown[p.sel])
+	case kMute:
+		// The highlighted channel or DM, staying in the palette: the
+		// sidebar never takes keys, so this is its keyboard mute.
+		if ch := m.palChan(); ch != 0 {
+			cmd := m.toggleMute(ch)
+			m.pal.items = m.palItems()
+			sel := p.sel
+			m.filterPalette()
+			p.sel = min(sel, max(len(p.shown)-1, 0))
+			return cmd
+		}
+		return nil
 	}
 	before := m.line.Value()
 	var cmd tea.Cmd
@@ -355,6 +371,19 @@ func (m *Model) switcherKey(k tea.KeyMsg) tea.Cmd {
 		m.filterPalette()
 	}
 	return cmd
+}
+
+// palChan is the channel or DM of the highlighted row, 0 if it isn't one
+// (a command, or a person without a DM yet).
+func (m *Model) palChan() uint64 {
+	if p := &m.pal; p.sel < len(p.shown) {
+		if it := p.shown[p.sel]; it.sw != nil {
+			return it.sw.ch
+		} else if it.muteCh != 0 {
+			return it.muteCh
+		}
+	}
+	return 0
 }
 
 // palRun does what a row says.
@@ -546,7 +575,15 @@ func (m *Model) drawPalette(c *canvas) {
 	}
 	if foot > y0+4 {
 		kx := x0 + in + 1
-		for _, k := range [][2]string{{"↑↓", "move"}, {"⏎", "open"}, {"⇥", "next tab"}, {"esc", "close"}} {
+		keys := [][2]string{{"↑↓", "move"}, {"⏎", "open"}, {"⇥", "next tab"}, {"esc", "close"}}
+		if ch := m.palChan(); ch != 0 {
+			mute := "mute"
+			if m.muted(ch) {
+				mute = "unmute"
+			}
+			keys = append(keys, [2]string{"⌥M", mute})
+		}
+		for _, k := range keys { // ⌥M last: it goes first when room runs out
 			k[0] = m.kn.of(k[0])
 			if kx+strWidth(k[0])+strWidth(k[1])+4 > x0+w {
 				break

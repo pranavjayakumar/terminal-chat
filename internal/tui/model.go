@@ -205,14 +205,15 @@ type Model struct {
 	lastCanvas *canvas // the last frame, for clicks and the theme cross-fade
 	spare      *canvas // the frame before it, reused for the next
 	lastFrame  string
-	reuseFrame bool        // nothing changed since lastFrame (pointer motion)
-	blinkIdle  bool        // the cursor blink loop stopped after blinkFor without keys
-	sbForce    string      // Ctrl-B's choice below sbIconsBelow columns, this session only
-	prevCh     uint64      // the channel open before this one (catchup.go)
-	jumping    bool        // openChannel for a jump: no divider placement, no mark
-	recent     []uint64    // channels left lately, newest first, this session only
-	ag         agentUI     // personal agents (agent.go)
-	wr         inputOffers // the input's one-shot offers (writing.go)
+	reuseFrame bool            // nothing changed since lastFrame (pointer motion)
+	blinkIdle  bool            // the cursor blink loop stopped after blinkFor without keys
+	sbForce    string          // Ctrl-B's choice below sbIconsBelow columns, this session only
+	prevCh     uint64          // the channel open before this one (catchup.go)
+	jumping    bool            // openChannel for a jump: no divider placement, no mark
+	recent     []uint64        // channels left lately, newest first, this session only
+	ag         agentUI         // personal agents (agent.go)
+	wr         inputOffers     // the input's one-shot offers (writing.go)
+	saving     map[uint64]bool // messages whose files are being saved (files.go)
 }
 
 // ---- tea messages ----
@@ -1080,6 +1081,11 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case snippetMsg:
 		m.gotSnippet(msg)
 		return m, nil
+	case savedMsg:
+		return m, m.gotSaved(msg)
+	case uploadQueuedMsg:
+		m.gotUploadQueued(msg)
+		return m, nil
 	case paneReadMsg:
 		m.gotPaneText(msg)
 		return m, nil
@@ -1449,6 +1455,8 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 	switch {
 	case key == kApproval:
 		return m.jumpToApproval()
+	case key == kTab && m.attachArmed():
+		return m.attachPaste()
 	case key == kTab && m.wrapArmed():
 		m.wrapPaste()
 		return nil
@@ -1478,6 +1486,8 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 		return m.huddleHere()
 	case key == kWatch:
 		return m.watchKeyNormal()
+	case key == kMute && m.active != 0:
+		return m.toggleMute(m.active)
 	case menuKey(key) != "" && m.menuBarShown():
 		return m.menuAction(menuKey(key))
 	case key == kCtrlEnd || (key == kEnd && empty):
@@ -1557,7 +1567,9 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 				if before == "" {
 					m.wr.pasteVal = m.input.Value() // the whole input was pasted
 				}
-				m.offerWrap(before)
+				if !m.offerAttach(before, string(k.Runes)) {
+					m.offerWrap(before)
+				}
 			}
 		}
 	} else {
@@ -1847,6 +1859,9 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 		m.setDraft(m.dk, m.input.Value())
 		m.editing = sel.ID
 		m.editOrig = sanitize.Text(sel.Body)
+		if hidesBody(sel) {
+			m.editOrig = "" // the 📎 stand-in isn't text to edit: what is typed becomes the caption
+		}
 		m.input.SetValue(m.editOrig)
 		m.layoutInput()
 		m.setHint("editing — Enter to save, Esc to cancel")
@@ -1915,6 +1930,11 @@ func (m *Model) selectKey(k tea.KeyMsg) (tea.Cmd, bool) {
 		return nil, true
 	case kSelLink:
 		return m.openSelectedLink(sel), true
+	case kSelSave, kSelOpen:
+		if len(sel.Files) == 0 || sel.Deleted {
+			return nil, false // no file: the letter leaves select mode and is typed, as before
+		}
+		return m.saveFiles(sel, -1, key == kSelOpen), true
 	case kSelMenu, kEnter:
 		m.openMsgMenu()
 		return nil, true

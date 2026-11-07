@@ -134,6 +134,17 @@ not argv, so it isn't visible for the length of the join.
   server before teammates turn it on.
 - Backup: `sqlite3 /var/lib/tc/tc.db ".backup /root/tc-$(date +%F).db"` (safe while running), plus
   `server.key`/`server.crt` — **losing the key invalidates every client's pin and every invite**.
+- **Files** (PROTOCOL.md §16) are not in `tc.db`: their sealed bytes live under
+  `/var/lib/tc/blobs/` (one file per upload, named by its id; the database only records who
+  uploaded what into which channel). Back them up **after** the database, e.g.
+  `rsync -a /var/lib/tc/blobs/ /root/tc-blobs/` (safe while running): a file sent in between
+  then has bytes but no row and is swept within the hour after a restore, while the other order
+  would leave rows whose bytes are missing (downloads of those fail). The bytes are ciphertext:
+  in encrypted channels the server never holds the keys; in plaintext channels the keys are in
+  `tc.db`, so the two together are as sensitive as the database. Restore both together.
+  `tc server --max-upload 25MiB` caps one file, `--user-quota 1GiB` one person's files and
+  `--blob-quota 10GiB` all of them (uploads past them are refused); `du -sh /var/lib/tc/blobs` shows the use. Uploads never attached to a
+  message are removed 24 hours after their last chunk, and deleting a message deletes its files.
 - **Restoring a backup breaks end-to-end encrypted channels that changed keys after it was taken.**
   Clients pin each encrypted channel's key chain; a restored server shows an older one, which is
   exactly what a server hiding a membership change would do, so those channels go into a red

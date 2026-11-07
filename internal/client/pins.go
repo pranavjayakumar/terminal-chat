@@ -150,7 +150,8 @@ func (c *Client) Pins(ch uint64) []Message {
 		var id, mch, author, thread, time, edited, sec sql.NullInt64
 		var body, reactions, agent, via sql.NullString
 		var deleted sql.NullBool
-		if err := rows.Scan(&data, &id, &mch, &author, &body, &thread, &time, &edited, &deleted, &reactions, &agent, &via, &sec); err != nil {
+		var files []byte
+		if err := rows.Scan(&data, &id, &mch, &author, &body, &thread, &time, &edited, &deleted, &reactions, &agent, &via, &files, &sec); err != nil {
 			break
 		}
 		var m proto.Message
@@ -160,6 +161,9 @@ func (c *Client) Pins(ch uint64) []Message {
 				Thread: uint64(thread.Int64), Time: time.Int64, Edited: edited.Int64, Deleted: deleted.Bool, Agent: agent.String, Via: via.String}
 			if reactions.String != "" && reactions.String != "{}" {
 				_ = json.Unmarshal([]byte(reactions.String), &m.Reactions)
+			}
+			if len(files) > 0 {
+				_ = proto.Unmarshal(files, &m.Files)
 			}
 		case len(data) > 0 && proto.Unmarshal(data, &m) == nil:
 			sec.Int64 = -1

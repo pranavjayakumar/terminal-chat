@@ -58,6 +58,7 @@ var commandTable = []cmdSpec{
 	{name: "reminders", desc: "pending reminders with ids"},
 	{name: "remind-delete", args: "id", desc: "cancel a reminder"},
 	{name: "snippet", args: "file[:range]", desc: "send file lines as a code block (preview first)"},
+	{name: "upload", args: "path [caption]", desc: "send a file or image (or drag it into the input, then Tab)"},
 	{name: "webhook", args: "name", desc: "webhook here; copies curl"},
 	{name: "webhooks", desc: "list webhooks"},
 	{name: "webhook-delete", args: "id", desc: "delete a webhook"},

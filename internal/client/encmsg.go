@@ -92,6 +92,8 @@ type plainMsg struct {
 	Agent string `msgpack:"agent,omitempty"`
 	// Via is Message.Via, signed: in e2e channels only this one counts.
 	Via string `msgpack:"via,omitempty"`
+	// Files are the attached files, with their keys (§16.2).
+	Files []proto.File `msgpack:"files,omitempty"`
 }
 
 var zeroRef = make([]byte, e2ecrypto.IDSize)
@@ -288,12 +290,19 @@ func (c *Client) prepMsg(q dbtx, m *proto.Message, memo *keyMemo) (Sec, []byte) 
 func (c *Client) judge(q dbtx, m *proto.Message, memo *keyMemo) (sec Sec, mid []byte, sts int64, keep bool) {
 	sid, hasSID := qServerID(q)
 	if m.Enc == nil {
+		if m.Deleted || !validFiles(m.Files) {
+			m.Files = nil // malformed: shown as text only, never offered for download
+		}
 		if m.Deleted || !c.chanIsE2E(q, sid, hasSID, m.Chan) {
 			return SecPlain, nil, 0, false
 		}
 		return c.plainSec(q, m.Chan, m.ID), nil, 0, false
 	}
+	srv := blobIDs(m.Files)
 	sec, mid, sts = c.judgeEnc(q, sid, hasSID, m, memo)
+	if sec == SecWaiting {
+		m.Files = srv
+	}
 	if sec == SecInvalid {
 		m.Body = ""
 	}
@@ -313,23 +322,29 @@ func (c *Client) judge(q dbtx, m *proto.Message, memo *keyMemo) (sec Sec, mid []
 
 func (c *Client) judgeEnc(q dbtx, sid e2ecrypto.ServerID, hasSID bool, m *proto.Message, memo *keyMemo) (Sec, []byte, int64) {
 	body := m.Body
-	m.Body = ""
+	// The server's files of an encrypted message are blob ids only; what
+	// counts is the sealed Plain's.
+	srvFiles := blobIDs(m.Files)
+	m.Body, m.Files = "", nil
 	if _, err := e2ecrypto.ParseEnc(m.Enc); err != nil || body != "" {
 		return SecInvalid, nil, 0
 	}
 	mid := e2ecrypto.MID(m.Enc)
 	// The same bytes judged before, for the same message, keep their
 	// verdict (history refetches).
-	var oldEnc []byte
+	var oldEnc, oldFiles []byte
 	var oldSec Sec
 	var oldBody string
 	var oldCh, oldAuthor, oldThread uint64
 	var oldSTS int64
-	if q.QueryRow(`SELECT enc, sec, body, chan, author, thread, sts FROM msgs WHERE id = ?`, m.ID).
-		Scan(&oldEnc, &oldSec, &oldBody, &oldCh, &oldAuthor, &oldThread, &oldSTS) == nil &&
+	if q.QueryRow(`SELECT enc, sec, body, chan, author, thread, sts, files FROM msgs WHERE id = ?`, m.ID).
+		Scan(&oldEnc, &oldSec, &oldBody, &oldCh, &oldAuthor, &oldThread, &oldSTS, &oldFiles) == nil &&
 		bytes.Equal(oldEnc, m.Enc) && oldSec != SecWaiting &&
 		oldCh == m.Chan && oldAuthor == m.Author && oldThread == m.Thread {
 		m.Body = oldBody
+		if len(oldFiles) > 0 {
+			_ = proto.Unmarshal(oldFiles, &m.Files)
+		}
 		return oldSec, mid[:], oldSTS
 	}
 	// First mid wins: the server can't replay an enc as a second message.
@@ -368,7 +383,12 @@ func (c *Client) judgeEnc(q dbtx, sid e2ecrypto.ServerID, hasSID bool, m *proto.
 			return SecInvalid, mid[:], 0
 		}
 	}
-	m.Body = p.Body
+	m.Body, m.Files = p.Body, p.Files
+	if !sameBlobs(p.Files, srvFiles) || !validFiles(p.Files) {
+		// The server attaches (and deletes) the blobs it lists: files it
+		// doesn't hold for this message aren't this message's (§16.2).
+		m.Files = nil
+	}
 	// Attribution only ever leans toward the agent (§15.3): the signed
 	// claim wins, a server's claim alone still marks it, and anything an
 	// agent's device signed is the agent's.
@@ -402,8 +422,12 @@ func (c *Client) saveMsg(q dbtx, m *proto.Message, replace bool, memo *keyMemo) 
 	}
 	editEnc, renc := m.EditEnc, m.Renc
 	sec, mid, sts, keep := c.judge(q, m, memo)
-	if sec == SecInvalid || sec == SecWaiting {
-		m.Body = ""
+	switch sec {
+	case SecInvalid:
+		m.Body, m.Files = "", nil
+	case SecWaiting:
+		// Kept: the server's blob ids, to check the Plain's against later.
+		m.Body, m.Files = "", blobIDs(m.Files)
 	}
 	if keep {
 		return sec, nil // the verified copy stays
@@ -429,7 +453,7 @@ func (c *Client) saveMsg(q dbtx, m *proto.Message, replace bool, memo *keyMemo) 
 	if mid != nil {
 		// Lowest id wins whatever the arrival order: a copy of this enc
 		// under a later id is a replay.
-		if _, err := q.Exec(`UPDATE msgs SET sec = ?, body = '' WHERE mid = ? AND id > ? AND sec != ?`,
+		if _, err := q.Exec(`UPDATE msgs SET sec = ?, body = '', files = NULL WHERE mid = ? AND id > ? AND sec != ?`,
 			SecInvalid, mid, m.ID, SecInvalid); err != nil {
 			return sec, err
 		}
@@ -543,14 +567,14 @@ func (c *Client) reopenMsgs(sid e2ecrypto.ServerID, chans []proto.Channel) {
 		if sec == SecWaiting {
 			continue
 		}
-		body := m.Body
+		body, files := m.Body, m.Files
 		if sec != SecE2E {
-			body, sts = "", 0
+			body, sts, files = "", 0, nil
 		}
 		// Only the row we judged: an event applied meanwhile (a delete, a
 		// refetch with other bytes or metadata) wins.
-		res, err := c.db.Exec(`UPDATE msgs SET body = ?, sec = ?, sts = ? WHERE id = ? AND sec = ? AND deleted = 0
-			AND enc = ? AND chan = ? AND author = ? AND thread = ?`, body, sec, sts, m.ID, SecWaiting, m.Enc, m.Chan, m.Author, m.Thread)
+		res, err := c.db.Exec(`UPDATE msgs SET body = ?, files = ?, sec = ?, sts = ? WHERE id = ? AND sec = ? AND deleted = 0
+			AND enc = ? AND chan = ? AND author = ? AND thread = ?`, body, encodeFiles(files), sec, sts, m.ID, SecWaiting, m.Enc, m.Chan, m.Author, m.Thread)
 		if n, _ := rowsAffected(res); err != nil || n == 0 {
 			continue
 		}
@@ -627,7 +651,7 @@ func (c *Client) seal(sid e2ecrypto.ServerID, dev *e2ecrypto.DeviceKeys, ep trus
 	if ep.Key == nil {
 		return nil, failErr{noKeyReason}
 	}
-	p := plainMsg{T: "msg", TS: e.time, Body: e.body, Agent: c.AgentHandle(), Via: e.via}
+	p := plainMsg{T: "msg", TS: e.time, Body: e.body, Agent: c.AgentHandle(), Via: e.via, Files: slices.Clone(e.files)}
 	if e.thread != 0 {
 		ref, err := c.threadRef(e.chan_, e.thread)
 		if err != nil {
@@ -636,6 +660,11 @@ func (c *Client) seal(sid e2ecrypto.ServerID, dev *e2ecrypto.DeviceKeys, ep trus
 		p.ThreadRef = ref
 	}
 	raw, err := proto.Marshal(p)
+	for err == nil && len(raw) > e2ecrypto.MaxPlainSize && dropThumb(p.Files) {
+		// Queued when the channel wasn't encrypted (no size check then):
+		// previews go before the message would.
+		raw, err = proto.Marshal(p)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -729,7 +758,7 @@ func (c *Client) sealOffline(e outboxEntry) []byte {
 		return nil
 	}
 	ep, ok, err := c.trust.Epoch(sid, e.chan_, head.Epoch)
-	if err != nil || !ok || ep.Key == nil || !slices.Equal(ep.Roster, c.liveMembers(ch)) || c.revokedStale(sid, e.chan_, ep) {
+	if err != nil || !ok || ep.Key == nil || !slices.Equal(ep.Roster, c.liveMembers(ch)) || c.epochStale(sid, e.chan_, ep) {
 		return nil
 	}
 	dev, err := c.trust.DeviceKeys(sid, c.Me().ID)
@@ -744,7 +773,8 @@ func (c *Client) sealOffline(e outboxEntry) []byte {
 }
 
 // encCurrent reports whether a queued entry's enc is still for the
-// channel's verified head, whose roster is still the current members.
+// channel's verified head, whose roster is still the current members, and
+// which needs no rotation (epochStale).
 func (c *Client) encCurrent(e outboxEntry) bool {
 	h, err := e2ecrypto.ParseEnc(e.enc)
 	if err != nil {
@@ -764,7 +794,7 @@ func (c *Client) encCurrent(e outboxEntry) bool {
 	}
 	ep, ok, err := c.trust.Epoch(sid, e.chan_, head.Epoch)
 	// not rosterNow: an unconfirmed member must reach sealWith
-	return err == nil && ok && ep.Key != nil && slices.Equal(ep.Roster, c.liveMembers(ch)) && !c.revokedStale(sid, e.chan_, ep)
+	return err == nil && ok && ep.Key != nil && slices.Equal(ep.Roster, c.liveMembers(ch)) && !c.epochStale(sid, e.chan_, ep)
 }
 
 // sealEntry encrypts an outbox entry for sending (§13.4 "Sending"): it
@@ -801,6 +831,56 @@ func (c *Client) revokedStale(sid e2ecrypto.ServerID, ch uint64, ep trust.Epoch)
 	}
 	hit, err := c.trust.RevokedAfter(sid, ep.Roster, ep.Seq)
 	return err != nil || hit
+}
+
+// epochStale reports whether an entry should go through sealWith rather
+// than be sealed (or kept sealed) under ep: revokedStale, or a roster user
+// ep sealed nothing to has since gained a device this device verified
+// (#197; sealWith then tries one rotation, but seals under ep if it fails).
+func (c *Client) epochStale(sid e2ecrypto.ServerID, ch uint64, ep trust.Epoch) bool {
+	return c.revokedStale(sid, ch, ep) || c.boxlessGained(sid, ch, ep)
+}
+
+// boxlessGained reports whether a roster user other than us, none of
+// whose devices ep boxed, now has a verified active device. An honest
+// server refuses a bundle without a box for every member with a device
+// (§13.3), so that device came after ep: without a new epoch it reads
+// nothing until a member who is online answers its key.need, and a script
+// that only runs tc send never is. The rotation boxes every verified device
+// (commitBundle), so this asks for one rotation, not one per send, and its
+// backlink opens what was sealed under ep. Epochs recorded without Boxed
+// (before trust schema v11) don't say, so they never count. After a failed
+// try it stays quiet for timing.keyNeed, so a rotation that keeps failing
+// costs one attempt per interval, not one per message.
+func (c *Client) boxlessGained(sid e2ecrypto.ServerID, ch uint64, ep trust.Epoch) bool {
+	if ep.Boxed == nil {
+		return false
+	}
+	c.mu.Lock()
+	t, tried := c.boxlessTried[[2]uint64{ch, uint64(ep.Epoch)}]
+	c.mu.Unlock()
+	if tried && time.Since(t) < c.timing.keyNeed {
+		return false
+	}
+	me := c.Me().ID
+	for _, u := range ep.Roster {
+		if u == me {
+			continue
+		}
+		devs, err := c.trust.Devices(sid, u)
+		if err != nil {
+			return false
+		}
+		active, boxed := false, false
+		for _, d := range devs {
+			active = active || !d.Revoked
+			boxed = boxed || slices.Contains(ep.Boxed, d.ID)
+		}
+		if active && !boxed {
+			return true
+		}
+	}
+	return false
 }
 
 // sealWith is sealEntry for anything sealed with channel chID's current
@@ -855,6 +935,7 @@ func (c *Client) sealWith(ctx context.Context, s *session, chID uint64, prev []b
 	// it was signed by): when the chain is behind what the cache shows,
 	// catch up again a few times before calling it "no key".
 	const attempts = 4
+	refreshed := false // boxlessGained's rotation was tried
 	behind := func(attempt int) error {
 		if attempt == attempts-1 {
 			return failErr{noKeyReason}
@@ -916,6 +997,28 @@ func (c *Client) sealWith(ctx context.Context, s *session, chID uint64, prev []b
 			cur, _, _ := c.trust.Epoch(sid, ch.ID, head.Epoch)
 			rotate = !slices.Equal(cur.Roster, c.rosterNow(ch)) || (prev != nil && head.Epoch == prevEpoch) ||
 				c.revokedStale(sid, ch.ID, cur)
+			if !rotate && !refreshed && c.boxlessGained(sid, ch.ID, cur) {
+				// Best effort, once: cur is still safe to seal under (the
+				// new device just can't read it yet), so a failed rotation
+				// never holds the message back, nor uses up a pass.
+				refreshed = true
+				attempt--
+				if err := c.rotateOnce(ctx, s, sid, ch.ID); err == nil {
+					prev = nil
+				} else if errors.Is(err, ErrOffline) || ctx.Err() != nil {
+					return nil, ErrOffline
+				} else {
+					c.mu.Lock()
+					c.boxlessTried[[2]uint64{ch.ID, uint64(cur.Epoch)}] = time.Now()
+					c.mu.Unlock()
+					if !isStale(err) { // e.g. a rival's bundle still arriving
+						if err := behind(0); err != nil {
+							return nil, err
+						}
+					}
+				}
+				continue
+			}
 		}
 		if rotate && attempt < attempts-1 {
 			err := c.rotateOnce(ctx, s, sid, ch.ID)

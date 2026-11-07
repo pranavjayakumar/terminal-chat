@@ -182,6 +182,10 @@ func openStore(path string) (*store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrating agents: %w", err)
 	}
+	if err := migrateBlobs(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	s := &store{db: db}
 	err = db.QueryRow(`SELECT v FROM meta WHERE k = 'server_id'`).Scan(&s.serverID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -423,7 +427,7 @@ func visibleChannels(ctx context.Context, q querier, u uint64) ([]proto.Channel,
 	return out, nil
 }
 
-const msgCols = `id, chan, author, body, thread, time, edited, deleted, enc, edit_enc, del_enc, mid, agent, via`
+const msgCols = `id, chan, author, body, thread, time, edited, deleted, enc, edit_enc, del_enc, mid, agent, via, files`
 
 func scanMessages(ctx context.Context, q querier, query string, args ...any) ([]proto.Message, error) {
 	rows, err := q.QueryContext(ctx, query, args...)
@@ -433,9 +437,16 @@ func scanMessages(ctx context.Context, q querier, query string, args ...any) ([]
 	var out []proto.Message
 	for rows.Next() {
 		var m proto.Message
-		if err := rows.Scan(&m.ID, &m.Chan, &m.Author, &m.Body, &m.Thread, &m.Time, &m.Edited, &m.Deleted, &m.Enc, &m.EditEnc, &m.DelEnc, &m.Mid, &m.Agent, &m.Via); err != nil {
+		var files []byte
+		if err := rows.Scan(&m.ID, &m.Chan, &m.Author, &m.Body, &m.Thread, &m.Time, &m.Edited, &m.Deleted, &m.Enc, &m.EditEnc, &m.DelEnc, &m.Mid, &m.Agent, &m.Via, &files); err != nil {
 			rows.Close()
 			return nil, err
+		}
+		if len(files) > 0 {
+			if err := proto.Unmarshal(files, &m.Files); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("message %d files: %w", m.ID, err)
+			}
 		}
 		out = append(out, m)
 	}

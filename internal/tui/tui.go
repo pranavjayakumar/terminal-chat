@@ -49,6 +49,10 @@ type Backend interface {
 	Presence(user uint64) client.Presence
 
 	Send(ch uint64, body string, thread uint64) error
+	// Files (PROTOCOL.md §16; client/files.go).
+	SendFiles(ch, thread uint64, caption string, paths ...string) (int64, error)
+	Download(ctx context.Context, msg uint64, i int, dir string, progress func(done, total int64)) (string, error)
+	MaxUpload() int64
 	RetryFailed(local int64) error
 	DiscardFailed(local int64) error
 	MarkRead(ch, seq uint64) error
@@ -161,6 +165,7 @@ func RunWatch(ctx context.Context, c *client.Client, version, watch string) erro
 	o.FontFallback = symbolsFallback(os.Getenv)
 	o.Hyperlinks = hyperlinks(os.Getenv)
 	o.OpenURL = defaultOpenURL
+	o.OpenFile = defaultOpenFile
 	o.NoBrowser = runtime.GOOS != "darwin" && os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == ""
 	o.UpdateCheck = func() string {
 		return release.Check(ctx, c.Home(), version, release.NewSource(), time.Now())
@@ -250,6 +255,11 @@ type Options struct {
 	// NoBrowser: a Linux session with no display, where xdg-open would
 	// start and fail later; links are copied instead.
 	NoBrowser bool
+	// OpenFile opens a saved file with the desktop opener (o on a file);
+	// nil (tests) or over SSH: o only saves.
+	OpenFile func(context.Context, string) error
+	// DownloadDir is where s and o save files; "": client.DownloadsDir().
+	DownloadDir string
 
 	// AgentDir is my agent's home (internal/agent/home) on this machine;
 	// "": tc doesn't know of one (tests).

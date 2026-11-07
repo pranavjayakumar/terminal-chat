@@ -35,6 +35,12 @@ type Config struct {
 	// MemberInvites lets non-admins create, list and revoke their own
 	// invites, within proto.MaxMember* limits (cap member_invites).
 	MemberInvites bool
+	// MaxUpload is the largest file in bytes (0: proto.DefaultMaxUpload);
+	// BlobQuota the room for all files together (0: DefaultBlobQuota).
+	MaxUpload int64
+	BlobQuota int64
+	// UserQuota is the room for one user's files (0: DefaultUserQuota).
+	UserQuota int64
 }
 
 // Server is a running tc server.
@@ -46,6 +52,8 @@ type Server struct {
 	log  *slog.Logger
 	hk   *hookState
 	hud  *huddles
+	// blobs is the on-disk store of uploaded files (blobs.go).
+	blobs *blobStore
 	// tamper holds the malicious-server test hooks; an empty struct unless
 	// built with -tags tctamper (tamper_on.go).
 	tamper tamperState
@@ -72,6 +80,8 @@ type Server struct {
 	agentOnline map[uint64]int
 	alimits     map[uint64]*bucket
 	awlimits    map[uint64]*bucket
+	blimits     map[uint64]*bucket // blob.put chunks
+	glimits     map[uint64]*bucket // blob.get chunks
 
 	remindWake chan struct{} // nudges the reminder scheduler
 	inc        *incarnation  // incarnation.go
@@ -131,8 +141,14 @@ func New(cfg Config) (*Server, error) {
 		agents:   map[uint64]proto.Agent{}, agentAccess: map[uint64]map[uint64]int64{},
 		chanE2E: map[uint64]bool{}, agentDMs: map[uint64]uint64{}, agentOnline: map[uint64]int{},
 		alimits: map[uint64]*bucket{}, awlimits: map[uint64]*bucket{},
+		blimits: map[uint64]*bucket{}, glimits: map[uint64]*bucket{},
+		blobs:      &blobStore{dir: filepath.Join(cfg.DataDir, "blobs")},
 		remindWake: make(chan struct{}, 1),
 		hud:        newHuddles(),
+	}
+	if err := os.MkdirAll(s.blobs.dir, 0o700); err != nil {
+		st.close()
+		return nil, fmt.Errorf("creating blob dir: %w", err)
 	}
 	if s.hk, err = newHookState(cfg.DataDir, func() time.Time { return s.cfg.Now() }); err != nil {
 		st.close()
@@ -369,6 +385,11 @@ func (s *Server) Serve(ctx context.Context, ln transport.Listener) error {
 		defer wg.Done()
 		s.incLoop(rctx)
 	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.blobLoop(rctx)
+	}()
 	if hl := transport.HTTPListener(ln); hl != nil {
 		defer s.serveHTTP(ctx, hl)()
 	}
@@ -434,26 +455,31 @@ type bucket struct {
 
 // Sends: 30 burst, refilling 3/s. Other write ops (edit, react, channel
 // changes, read markers) share a separate, looser bucket.
-func (s *Server) allowSend(u uint64) bool  { return s.take(s.limits, u, 30, 3) }
-func (s *Server) allowWrite(u uint64) bool { return s.take(s.wlimits, u, 60, 5) }
+func (s *Server) allowSend(u uint64) bool { return s.take(s.limits, u, 30, 3) }
 
 // An agent session spends its own buckets, so a busy agent never slows its
-// owner down.
-func (s *Server) allowSendSess(sess *session, u uint64) bool {
+// owner down. Refused, they also say how long until a token is back
+// (retry_after_ms, §5).
+func (s *Server) allowSendSess(sess *session, u uint64) (bool, time.Duration) {
 	if sess != nil && sess.agent != nil {
-		return s.take(s.alimits, u, 30, 3)
+		return s.takeWait(s.alimits, u, 30, 3)
 	}
-	return s.allowSend(u)
+	return s.takeWait(s.limits, u, 30, 3)
 }
 
-func (s *Server) allowWriteSess(sess *session) bool {
+func (s *Server) allowWriteSess(sess *session) (bool, time.Duration) {
 	if sess.agent != nil {
-		return s.take(s.awlimits, sess.user.ID, 60, 5)
+		return s.takeWait(s.awlimits, sess.user.ID, 60, 5)
 	}
-	return s.allowWrite(sess.user.ID)
+	return s.takeWait(s.wlimits, sess.user.ID, 60, 5)
 }
 
 func (s *Server) take(m map[uint64]*bucket, u uint64, burst, perSec float64) bool {
+	ok, _ := s.takeWait(m, u, burst, perSec)
+	return ok
+}
+
+func (s *Server) takeWait(m map[uint64]*bucket, u uint64, burst, perSec float64) (bool, time.Duration) {
 	now := s.cfg.Now()
 	b := m[u]
 	if b == nil {
@@ -463,10 +489,10 @@ func (s *Server) take(m map[uint64]*bucket, u uint64, burst, perSec float64) boo
 	b.tokens = min(burst, b.tokens+now.Sub(b.last).Seconds()*perSec)
 	b.last = now
 	if b.tokens < 1 {
-		return false
+		return false, wait(b, perSec)
 	}
 	b.tokens--
-	return true
+	return true, 0
 }
 
 // UserCount returns the number of registered users.

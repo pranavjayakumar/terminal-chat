@@ -24,6 +24,8 @@ const usage = `tc — terminal team chat
   tc login                   show this computer's tc://host:port#pin
   tc send <#chan|@user|@your-agent> [message...]   (reads stdin if no message)
   tc send <#chan|@user> --file path[:start[-end]] [--context N] [message...]
+  tc send <#chan|@user> --attach file [--attach file2] [caption...]
+                             send files and images (sealed per file; end-to-end in encrypted channels)
   tc tail <#chan>            stream a channel
   tc watch @user             watch the pane @user streams in a huddle (/pair; joins it; Esc leaves)
   tc notify [--to #chan|@user|@me] [--on-fail] -- <cmd...>
@@ -53,7 +55,7 @@ const usage = `tc — terminal team chat
   tc users disable @user [--yes]
                              (admin) shut an account out for good, e.g. after a stolen SSH key
   tc server [--listen :7443] [--public host:port] [--data dir] [--member-invites=false]
-            [--max-pending 512] [--max-pending-per-source 32]
+            [--max-pending 512] [--max-pending-per-source 32] [--max-upload 25MiB] [--blob-quota 10GiB] [--user-quota 1GiB]
   tc server invite [--uses N] [--ttl 72h] [--admin] [--key github:user] [--raw]
   tc fonts install|status|test|remove
                              tc's icon font, for sharper icons (Settings › Icons picks them)

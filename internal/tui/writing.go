@@ -40,6 +40,14 @@ type inputOffers struct {
 	dk      draftKey // where the offer was made
 
 	pasteVal string // the input right after the last paste
+
+	// A dragged-in file path or an over-long paste (files.go): Tab sends
+	// attachPaths, or attachText as paste.txt, and drops runes
+	// [attachFrom, attachTo) of attachVal from the input.
+	attachVal            string
+	attachFrom, attachTo int
+	attachPaths          []string
+	attachText           string
 }
 
 // dropWriteHints ends any offer (the input changed or moved elsewhere).
@@ -64,7 +72,7 @@ func (m *Model) staleOffers() {
 	if w.hint == "" || m.notice != w.hint {
 		return
 	}
-	if v := m.input.Value(); w.dk != m.dk || (w.wrapVal != "" && v != w.wrapVal) || (w.subVal != "" && v != w.subVal) {
+	if v := m.input.Value(); w.dk != m.dk || (w.wrapVal != "" && v != w.wrapVal) || (w.subVal != "" && v != w.subVal) || (w.attachVal != "" && v != w.attachVal) {
 		m.dropWriteHints()
 	}
 }
@@ -589,8 +597,9 @@ func (m *Model) showLinks() error {
 
 // ---- sidebar mute ----
 
-// toggleMute mutes a channel from the sidebar's hover button, or puts it
-// back to the default level (mentions, when the default is off).
+// toggleMute mutes a channel from the sidebar's hover button or ⌥M (the
+// open channel, or the palette's highlighted one), or puts it back to the
+// default level (mentions, when the default is off).
 func (m *Model) toggleMute(ch uint64) tea.Cmd {
 	nb, ok := m.notifyBackend()
 	if !ok {
@@ -621,7 +630,15 @@ func (m *Model) toggleMute(ch uint64) tea.Cmd {
 	if muted {
 		m.setInfo("unmuted " + m.chanTitle(ch))
 	} else {
-		m.setInfo("muted " + m.chanTitle(ch) + " · no popups or sounds · click unmute to undo")
+		// Name only a key that acts on this channel once the palette closes.
+		undo := "click unmute to undo"
+		switch {
+		case ch == m.active:
+			undo = m.kn.of("⌥M") + " undoes"
+		case m.mode == modeSwitcher:
+			undo = m.kn.of("⌥M") + " on its row undoes"
+		}
+		m.setInfo("muted " + m.chanTitle(ch) + " · no popups or sounds · " + undo)
 	}
 	return nil
 }

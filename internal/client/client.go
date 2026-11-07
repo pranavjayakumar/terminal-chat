@@ -239,6 +239,8 @@ type Client struct {
 	updates   chan Update
 
 	obKick    chan struct{}
+	upKick    chan struct{} // a new or retried upload (files.go)
+	up        upProgress
 	obMu      sync.Mutex
 	obChanged chan struct{} // closed and replaced on every outbox change
 
@@ -258,8 +260,9 @@ type Client struct {
 	needSent     map[uint64]time.Time
 	shared       map[shareKey]time.Time
 	autoTried    map[uint64]time.Time
-	owedTried    map[uint64]time.Time // rotateOwed's own throttle
-	reopenAfter  uint64               // reopenMsgs' cursor (under e2eMu)
+	owedTried    map[uint64]time.Time    // rotateOwed's own throttle
+	boxlessTried map[[2]uint64]time.Time // (chan, epoch) → when a boxlessGained rotation of it last failed
+	reopenAfter  uint64                  // reopenMsgs' cursor (under e2eMu)
 	reopenBatch  int
 	poisonSeen   map[[2]uint64]time.Time // (chan, epoch) → when our box there first proved unusable
 	probed       map[uint64]uint32       // channel → highest waiting-message epoch fetched ahead for, this session
@@ -292,6 +295,9 @@ type timing struct {
 	devWait                       time.Duration // how long an encrypted send waits for device registration
 	poisonWait                    time.Duration // how long a provably bad box waits for a key.share before rotating past it
 	historyPages                  int           // pages one History call walks at most (ops.go)
+	// sendPace spaces sends once the server rate limited one (outboxLoop):
+	// its send bucket refills 3/s (§9), plus a margin for network jitter.
+	sendPace time.Duration
 }
 
 var defaultTiming = timing{
@@ -300,6 +306,7 @@ var defaultTiming = timing{
 	dial: 15 * time.Second, handshake: 30 * time.Second, retry: 2 * time.Second,
 	type_: 6 * time.Second, keyNeed: 30 * time.Second, autoEpoch: time.Minute,
 	devWait: 15 * time.Second, poisonWait: 2 * time.Minute, historyPages: 50,
+	sendPace: 350 * time.Millisecond,
 }
 
 // DefaultHome is $TC_HOME, else ~/.config/tc.
@@ -361,13 +368,13 @@ func Open(home string) (*Client, error) {
 		home: home, cfg: cfg, db: db, trust: ts, users: users,
 		typing: map[uint64]map[uint64]time.Time{}, typingTimers: map[uint64]*time.Timer{}, readTimers: map[uint64]*time.Timer{}, readSent: map[uint64]time.Time{}, presence: map[uint64]Presence{},
 		typed:   map[uint64]time.Time{},
-		updates: make(chan Update, 1), obKick: make(chan struct{}, 1),
+		updates: make(chan Update, 1), obKick: make(chan struct{}, 1), upKick: make(chan struct{}, 1),
 		obChanged: make(chan struct{}), timing: defaultTiming,
 		e2eKick: make(chan struct{}, 1), keyNeeds: make(chan proto.Ephemeral, 32),
 		e2eSoft: map[uint64]string{}, needSent: map[uint64]time.Time{}, shared: map[shareKey]time.Time{},
 		agentName: cfg.Agent, agents: map[uint64]proto.Agent{}, agentLive: map[agentKey]map[uint64]AgentLive{}, agentPres: map[uint64]bool{},
 		granting: map[uint64]bool{}, agentPend: map[agentKey]proto.Ephemeral{},
-		autoTried: map[uint64]time.Time{}, owedTried: map[uint64]time.Time{}, poisonSeen: map[[2]uint64]time.Time{}, reopenBatch: reopenBatch, badCerts: map[[32]byte]struct{}{}, probed: map[uint64]uint32{},
+		autoTried: map[uint64]time.Time{}, owedTried: map[uint64]time.Time{}, boxlessTried: map[[2]uint64]time.Time{}, poisonSeen: map[[2]uint64]time.Time{}, reopenBatch: reopenBatch, badCerts: map[[32]byte]struct{}{}, probed: map[uint64]uint32{},
 	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	c.me = users[cfg.UserID]

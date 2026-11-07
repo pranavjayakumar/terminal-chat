@@ -22,7 +22,7 @@ func (m *Model) hoverMsg() (string, int, bool) {
 		return "", 0, false
 	}
 	switch kind {
-	case "msg", "tb", "react", "addreact", "thread", "copy", "chanlink", "fold", "appr", "url":
+	case "msg", "tb", "react", "addreact", "thread", "copy", "chanlink", "fold", "appr", "url", "file":
 	default:
 		return "", 0, false
 	}
@@ -323,6 +323,12 @@ func (m *Model) click(a string) tea.Cmd {
 		return nil
 	case "appr":
 		return m.answerApproval(x, arg)
+	case "file":
+		i, err := strconv.Atoi(arg)
+		if err != nil {
+			return nil
+		}
+		return m.saveFiles(x, i, false)
 	case "chanlink":
 		id, err := strconv.ParseUint(arg, 10, 64)
 		if err != nil {

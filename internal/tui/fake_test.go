@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -175,6 +177,15 @@ func (f *fakeClient) Send(ch uint64, body string, thread uint64) error {
 	f.sent = append(f.sent, client.Message{Message: proto.Message{Chan: ch, Body: body, Thread: thread}})
 	return nil
 }
+func (f *fakeClient) SendFiles(ch, thread uint64, caption string, paths ...string) (int64, error) {
+	f.record("sendfiles:" + strings.Join(paths, ",") + "|" + caption)
+	return -1, nil
+}
+func (f *fakeClient) Download(ctx context.Context, msg uint64, i int, dir string, progress func(done, total int64)) (string, error) {
+	f.record(fmt.Sprintf("download:%d:%d", msg, i))
+	return filepath.Join(dir, fmt.Sprintf("file%d", i)), nil
+}
+func (f *fakeClient) MaxUpload() int64                { return proto.DefaultMaxUpload }
 func (f *fakeClient) RetryFailed(local int64) error   { f.record("retry"); return nil }
 func (f *fakeClient) DiscardFailed(local int64) error { f.record("discard"); return nil }
 func (f *fakeClient) MarkRead(ch, seq uint64) error {

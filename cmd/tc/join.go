@@ -36,6 +36,9 @@ type joinEnv struct {
 	user    string // $USER
 	herdr   bool
 	login   func(ctx context.Context, home, invite, name, keyPath string) (proto.User, error)
+	// register sets up this computer's encryption device after a login
+	// (nil: skipped, for tests that fake login).
+	register func(ctx context.Context, home string) error
 }
 
 func osJoinEnv() joinEnv {
@@ -52,8 +55,28 @@ func osJoinEnv() joinEnv {
 	return joinEnv{
 		in: os.Stdin, out: os.Stdout, tty: isTerminal(os.Stdin),
 		home: client.DefaultHome(), sshDir: sshDir, gitName: gitUserName, user: u,
-		herdr: os.Getenv("HERDR_ENV") == "1", login: pausedLogin,
+		herdr: os.Getenv("HERDR_ENV") == "1", login: pausedLogin, register: registerDevice,
 	}
+}
+
+// registerWait bounds registerDevice: connecting, a first sync and the
+// device registration.
+var registerWait = 30 * time.Second
+
+// registerDevice connects once as the account in home, the way any tc run
+// does, and waits until the client registered this computer's encryption
+// device. Until then nobody can seal a key to it, so encrypted DMs and
+// channels written to a user who joined but hasn't run tc yet would wait
+// for a key.share from a member who happens to be online (#197).
+func registerDevice(ctx context.Context, home string) error {
+	ctx, cancel := context.WithTimeout(ctx, registerWait)
+	defer cancel()
+	c, err := connectedAt(ctx, home)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	return c.WaitDevice(ctx)
 }
 
 // pausedLogin is client.Login with tc background paused: a login wipes the
@@ -356,6 +379,14 @@ func joinWithKeys(ctx context.Context, env joinEnv, inv proto.Invite, code, name
 		fmt.Fprintf(env.out, "If the key is new to the account, your other computers don't trust it yet. On one that's signed in as %s, run:\n\n"+
 			"  tc devices endorse %s\n\nand then here the command it prints.\n",
 			sanitize.Line(u.Name), identity.Fingerprint(used.Pub))
+	}
+	if env.register != nil {
+		fmt.Fprintln(env.out, "Setting up end-to-end encryption for this computer…")
+		if err := env.register(ctx, env.home); err != nil {
+			// Not fatal: every tc run retries it.
+			fmt.Fprintf(env.out, "Note: this computer isn't set up for encrypted messages yet (%s); tc finishes that the next time it runs.\n",
+				sanitize.Line(err.Error()))
+		}
 	}
 	printJoinTips(env, u)
 	return nil

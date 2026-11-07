@@ -451,6 +451,28 @@ func TestEncQueuedBlockedByAlarm(t *testing.T) {
 	}
 }
 
+// #195: a conflict counts as "stored earlier" only when the cache holds
+// that message, verified as ours. A bare conflict (a lying server, or no
+// copy synced) leaves the entry failed, never silently dropped.
+func TestEncConflictWithoutStoredCopyStaysFailed(t *testing.T) {
+	d := newEncDM(t, proto.Snapshot{})
+	d.f.setOnSend(func(f *e2eFake, id uint32, a proto.SendArgs) {
+		f.write(proto.TRes, proto.Res{ID: id, Err: proto.Errf(proto.ErrConflict, "nonce reused for a different message")})
+	})
+	if err := d.c.Send(dm, "never stored", 0); err != nil {
+		t.Fatal(err)
+	}
+	nextSend(t, d.f)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := d.c.Flush(ctx); err == nil || !strings.Contains(err.Error(), "conflict") {
+		t.Fatalf("flush: %v, want the conflict", err)
+	}
+	if ms := msgsOf(d.c, dm); len(ms) != 1 || ms[0].Failed == "" {
+		t.Fatalf("messages %+v, want one failed entry", ms)
+	}
+}
+
 // RetryFailed encrypts afresh; DiscardFailed leaves no plaintext in the
 // cache file.
 func TestEncRetryAndDiscard(t *testing.T) {

@@ -61,3 +61,31 @@ func TestWaitingMessagesSayWhy(t *testing.T) {
 		}
 	}
 }
+
+// #198: under a rollback or fork alarm a message sealed under the restored
+// chain says /alarm-recover opens it; a genuinely invalid one still says
+// invalid. Every frame fits, down to 20x6.
+func TestWaitingForRestore(t *testing.T) {
+	for _, sz := range [][2]int{{20, 6}, {34, 12}, {40, 12}, {60, 16}, {80, 24}, {200, 60}} {
+		m, f := newTestModelFake(t, sz[0], sz[1])
+		e2eFake(f, client.E2EStatus{State: client.E2EAlarm, Epoch: 4, Detail: "fork: a second bundle for epoch 4"})
+		f.msgs[20] = []client.Message{
+			{Message: proto.Message{ID: 501, Chan: 20, Author: 2, Time: 1}, Sec: client.SecWaiting, Wait: client.WaitRestore},
+			{Message: proto.Message{ID: 502, Chan: 20, Author: 2, Time: 2}, Sec: client.SecInvalid},
+		}
+		run(m, m.applyUpdate(client.Update{Channels: true}))
+		run(m, m.openChannel(20))
+		v := ansi.Strip(checkView(t, m, "restore"))
+		if sz[0] >= 40 && !strings.Contains(v, "🔒 /alarm-recover") && !strings.Contains(v, "with /alarm-recover") {
+			t.Errorf("%dx%d: the command is cut off:\n%s", sz[0], sz[1], v)
+		}
+		if sz[0] < 80 {
+			continue
+		}
+		for _, want := range []string{"🔒 waiting: accept the restore with /alarm-recover", "⚠ invalid encrypted message (hidden)"} {
+			if !strings.Contains(v, want) {
+				t.Errorf("%dx%d: missing %q in\n%s", sz[0], sz[1], want, v)
+			}
+		}
+	}
+}
