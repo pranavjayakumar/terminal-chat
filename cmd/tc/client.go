@@ -54,7 +54,12 @@ func signalContext() (context.Context, context.CancelFunc) {
 
 // connected opens the client, runs it, and waits until it's online.
 func connected(ctx context.Context) (*client.Client, error) {
-	c, err := client.Open(client.DefaultHome())
+	return connectedAt(ctx, client.DefaultHome())
+}
+
+// connectedAt is connected for the account in home.
+func connectedAt(ctx context.Context, home string) (*client.Client, error) {
+	c, err := client.Open(home)
 	if err != nil {
 		return nil, err
 	}

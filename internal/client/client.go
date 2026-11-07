@@ -258,8 +258,9 @@ type Client struct {
 	needSent     map[uint64]time.Time
 	shared       map[shareKey]time.Time
 	autoTried    map[uint64]time.Time
-	owedTried    map[uint64]time.Time // rotateOwed's own throttle
-	reopenAfter  uint64               // reopenMsgs' cursor (under e2eMu)
+	owedTried    map[uint64]time.Time    // rotateOwed's own throttle
+	boxlessTried map[[2]uint64]time.Time // (chan, epoch) → when a boxlessGained rotation of it last failed
+	reopenAfter  uint64                  // reopenMsgs' cursor (under e2eMu)
 	reopenBatch  int
 	poisonSeen   map[[2]uint64]time.Time // (chan, epoch) → when our box there first proved unusable
 	probed       map[uint64]uint32       // channel → highest waiting-message epoch fetched ahead for, this session
@@ -371,7 +372,7 @@ func Open(home string) (*Client, error) {
 		e2eSoft: map[uint64]string{}, needSent: map[uint64]time.Time{}, shared: map[shareKey]time.Time{},
 		agentName: cfg.Agent, agents: map[uint64]proto.Agent{}, agentLive: map[agentKey]map[uint64]AgentLive{}, agentPres: map[uint64]bool{},
 		granting: map[uint64]bool{}, agentPend: map[agentKey]proto.Ephemeral{},
-		autoTried: map[uint64]time.Time{}, owedTried: map[uint64]time.Time{}, poisonSeen: map[[2]uint64]time.Time{}, reopenBatch: reopenBatch, badCerts: map[[32]byte]struct{}{}, probed: map[uint64]uint32{},
+		autoTried: map[uint64]time.Time{}, owedTried: map[uint64]time.Time{}, boxlessTried: map[[2]uint64]time.Time{}, poisonSeen: map[[2]uint64]time.Time{}, reopenBatch: reopenBatch, badCerts: map[[32]byte]struct{}{}, probed: map[uint64]uint32{},
 	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	c.me = users[cfg.UserID]

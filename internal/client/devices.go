@@ -290,6 +290,33 @@ func (c *Client) DeviceError() error {
 	return s.deviceErr()
 }
 
+// WaitDevice waits for the current connection's first attempt to register
+// this device for encryption (ensureDevice, the same path every run takes)
+// and returns its outcome: nil when the device is registered or the server
+// doesn't speak e2e1. tc join and tc login call it so that whoever writes to
+// a new user before their first tc run can seal to them (#197).
+func (c *Client) WaitDevice(ctx context.Context) error {
+	c.mu.Lock()
+	s := c.sess
+	c.mu.Unlock()
+	if s == nil {
+		return ErrOffline
+	}
+	if !s.e2e() {
+		return nil
+	}
+	select {
+	case <-s.devReady:
+		return nil
+	case <-s.devTried:
+		return s.deviceErr()
+	case <-s.done:
+		return ErrOffline
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // fetchDevices pages through devices.list with args and stores everything
 // in the cache (unverified, like events). A complete list of everyone marks
 // the cache full. It returns the raw certs and revokes it got.
