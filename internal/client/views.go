@@ -27,6 +27,9 @@ type Message struct {
 	// SignedTime is a verified encrypted message's own timestamp (its
 	// author's clock, Plain ts), 0 otherwise. Time is the server's claim.
 	SignedTime int64
+	// UpSent and UpTotal: a pending upload (Local < 0) has sent UpSent of
+	// UpTotal bytes (files.go).
+	UpSent, UpTotal int64
 }
 
 // MaxTimeDrift is how far a verified message's signed time may be from
@@ -238,7 +241,8 @@ func (c *Client) Messages(ch uint64, limit int) []Message {
 	out := c.queryMsgs(`SELECT `+msgCols+`, sec, sts, (SELECT COUNT(*) FROM msgs r WHERE r.thread = m.id)
 		FROM (SELECT * FROM msgs WHERE chan = ? AND thread = 0 ORDER BY id DESC LIMIT ?) m ORDER BY id`, ch, limit)
 	c.markPinned(out)
-	return append(out, c.outboxMsgs(`chan = ? AND thread = 0`, ch)...)
+	out = append(out, c.outboxMsgs(`chan = ? AND thread = 0`, ch)...)
+	return append(out, c.uploadMsgs(`chan = ? AND thread = 0`, ch)...)
 }
 
 // Thread returns the root message, its replies, then our unsent replies.
@@ -247,7 +251,8 @@ func (c *Client) Thread(root uint64) []Message {
 		FROM msgs m WHERE id = ?`, root)
 	out = append(out, c.queryMsgs(`SELECT `+msgCols+`, sec, sts, 0 FROM msgs WHERE thread = ? ORDER BY id`, root)...)
 	c.markPinned(out)
-	return append(out, c.outboxMsgs(`thread = ?`, root)...)
+	out = append(out, c.outboxMsgs(`thread = ?`, root)...)
+	return append(out, c.uploadMsgs(`thread = ?`, root)...)
 }
 
 func (c *Client) queryMsgs(q string, args ...any) []Message {
@@ -294,7 +299,7 @@ func (c *Client) outboxMsgs(where string, args ...any) []Message {
 
 func (e outboxEntry) message(me uint64, agent string) Message {
 	return Message{
-		Message: proto.Message{Chan: e.chan_, Author: me, Body: e.body, Thread: e.thread, Time: e.time, Agent: agent, Via: e.via},
+		Message: proto.Message{Chan: e.chan_, Author: me, Body: e.body, Thread: e.thread, Time: e.time, Agent: agent, Via: e.via, Files: e.files},
 		Pending: e.failed == "", Failed: e.failed, Local: e.id,
 	}
 }
