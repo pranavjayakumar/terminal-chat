@@ -24,11 +24,24 @@ jobs:
     if: github.repository == 'pranavjayakumar/terminal-chat'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      ready: ${{ steps.ready.outputs.ready }}
     steps:
+      # Until both secrets exist (README.md › Setup), do nothing rather than
+      # fail every 4 hours.
+      - id: ready
+        env:
+          A: ${{ secrets.AGENT_GH_TOKEN }}
+          C: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -n "$A" ] && [ -n "$C" ]; then echo ready=true >>"$GITHUB_OUTPUT"
+          else echo "::notice::agent-org is not set up yet (.github/agent-org/README.md)"; fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.ready.outputs.ready == 'true'
         with:
           persist-credentials: false
       - name: Merge green low-risk agent PRs
+        if: steps.ready.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
           REPO: ${{ github.repository }}
@@ -36,7 +49,7 @@ jobs:
 
   work:
     needs: merge
-    if: github.repository == 'pranavjayakumar/terminal-chat'
+    if: needs.merge.outputs.ready == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
