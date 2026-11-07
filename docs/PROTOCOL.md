@@ -967,7 +967,11 @@ Boxes may be missing for some devices: clients seal only to devices they
 verified, and the rest get the key via `key.share` (§13.7). But every roster
 user who has an active device needs at least one box, so someone of theirs
 can answer `key.need` for their other devices; a user with no devices yet
-needs none.
+needs none. Such a user's first device therefore has no K until a member
+answers its `key.need` or rotates: the next sender rotates once for it
+(§13.4 "Sending"), and `tc join` / `tc login` register the device right
+away so that the common case (joined, written to before the first `tc`
+run) gets a box in the first place.
 
 **key.fetch** `{chan, from: u32, to: u32}`: current members only (else
 `forbidden`, also for unknown channels); `1 ≤ from ≤ to` and `to − from < 256` (else `bad_request`).
@@ -1143,7 +1147,13 @@ only the creator, or any DM member), its roster isn't the current
 non-disabled members, or a device the client now knows to be revoked may
 hold its K: one it boxed, or any device of a roster user revoked after its
 `key.epoch` (clients don't rely on the server's `stale_epoch` for devices
-they know of). Once the channel has a verified epoch, the roster of
+they know of). It also tries one rotation, best effort, when a roster
+user other than itself whom the current bundle boxed nothing for now has a
+device it verified (their first device, registered after the bundle): the
+new bundle boxes it, and its `back` opens what was sealed before. Unlike
+the cases above this one never holds a message back: if that rotation
+fails, the message is sealed under the current epoch (still safe; the new
+device gets K by `key.share`). Once the channel has a verified epoch, the roster of
 a new bundle (and who a sender seals to) is only the members the verified
 head's roster includes: a verified epoch is signed by a previous-roster
 member, while the member list is the server's word, so a user who appears
