@@ -13,6 +13,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/skailama/tc/internal/e2ecrypto"
 	"github.com/skailama/tc/internal/identity"
@@ -544,7 +545,8 @@ func (s *Server) rotateTx(ctx context.Context, tx *sql.Tx, u proto.User, ch uint
 	}
 	if capped {
 		if now-head.time < rotateChanEveryMs {
-			return none, proto.Errf(proto.ErrRateLimited, "nothing changed since the channel's last rotation")
+			return none, proto.RateLimited(time.Duration(rotateChanEveryMs-(now-head.time))*time.Millisecond,
+				"nothing changed since the channel's last rotation")
 		}
 		var last sql.NullInt64
 		if err := tx.QueryRowContext(ctx, `SELECT MAX(time) FROM epochs WHERE chan = ? AND by_user = ?`,
@@ -552,7 +554,8 @@ func (s *Server) rotateTx(ctx context.Context, tx *sql.Tx, u proto.User, ch uint
 			return none, err
 		}
 		if last.Valid && now-last.Int64 < rotateEveryMs {
-			return none, proto.Errf(proto.ErrRateLimited, "nothing changed since your last rotation")
+			return none, proto.RateLimited(time.Duration(rotateEveryMs-(now-last.Int64))*time.Millisecond,
+				"nothing changed since your last rotation")
 		}
 	}
 

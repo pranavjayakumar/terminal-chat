@@ -180,6 +180,8 @@ type Res struct {
 type Error struct {
 	Code string `msgpack:"code"`
 	Msg  string `msgpack:"msg"`
+	// RetryAfterMs: on rate_limited only, cap retry_after (§5).
+	RetryAfterMs uint32 `msgpack:"retry_after_ms,omitempty"`
 }
 
 func (e *Error) Error() string {

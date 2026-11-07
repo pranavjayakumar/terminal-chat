@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/skailama/tc/internal/e2ecrypto"
@@ -84,18 +85,18 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 	s.mu.Lock()
 	disabled := s.disabled[u.ID]
 	// huddle.leave is exempt: refusing a cleanup would leave a ghost listener.
-	var limited bool
+	ok, retry := true, time.Duration(0)
 	if op == proto.OpRead && sess.agent == nil { // an agent keeps its own buckets (§15.1)
-		limited = !s.take(s.rlimits, u.ID, 60, 5)
-	} else {
-		limited = (writeOps[op] || op == proto.OpHuddleJoin) && !s.allowWriteSess(sess)
+		ok, retry = s.takeWait(s.rlimits, u.ID, 60, 5)
+	} else if writeOps[op] || op == proto.OpHuddleJoin {
+		ok, retry = s.allowWriteSess(sess)
 	}
 	s.mu.Unlock()
 	if disabled {
 		return nil, proto.Errf(proto.ErrUnauthorized, "account disabled")
 	}
-	if limited {
-		return nil, proto.Errf(proto.ErrRateLimited, "slow down")
+	if !ok {
+		return nil, proto.RateLimited(retry, "slow down")
 	}
 	switch op {
 	case proto.OpHuddleJoin:
@@ -369,8 +370,8 @@ func (s *Server) send(ctx context.Context, sess *session, u proto.User, a proto.
 		if hook != nil && !s.allowSend(hook.creator) {
 			return nil, proto.Errf(proto.ErrRateLimited, "slow down")
 		}
-		if !s.allowSendSess(sess, u.ID) {
-			return nil, proto.Errf(proto.ErrRateLimited, "slow down")
+		if ok, retry := s.allowSendSess(sess, u.ID); !ok {
+			return nil, proto.RateLimited(retry, "slow down")
 		}
 		now := s.now()
 		m := proto.Message{Chan: a.Chan, Author: u.ID, Body: a.Body, Thread: a.Thread, Time: now, Enc: a.Enc, Mid: mid,
