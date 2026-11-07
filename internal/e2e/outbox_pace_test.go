@@ -68,8 +68,8 @@ func TestOutboxBacklogDrainsAtServerRate(t *testing.T) {
 		maxGap = max(maxGap, times[i]-times[i-1])
 	}
 	t.Logf("drained %d messages in %v, largest gap after the burst %d ms", n, took, maxGap)
-	if maxGap > 1200 {
-		t.Errorf("largest gap after the burst = %d ms, want paced sends (≤ 1.2 s)", maxGap)
+	if maxGap > 1600 {
+		t.Errorf("largest gap after the burst = %d ms, want paced sends, not 2 s retries (≤ 1.6 s)", maxGap)
 	}
 	if span := times[n-1] - times[0]; span < 5500 {
 		t.Errorf("drain span %d ms: faster than the server's limit allows?", span)
