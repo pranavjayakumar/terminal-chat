@@ -258,9 +258,9 @@ type Client struct {
 	needSent     map[uint64]time.Time
 	shared       map[shareKey]time.Time
 	autoTried    map[uint64]time.Time
-	owedTried    map[uint64]time.Time // rotateOwed's own throttle
+	owedTried    map[uint64]time.Time    // rotateOwed's own throttle
 	boxlessTried map[[2]uint64]time.Time // (chan, epoch) → when a boxlessGained rotation of it last failed
-	reopenAfter  uint64               // reopenMsgs' cursor (under e2eMu)
+	reopenAfter  uint64                  // reopenMsgs' cursor (under e2eMu)
 	reopenBatch  int
 	poisonSeen   map[[2]uint64]time.Time // (chan, epoch) → when our box there first proved unusable
 	probed       map[uint64]uint32       // channel → highest waiting-message epoch fetched ahead for, this session
