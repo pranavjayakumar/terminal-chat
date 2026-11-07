@@ -75,7 +75,7 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 		// An agent never holds its owner's admin powers.
 		u.Admin = false
 	}
-	if e2eOps[op] && !sess.e2e || voiceOps[op] && !sess.voice {
+	if e2eOps[op] && !sess.e2e || voiceOps[op] && !sess.voice || watchOps[op] && !sess.watch {
 		return nil, proto.Errf(proto.ErrUnknownOp, "")
 	}
 	if op == proto.OpHuddleJoin && sess.passive {
@@ -88,7 +88,7 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 	if op == proto.OpRead && sess.agent == nil { // an agent keeps its own buckets (§15.1)
 		limited = !s.take(s.rlimits, u.ID, 60, 5)
 	} else {
-		limited = (writeOps[op] || op == proto.OpHuddleJoin) && !s.allowWriteSess(sess)
+		limited = (writeOps[op] || op == proto.OpHuddleJoin || watchOn(op, args)) && !s.allowWriteSess(sess)
 	}
 	s.mu.Unlock()
 	if disabled {
@@ -102,6 +102,10 @@ func (s *Server) dispatch(ctx context.Context, sess *session, op string, args pr
 		return withArgs(args, func(a proto.HuddleJoinArgs) (any, error) { return s.opHuddleJoin(ctx, sess, a) })
 	case proto.OpHuddleLeave:
 		return s.opHuddleLeave(sess)
+	case proto.OpHuddleShare:
+		return withArgs(args, func(a proto.HuddleShareArgs) (any, error) { return s.opHuddleShare(sess, a.On) })
+	case proto.OpHuddleWatch:
+		return withArgs(args, func(a proto.HuddleWatchArgs) (any, error) { return s.opHuddleWatch(sess, a.On) })
 	case proto.OpSend:
 		return withArgs(args, func(a proto.SendArgs) (any, error) { return s.send(ctx, sess, u, a, nil) })
 	case proto.OpEdit:

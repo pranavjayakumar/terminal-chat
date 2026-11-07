@@ -36,12 +36,14 @@ type participant struct {
 	src         uint32
 	dev, stream []byte
 	h           *huddle
+	watch       bool // asked for the shared pane's chunks (§14.5)
 }
 
 type huddle struct {
 	ch    uint64
 	enc   bool
 	parts []*participant // join order
+	live  *participant   // the one sharing a pane, if any (§14.5)
 }
 
 // huddles has its own lock so the datagram hot path never waits on a write
@@ -77,6 +79,9 @@ func newHuddles() *huddles {
 func (hs *huddles) removeLocked(p *participant) uint64 {
 	h := p.h
 	h.parts = slices.DeleteFunc(h.parts, func(q *participant) bool { return q == p })
+	if h.live == p {
+		h.live = nil
+	}
 	if len(h.parts) == 0 {
 		delete(hs.byChan, h.ch)
 	}
@@ -93,7 +98,7 @@ func (hs *huddles) roster(ch uint64) []proto.Part {
 	}
 	out := make([]proto.Part, len(h.parts))
 	for i, p := range h.parts {
-		out[i] = proto.Part{User: p.sess.user.ID, Src: p.src, Dev: p.dev, Stream: p.stream}
+		out[i] = proto.Part{User: p.sess.user.ID, Src: p.src, Dev: p.dev, Stream: p.stream, Live: h.live == p, Watch: p.watch}
 	}
 	return out
 }
@@ -391,6 +396,9 @@ func (sess *session) startDatagrams(ctx context.Context, dg transport.DatagramCo
 	sess.streamVoice = dg == nil
 	sess.dgOut = make(chan dgItem, dgQueueLen)
 	hs := sess.srv.hud
+	if sess.watch {
+		sess.startScreen(dg)
+	}
 	go func() {
 		live := time.NewTicker(hs.pingEvery)
 		defer live.Stop()
@@ -404,16 +412,22 @@ func (sess *session) startDatagrams(ctx context.Context, dg transport.DatagramCo
 				hs.mu.RLock()
 				live := hs.bySess[sess] == it.to && hs.bySess[it.from.sess] == it.from
 				hs.mu.RUnlock()
-				switch {
-				case !live:
-				case dg == nil:
-					if !sess.pushVoice(it) {
-						hs.dropped.Add(1)
+				if !live {
+					continue
+				}
+				var one [1][]byte
+				for _, b := range sess.outgoing(it.b, &one) {
+					it.b = b
+					switch {
+					case dg == nil:
+						if !sess.pushVoice(it) {
+							hs.dropped.Add(1)
+						}
+					default:
+						// Errors are a closing connection or a datagram that no
+						// longer fits the path MTU; voice just loses that frame.
+						_ = dg.SendDatagram(it.b)
 					}
-				default:
-					// Errors are a closing connection or a datagram that no
-					// longer fits the path MTU; voice just loses that frame.
-					_ = dg.SendDatagram(it.b)
 				}
 			case <-sess.done:
 				return
@@ -482,7 +496,15 @@ func (s *Server) relay(sess *session, b []byte) {
 	hs.mu.RLock()
 	defer hs.mu.RUnlock()
 	p := hs.bySess[sess]
-	if p == nil || p.src != src || (kind == proto.DgAudioEnc) != p.h.enc || !takeBucket(&sess.dgBucket, now, dgBurst, dgPerSecond) {
+	if p == nil || p.src != src || proto.EncKind(kind) != p.h.enc {
+		hs.dropped.Add(1)
+		return
+	}
+	if proto.ScreenKind(kind) {
+		relayScreen(hs, sess, p, b, now)
+		return
+	}
+	if !takeBucket(&sess.dgBucket, now, dgBurst, dgPerSecond) {
 		hs.dropped.Add(1)
 		return
 	}

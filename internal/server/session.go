@@ -84,6 +84,7 @@ type session struct {
 	byeKeys  []string // Bye.Keys for a failed handshake (cap key_hint)
 	voice    bool     // both sides advertised proto.CapVoice
 	voiceTCP bool     // the client advertised proto.CapVoiceTCP too
+	watch    bool     // the client advertised proto.CapWatch too (pane sharing, §14.5)
 	passive  bool     // proto.CapPassive: no presence, typing or huddles
 	// agentCap: both sides advertised proto.CapAgent. agent is set on an
 	// agent session (HELLO agent, §15.1): it never counts as the user
@@ -101,6 +102,11 @@ type session struct {
 	streamVoice bool
 	dgOut       chan dgItem
 	vq          []voiceOut // under mu
+	// Pane sharing (§14.5): chunks for this session, apart from voice so a
+	// keyframe's burst never crowds out audio; sq is the stream side.
+	scOut    chan dgItem
+	sq       []voiceOut // under mu
+	scBucket bucket     // only the datagram reader goroutine touches it
 	writing     atomic.Int64
 	// checkVoiceStuck's state (readLoop's ticker only); unsent is
 	// transport.Unsent unless a test replaces it.
@@ -155,7 +161,7 @@ func (s *Server) handle(ctx context.Context, conn transport.Conn) {
 	}
 	defer s.unregister(sess)
 	w := proto.Welcome{
-		Server: Version, Caps: append([]string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapVoice, proto.CapVoiceTCP, proto.CapAgent, proto.CapAgentKeyProof, proto.CapKeyEndorse, proto.CapIncarnation}, s.inviteCaps()...), ServerID: s.st.serverID, User: user, Time: s.now(),
+		Server: Version, Caps: append([]string{proto.CapHooks, proto.CapE2E, proto.CapPins, proto.CapGroups, proto.CapRemind, proto.CapVoice, proto.CapVoiceTCP, proto.CapWatch, proto.CapAgent, proto.CapAgentKeyProof, proto.CapKeyEndorse, proto.CapIncarnation}, s.inviteCaps()...), ServerID: s.st.serverID, User: user, Time: s.now(),
 		Agent: sess.agent,
 	}
 	if sess.passive {
@@ -194,6 +200,7 @@ func (s *Server) handshake(ctx context.Context, sess *session) (proto.User, stri
 	sess.e2e = slices.Contains(h.Caps, proto.CapE2E)
 	sess.voice = slices.Contains(h.Caps, proto.CapVoice)
 	sess.voiceTCP = sess.voice && slices.Contains(h.Caps, proto.CapVoiceTCP)
+	sess.watch = sess.voice && slices.Contains(h.Caps, proto.CapWatch)
 	sess.passive = slices.Contains(h.Caps, proto.CapPassive)
 	sess.agentCap = slices.Contains(h.Caps, proto.CapAgent)
 	exp, err := sess.conn.Exporter()
@@ -566,8 +573,8 @@ func (sess *session) writer() {
 		case <-sess.wake:
 		}
 		sess.mu.Lock()
-		batch, voice := sess.queue, sess.vq
-		sess.queue, sess.queued, sess.vq = nil, 0, nil
+		batch, voice, screen := sess.queue, sess.vq, sess.sq
+		sess.queue, sess.queued, sess.vq, sess.sq = nil, 0, nil, nil
 		sess.mu.Unlock()
 		sess.signalDrained()
 		// Chat first: voice waits behind it, and is dropped if that made it
@@ -587,7 +594,7 @@ func (sess *session) writer() {
 				}
 			}
 		}
-		if !sess.writeVoice(voice) {
+		if !sess.writeVoice(voice) || !sess.writeScreen(screen) {
 			sess.writerDone()
 			return
 		}
