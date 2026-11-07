@@ -30,8 +30,20 @@ func VoiceKey(k Key, sid ServerID, ch uint64, ep uint32) (Key, error) {
 type VoiceSender struct{ aead cipher.AEAD }
 
 func NewVoiceSender(vk Key, dev DevID, stream [VoiceStreamSize]byte) (*VoiceSender, error) {
-	info := make([]byte, 0, 16+IDSize+VoiceStreamSize)
-	info = append(info, "tc-voice-send-v1"...)
+	return newFrameSender(vk, "tc-voice-send-v1", dev, stream)
+}
+
+// NewScreenSender seals or opens one sender's shared-pane chunks (PROTOCOL.md
+// §14.5) under ssk = HKDF-SHA256(vk, info "tc-screen-send-v1" || dev ||
+// stream): the huddle's frame keys, with a key of its own so its seq (the
+// nonce) never meets the audio stream's.
+func NewScreenSender(vk Key, dev DevID, stream [VoiceStreamSize]byte) (*VoiceSender, error) {
+	return newFrameSender(vk, "tc-screen-send-v1", dev, stream)
+}
+
+func newFrameSender(vk Key, label string, dev DevID, stream [VoiceStreamSize]byte) (*VoiceSender, error) {
+	info := make([]byte, 0, len(label)+IDSize+VoiceStreamSize)
+	info = append(info, label...)
 	info = append(info, dev[:]...)
 	info = append(info, stream[:]...)
 	sk, err := hkdf.Key(sha256.New, vk[:], nil, string(info), KeySize)

@@ -46,12 +46,18 @@ type Part struct {
 	Src    uint32 `msgpack:"src"`
 	Dev    []byte `msgpack:"dev,omitempty"`
 	Stream []byte `msgpack:"stream,omitempty"`
+	// Live: this participant is sharing a pane (cap watch1, §14.5);
+	// Watch: it asked for the shared pane's chunks.
+	Live  bool `msgpack:"live,omitempty"`
+	Watch bool `msgpack:"watch,omitempty"`
 }
 
-// Datagram kinds (§14.3).
+// Datagram kinds (§14.3, §14.5).
 const (
-	DgAudio    byte = 0x01
-	DgAudioEnc byte = 0x02
+	DgAudio     byte = 0x01
+	DgAudioEnc  byte = 0x02
+	DgScreen    byte = 0x03 // a shared-pane chunk in a plaintext channel
+	DgScreenEnc byte = 0x04 // a sealed shared-pane chunk
 )
 
 // DgFlagEnd marks the last frame of a talk spurt.
@@ -82,8 +88,14 @@ type Datagram struct {
 	Payload []byte
 }
 
+// EncKind reports whether kind carries the encrypted header (epoch, ts).
+func EncKind(kind byte) bool { return kind == DgAudioEnc || kind == DgScreenEnc }
+
+// ScreenKind reports whether kind is a shared-pane chunk (§14.5).
+func ScreenKind(kind byte) bool { return kind == DgScreen || kind == DgScreenEnc }
+
 // RelayHeader is what the server needs: kind and src, read without
-// looking past byte DgHeaderLen.
+// looking past byte DgHeaderLen. It accepts audio and screen kinds.
 func RelayHeader(b []byte) (kind byte, src uint32, err error) {
 	if len(b) > MaxDatagram {
 		return 0, 0, ErrDgLarge
@@ -93,8 +105,8 @@ func RelayHeader(b []byte) (kind byte, src uint32, err error) {
 	}
 	kind = b[0]
 	switch kind {
-	case DgAudio:
-	case DgAudioEnc:
+	case DgAudio, DgScreen:
+	case DgAudioEnc, DgScreenEnc:
 		if len(b) < DgEncHeaderLen+dgTagLen+1 {
 			return 0, 0, ErrDgShort
 		}
@@ -104,14 +116,24 @@ func RelayHeader(b []byte) (kind byte, src uint32, err error) {
 	return kind, binary.BigEndian.Uint32(b[2:6]), nil
 }
 
-// ParseDatagram decodes a full datagram (receivers).
-func ParseDatagram(b []byte) (Datagram, error) {
+// ParseDatagram decodes a full audio datagram (receivers). Screen kinds
+// are ErrDgKind here, so a pane chunk can never reach an audio decoder.
+func ParseDatagram(b []byte) (Datagram, error) { return parseDatagram(b, false) }
+
+// ParseScreenDatagram decodes a shared-pane chunk (§14.5); audio kinds are
+// ErrDgKind.
+func ParseScreenDatagram(b []byte) (Datagram, error) { return parseDatagram(b, true) }
+
+func parseDatagram(b []byte, screen bool) (Datagram, error) {
 	kind, src, err := RelayHeader(b)
 	if err != nil {
 		return Datagram{}, err
 	}
+	if ScreenKind(kind) != screen {
+		return Datagram{}, ErrDgKind
+	}
 	d := Datagram{Kind: kind, Flags: b[1], Src: src, Seq: binary.BigEndian.Uint32(b[6:10])}
-	if kind == DgAudioEnc {
+	if EncKind(kind) {
 		d.Epoch = binary.BigEndian.Uint32(b[10:14])
 		d.TS = binary.BigEndian.Uint32(b[14:18])
 		d.Payload = b[DgEncHeaderLen:]
@@ -123,7 +145,7 @@ func ParseDatagram(b []byte) (Datagram, error) {
 
 // HeaderLen is the size of d's header (the AD of an encrypted frame).
 func (d Datagram) HeaderLen() int {
-	if d.Kind == DgAudioEnc {
+	if EncKind(d.Kind) {
 		return DgEncHeaderLen
 	}
 	return DgHeaderLen
@@ -134,7 +156,7 @@ func (d Datagram) AppendHeader(dst []byte) []byte {
 	dst = append(dst, d.Kind, d.Flags)
 	dst = binary.BigEndian.AppendUint32(dst, d.Src)
 	dst = binary.BigEndian.AppendUint32(dst, d.Seq)
-	if d.Kind == DgAudioEnc {
+	if EncKind(d.Kind) {
 		dst = binary.BigEndian.AppendUint32(dst, d.Epoch)
 		dst = binary.BigEndian.AppendUint32(dst, d.TS)
 	}
