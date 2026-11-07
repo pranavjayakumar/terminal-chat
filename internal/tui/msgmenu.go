@@ -160,6 +160,10 @@ func (m *Model) runMenuItem(i int) tea.Cmd {
 		return nil
 	}
 	p.sel = j
+	if key == kSelOpen {
+		// Not through the key: on an agent message o unfolds its steps.
+		return m.saveFiles(p.msgs[j], -1, true)
+	}
 	cmd, _ := m.selectKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
 	return cmd
 }

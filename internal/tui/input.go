@@ -183,7 +183,12 @@ func (m *Model) selectFooter() string {
 				keys = append(keys, "p pin")
 			}
 		}
-		keys = append(keys, fileKeysFor(sel)...)
+		for _, k := range fileKeysFor(sel) {
+			if m.ag.folds[sel.ID] != nil && k == "s/o save/open" {
+				k = "s save" // o unfolds the steps here
+			}
+			keys = append(keys, k)
+		}
 		keys = append(keys, "v view", "y copy")
 		if !sel.Deleted && codeOnly(sel.Body) != "" {
 			keys = append(keys, "Y code")
@@ -208,6 +213,13 @@ func (m *Model) selectFooter() string {
 			}
 		}
 		return full
+	}
+	// A bit narrow: v and y go first (the menu has both), keeping the words.
+	if slices.Contains(keys, "s/o save/open") || slices.Contains(keys, "s save") || slices.Contains(keys, "s save all") {
+		short := slices.DeleteFunc(slices.Clone(keys), func(k string) bool { return k == "v view" || k == "y copy" })
+		if f := strings.Join(short, " · ") + " · Esc"; strWidth(f) < m.dims().inputW {
+			return f
+		}
 	}
 	// Narrow: just the key letters, Esc last so leaving is always visible.
 	letters := make([]string, len(keys))

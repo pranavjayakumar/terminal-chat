@@ -330,16 +330,19 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
 ## Files
 
 - **Sending**: `/upload path [caption]` (the path may be quoted; `~/` and paths relative to the working
-  directory work), or drag a file into the input: a bracketed paste that is a path to a file (or several,
-  as terminals type them: quoted, `\ ` escapes, `file://`) shows `⇥ sends name as a file · keep typing to
-  send the path as text`, and `Tab` sends it (the path leaves the input; the rest stays). A paste over
-  64 KiB shows `⇥ sends the paste as a file (paste.txt, 120 KB)`. Scripts use
+  directory work), or drag a file into the input: a bracketed paste that is an absolute, `~/` or
+  `file://` path to a file (or several, as terminals type them: quoted or with `\ ` escapes; a pasted word
+  like `Makefile` stays text) shows `⇥ send as file: name · or keep typing`, and `Tab` sends it (the path
+  leaves the input; the rest stays). A file over the server's limit says so instead. Keys and credentials
+  (`~/.ssh`, `~/.gnupg`, `~/.aws`, tc's home, `id_*`, `*.pem`, `*.key`, `.env*`, `.netrc`) are never
+  offered, and `/upload` refuses them. A paste over 64 KiB shows `⇥ send as file: paste.txt, 120 KB` (the
+  file holds the paste exactly as pasted, tabs included). Scripts use
   `tc send '#x' --attach file [caption]`. A file is sealed at once (the original may change afterwards)
   and shows as a pending message with `uploading 40%`; it goes when online, resumes after a disconnect,
   and fails like a message (`r` retry, `d` discard).
 - **Cards**: each file is a row `▣ name · 640×480 · 1.2 MB` (`▤` for other files; a click saves it)
   under the caption; the `📎 name` stand-in text older clients see is hidden. An image with a thumbnail
-  also gets a block-art preview (at most 40×10 cells of `▀` colored from the thumbnail) above its card,
+  also gets a block-art preview (at most 40×10 cells of `▀` colored from the thumbnail) under its card,
   only with 256 or more colors. It is plain text to the renderer, so it fits any frame and works in tmux
   and herdr. Real inline images (kitty graphics, iTerm2) are not drawn yet. Waiting, invalid and deleted
   messages show no files.
@@ -347,8 +350,13 @@ until someone runs `/encrypt` there (earlier messages are then marked legacy); t
   (`$TC_DOWNLOADS` overrides) under a safe name, never over an existing file (`cat (1).png`), and only
   after the file checks out (else `the file failed its integrity check`). `o` (`Open file`) saves, then
   opens it with the desktop's opener only if its extension is an image, PDF, text or media type **and**
-  its bytes sniff as that type; anything else stays saved with `open it yourself if you trust it`. Over
-  SSH or without a display `o` only saves. On macOS saved files carry the download quarantine flag.
+  its bytes sniff as that type; anything else stays saved (`not opened (.zip)`). Over SSH or without a
+  display `o` only saves (and says so). On macOS saved files carry the download quarantine flag. While a
+  save runs, `s` on the same message says `already saving that`. On a message without files `s` and `o`
+  leave select mode and are typed, as before; on an agent message with folded steps `o` unfolds them (the
+  menu's `Open file` still opens). A file-only message's `📎 name` text isn't put in the editor by `e`:
+  what is typed becomes its caption. With several files `s` saves them all, and a click on a card saves
+  that one.
 
 ## Emoji
 

@@ -447,7 +447,9 @@ func (s *Server) blobLoop(ctx context.Context) {
 // blobs whose message is gone or deleted, and files without a row.
 func (s *Server) gcBlobs(ctx context.Context) error {
 	bs := s.blobs
+	s.mu.Lock() // tests swap cfg.Now under it
 	cutoff := s.cfg.Now().Add(-blobPendingTTL).UnixMilli()
+	s.mu.Unlock()
 	var ids [][]byte
 	bs.mu.Lock()
 	_, err := s.write(ctx, func(tx *sql.Tx) ([]proto.Event, error) {

@@ -65,9 +65,6 @@ func (m *Model) drawFiles(g *grower, x client.Message, bw int, at func(int) int)
 		if g.full() {
 			return
 		}
-		if len(f.Thumb) > 0 && m.previewOK() && !x.Pending && x.Failed == "" {
-			m.drawPreview(g, f, bw, at)
-		}
 		icon := m.icon(icFile)
 		if media.IsImage(f.Mime) || len(f.Thumb) > 0 {
 			icon = m.icon(icImage)
@@ -95,6 +92,10 @@ func (m *Model) drawFiles(g *grower, x client.Message, bw int, at func(int) int)
 		}
 		xx = g.c.put(xx, y, name, fgb(th.fg), act)
 		g.c.put(xx, y, meta, fgc(th.dim), "")
+		// The card comes first, so a short pane still shows what the file is.
+		if len(f.Thumb) > 0 && m.previewOK() && !x.Pending && x.Failed == "" {
+			m.drawPreview(g, f, bw, at)
+		}
 	}
 }
 
@@ -143,7 +144,7 @@ func fileKeysFor(x client.Message) []string {
 		return nil
 	}
 	if len(x.Files) == 1 {
-		return []string{"s save", "o open"}
+		return []string{"s/o save/open"}
 	}
 	return []string{"s save all"}
 }
@@ -157,6 +158,7 @@ func savable(x client.Message) int {
 }
 
 type savedMsg struct {
+	id    uint64
 	paths []string
 	open  bool
 	err   error
@@ -165,8 +167,21 @@ type savedMsg struct {
 // saveFiles saves sel's file only (-1: all of them; open: its only file,
 // then opens it if it is a kind tc opens).
 func (m *Model) saveFiles(sel client.Message, only int, open bool) tea.Cmd {
-	if !showsFiles(sel) || sel.ID == 0 {
+	switch {
+	case len(sel.Files) > 0 && sel.ID == 0 && sel.Failed != "":
+		m.setInfo("not sent — r retries")
+		return nil
+	case len(sel.Files) > 0 && sel.ID == 0:
+		m.setInfo("still uploading")
+		return nil
+	case !showsFiles(sel):
 		m.setInfo("no file in this message")
+		return nil
+	case !client.Downloadable(sel, 0):
+		m.setInfo("this message isn't verified: its files can't be saved")
+		return nil
+	case m.saving[sel.ID]:
+		m.setInfo("already saving that")
 		return nil
 	}
 	if open && len(sel.Files) > 1 {
@@ -178,6 +193,9 @@ func (m *Model) saveFiles(sel client.Message, only int, open bool) tea.Cmd {
 		dir = client.DownloadsDir()
 	}
 	be, ctx := m.c, m.ctx
+	if m.saving == nil {
+		m.saving = map[uint64]bool{}
+	}
 	id, idx := sel.ID, []int{}
 	for i := range sel.Files {
 		if only < 0 || i == only {
@@ -187,16 +205,16 @@ func (m *Model) saveFiles(sel client.Message, only int, open bool) tea.Cmd {
 	if len(idx) == 0 {
 		return nil
 	}
+	m.saving[id] = true
 	if len(idx) == 1 {
-		m.setInfo("saving " + sanitize.Line(media.SafeName(sel.Files[idx[0]].Name)) + "…")
+		m.setHint("saving " + sanitize.Line(media.SafeName(sel.Files[idx[0]].Name)) + "…")
 	} else {
-		m.setInfo(fmt.Sprintf("saving %d files…", len(idx)))
+		m.setHint(fmt.Sprintf("saving %d files…", len(idx)))
 	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(ctx, downloadTimeout)
 		defer cancel()
-		var out savedMsg
-		out.open = open
+		out := savedMsg{id: id, open: open}
 		for _, i := range idx {
 			p, err := be.Download(ctx, id, i, dir, nil)
 			if err != nil {
@@ -210,6 +228,7 @@ func (m *Model) saveFiles(sel client.Message, only int, open bool) tea.Cmd {
 }
 
 func (m *Model) gotSaved(msg savedMsg) tea.Cmd {
+	delete(m.saving, msg.id)
 	if msg.err != nil {
 		if len(msg.paths) > 0 {
 			m.setErr("save", fmt.Errorf("saved %d, then: %w", len(msg.paths), msg.err))
@@ -236,7 +255,11 @@ func (m *Model) gotSaved(msg savedMsg) tea.Cmd {
 	}
 	open := m.opt.OpenFile
 	if open == nil || m.opt.SSH || m.opt.NoBrowser {
-		m.setInfo("saved " + shown)
+		why := " · not opened: no display"
+		if m.opt.SSH {
+			why = " · not opened over SSH"
+		}
+		m.setInfo("saved " + shown + why)
 		return nil
 	}
 	ctx := m.ctx
@@ -262,7 +285,7 @@ func unopenable(p string) string {
 	ext := strings.ToLower(filepath.Ext(p))
 	want, ok := openable[ext]
 	if !ok {
-		return "tc only opens images, PDFs, text and media; open it yourself if you trust it"
+		return "not opened (" + safeExt(ext) + ")"
 	}
 	f, err := os.Open(p)
 	if err != nil {
@@ -278,7 +301,16 @@ func unopenable(p string) string {
 	if want == "video/mp4" && strings.HasPrefix(got, "video/") || want == "audio/wave" && strings.HasPrefix(got, "audio/") {
 		return ""
 	}
-	return "its contents don't look like a " + strings.TrimPrefix(ext, ".") + " file, so tc didn't open it"
+	return "not opened: not really " + safeExt(ext)
+}
+
+// safeExt is ext for a notice ("no extension" when there is none), at most 10 bytes.
+func safeExt(ext string) string {
+	ext = sanitize.Line(ext)
+	if ext == "" || ext == "." {
+		return "no extension"
+	}
+	return truncate(ext, 10)
 }
 
 // defaultOpenFile hands a saved file to the desktop's opener as one
@@ -321,6 +353,12 @@ func (m *Model) uploadCommand(rest string) (tea.Cmd, error) {
 	path, caption, ok := m.splitUploadArgs(rest)
 	if !ok {
 		return nil, fmt.Errorf("no such file: %s", sanitize.Line(rest))
+	}
+	if secretPath(path) {
+		return nil, fmt.Errorf("%s looks like a key or credentials file; tc won't send it", sanitize.Line(filepath.Base(path)))
+	}
+	if big := m.tooBig([]string{path}); big != "" {
+		return nil, errors.New(big)
 	}
 	return m.sendFiles(f.ch, f.root, caption, path), nil
 }
@@ -423,7 +461,7 @@ func (m *Model) gotUploadQueued(msg uploadQueuedMsg) {
 // offerAttach arms Tab after a bracketed paste that is a path to a file
 // (what a terminal types when a file is dragged in) or is over the message
 // limit. It reports whether it made an offer.
-func (m *Model) offerAttach(before string) bool {
+func (m *Model) offerAttach(before, raw string) bool {
 	after := m.input.Value()
 	// A command's argument, but not a pasted absolute path.
 	if strings.HasPrefix(before, "/") && !strings.HasPrefix(before, "//") {
@@ -442,12 +480,12 @@ func (m *Model) offerAttach(before string) bool {
 	ins := string(rs[start:end])
 	w := &m.wr
 	switch {
-	case len(ins) > proto.MaxBody || len(after) > proto.MaxBody:
-		if int64(len(ins)) > m.c.MaxUpload() {
+	case len(raw) > proto.MaxBody:
+		if int64(len(raw)) > m.c.MaxUpload() {
 			return false
 		}
-		m.offerHint(m.kn.of(fmt.Sprintf("⇥ sends the paste as a file (paste.txt, %s): too long for a message", media.Size(uint64(len(ins))))))
-		w.attachText = ins
+		m.offerHint(m.kn.of(fmt.Sprintf("⇥ send as file: paste.txt, %s (too long for a message)", media.Size(uint64(len(raw))))))
+		w.attachText = raw // as pasted: the input turned tabs into spaces
 	case !strings.Contains(strings.TrimSpace(ins), "\n"):
 		paths := m.droppedPaths(ins)
 		if len(paths) == 0 {
@@ -457,13 +495,29 @@ func (m *Model) offerAttach(before string) bool {
 		if len(paths) > 1 {
 			label = fmt.Sprintf("%d files", len(paths))
 		}
-		m.offerHint(m.kn.of("⇥ sends " + sanitize.Line(label) + " as a file · keep typing to send the path as text"))
+		if big := m.tooBig(paths); big != "" {
+			m.setInfo(big)
+			return false
+		}
+		m.offerHint(m.kn.of("⇥ send as file: " + sanitize.Line(label) + " · or keep typing"))
 		w.attachPaths = paths
 	default:
 		return false
 	}
 	w.attachVal, w.attachFrom, w.attachTo = after, start, end
 	return true
+}
+
+// tooBig says which of paths is over the server's limit ("" when none).
+func (m *Model) tooBig(paths []string) string {
+	limit := m.c.MaxUpload()
+	for _, p := range paths {
+		if st, err := os.Stat(p); err == nil && st.Size() > limit {
+			return fmt.Sprintf("%s is %s; the server takes files up to %s", sanitize.Line(filepath.Base(p)),
+				media.Size(uint64(st.Size())), media.Size(uint64(limit)))
+		}
+	}
+	return ""
 }
 
 // droppedPaths reads s as one file path or several (space-separated, with
@@ -473,12 +527,12 @@ func (m *Model) droppedPaths(s string) []string {
 	if s == "" || len(s) > 64<<10 {
 		return nil
 	}
-	if p, ok := m.filePath(unquote(s)); ok {
+	if p, ok := m.droppedPath(unquote(s)); ok {
 		return []string{p}
 	}
 	var out []string
 	for _, part := range splitShellWords(s) {
-		p, ok := m.filePath(part)
+		p, ok := m.droppedPath(part)
 		if !ok {
 			return nil
 		}
@@ -488,6 +542,47 @@ func (m *Model) droppedPaths(s string) []string {
 		return nil
 	}
 	return out
+}
+
+// droppedPath is filePath for what a terminal types when a file is dropped:
+// an absolute, ~/ or file:// path (a pasted word like "Makefile" is text),
+// and never a secret (secretPath).
+func (m *Model) droppedPath(s string) (string, bool) {
+	t := strings.TrimSpace(s)
+	if !strings.HasPrefix(t, "/") && !strings.HasPrefix(t, "~/") && !strings.HasPrefix(t, "file://") {
+		return "", false
+	}
+	p, ok := m.filePath(t)
+	if !ok || secretPath(p) {
+		return "", false
+	}
+	return p, true
+}
+
+// secretPath: a file that holds keys or credentials, which tc never offers
+// to send and /upload refuses (SSH and GPG keys, tc's own home, .env).
+func secretPath(p string) bool {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		p = r
+	}
+	base := strings.ToLower(filepath.Base(p))
+	if strings.HasPrefix(base, "id_") || strings.HasPrefix(base, ".env") || strings.HasSuffix(base, ".pem") ||
+		strings.HasSuffix(base, ".key") || base == "credentials" || base == ".netrc" {
+		return true
+	}
+	dirs := []string{".ssh", ".gnupg", ".aws", filepath.Join(".config", "tc")}
+	h, _ := os.UserHomeDir()
+	for _, d := range dirs {
+		if h != "" && strings.HasPrefix(p, filepath.Join(h, d)+string(filepath.Separator)) {
+			return true
+		}
+	}
+	if th := os.Getenv("TC_HOME"); th != "" {
+		if a, err := filepath.Abs(th); err == nil && strings.HasPrefix(p, a+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 func unquote(s string) string {

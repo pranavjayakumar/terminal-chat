@@ -191,7 +191,7 @@ func TestSelectSaveOpen(t *testing.T) {
 	f.msgs[10] = append(f.msgs[10], x)
 	run(m, m.applyUpdate(client.Update{Msgs: map[uint64]bool{10: true}}))
 	press(m, "up")
-	if f := m.selectFooter(); !strings.Contains(f, "s save") && !strings.Contains(f, " s o ") {
+	if f := m.selectFooter(); !strings.Contains(f, "s/o save/open") {
 		t.Fatalf("footer %q", m.selectFooter())
 	}
 	press(m, "s")
@@ -206,6 +206,58 @@ func TestSelectSaveOpen(t *testing.T) {
 	press(m, "o")
 	if !strings.Contains(m.notice, "saved") {
 		t.Fatalf("open: %q", m.notice)
+	}
+}
+
+// TestPasteOffersReview: what the TUI review found.
+func TestPasteOffersReview(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	os.WriteFile(filepath.Join(dir, "Makefile"), []byte("all:"), 0o600)
+	// A pasted word that names a file in the working directory is text.
+	m, _ := newTestModelFake(t, 80, 24)
+	pasteUp(m, "Makefile")
+	if m.attachArmed() {
+		t.Fatal("offered a relative path")
+	}
+	// Keys are never offered, nor sent by /upload.
+	key := filepath.Join(dir, "id_ed25519")
+	os.WriteFile(key, []byte("secret"), 0o600)
+	press(m, "ctrl+u")
+	pasteUp(m, key)
+	if m.attachArmed() {
+		t.Fatal("offered a private key")
+	}
+	m2, f2 := newTestModelFake(t, 80, 24)
+	submitRun(m2, "/upload "+key)
+	if len(f2.calls) > 0 && strings.HasPrefix(f2.calls[len(f2.calls)-1], "sendfiles") || !strings.Contains(m2.notice, "key") {
+		t.Fatalf("/upload a key: calls %v notice %q", f2.calls, m2.notice)
+	}
+	// After a big paste was ignored, a small one gets no offer.
+	m3, _ := newTestModelFake(t, 80, 24)
+	pasteUp(m3, strings.Repeat("x", proto.MaxBody+10))
+	press(m3, "x")
+	pasteUp(m3, "hello")
+	if m3.attachArmed() {
+		t.Fatalf("small paste offered: %q", m3.notice)
+	}
+	// Tabs survive into paste.txt (the input turns them into spaces).
+	m4, _ := newTestModelFake(t, 80, 24)
+	big := strings.Repeat("a\tb\n", proto.MaxBody/4+10)
+	pasteUp(m4, big)
+	if m4.wr.attachText != big {
+		t.Fatal("paste.txt is not what was pasted")
+	}
+}
+
+// TestSelectLettersWithoutFiles: s and o on a message without files leave
+// select mode and are typed, as before.
+func TestSelectLettersWithoutFiles(t *testing.T) {
+	m, f := newTestModelFake(t, 80, 24)
+	onlySent(m, f)
+	press(m, "up", "s")
+	if m.mode == modeSelect || !strings.HasSuffix(m.input.Value(), "s") {
+		t.Fatalf("mode %v input %q", m.mode, m.input.Value())
 	}
 }
 
