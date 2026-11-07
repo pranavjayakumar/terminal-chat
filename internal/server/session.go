@@ -107,7 +107,7 @@ type session struct {
 	scOut    chan dgItem
 	sq       []voiceOut // under mu
 	scBucket bucket     // only the datagram reader goroutine touches it
-	writing     atomic.Int64
+	writing  atomic.Int64
 	// checkVoiceStuck's state (readLoop's ticker only); unsent is
 	// transport.Unsent unless a test replaces it.
 	lastUnsent int
