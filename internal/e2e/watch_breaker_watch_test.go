@@ -155,8 +155,14 @@ func TestWatch_BreakRestartWhileEncoding(t *testing.T) {
 	eventually(t, "watcher counted", func() bool { i, _ := ana.Sharing(); return i.Watchers == 1 })
 	for i := range 120 {
 		time.Sleep(time.Duration(rand.IntN(60)) * time.Millisecond)
-		ana.StopShare()                                           // Esc
-		if err := ana.StartShare(ctx, "busy", busy); err != nil { // /pair
+		ana.StopShare()                          // Esc
+		err := ana.StartShare(ctx, "busy", busy) // /pair
+		for err != nil && strings.Contains(err.Error(), "rate_limited") {
+			// huddle.share on is a write op (§9): 60 burst, 5 a second.
+			time.Sleep(250 * time.Millisecond)
+			err = ana.StartShare(ctx, "busy", busy)
+		}
+		if err != nil {
 			t.Fatalf("restart %d: %v", i, err)
 		}
 	}
