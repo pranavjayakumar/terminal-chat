@@ -83,8 +83,8 @@ type Datagram struct {
 	Flags   byte
 	Src     uint32
 	Seq     uint32
-	Epoch   uint32 // DgAudioEnc only
-	TS      uint32 // DgAudioEnc only, Unix seconds
+	Epoch   uint32 // sealed kinds (DgAudioEnc, DgScreenEnc) only
+	TS      uint32 // sealed kinds only, Unix seconds
 	Payload []byte
 }
 

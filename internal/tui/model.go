@@ -966,6 +966,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if t := m.noticeTick(); t != nil {
 		cmd = tea.Batch(cmd, t)
 	}
+	if t := m.pendingTimer(); t != nil {
+		cmd = tea.Batch(cmd, t)
+	}
 	if t := m.badgeTick(); t != nil {
 		cmd = tea.Batch(cmd, t)
 	}
@@ -1110,13 +1113,19 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshHuddle()
 		}
 		var wcmd tea.Cmd
-		if msg.Watch || msg.Huddle || msg.Reset {
+		if msg.Watch || msg.Huddle || msg.Reset || msg.Users {
 			wcmd = m.refreshWatch()
 		}
 		return m, tea.Batch(m.applyUpdate(client.Update(msg)), m.huddleStarted(msg.HuddleStarted), wcmd, m.waitUpdate())
 	case updatesClosedMsg:
 		return m, nil
 	case errMsg:
+		switch msg.what {
+		case "watch":
+			m.wt.pending, m.wt.joining = "", false
+		case "pair":
+			m.wt.pairing = false
+		}
 		if msg.what == "huddle" && m.nt.answering != 0 && m.nt.answering == m.al.Ring.Gen {
 			m.stopRing(true) // answering failed: let the error show
 		}
@@ -1497,7 +1506,7 @@ func (m *Model) normalKey(k tea.KeyMsg) tea.Cmd {
 		// One Esc backs out one thing: a pane we stream first, then an
 		// open mic (we're broadcasting either way), then a ring, then the
 		// usual chain.
-		if m.unpair() {
+		if m.unpair() || m.cancelPending() {
 			return nil
 		}
 		if m.micOff() {

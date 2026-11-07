@@ -22,6 +22,9 @@ import (
 const (
 	MaxCols = 400
 	MaxRows = 200
+	// maxCellBytes bounds one cell's text (real graphemes are under ~40
+	// bytes); MaxCols × maxCellBytes stays under a run's u16 length.
+	maxCellBytes = 128
 )
 
 // Attr is a cell's text attributes.
@@ -222,6 +225,11 @@ func layText(row []Cell, t string, st Style, maxCols int) []Cell {
 		var g string
 		var w int
 		g, t, w, state = uniseg.FirstGraphemeClusterInString(t, state)
+		if len(g) > maxCellBytes && w > 0 {
+			// An endless joiner chain is one grapheme: cap it, so a row's
+			// text always fits an update's 16-bit run length.
+			g, w = "�", 1
+		}
 		switch {
 		case w == 0:
 			continue

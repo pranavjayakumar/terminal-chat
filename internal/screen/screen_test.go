@@ -112,6 +112,21 @@ func TestEncodeDecodeDiffs(t *testing.T) {
 	}
 }
 
+// A row of endless emoji joiner chains still encodes: each cell's text is
+// capped, so a run's 16-bit length can't wrap.
+func TestLongGraphemes(t *testing.T) {
+	chain := "👩" + strings.Repeat("‍👩", 60)
+	g := Parse(strings.Repeat(chain, 300), MaxCols, 1)
+	var e Encoder
+	var d Decoder
+	roundTrip(t, &e, &d, g, false)
+	for _, c := range g.C {
+		if len(c.S) > maxCellBytes {
+			t.Fatalf("cell of %d bytes", len(c.S))
+		}
+	}
+}
+
 // put writes c at x the way a terminal would: no half wide graphemes left.
 func put(row []Cell, x int, c Cell) {
 	clearAt := func(x int) {
@@ -261,6 +276,22 @@ func TestScrub(t *testing.T) {
 	txt := g.Text()
 	if strings.Contains(txt, "b3BlbnNz") || strings.Contains(txt, "PRIVATE") || !strings.Contains(txt, "after") || !strings.HasPrefix(txt, "ok") {
 		t.Fatalf("key block: %q", txt)
+	}
+	// A token soft-wrapped over three rows is masked on every row.
+	tok := "ghp_" + strings.Repeat("Ab1", 25)
+	g = Parse(tok[:30]+"\r\n"+tok[30:60]+"\r\n"+tok[60:]+" tail\r\n", 30, 3)
+	Scrub(g)
+	if txt := g.Text(); strings.ContainsAny(txt, "Ab1") || !strings.Contains(txt, "tail") {
+		t.Fatalf("wrapped token: %q", txt)
+	}
+	// A key whose BEGIN scrolled off: the base64 rows above END go too.
+	g = Parse("$ cat key\r\nb3BlbnNzaC1rZXktdjEAAAAA\r\nQUFBQUFBQUFBQUFBQUFB\r\n-----END OPENSSH PRIVATE KEY-----\r\n", 60, 4)
+	Scrub(g)
+	if txt := g.Text(); strings.Contains(txt, "b3Bl") || strings.Contains(txt, "QUFB") || !strings.Contains(txt, "cat key") {
+		t.Fatalf("key body: %q", txt)
+	}
+	if l := ScrubText("psql PGPASSWORD=hunter22"); strings.Contains(l, "hunter22") {
+		t.Fatalf("label %q", l)
 	}
 	// The stream's scrubber remembers rows, and still masks every picture.
 	var sc Scrubber

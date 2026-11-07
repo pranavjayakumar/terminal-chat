@@ -1721,10 +1721,11 @@ travel exactly like voice: QUIC datagrams, or VOICE frames (§14.4) on a session
 
 ```
 off len field
-0   4   update   update id: increases per stream; a resend of an update gets a new one
+0   4   update   update id: increases for the sender's whole participation (never reset when a
+                 stream stops and starts again); a resend of an update gets a new one
 4   1   index    0 … count−1
 5   1   count    1 … 255: chunks in this update
-6   n   data     ≤ 472 bytes; every chunk but the last carries exactly 472
+6   n   data     1–472 bytes; every chunk but the last carries exactly 472
 ```
 
 - **Server relay**, per screen datagram: drop it unless the sender's session has `watch1`, is in
@@ -1750,7 +1751,8 @@ off len field
   Senders seal under the newest verified, fresh epoch exactly as for audio (§14.3: stop while it
   isn't, rotate, resume). Receivers apply every §14.3 receiver rule (kind matches the channel,
   so no plaintext chunk in an encrypted channel; epoch window; roster and membership; verified,
-  unrevoked `dev`; AEAD; `|ts − now| ≤ 60 s`; a 64-entry replay window per `src`) and also drop
+  unrevoked `dev`; AEAD; `|ts − now| ≤ 60 s`; a 64-entry replay window per `src`, kept apart
+  from that `src`'s audio window, since the two `seq`s are independent) and also drop
   chunks whose `src` isn't the roster's `live` participant they watch.
 - **Updates.** Reassembled chunks form one update: a raw DEFLATE (RFC 1951) stream of at most
   255 × 472 bytes, inflating to at most 2 MiB:
@@ -1765,8 +1767,12 @@ off len field
              0x40 bg set (0x80 must be 0)
   ```
 
-  A keyframe is the whole grid (rows it omits are blank) and starts key id `k` (increasing per
-  stream). A diff `n` of key `k` lists, per row that differs from keyframe `k`, the cells from the
+  A keyframe is the whole grid (rows it omits are blank) and starts key id `k`; key ids, like
+  update ids and `seq`, keep increasing for the sender's whole participation, across streams.
+  Diffs of a keyframe are numbered from 1. An update with bytes after its last span, an unknown
+  `version` or any field out of range is malformed; a new update format therefore needs a new cap
+  (`watch2`), not just a version byte. A run's text is at most 128 bytes per cell of its span.
+  A diff `n` of key `k` lists, per row that differs from keyframe `k`, the cells from the
   first to the last difference, never splitting a wide character; diffs are cumulative
   against their keyframe, never chained, so a lost diff costs nothing once a later one arrives.
   A run's text is laid out from the span's `x` for the cells it fills (grapheme widths as a

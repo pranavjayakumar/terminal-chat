@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -220,10 +221,27 @@ func TestWatchViewer(t *testing.T) {
 	m.clearNotice()
 	w.live[m.active] = 2
 	w.update(m)
-	if v := ansi.Strip(checkView(t, m, "bob live")); !strings.Contains(v, "watch bob") {
+	if v := ansi.Strip(checkView(t, m, "bob live")); !strings.Contains(v, "watch @bob") {
 		t.Fatalf("huddle bar has no watch control:\n%s", v)
 	}
-	g := screen.Parse("\x1b[32m$ go test ./...\x1b[0m\r\nok  tc/internal/tui  28.4s\r\n世界 wide "+strings.Repeat("x", 150)+"\r\n", 300, 100)
+	// At every width the control is whole or absent, never overwritten.
+	for width := 30; width <= 110; width++ {
+		m.Update(tea.WindowSizeMsg{Width: width, Height: 24})
+		v := ansi.Strip(checkView(t, m, "bar"))
+		bar := strings.Split(v, "\n")[1]
+		if strings.Contains(bar, "watch") != strings.Contains(bar, "watch @bob") || strings.Contains(bar, "muted") && !strings.Contains(bar, "⊘ muted") {
+			t.Fatalf("width %d: bar %q", width, bar)
+		}
+	}
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	// A pane taller than ours: the viewer opens on its bottom (the prompt).
+	var b strings.Builder
+	b.WriteString("\x1b[32m$ go test ./...\x1b[0m\r\nok  tc/internal/tui  28.4s\r\n世界 wide " + strings.Repeat("x", 150) + "\r\n")
+	for i := range 60 {
+		fmt.Fprintf(&b, "line %d\r\n", i)
+	}
+	b.WriteString("$ prompt-at-the-bottom\r\n")
+	g := screen.Parse(b.String(), 300, 100)
 	w.frame = client.WatchFrame{Label: "build pane", Grid: g, Ver: 1}
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}, Alt: true})
 	run(m, cmd)
@@ -233,12 +251,22 @@ func TestWatchViewer(t *testing.T) {
 	w.update(m)
 	for _, size := range [][2]int{{100, 24}, {30, 6}, {12, 3}, {220, 70}} {
 		m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		w.update(m)
 		v := ansi.Strip(checkView(t, m, "watching"))
-		if size[1] >= 6 && (!strings.Contains(v, "28.4s") || !strings.Contains(v, "@bob")) {
-			t.Fatalf("%dx%d: pane not shown\n%s", size[0], size[1], v)
+		if size[1] >= 3 && size[0] >= 30 && !strings.Contains(v, "prompt-at-the-bottom") {
+			t.Fatalf("%dx%d: the pane's last row not shown\n%s", size[0], size[1], v)
+		}
+		if strings.Contains(v, "╭") {
+			t.Fatalf("%dx%d: the input box covers the pane\n%s", size[0], size[1], v)
 		}
 	}
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	for range 70 {
+		m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	}
+	if v := ansi.Strip(checkView(t, m, "top")); !strings.Contains(v, "28.4s") || !strings.Contains(v, "@bob") {
+		t.Fatalf("top of the pane:\n%s", v)
+	}
 	// Panning right shows the rest of the long line.
 	for range 10 {
 		m.Update(tea.KeyMsg{Type: tea.KeyRight})

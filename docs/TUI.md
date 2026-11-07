@@ -78,18 +78,26 @@ into a cell canvas (`internal/tui/canvas.go`) and encoded once for the terminal'
   `join`. Meters are a braille line (one dot per sample, two per cell): yours rolls over 10 samples, others'
   over 4, on the animation tick while you are in the huddle. Voice reports who is talking, not how loud,
   so a meter moves while that person talks and lies on the floor otherwise. While someone in your huddle
-  streams a pane the bar's first control is `watch bob` (`unpair` while it is you).
+  streams a pane the bar's first control is `watch @bob` (`unpair` while it is you), and a notice
+  says `@bob is streaming a pane · ⌥W watch` once. Controls drop (first one first) rather than overlap
+  the bar's left part.
 - Pane sharing (docs/VOICE.md "Pane sharing"): `/pair [pane]` streams a herdr pane, read-only, to your
   huddle (no argument: the only other pane in your tab, else a picker; never tc's own pane); without
-  herdr (`HERDR_PANE_ID` unset) it says so. While you stream, a red `● LIVE build · 2 watching · 1 hidden
+  herdr (`HERDR_PANE_ID` unset) it says so. While you stream, a red `● LIVE build · 2 watching · 1 masked
   · Esc stops` banner sits at the top right over everything (dialogs, the viewer, tiny panes: it shortens
-  to `● LIVE`; clicking it stops); `Esc` on the chat or `/unpair` stops at once (before the mic). If the
-  pane goes away the stream stops and says why. `/watch [@user]`, `⌥W` or the bar's `watch` opens the
-  shared pane full screen (joining that person's huddle first if you're in another one; `tc watch @user`
-  does the same from the shell, waiting up to 30 s for them to go live): a title row (`🔒` when the huddle
-  is encrypted, who, the pane's label, `live` or `ended`), then the cells as the streamer sees them,
-  sanitized; `←→↑↓`/`hjkl`/PgUp/PgDn pan a pane bigger than yours, `y` copies its text, `Esc` (or `⌥W`, `q`)
-  leaves and drops the picture. When the stream stops the last picture stays, marked `ended`.
+  to `● LIVE`, and to 8 columns when row 0 is the input; it says `/unpair` instead of `Esc stops` where
+  Esc would close something else first; clicking it stops); `Esc` on the chat or `/unpair` stops at once
+  (before the mic), also while `/pair` is still starting. If the pane goes away the stream stops and says
+  why. `/watch [@user]`, `⌥W` or the bar's `watch` opens the shared pane full screen; when that person
+  streams in another huddle than yours, the first `/watch` says so and only a second one leaves yours
+  ("left #a's huddle to watch @bob"). `tc watch @user` does the same from the shell: a sticky `waiting
+  for @bob to share a pane… Esc cancels` until they go live (30 s at most). It never opens over a dialog
+  (a notice says `⌥W` opens it). The viewer: a title row (`🔒` when the huddle is encrypted, who, `live`
+  or `ended`, then the pane's label as room allows), then the cells as the streamer sees them, sanitized,
+  over every row down to the status bar (no input box); it follows the pane's bottom (its prompt) until
+  you pan up; `←→↑↓`/`hjkl`/PgUp/PgDn pan, `End`/`G` follow again, `Home` the top-left, `y` copies the
+  text, `Esc` (or `⌥W`, `q`) leaves and drops the picture. When the stream stops the last picture stays,
+  marked `ended`.
 - Startup: a short logo intro while tc connects (see Skins › Intro).
 
 ## Skins

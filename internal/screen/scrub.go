@@ -34,6 +34,7 @@ var secretRes = []*regexp.Regexp{
 }
 
 var (
+	keyBody  = regexp.MustCompile(`^[A-Za-z0-9+/=]{16,}$`)
 	pemBegin = regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY[A-Z ]*-----`)
 	pemEnd   = regexp.MustCompile(`-----END [A-Z0-9 ]*PRIVATE KEY[A-Z ]*-----`)
 )
@@ -60,27 +61,88 @@ func (sc *Scrubber) Scrub(g *Grid) int {
 	if sc.next == nil {
 		sc.next = map[string][][2]int{}
 	}
+	// Private key blocks first, whole rows.
+	done := make([]bool, g.H)
 	for y := range g.H {
-		row := g.Row(y)
-		text, at := rowText(row)
-		if inKey || strings.Contains(text, "PRIVATE KEY") && pemBegin.MatchString(text) {
+		text, _ := rowText(g.Row(y))
+		hasKey := strings.Contains(text, "PRIVATE KEY")
+		switch {
+		case inKey || hasKey && pemBegin.MatchString(text):
 			if !inKey {
 				n++
 			}
 			inKey = !pemEnd.MatchString(text)
-			maskCells(row, 0, len(row))
+			maskCells(g.Row(y), 0, g.W)
+			done[y] = true
+		case hasKey && pemEnd.MatchString(text):
+			// The END of a key whose BEGIN scrolled off: its body is the
+			// base64 rows just above.
+			n++
+			maskCells(g.Row(y), 0, g.W)
+			done[y] = true
+			for k := y - 1; k >= 0 && !done[k]; k-- {
+				t, _ := rowText(g.Row(k))
+				if !keyBody.MatchString(strings.TrimSpace(t)) {
+					break
+				}
+				maskCells(g.Row(k), 0, g.W)
+				done[k] = true
+			}
+		}
+	}
+	// Then each logical line: rows joined while a row is full to its last
+	// cell (a soft wrap), so a token wrapped over several rows still
+	// matches and is masked on all of them.
+	for y := 0; y < g.H; {
+		if done[y] {
+			y++
 			continue
 		}
+		var b strings.Builder
+		var at [][2]int // byte → (row, cell)
+		k := y
+		for ; k < g.H && !done[k]; k++ {
+			row := g.Row(k)
+			for x, c := range row {
+				if c.W == 0 {
+					continue
+				}
+				b.WriteString(c.S)
+				for range len(c.S) {
+					at = append(at, [2]int{k, x})
+				}
+			}
+			if row[len(row)-1].S == " " && row[len(row)-1].W == 1 {
+				k++
+				break // not full: the line ends here
+			}
+		}
+		text := b.String()
 		ranges, ok := sc.seen[text]
 		if !ok {
 			ranges = secretRanges(text)
 		}
 		sc.next[text] = ranges
 		for _, r := range ranges {
-			if maskCells(row, at[r[0]], at[r[1]-1]+1) {
+			s, e := at[r[0]], at[r[1]-1]
+			fresh := false
+			for row := s[0]; row <= e[0]; row++ {
+				x0, x1 := 0, g.W
+				if row == s[0] {
+					x0 = s[1]
+				}
+				if row == e[0] {
+					x1 = e[1] + 1
+				}
+				if maskCells(g.Row(row), x0, x1) {
+					fresh = true
+				}
+			}
+			if fresh {
 				n++ // overlapping patterns count once
 			}
 		}
+		y = k
 	}
 	sc.seen, sc.next = sc.next, sc.seen
 	clear(sc.next)
@@ -138,4 +200,28 @@ func maskCells(row []Cell, x0, x1 int) bool {
 		fresh = true
 	}
 	return fresh
+}
+
+// ScrubText masks what looks like a secret in one line of text (a pane's
+// label), rune by rune.
+func ScrubText(s string) string {
+	ranges := secretRanges(s)
+	if len(ranges) == 0 {
+		return s
+	}
+	mask := make([]bool, len(s))
+	for _, r := range ranges {
+		for i := r[0]; i < r[1]; i++ {
+			mask[i] = true
+		}
+	}
+	var b strings.Builder
+	for i, r := range s {
+		if mask[i] && r != ' ' {
+			b.WriteString(Mask)
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

@@ -24,6 +24,8 @@ var (
 	ErrNotInHuddle   = errors.New("not in a huddle (/huddle to join)")
 	ErrNotLive       = errors.New("isn't sharing a pane in your huddle")
 	ErrShareTooBig   = errors.New("the pane is too big to share")
+
+	errShareCancelled = errors.New("stopped before it started")
 )
 
 // Capture reads the pane being shared: its visible text with SGR colors.
@@ -53,6 +55,10 @@ type paneState struct {
 	share    *paneShare
 	view     *paneView
 	watchers int   // participants watching us, by the last roster
+	watchSet map[uint32]bool
+	// watchGen moves whenever someone starts watching (a src not in the
+	// last roster's set), even if someone else stopped meanwhile.
+	watchGen int
 	stopped  error // why our stream stopped by itself, until read
 	// enc, seq and upd belong to the one running share loop (StartShare
 	// waits for the previous one), and outlive it: key ids, nonces and
@@ -61,6 +67,12 @@ type paneState struct {
 	seq  uint32
 	upd  uint32
 	kick chan struct{}
+	// startMu serializes StartShare; stops counts StopShare calls (under
+	// mu), so a stop during a start's round trip wins; ended: the
+	// participation is over.
+	startMu sync.Mutex
+	stops   int
+	ended   bool
 }
 
 type paneShare struct {
@@ -72,16 +84,76 @@ type paneShare struct {
 
 type paneView struct {
 	user uint64
+	// Reassembled updates go to their own decode goroutine, so a hostile
+	// stream's costly updates never hold up the receive loop that also
+	// carries audio. stop ends it.
+	in   chan decItem
+	stop chan struct{}
+	once sync.Once
 
+	// mu: the receive side (the huddle's receive goroutine).
 	mu    sync.Mutex
 	src   uint32
-	dec   screen.Decoder
 	asm   screen.Reassembler
 	win   replayWindow
-	ver   uint64
-	at    time.Time
 	ended bool
+	gen   uint64 // under mu and dmu: moves when the view starts over
 	stats WatchStats
+
+	// dmu: the picture (the decode goroutine). Lock order: mu, then dmu.
+	dmu sync.Mutex
+	dec screen.Decoder
+	ver uint64
+	at  time.Time
+}
+
+type decItem struct {
+	upd []byte
+	gen uint64
+}
+
+// decodeQueue bounds updates waiting for the decoder; more are dropped
+// (the streamer's refresh repairs a gap).
+const decodeQueue = 8
+
+func newPaneView(user uint64, src uint32) *paneView {
+	return &paneView{user: user, src: src, in: make(chan decItem, decodeQueue), stop: make(chan struct{})}
+}
+
+func (v *paneView) close() { v.once.Do(func() { close(v.stop) }) }
+
+// decodeLoop applies reassembled updates until the view is dropped.
+func (c *Client) decodeLoop(ctx context.Context, v *paneView) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-v.stop:
+			return
+		case it := <-v.in:
+			v.dmu.Lock()
+			changed, err := false, error(nil)
+			if it.gen == v.gen {
+				changed, err = v.dec.Apply(it.upd)
+				if changed {
+					v.ver++
+					v.at = time.Now()
+				}
+			}
+			v.dmu.Unlock()
+			v.mu.Lock()
+			switch {
+			case err != nil:
+				v.stats.BadUpdate++
+			case changed:
+				v.stats.Applied++
+			}
+			v.mu.Unlock()
+			if changed {
+				c.post(Update{Watch: true})
+			}
+		}
+	}
 }
 
 // WatchStats counts what a viewer did with screen datagrams (tests,
@@ -135,25 +207,35 @@ func (c *Client) StartShare(ctx context.Context, label string, capture Capture) 
 	if !p.watchCap() {
 		return ErrNoWatchServer
 	}
+	// One start at a time per participation: two loops would share the
+	// encoder and, worse, the nonce counter.
+	p.pane.startMu.Lock()
+	defer p.pane.startMu.Unlock()
 	if old := c.stopShare(p, false); old != nil {
 		<-old.done
 	}
+	p.pane.mu.Lock()
+	stops := p.pane.stops
+	p.pane.mu.Unlock()
 	if _, err := p.sess.call(ctx, proto.OpHuddleShare, proto.HuddleShareArgs{On: true}, nil); err != nil {
 		return err
 	}
 	sctx, cancel := context.WithCancel(p.pane.ctx)
 	sh := &paneShare{label: label, cancel: cancel, done: make(chan struct{})}
 	p.pane.mu.Lock()
+	if p.pane.ended || p.pane.stops != stops {
+		// The huddle ended, or the user stopped while we asked: never
+		// start after a stop.
+		p.pane.mu.Unlock()
+		cancel()
+		_ = p.sess.fire(proto.OpHuddleShare, proto.HuddleShareArgs{On: false})
+		return errShareCancelled
+	}
 	if p.pane.kick == nil {
 		p.pane.kick = make(chan struct{}, 1)
 	}
 	p.pane.share, p.pane.stopped = sh, nil
 	p.pane.mu.Unlock()
-	if c.curParticipation() != p { // the huddle ended meanwhile
-		cancel()
-		close(sh.done)
-		return ErrNotInHuddle
-	}
 	go c.shareLoop(sctx, p, sh, capture)
 	c.post(Update{Watch: true})
 	return nil
@@ -163,6 +245,9 @@ func (c *Client) StartShare(ctx context.Context, label string, capture Capture) 
 // sent, whatever the server says.
 func (c *Client) StopShare() {
 	if p := c.curParticipation(); p != nil {
+		p.pane.mu.Lock()
+		p.pane.stops++
+		p.pane.mu.Unlock()
 		c.stopShare(p, true)
 	}
 }
@@ -226,17 +311,17 @@ func (c *Client) shareFailed(p *participation, sh *paneShare, err error) {
 	}
 }
 
-func (ps *paneState) watcherCount() int {
+func (ps *paneState) watcherCount() (n, gen int) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
-	return ps.watchers
+	return ps.watchers, ps.watchGen
 }
 
 func (c *Client) shareLoop(ctx context.Context, p *participation, sh *paneShare, capture Capture) {
 	defer close(sh.done)
 	var prev *screen.Grid
 	var sc screen.Scrubber
-	seen, fails := 0, 0
+	seen, fails := -1, 0
 	interval := shareFast
 	var refresh time.Time
 	b := bucket{tokens: shareBurst, at: time.Now()}
@@ -255,16 +340,16 @@ func (c *Client) shareLoop(ctx context.Context, p *participation, sh *paneShare,
 				}
 			}
 		}
-		w := p.pane.watcherCount()
+		w, gen := p.pane.watcherCount()
 		if w == 0 {
 			// Nobody watches: nothing is captured or sent. A roster with a
 			// watcher kicks us.
-			seen, prev = 0, nil
+			seen, prev = -1, nil
 			t.Reset(shareSlow)
 			continue
 		}
-		force := w > seen // someone new: a keyframe now, not at the next refresh
-		seen = w
+		force := gen != seen // someone new: a keyframe now, not at the next refresh
+		seen = gen
 		cctx, cancel := context.WithTimeout(ctx, captureTimeout)
 		text, err := capture(cctx)
 		cancel()
@@ -341,7 +426,7 @@ func (c *Client) sendUpdate(ctx context.Context, p *participation, upd []byte, b
 		return false
 	}
 	for _, ch := range chunks {
-		if !b.take(ctx) {
+		if ctx.Err() != nil || !b.take(ctx) { // a stop stops mid-update too
 			return false
 		}
 		d, ok := c.sealScreen(p, ch)
@@ -414,16 +499,26 @@ func (c *Client) Watch(ctx context.Context, user uint64) error {
 	}
 	// The view exists before we ask: the streamer's keyframe for us may
 	// overtake our RES.
-	v := &paneView{user: user, src: c.liveSrc(p.ch)}
+	v := newPaneView(user, c.liveSrc(p.ch))
 	p.pane.mu.Lock()
+	if p.pane.ended {
+		p.pane.mu.Unlock()
+		return ErrNotInHuddle
+	}
+	old := p.pane.view
 	p.pane.view = v
 	p.pane.mu.Unlock()
+	if old != nil {
+		old.close()
+	}
+	go c.decodeLoop(p.pane.ctx, v)
 	if _, err := p.sess.call(ctx, proto.OpHuddleWatch, proto.HuddleWatchArgs{On: true}, nil); err != nil {
 		p.pane.mu.Lock()
 		if p.pane.view == v {
 			p.pane.view = nil
 		}
 		p.pane.mu.Unlock()
+		v.close()
 		return err
 	}
 	c.post(Update{Watch: true})
@@ -448,10 +543,11 @@ func (c *Client) StopWatch() {
 		return
 	}
 	p.pane.mu.Lock()
-	had := p.pane.view != nil
+	v := p.pane.view
 	p.pane.view = nil
 	p.pane.mu.Unlock()
-	if had {
+	if v != nil {
+		v.close()
 		_ = p.sess.fire(proto.OpHuddleWatch, proto.HuddleWatchArgs{On: false})
 		c.post(Update{Watch: true})
 	}
@@ -472,6 +568,8 @@ func (c *Client) Watching(ver uint64) (WatchFrame, bool) {
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	v.dmu.Lock()
+	defer v.dmu.Unlock()
 	f := WatchFrame{User: v.user, Label: v.dec.Label(), Ver: v.ver, At: v.at, Ended: v.ended, Enc: p.keys != nil}
 	if g := v.dec.Grid(); g != nil && v.ver != ver {
 		f.Grid = g.Clone()
@@ -506,65 +604,58 @@ func (c *Client) screenIn(p *participation, b []byte) {
 	if v == nil {
 		return
 	}
-	now := time.Now()
 	v.mu.Lock()
-	changed := v.screenIn(p, b, now)
+	upd, ok := v.screenIn(p, b, time.Now())
+	gen := v.gen
 	v.mu.Unlock()
-	if changed {
-		c.post(Update{Watch: true})
+	if !ok {
+		return
+	}
+	select {
+	case v.in <- decItem{upd, gen}:
+	default:
+		v.mu.Lock()
+		v.stats.BadUpdate++ // the decoder is behind: dropped
+		v.mu.Unlock()
 	}
 }
 
-// screenIn applies b; caller holds v.mu.
-func (v *paneView) screenIn(p *participation, b []byte, now time.Time) bool {
+// screenIn opens b and returns a completed update, if any; caller holds
+// v.mu.
+func (v *paneView) screenIn(p *participation, b []byte, now time.Time) ([]byte, bool) {
 	v.stats.Received++
 	d, err := proto.ParseScreenDatagram(b)
 	if err != nil || (d.Kind == proto.DgScreenEnc) != (p.keys != nil) {
 		v.stats.BadFrame++ // never plaintext in an encrypted huddle
-		return false
+		return nil, false
 	}
 	if d.Src != v.src || v.ended {
 		v.stats.Unknown++
-		return false
+		return nil, false
 	}
 	if !v.win.check(d.Seq) {
 		v.stats.Replay++
-		return false
+		return nil, false
 	}
 	chunk := d.Payload
 	if p.keys != nil {
 		s, ok := p.keys.recv(d.Src, d.Epoch, frameScreen)
 		if !ok {
 			v.stats.Key++
-			return false
+			return nil, false
 		}
 		if chunk, err = s.Open(d.Seq, b[:d.HeaderLen()], d.Payload); err != nil {
 			v.stats.Auth++
-			return false
+			return nil, false
 		}
 		ts := time.Unix(int64(d.TS), 0)
 		if ts.Before(now.Add(-tsWindow)) || ts.After(now.Add(tsWindow)) {
 			v.stats.Skew++
-			return false
+			return nil, false
 		}
 	}
 	v.win.accept(d.Seq)
-	upd, ok := v.asm.Add(chunk, now)
-	if !ok {
-		return false
-	}
-	changed, err := v.dec.Apply(upd)
-	if err != nil {
-		v.stats.BadUpdate++
-		return false
-	}
-	if !changed {
-		return false
-	}
-	v.stats.Applied++
-	v.ver++
-	v.at = now
-	return true
+	return v.asm.Add(chunk, now)
 }
 
 // tsWindow is §14.3's ±60 s, which screen chunks share.
@@ -574,19 +665,29 @@ const tsWindow = 60 * time.Second
 // at once), and whether the stream we watch still runs.
 func (c *Client) paneRoster(p *participation, parts []proto.Part) {
 	watchers := 0
+	set := map[uint32]bool{}
 	var live *proto.Part
 	for i, q := range parts {
 		if q.Src != p.src && q.Watch {
 			watchers++
+			set[q.Src] = true
 		}
 		if q.Live {
 			live = &parts[i]
 		}
 	}
 	p.pane.mu.Lock()
-	more := watchers > p.pane.watchers
+	more := false
+	for src := range set {
+		if !p.pane.watchSet[src] {
+			more = true
+		}
+	}
+	if more {
+		p.pane.watchGen++
+	}
 	changed := watchers != p.pane.watchers
-	p.pane.watchers = watchers
+	p.pane.watchers, p.pane.watchSet = watchers, set
 	kick, v := p.pane.kick, p.pane.view
 	p.pane.mu.Unlock()
 	if more && kick != nil {
@@ -601,12 +702,17 @@ func (c *Client) paneRoster(p *participation, parts []proto.Part) {
 		case live != nil && live.User == v.user && (live.Src != v.src || v.ended):
 			// The same person streams again (a new pane, or after a
 			// rejoin): start over from their next keyframe.
+			v.dmu.Lock()
 			v.src, v.ended, v.ver, v.at = live.Src, false, v.ver+1, time.Time{}
 			v.dec, v.asm, v.win = screen.Decoder{}, screen.Reassembler{}, replayWindow{}
+			v.gen++ // updates still queued for the old stream are dropped
+			v.dmu.Unlock()
 			changed = true
 		case (live == nil || live.User != v.user) && !v.ended:
 			v.ended = true
+			v.dmu.Lock()
 			v.ver++
+			v.dmu.Unlock()
 			changed = true
 		}
 		v.mu.Unlock()
@@ -619,10 +725,13 @@ func (c *Client) paneRoster(p *participation, parts []proto.Part) {
 // paneEnded drops p's stream and view with the participation.
 func (c *Client) paneEnded(p *participation) {
 	p.pane.mu.Lock()
-	sh := p.pane.share
-	had := sh != nil || p.pane.view != nil
-	p.pane.share, p.pane.view = nil, nil
+	sh, v := p.pane.share, p.pane.view
+	had := sh != nil || v != nil
+	p.pane.share, p.pane.view, p.pane.ended = nil, nil, true
 	p.pane.mu.Unlock()
+	if v != nil {
+		v.close()
+	}
 	if sh != nil {
 		sh.cancel()
 	}

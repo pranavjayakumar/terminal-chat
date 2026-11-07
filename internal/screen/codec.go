@@ -97,7 +97,7 @@ func (e *Encoder) Current() [][]byte {
 }
 
 func clipLabel(s string) string {
-	s = sanitize.Line(s)
+	s = ScrubText(sanitize.Line(s)) // pane titles often show the command line
 	for len(s) > MaxLabel {
 		_, n := lastRune(s)
 		s = s[:len(s)-n]
@@ -386,6 +386,7 @@ func (r *reader) span(w, h int) (decSpan, bool) {
 		return s, false
 	}
 	s.runs = make([]decRun, 0, nruns)
+	text := 0
 	for range nruns {
 		a := Attr(r.u8())
 		if a&^attrMask != 0 {
@@ -399,7 +400,9 @@ func (r *reader) span(w, h int) (decSpan, bool) {
 			st.BG = r.u24()
 		}
 		t := r.bytes(int(r.u16()))
-		if r.bad {
+		// No more text than the span's cells can hold: a hostile run
+		// can't make the viewer sanitize kilobytes it will throw away.
+		if text += len(t); r.bad || text > s.cells*maxCellBytes {
 			return s, false
 		}
 		s.runs = append(s.runs, decRun{st, string(t)})

@@ -37,7 +37,11 @@ func (m *Model) frame() *canvas {
 		m.drawThreadPane(c, g)
 	}
 	m.drawDesktop(c, g)
-	if g.split && !m.thread.open() {
+	switch {
+	case m.mode == modeWatch:
+		// The shared pane takes every row above the status bar: no input
+		// (keys go to the viewer) over its last rows.
+	case g.split && !m.thread.open():
 		// The pane is sliding out: what follows stays left of it.
 		old := c.setClip(rect{0, 0, g.RX, m.h})
 		m.drawInput(c, g)
@@ -45,7 +49,7 @@ func (m *Model) frame() *canvas {
 		m.drawPicker(c, g)
 		m.drawMsgMenu(c, g)
 		c.setClip(old)
-	} else {
+	default:
 		m.drawInput(c, g)
 		m.drawPopup(c, g)
 		m.drawPicker(c, g)

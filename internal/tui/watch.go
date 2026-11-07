@@ -50,13 +50,20 @@ type watchUI struct {
 	scrubbed int
 	enc      bool
 	// the pane we watch (modeWatch)
-	frame client.WatchFrame
-	grid  *screen.Grid
-	x, y  int // pan
+	frame  client.WatchFrame
+	grid   *screen.Grid
+	x, y   int  // pan
+	follow bool // keep the pane's bottom (its prompt) in view
 	// pending: tc watch @user, until they are live somewhere we can join.
-	pending   string
-	pendingAt time.Time
-	joining   bool
+	pending     string
+	pendingAt   time.Time
+	pendingTick bool
+	joining     bool
+	// pairing: a /pair is on its way (Esc still stops it); confirm: the
+	// user /watch asked to leave our huddle for, once (asked again: go).
+	pairing bool
+	confirm uint64
+	left    uint64 // the huddle a /watch left
 }
 
 type (
@@ -65,8 +72,9 @@ type (
 		panes []notify.Pane
 		err   error
 	}
-	pairedMsg  struct{ label string }
-	watchedMsg struct{ user uint64 }
+	pairedMsg      struct{ label string }
+	watchedMsg     struct{ user, left uint64 }
+	pendingTimeout struct{}
 )
 
 // pendingWait is how long tc watch @user waits for them to go live.
@@ -82,6 +90,26 @@ func (m *Model) watchBackend() (WatchBackend, bool) {
 func (m *Model) SetWatchTarget(name string) {
 	m.wt.pending = strings.TrimPrefix(strings.ToLower(name), "@")
 	m.wt.pendingAt = m.now()
+	m.setNotice("waiting for @"+sanitize.Line(m.wt.pending)+" to share a pane… Esc cancels", false, true, 0)
+}
+
+// pendingTimer schedules tc watch @user's give-up, once.
+func (m *Model) pendingTimer() tea.Cmd {
+	if m.wt.pending == "" || m.wt.pendingTick {
+		return nil
+	}
+	m.wt.pendingTick = true
+	return tea.Tick(pendingWait, func(time.Time) tea.Msg { return pendingTimeout{} })
+}
+
+// cancelPending drops a waiting tc watch @user (Esc).
+func (m *Model) cancelPending() bool {
+	if m.wt.pending == "" {
+		return false
+	}
+	m.wt.pending, m.wt.joining = "", false
+	m.setInfo("not waiting any more")
+	return true
 }
 
 func (m *Model) watchCommand(c command) (tea.Cmd, bool, error) {
@@ -155,15 +183,25 @@ func (m *Model) watchUser(wb WatchBackend, hb HuddleBackend, name string) (tea.C
 	}
 	if in && ch == cur {
 		return m.callThen("watch", func(ctx context.Context) (tea.Msg, error) {
-			return watchedMsg{who}, wb.Watch(ctx, who)
+			return watchedMsg{user: who}, wb.Watch(ctx, who)
 		}), true, nil
 	}
-	// Watching means being in that huddle: join it (leaving ours), then watch.
+	// Watching means being in that huddle (and opening the audio device):
+	// leaving a call for it takes asking twice.
+	if in && m.wt.confirm != who {
+		m.wt.confirm = who
+		return nil, true, fmt.Errorf("%s streams in %s's huddle: /watch %s again to leave %s's and watch", m.userName(who), m.chanTitle(ch), m.userName(who), m.chanTitle(cur))
+	}
+	m.wt.confirm = 0
+	left := uint64(0)
+	if in {
+		left = cur
+	}
 	return m.callThen("watch", func(ctx context.Context) (tea.Msg, error) {
 		if err := hb.JoinHuddle(ctx, ch); err != nil {
 			return nil, err
 		}
-		return watchedMsg{who}, wb.Watch(ctx, who)
+		return watchedMsg{user: who, left: left}, wb.Watch(ctx, who)
 	}), true, nil
 }
 
@@ -219,19 +257,25 @@ func (m *Model) startPair(p notify.Pane) tea.Cmd {
 		}
 		return h.ReadPane(ctx, id, screen.MaxRows)
 	}
+	m.wt.pairing = true
 	return m.callThen("pair", func(ctx context.Context) (tea.Msg, error) {
 		return pairedMsg{label}, wb.StartShare(ctx, label, capture)
 	})
 }
 
-// unpair stops our pane stream at once; false if none ran.
+// unpair stops our pane stream at once, or one still starting; false if
+// none.
 func (m *Model) unpair() bool {
 	wb, ok := m.watchBackend()
-	if !ok || !m.wt.sharing {
+	if !ok || !m.wt.sharing && !m.wt.pairing {
 		return false
 	}
 	wb.StopShare()
-	m.wt.sharing = false
+	m.wt.sharing, m.wt.pairing = false, false
+	if m.wt.label == "" {
+		m.setNotice("stopped streaming", false, false, 0)
+		return true
+	}
 	m.setNotice("stopped streaming "+m.wt.label, false, false, 0)
 	return true
 }
@@ -272,16 +316,34 @@ func (m *Model) watchMsg(msg tea.Msg) (tea.Cmd, bool) {
 		m.mode = modePanePick
 		return nil, true
 	case pairedMsg:
+		m.wt.pairing = false
 		m.refreshWatch()
-		m.setNotice(m.icon(icMic)+" you're live: "+sanitize.Line(msg.label)+" · /unpair or Esc stops", false, false, errTTL)
+		m.setNotice("you're live: "+sanitize.Line(msg.label), false, false, 0)
+		return nil, true
+	case pendingTimeout:
+		m.wt.pendingTick = false
+		if m.wt.pending != "" && !m.wt.joining {
+			m.setErr("watch", fmt.Errorf("@%s isn't sharing a pane in any of your huddles", sanitize.Line(m.wt.pending)))
+			m.wt.pending = ""
+		}
 		return nil, true
 	case watchedMsg:
+		if m.wt.pending != "" && m.notice != "" && !m.noticeErr {
+			m.clearNotice() // the "waiting for" one
+		}
 		m.wt.pending, m.wt.joining = "", false
-		m.wt.x, m.wt.y = 0, 0
+		m.wt.x, m.wt.y, m.wt.follow = 0, 0, true
 		m.refreshWatch()
-		m.leaveSelect()
-		m.mode = modeWatch
-		m.clearNotice()
+		if msg.left != 0 {
+			m.setInfo("left " + m.chanTitle(msg.left) + "'s huddle to watch " + m.userName(msg.user))
+		}
+		// Never yank the user out of a dialog: from the chat only.
+		if m.mode == modeNormal || m.mode == modeSelect {
+			m.leaveSelect()
+			m.mode = modeWatch
+		} else {
+			m.setInfo("watching " + m.userName(msg.user) + " · " + m.kn.of("⌥W") + " opens it")
+		}
 		return nil, true
 	}
 	return nil, false
@@ -305,6 +367,7 @@ func (m *Model) refreshWatch() tea.Cmd {
 			m.setErr("pair", fmt.Errorf("stopped streaming %s: %w", w.label, err))
 		}
 	}
+	prevLive := w.live
 	w.live = 0
 	if hb, ok := m.huddleBackend(); ok {
 		if ch, in := hb.InHuddle(); in {
@@ -312,6 +375,9 @@ func (m *Model) refreshWatch() tea.Cmd {
 				w.live = u
 			}
 		}
+	}
+	if w.live != 0 && w.live != prevLive && m.mode != modeWatch && !w.sharing {
+		m.setInfo(m.userName(w.live) + " is streaming a pane · " + m.kn.of("⌥W") + " watch")
 	}
 	f, ok := wb.Watching(w.frame.Ver)
 	switch {
@@ -321,6 +387,10 @@ func (m *Model) refreshWatch() tea.Cmd {
 			g = w.grid // unchanged: keep our copy
 		}
 		w.frame, w.grid = f, g
+		if w.follow && g != nil {
+			w.y = g.H - m.watchRows()
+		}
+		m.clampWatch()
 	default:
 		w.frame, w.grid = client.WatchFrame{}, nil // nothing kept while not watching
 		if m.mode == modeWatch {
@@ -361,9 +431,12 @@ func (m *Model) watchPending(wb WatchBackend) tea.Cmd {
 	return cmd
 }
 
+// watchRows is how many of the pane's rows the viewer shows.
+func (m *Model) watchRows() int { return max(m.geo().statusY-1, 1) }
+
 func (m *Model) watchKey(key string) tea.Cmd {
 	w := &m.wt
-	page := max(m.h-3, 1)
+	page := max(m.watchRows()-1, 1)
 	switch key {
 	case kEsc, "q", kWatch:
 		if wb, ok := m.watchBackend(); ok {
@@ -383,16 +456,26 @@ func (m *Model) watchKey(key string) tea.Cmd {
 		w.x += 8
 	case kUp, "k":
 		w.y--
+		w.follow = false
 	case kDown, "j":
 		w.y++
 	case kPgUp:
 		w.y -= page
+		w.follow = false
 	case kPgDown, " ":
 		w.y += page
 	case kHome:
-		w.x, w.y = 0, 0
+		w.x, w.y, w.follow = 0, 0, false
+	case kEnd, "G":
+		w.follow = true
+		if w.grid != nil {
+			w.y = w.grid.H
+		}
 	}
 	m.clampWatch()
+	if w.grid != nil && w.y >= w.grid.H-m.watchRows() {
+		w.follow = true // back at the bottom: follow it again
+	}
 	return nil
 }
 
@@ -402,7 +485,7 @@ func (m *Model) clampWatch() {
 		w.x, w.y = 0, 0
 		return
 	}
-	rows := max(m.geo().statusY-1, 1)
+	rows := m.watchRows()
 	w.x = min(max(w.x, 0), max(w.grid.W-m.w, 0))
 	w.y = min(max(w.y, 0), max(w.grid.H-rows, 0))
 }
@@ -413,7 +496,6 @@ func (m *Model) clampWatch() {
 func (m *Model) drawWatch(c *canvas, g geo) {
 	th := m.st.th
 	w := &m.wt
-	m.clampWatch()
 	bottom := g.statusY
 	if bottom <= 0 {
 		bottom = m.h
@@ -429,11 +511,12 @@ func (m *Model) drawWatch(c *canvas, g geo) {
 		x = c.put(x+1, 0, "🔒", cstyle{}, "")
 	}
 	x = c.put(x+1, 0, who, fgb(th.fg), "")
-	if w.frame.Label != "" {
-		x = c.put(x, 0, " · "+truncate(w.frame.Label, max(m.w/3, 8)), fgc(th.dim), "")
-	}
 	x = c.put(x, 0, " · ", fgc(th.dim), "")
 	x = c.put(x, 0, state, fgb(sc), "")
+	// the label gets what is left, the state never goes
+	if room := min(m.w-x-4, m.w/3); w.frame.Label != "" && room >= 4 {
+		x = c.put(x, 0, " · "+truncate(w.frame.Label, room), fgc(th.dim), "")
+	}
 	hint := "Esc leaves · y copy · ←→↑↓ pan"
 	if m.w-x < strWidth(hint)+3 {
 		hint = "Esc · y"
@@ -500,15 +583,19 @@ func (m *Model) liveText(w int) string {
 		full += fmt.Sprintf(" · %d watching", wt.watchers)
 	}
 	if wt.scrubbed > 0 {
-		full += fmt.Sprintf(" · %d hidden", wt.scrubbed)
+		full += fmt.Sprintf(" · %d masked", wt.scrubbed)
 	}
-	full += " · Esc stops"
-	for _, s := range []string{full, m.icon(icMic) + " LIVE " + wt.label + " · Esc stops", m.icon(icMic) + " LIVE " + wt.label, m.icon(icMic) + " LIVE"} {
+	stop := " · /unpair"
+	if m.mode == modeNormal {
+		stop = " · Esc stops" // elsewhere Esc closes what is open first
+	}
+	full += stop
+	for _, s := range []string{full, m.icon(icMic) + " LIVE " + wt.label + stop, m.icon(icMic) + " LIVE " + wt.label, m.icon(icMic) + " LIVE", "LIVE"} {
 		if strWidth(s)+2 <= w {
 			return s
 		}
 	}
-	return truncate(m.icon(icMic)+" LIVE", max(w-2, 1))
+	return "LIVE"
 }
 
 // drawLive draws the ● LIVE banner at the top right, over everything,
@@ -518,7 +605,11 @@ func (m *Model) drawLive(c *canvas) {
 		return
 	}
 	th := m.st.th
-	text := m.liveText(min(m.w, 72))
+	room := min(m.w, 72)
+	if m.h <= 2 {
+		room = 8 // row 0 is the input: keep most of it
+	}
+	text := m.liveText(room)
 	tw := strWidth(text) + 2
 	x := m.w - tw
 	old := c.setClip(rect{0, 0, m.w, m.h})

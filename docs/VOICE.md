@@ -361,13 +361,17 @@ Code, a build, NetHack. Wire format: PROTOCOL.md §14.5. UX: docs/TUI.md ("Pane 
 - **One stream per huddle** (`huddle.share` → `conflict` for a second). It ends with `/unpair`, `Esc`,
   leaving the huddle, the participation ending for any reason, or the pane going away (three failed
   captures in a row).
-- **Secrets.** Before encoding, rows are scrubbed (`internal/screen/scrub.go`): AWS keys, GitHub,
+- **Secrets.** Before encoding, logical lines (rows joined across soft wraps, so a wrapped token is
+  caught and masked on every row) are scrubbed (`internal/screen/scrub.go`): AWS keys, GitHub,
   GitLab, Slack, OpenAI/Anthropic, Stripe, Google and npm tokens, JWTs, tc webhook URLs, URL
   passwords, `Authorization: Bearer …`, `password=`/`token:`-style assignments, and whole private key
-  blocks become `•`. Pattern-based, so best effort: the LIVE banner counts what it hid, and is the
+  blocks become `•` (also the base64 rows above an END line whose BEGIN scrolled off). The pane's label
+  (often the running command) is scrubbed too. Pattern-based, so best effort: the LIVE banner counts what it hid, and is the
   real safeguard (you see that you're streaming, always).
 - **Viewer cost.** A client that isn't watching drops screen datagrams before parsing them (the
-  server doesn't send them anyway) and keeps no grid, so idle memory doesn't grow. A viewer holds the
+  server doesn't send them anyway) and keeps no grid, so idle memory doesn't grow. Updates are
+  decoded on a goroutine of their own (8 queued at most), never on the receive loop that also
+  carries audio, and a run may hold at most 128 bytes of text per cell. A viewer holds the
   keyframe, the current picture and at most 4 partial updates (≤ 120 KB each), dropped on `Esc`.
 - **Not in v1:** streaming without herdr (the tc host terminal, a command's output), more than one
   stream per huddle, watching without joining the huddle, `/pair --drive` (input to the streamer),
