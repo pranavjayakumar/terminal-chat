@@ -3,13 +3,17 @@
 An autonomous Claude Code agent that improves this repo on a schedule, with no
 one at a keyboard. Every 4 hours `.github/workflows/agent-org.yml`:
 
-1. **merge** (`merge.sh`): squash-merges open PRs labelled `agent-org` that
-   are fixes or behaviour-preserving refactors (`agent-org:fix`,
-   `agent-org:refactor`), green, mergeable, under 1,500 changed lines and
+1. **review** (`REVIEW.md`, `merge.sh`): a separate Claude session, with
+   no write token and a fresh subagent per PR, reviews every open green
+   agent PR it hasn't reviewed at its current commit, and posts the
+   verdict as a PR comment. Fixes and behaviour-preserving refactors
+   (`agent-org:fix`, `agent-org:refactor`) under 1,500 changed lines that
    touch no sensitive path (crypto, identity, protocol, transport, auth,
-   invites, release, install, CI, dependencies). Features
-   (`agent-org:feature`) and the rest get `agent-org:needs-owner` and wait
-   for you.
+   invites, release, install, CI, dependencies) are squash-merged when the
+   reviewer approves that exact commit. Features (`agent-org:feature`) and
+   the rest get `agent-org:needs-owner` and wait for you, with the review
+   there to help. When the reviewer requests changes, the next work run
+   fixes them.
 2. **work** (`PROMPT.md`): picks one task (red main, then agent PRs needing
    fixes, then issues you labelled `agent-ok`, then this run's focus, which
    rotates security audit → cleanup refactor → backlog feature, then
