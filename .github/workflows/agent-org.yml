@@ -1,6 +1,7 @@
-# Autonomous agent org (.github/agent-org/README.md): every few hours a
-# Claude Code agent merges the previous runs' green low-risk PRs, then
-# picks one task, builds it with tests on a branch and opens a PR.
+# Autonomous agent org (.github/agent-org/README.md): every few hours an
+# independent Claude reviewer checks the open agent PRs and the green
+# low-risk ones it approves are merged; then a Claude Code agent picks one
+# task, builds it with tests on a branch and opens a PR.
 # It runs as the owner through AGENT_GH_TOKEN (a fine-grained PAT without
 # the Workflows permission, so it can never edit this directory's
 # workflows) and CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`).
@@ -18,12 +19,28 @@ concurrency:
 permissions:
   contents: read
 
+# Owner's rule: Opus for everything, including subagents and the small
+# background calls Claude Code would otherwise send to Haiku.
+env:
+  ANTHROPIC_MODEL: claude-opus-5-5
+  ANTHROPIC_DEFAULT_OPUS_MODEL: claude-opus-5-5
+  ANTHROPIC_DEFAULT_SONNET_MODEL: claude-opus-5-5
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-opus-5-5
+  ANTHROPIC_SMALL_FAST_MODEL: claude-opus-5-5
+  CLAUDE_CODE_SUBAGENT_MODEL: claude-opus-5-5
+
 jobs:
-  merge:
-    # Merge first, so the agent below starts from what earlier runs landed.
+  review:
+    # Review and merge first, so the worker below starts from what earlier
+    # runs landed. The reviewer is a separate Claude session with no write
+    # token; only its verdict, for the exact head commit, lets merge.sh land
+    # a PR.
     if: github.repository == 'pranavjayakumar/terminal-chat'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       ready: ${{ steps.ready.outputs.ready }}
     steps:
@@ -39,17 +56,49 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.ready.outputs.ready == 'true'
         with:
+          fetch-depth: 0
           persist-credentials: false
-      - name: Merge green low-risk agent PRs
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: steps.ready.outputs.ready == 'true'
+        with:
+          go-version: "1.25"
+          cache: false
+      - id: queue
+        name: Find PRs to review
         if: steps.ready.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
           REPO: ${{ github.repository }}
-        run: sh .github/agent-org/merge.sh
+        run: |
+          sh .github/agent-org/merge.sh list >candidates
+          sh .github/agent-org/merge.sh prepare candidates
+          if [ -s review/queue ]; then echo any=true >>"$GITHUB_OUTPUT"; cat review/queue; fi
+      - uses: anthropics/claude-code-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8 # v1.0.250
+        if: steps.queue.outputs.any == 'true'
+        env:
+          GOTOOLCHAIN: local
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          prompt: |
+            Read .github/agent-org/REVIEW.md and follow it exactly. It is your
+            whole job for this run. Repository: ${{ github.repository }}.
+            Before you stop, append each PR's verdict and one line of why to
+            the file named by $GITHUB_STEP_SUMMARY.
+          claude_args: >-
+            --model claude-opus-5-5
+            --max-turns 200
+            --allowedTools "Bash,Read,Write,Glob,Grep,Task,TodoWrite"
+      - name: Post reviews and merge approved PRs
+        if: steps.queue.outputs.any == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: sh .github/agent-org/merge.sh land review/queue
 
   work:
-    needs: merge
-    if: needs.merge.outputs.ready == 'true'
+    needs: review
+    if: ${{ !cancelled() && needs.review.outputs.ready == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
@@ -78,14 +127,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
           GOTOOLCHAIN: local
-          # Owner's rule: Opus for everything, including subagents and the
-          # small background calls Claude Code would otherwise send to Haiku.
-          ANTHROPIC_MODEL: claude-opus-5-5
-          ANTHROPIC_DEFAULT_OPUS_MODEL: claude-opus-5-5
-          ANTHROPIC_DEFAULT_SONNET_MODEL: claude-opus-5-5
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-opus-5-5
-          ANTHROPIC_SMALL_FAST_MODEL: claude-opus-5-5
-          CLAUDE_CODE_SUBAGENT_MODEL: claude-opus-5-5
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.AGENT_GH_TOKEN }}

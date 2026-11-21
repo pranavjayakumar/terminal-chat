@@ -12,8 +12,11 @@ file adds the rules for running unattended.
 1. **Main is red.** If the latest `ci` run on `main` failed
    (`gh run list --branch main --workflow ci.yml -L 1`), fix that and nothing else.
 2. **An open agent PR needs work.** An open PR labelled `agent-org` whose CI
-   failed, or that the owner (`pranavjayakumar`) commented on or requested
-   changes on. Push the fix to that same branch. Don't open a new PR.
+   failed, whose latest `agent-org review: changes requested` comment
+   (from the independent reviewer, REVIEW.md) is about its current head
+   commit, or that the owner (`pranavjayakumar`) commented on or requested
+   changes on. Address every blocking finding, push the fix to that same
+   branch, and reply to the review in one comment. Don't open a new PR.
 3. **An owner-approved bug.** An open issue labelled `agent-ok` and `bug`
    where `agent-ok` was added by `pranavjayakumar` (check
    `gh api repos/{repo}/issues/{n}/events`). Oldest first; skip issues that
@@ -117,7 +120,8 @@ Write like a careful senior engineer, not like a chatbot.
   The owner keeps every current feature.
 - Never decide things that are the owner's: the project name, the license,
   the Go module path, pricing or hosting.
-- Never merge. A separate gate merges green, low-risk PRs.
+- Never merge. A separate gate merges green, low-risk PRs that the
+  independent reviewer approved.
 
 ## 4. Open the PR
 
