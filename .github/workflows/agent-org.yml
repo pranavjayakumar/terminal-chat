@@ -78,6 +78,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
           GOTOOLCHAIN: local
+          # Owner's rule: Opus for everything, including subagents and the
+          # small background calls Claude Code would otherwise send to Haiku.
+          ANTHROPIC_MODEL: claude-opus-5-5
+          ANTHROPIC_DEFAULT_OPUS_MODEL: claude-opus-5-5
+          ANTHROPIC_DEFAULT_SONNET_MODEL: claude-opus-5-5
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-opus-5-5
+          ANTHROPIC_SMALL_FAST_MODEL: claude-opus-5-5
+          CLAUDE_CODE_SUBAGENT_MODEL: claude-opus-5-5
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.AGENT_GH_TOKEN }}
