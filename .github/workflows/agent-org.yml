@@ -78,6 +78,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
           GOTOOLCHAIN: local
+          # Owner's rule: Opus for everything, including subagents and the
+          # small background calls Claude Code would otherwise send to Haiku.
+          ANTHROPIC_MODEL: claude-opus-5-5
+          ANTHROPIC_DEFAULT_OPUS_MODEL: claude-opus-5-5
+          ANTHROPIC_DEFAULT_SONNET_MODEL: claude-opus-5-5
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-opus-5-5
+          ANTHROPIC_SMALL_FAST_MODEL: claude-opus-5-5
+          CLAUDE_CODE_SUBAGENT_MODEL: claude-opus-5-5
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.AGENT_GH_TOKEN }}
@@ -86,6 +94,10 @@ jobs:
             whole job for this run. Repository: ${{ github.repository }}.
             Run id: ${{ github.run_id }}. This run's focus (PROMPT.md §1
             step 4): ${{ steps.focus.outputs.focus }}.
+            Before you stop, append a short Markdown report to the file
+            named by $GITHUB_STEP_SUMMARY: the task you picked and why, the
+            PR link or the reason you opened none, and test results.
           claude_args: >-
+            --model claude-opus-5-5
             --max-turns 200
             --allowedTools "Bash,Read,Write,Edit,Glob,Grep,Task,TodoWrite"
