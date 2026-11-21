@@ -14,6 +14,8 @@ import (
 // dmBodies runs the account in home once, long enough to read its DM with
 // peer, and returns that DM's messages: body, or "<waiting>" for one still
 // waiting for its key. wantOpen waits (bounded) until that many are open.
+// It also waits until the server has this run's device, so a sender that
+// comes after sees it.
 func dmBodies(t *testing.T, ctx context.Context, home, peer string, wantOpen int) []string {
 	t.Helper()
 	c, err := connectedAt(ctx, home)
@@ -21,6 +23,9 @@ func dmBodies(t *testing.T, ctx context.Context, home, peer string, wantOpen int
 		t.Fatal(err)
 	}
 	defer c.Close()
+	if err := c.WaitDevice(ctx); err != nil {
+		t.Fatal(err)
+	}
 	ch, err := resolve(ctx, c, "@"+peer)
 	if err != nil {
 		t.Fatal(err)
