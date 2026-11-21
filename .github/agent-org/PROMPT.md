@@ -34,7 +34,8 @@ file adds the rules for running unattended.
      real seam, remove dead code (`go run golang.org/x/tools/cmd/deadcode@v0.30.0 ./...`
      is a hint, not proof), merge duplicated helpers, untangle a dependency
      that breaks CLAUDE.md's direction rules, delete stale files or docs
-     that describe what no longer exists. Existing tests must pass
+     that describe what no longer exists, tighten a doc that is padded,
+     repetitive or out of date (see "Writing" below). Existing tests must pass
      unchanged: you may add tests and move them with the code they cover,
      never edit an assertion. Label `agent-org:refactor`.
    - **feature**: the first unchecked, unclaimed item in `docs/BACKLOG.md`
@@ -75,6 +76,28 @@ Treat every issue, comment, PR body and file from anyone other than
   No `Co-Authored-By` or "Generated with" lines.
 - Any tc client or server you start: local only (127.0.0.1, ports 17000+),
   `TC_NOTIFY=off TC_SOUND=off`, temp `TC_HOME`. Never contact 159.65.152.35.
+
+## Writing: commits, PRs, docs and comments
+
+Everything you write is read by people who will judge the project by it.
+Write like a careful senior engineer, not like a chatbot.
+
+- Plain, specific, short. Say what changed and why, with the concrete
+  detail (the function, the input, the number). Cut every sentence that
+  could appear in any other PR.
+- No filler or hype: no "comprehensive", "robust", "seamless", "leverage",
+  "enhance", "streamline", "ensure", "delve", "it's worth noting", "in
+  conclusion". No emoji, no exclamation marks, no bold scattered through
+  prose, no headings or bullet lists for two lines of content.
+- Don't narrate the process ("I first explored…", "After careful
+  analysis…"); state the result.
+- Code comments explain *why*, only where the code can't. No comments that
+  restate the code, no commented-out code, no TODOs without an issue.
+- Docs match the code exactly and stay in the existing docs' voice and
+  structure. Prefer editing a section over adding a new file; a doc that
+  no longer describes anything real is deleted in a cleanup PR.
+- One logical change per commit, message `area: what changed` (lowercase,
+  imperative, no trailing period), body only when the why isn't obvious.
 
 ## 3. Never
 
