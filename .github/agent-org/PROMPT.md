@@ -14,8 +14,8 @@ file adds the rules for running unattended.
 2. **An open agent PR needs work.** An open PR labelled `agent-org` whose CI
    failed, or that the owner (`pranavjayakumar`) commented on or requested
    changes on. Push the fix to that same branch. Don't open a new PR.
-3. **An owner-approved issue.** An open issue labelled `agent-ok` where the
-   label was added by `pranavjayakumar` (check
+3. **An owner-approved bug.** An open issue labelled `agent-ok` and `bug`
+   where `agent-ok` was added by `pranavjayakumar` (check
    `gh api repos/{repo}/issues/{n}/events`). Oldest first; skip issues that
    already have an open PR linked.
 4. **This run's focus.** The workflow passes a focus (`security`, `cleanup`
@@ -38,8 +38,9 @@ file adds the rules for running unattended.
      repetitive or out of date (see "Writing" below). Existing tests must pass
      unchanged: you may add tests and move them with the code they cover,
      never edit an assertion. Label `agent-org:refactor`.
-   - **feature**: the first unchecked, unclaimed item in `docs/BACKLOG.md`
-     under "Owner's list" (or an `agent-ok` issue, step 3). Label
+   - **feature**: the oldest owner-approved `agent-ok` issue without `bug`
+     (same ownership check and skip rule as step 3), else the first
+     unchecked, unclaimed item in `docs/BACKLOG.md` under "Owner's list". Label
      `agent-org:feature`. Feature PRs are never merged automatically; the
      owner reviews them.
 5. **Self-directed.** Something a strict maintainer would thank you for:
