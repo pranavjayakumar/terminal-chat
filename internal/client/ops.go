@@ -46,8 +46,9 @@ func (c *Client) sendLocal(ch uint64, body string, thread uint64, via string) (i
 	return c.queueOutbox(c.db, outboxEntry{chan_: ch, thread: thread, body: body, time: time.Now().UnixMilli(), via: via})
 }
 
-// queueOutbox checks and stores a new outbox entry (with a fresh nonce),
-// encrypting it now if it goes into an encrypted channel and we can.
+// queueOutbox checks and stores a new outbox entry (with a fresh nonce,
+// unless it is a requeued upload's), encrypting it now if it goes into an
+// encrypted channel and we can.
 func (c *Client) queueOutbox(q dbtx, e outboxEntry) (int64, error) {
 	ch, body := e.chan_, e.body
 	if ch == 0 || body == "" {
@@ -59,22 +60,24 @@ func (c *Client) queueOutbox(q dbtx, e outboxEntry) (int64, error) {
 	if err := c.sendAllowed(ch); err != nil {
 		return 0, err
 	}
-	e.nonce = make([]byte, 16)
-	rand.Read(e.nonce)
-	if c.needsEnc(ch) {
-		// The server can't check encrypted text (§10): receivers would
-		// reject it as invalid, so refuse it here.
-		if !validText(body) {
-			return 0, proto.Errf(proto.ErrBadRequest, "message is empty or contains control characters")
+	// The server can't check encrypted text (§10): receivers would reject
+	// it as invalid, so refuse it here.
+	if c.needsEnc(ch) && !validText(body) {
+		return 0, proto.Errf(proto.ErrBadRequest, "message is empty or contains control characters")
+	}
+	if e.nonce == nil {
+		e.nonce = make([]byte, 16)
+		rand.Read(e.nonce)
+		if c.needsEnc(ch) {
+			// Encrypted once, here if we can (works offline), else by the
+			// outbox before the first send; retries send the same bytes.
+			e.encNonce = newEncNonce()
+			e.enc = c.sealOffline(e)
 		}
-		// Encrypted once, here if we can (works offline), else by the outbox
-		// before the first send; retries send the same bytes.
-		e.encNonce = newEncNonce()
-		e.enc = c.sealOffline(e)
 	}
 	var id int64
-	if err := q.QueryRow(`INSERT INTO outbox (nonce, chan, thread, body, time, enc, encnonce, via, files, upload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		RETURNING id`, e.nonce, ch, e.thread, body, e.time, e.enc, e.encNonce, e.via, encodeFiles(e.files), e.upload).Scan(&id); err != nil {
+	if err := q.QueryRow(`INSERT INTO outbox (nonce, chan, thread, body, time, enc, encnonce, via, files, upload, sent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		RETURNING id`, e.nonce, ch, e.thread, body, e.time, e.enc, e.encNonce, e.via, encodeFiles(e.files), e.upload, e.sent).Scan(&id); err != nil {
 		return 0, fmt.Errorf("queueing message: %w", err)
 	}
 	if q == dbtx(c.db) {
@@ -263,34 +266,60 @@ func (c *Client) sendEntry(ctx context.Context, s *session, e outboxEntry) error
 			continue
 		}
 		if errors.As(err, &pe) && pe.Code == proto.ErrConflict && c.storedEarlier(e) {
-			if _, err := c.db.Exec(`DELETE FROM outbox WHERE id = ?`, e.id); err != nil {
-				return err
-			}
-			c.outboxChanged(e.chan_, nil)
-			return nil
+			return c.settleStored(e)
 		}
 		return err
 	}
 }
 
-// storedEarlier reports whether a conflict for encrypted entry e means an
-// earlier send of it was stored after all (#195): its RES was lost, it was
-// then failed locally (key change, alarm) and retried, which encrypts
-// afresh (§13.4), so the same nonce came with other bytes. The nonce is
-// ours and random, so the conflict alone says that much; to be sure, the
-// cache must also hold that message, verified as ours: same channel and
-// thread, the entry's signed time and text, not older than its first send.
-// An earlier send in the clear (the channel was encrypted before its RES
-// came back) left a plaintext copy, which has no signed time to compare.
+// settleStored drops outbox entry e, which storedEarlier found delivered.
+func (c *Client) settleStored(e outboxEntry) error {
+	if _, err := c.db.Exec(`DELETE FROM outbox WHERE id = ?`, e.id); err != nil {
+		return err
+	}
+	for _, f := range e.files {
+		os.Remove(c.stagedPath(f.Blob))
+	}
+	c.outboxChanged(e.chan_, nil)
+	return nil
+}
+
+// storedEarlier reports whether the cache holds a copy of entry e that an
+// earlier send stored, verified as ours: same channel, thread, text and
+// files, the entry's signed time, not older than its first send. An earlier
+// send in the clear (the channel was encrypted before its RES came back)
+// left a plaintext copy, which has no signed time to compare.
+//
+// A conflict for an encrypted entry means that (#195): its RES was lost, it
+// was then failed locally (key change, alarm) and retried, which encrypts
+// afresh (§13.4), so the same nonce came with other bytes. A not_found for
+// an entry with files says the server collected its blobs and stored
+// nothing; if the copy is here anyway, the server stored it and lied
+// (#210), and uploading the files again would post the message twice.
 func (c *Client) storedEarlier(e outboxEntry) bool {
-	if e.sent == 0 {
+	// From the row: e was read before the send that set it, if that was its first.
+	var sent uint64
+	if c.db.QueryRow(`SELECT sent FROM outbox WHERE id = ?`, e.id).Scan(&sent) != nil || sent == 0 {
 		return false
 	}
-	var id uint64
-	err := c.db.QueryRow(`SELECT id FROM msgs WHERE chan = ? AND thread = ? AND author = ?
-		AND (sec = ? AND sts = ? OR sec IN (?, ?, ?)) AND body = ? AND deleted = 0 AND id >= ? LIMIT 1`,
-		e.chan_, e.thread, c.Me().ID, SecE2E, e.time, SecPlain, SecLegacy, SecLegacyClaimed, e.body, e.sent).Scan(&id)
-	return err == nil
+	rows, err := c.db.Query(`SELECT files FROM msgs WHERE chan = ? AND thread = ? AND author = ?
+		AND (sec = ? AND sts = ? OR sec IN (?, ?, ?)) AND body = ? AND deleted = 0 AND id >= ?`,
+		e.chan_, e.thread, c.Me().ID, SecE2E, e.time, SecPlain, SecLegacy, SecLegacyClaimed, e.body, sent)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw []byte
+		var files []proto.File
+		if rows.Scan(&raw) != nil || len(raw) > 0 && proto.Unmarshal(raw, &files) != nil {
+			return false
+		}
+		if sameBlobs(files, e.files) {
+			return true
+		}
+	}
+	return false
 }
 
 // outboxLoop sends the outbox oldest first, one at a time, which keeps
@@ -339,6 +368,10 @@ func (c *Client) outboxLoop(ctx context.Context, s *session) {
 		}
 		switch {
 		case err == nil:
+		case reason != "" && errors.As(err, &perr) && perr.Code == proto.ErrNotFound && len(e.files) > 0 && c.storedEarlier(e):
+			if err := c.settleStored(e); err != nil && !sleepUntil(ctx, time.Now().Add(c.timing.retry)) {
+				return
+			}
 		case reason != "" && errors.As(err, &perr) && perr.Code == proto.ErrNotFound && c.requeueUpload(e):
 			// The server collected the blobs before the message went out:
 			// they go up again from the staged copies.
