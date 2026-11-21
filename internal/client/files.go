@@ -293,14 +293,18 @@ type upload struct {
 	files  []proto.File
 	time   int64
 	failed string
+	// A send that got not_found left these (requeueUpload): the message
+	// goes out again as that send, not as a new one.
+	nonce, enc, encNonce []byte
+	sent                 uint64
 }
 
-const uploadCols = `id, chan, thread, body, files, time, failed`
+const uploadCols = `id, chan, thread, body, files, time, failed, nonce, enc, encnonce, sent`
 
 func scanUpload(sc interface{ Scan(...any) error }) (upload, error) {
 	var u upload
 	var raw []byte
-	err := sc.Scan(&u.id, &u.ch, &u.thread, &u.body, &raw, &u.time, &u.failed)
+	err := sc.Scan(&u.id, &u.ch, &u.thread, &u.body, &raw, &u.time, &u.failed, &u.nonce, &u.enc, &u.encNonce, &u.sent)
 	if err == nil {
 		err = proto.Unmarshal(raw, &u.files)
 	}
@@ -438,8 +442,11 @@ func (c *Client) runUpload(ctx context.Context, s *session, up upload) error {
 	if still == 0 {
 		return nil // discarded meanwhile
 	}
-	if _, err := c.queueOutbox(tx, outboxEntry{chan_: up.ch, thread: up.thread, body: up.body, time: time.Now().UnixMilli(),
-		files: up.files, upload: up.id}); err != nil {
+	e := outboxEntry{chan_: up.ch, thread: up.thread, body: up.body, time: time.Now().UnixMilli(), files: up.files, upload: up.id}
+	if up.nonce != nil {
+		e.nonce, e.enc, e.encNonce, e.time, e.sent = up.nonce, up.enc, up.encNonce, up.time, up.sent
+	}
+	if _, err := c.queueOutbox(tx, e); err != nil {
 		var pe *proto.Error
 		if errors.As(err, &pe) {
 			return err
@@ -807,8 +814,11 @@ func (c *Client) fetchBlob(ctx context.Context, blob []byte, size int64, w io.Wr
 }
 
 // requeueUpload moves an outbox entry whose blobs the server no longer has
-// back to the uploads, if the staged copies are all still here. The send
-// nonce is new next time: the server stored nothing for this one.
+// back to the uploads, if the staged copies are all still here. It keeps
+// the send's nonce, signed time, sealed bytes and first-send mark: a server
+// that said not_found but stored the message (#210) answers the resend with
+// that message instead of storing a second one, and only a stale_epoch may
+// change the bytes, as for any entry that was sent.
 func (c *Client) requeueUpload(e outboxEntry) bool {
 	if len(e.files) == 0 {
 		return false
@@ -818,18 +828,19 @@ func (c *Client) requeueUpload(e outboxEntry) bool {
 			return false
 		}
 	}
-	raw, err := proto.Marshal(e.files)
-	if err != nil {
-		return false
-	}
 	tx, err := c.db.Begin()
 	if err != nil {
 		return false
 	}
 	defer tx.Rollback()
 	// Same id as before (when it came from one): WaitUpload follows it.
-	if _, err := tx.Exec(`INSERT INTO uploads (id, chan, thread, body, files, time) VALUES (NULLIF(?, 0), ?, ?, ?, ?, ?)`,
-		e.upload, e.chan_, e.thread, e.body, raw, e.time); err != nil {
+	// Copied from the row: e predates what its sends stored there.
+	res, err := tx.Exec(`INSERT INTO uploads (id, chan, thread, body, files, time, nonce, enc, encnonce, sent)
+		SELECT NULLIF(upload, 0), chan, thread, body, files, time, nonce, enc, encnonce, sent FROM outbox WHERE id = ?`, e.id)
+	if err != nil {
+		return false
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
 		return false
 	}
 	if _, err := tx.Exec(`DELETE FROM outbox WHERE id = ?`, e.id); err != nil {
