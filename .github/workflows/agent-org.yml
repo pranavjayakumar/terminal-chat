@@ -66,6 +66,14 @@ jobs:
         run: |
           git config user.name "Pranav Jayakumar"
           git config user.email "167646591+pranavjayakumar@users.noreply.github.com"
+      # Rotates security → cleanup → feature so no kind of work starves.
+      - id: focus
+        env:
+          N: ${{ github.run_number }}
+        run: |
+          set -- security cleanup feature
+          shift $((N % 3))
+          echo "focus=$1" >>"$GITHUB_OUTPUT"
       - uses: anthropics/claude-code-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8 # v1.0.250
         env:
           GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
@@ -76,7 +84,8 @@ jobs:
           prompt: |
             Read .github/agent-org/PROMPT.md and follow it exactly. It is your
             whole job for this run. Repository: ${{ github.repository }}.
-            Run id: ${{ github.run_id }}.
+            Run id: ${{ github.run_id }}. This run's focus (PROMPT.md §1
+            step 4): ${{ steps.focus.outputs.focus }}.
           claude_args: >-
             --max-turns 200
             --allowedTools "Bash,Read,Write,Edit,Glob,Grep,Task,TodoWrite"

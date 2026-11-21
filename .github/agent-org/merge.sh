@@ -20,6 +20,15 @@ gh pr list --repo "$REPO" --state open --label agent-org --author "$OWNER" \
 		| select([.labels[].name] | (index("agent-org:hold") or index("agent-org:needs-owner")) | not)
 		| select(.additions + .deletions <= '"$MAX_LINES"') | .number' |
 while read -r n; do
+	# Only fixes and behaviour-preserving refactors may land on their own.
+	# Features, and PRs with no kind label, always wait for the owner.
+	kinds=$(gh pr view "$n" --repo "$REPO" --json labels --jq '.labels[].name')
+	if ! printf '%s\n' "$kinds" | grep -Eqx 'agent-org:(fix|refactor)' ||
+		printf '%s\n' "$kinds" | grep -qx 'agent-org:feature'; then
+		echo "#$n is a feature or unlabelled: left for the owner"
+		gh pr edit "$n" --repo "$REPO" --add-label agent-org:needs-owner >/dev/null || true
+		continue
+	fi
 	files=$(gh pr view "$n" --repo "$REPO" --json files --jq '.files[].path')
 	if printf '%s\n' "$files" | grep -Eq "$SENSITIVE"; then
 		echo "#$n touches a sensitive path: left for the owner"
