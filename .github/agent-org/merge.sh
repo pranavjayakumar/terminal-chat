@@ -32,6 +32,19 @@ checks_green() {
 		! printf '%s\n' "$2" | grep -qv '\.md$'
 }
 
+# mergeable <n>: GitHub computes mergeability lazily and answers UNKNOWN
+# until it has, typically right after main moves, so ask a few times.
+mergeable() {
+	for _ in 1 2 3 4 5 6; do
+		case $(gh pr view "$1" --repo "$REPO" --json mergeable --jq .mergeable) in
+		MERGEABLE) return 0 ;;
+		CONFLICTING) return 1 ;;
+		esac
+		sleep 5
+	done
+	return 1
+}
+
 # reviewed <n> <sha> <verdict regex>: a review comment for this commit exists.
 reviewed() {
 	gh pr view "$1" --repo "$REPO" --json comments --jq '.comments[].body' |
@@ -40,11 +53,13 @@ reviewed() {
 
 list() {
 	gh pr list --repo "$REPO" --state open --label agent-org --author "$OWNER" \
-		--json number,headRefOid,isDraft,mergeable,additions,deletions,labels \
-		--jq '.[] | select(.isDraft | not) | select(.mergeable == "MERGEABLE")
+		--json number,headRefOid,isDraft,additions,deletions,labels \
+		--jq '.[] | select(.isDraft | not)
 			| select([.labels[].name] | index("agent-org:hold") | not)
 			| "\(.number) \(.headRefOid) \(.additions + .deletions) \([.labels[].name] | join(","))"' |
 	while read -r n sha size labels; do
+		echo "#$n: considering $sha" >&2
+		mergeable "$n" || { echo "#$n: not mergeable" >&2; continue; }
 		files=$(gh pr view "$n" --repo "$REPO" --json files --jq '.files[].path')
 		checks_green "$n" "$files" || { echo "#$n: checks not green" >&2; continue; }
 		kind=auto
