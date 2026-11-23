@@ -122,10 +122,16 @@ func Run(ctx context.Context, cfg Config) error {
 		r.save()
 	}()
 	cfg.Log.Info("started", "version", cfg.Version, "pid", os.Getpid())
+	cfgPath := filepath.Join(cfg.Home, "config.json")
 	for {
+		var login os.FileInfo
 		err := r.waitUIClosed(ctx)
 		if err == nil {
-			err = r.session(ctx)
+			// Taken before the attempt: a tc join that lands after this
+			// session fails (even before "waiting" is written) still counts
+			// as a change.
+			login = statOf(cfgPath)
+			err = r.session(ctx, login)
 		}
 		if ctx.Err() != nil {
 			cfg.Log.Info("stopping")
@@ -140,7 +146,7 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		r.setErr("waiting", err)
 		cfg.Log.Warn("waiting for a login change", "err", sanitize.Line(err.Error()))
-		if err := r.waitConfig(ctx); err != nil {
+		if err := r.waitConfig(ctx, login); err != nil {
 			if errors.Is(err, ErrBinaryChanged) {
 				return err
 			}
@@ -230,9 +236,8 @@ type errClientStopped string
 
 func (e errClientStopped) Error() string { return string(e) }
 
-func (r *runner) session(ctx context.Context) error {
+func (r *runner) session(ctx context.Context, login os.FileInfo) error {
 	cfgPath := filepath.Join(r.cfg.Home, "config.json")
-	login := statOf(cfgPath)
 	c, err := client.Open(r.cfg.Home)
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", r.cfg.Home, err)
@@ -340,11 +345,10 @@ func (r *runner) connState(c *client.Client, s client.Status) {
 	}
 }
 
-// waitConfig returns once config.json changes (a new tc join/login), ctx
-// ends (nil error) or the binary changes.
-func (r *runner) waitConfig(ctx context.Context) error {
+// waitConfig returns once config.json differs from before (a new tc
+// join/login), ctx ends (nil error) or the binary changes.
+func (r *runner) waitConfig(ctx context.Context, before os.FileInfo) error {
 	path := filepath.Join(r.cfg.Home, "config.json")
-	before := statOf(path)
 	t := time.NewTicker(r.cfg.Poll)
 	defer t.Stop()
 	for {
