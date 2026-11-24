@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"os"
 	"path/filepath"
@@ -902,6 +903,109 @@ func TestEncRotatesAfterBoxedDeviceRevoked(t *testing.T) {
 		t.Fatalf("send %+v", s)
 	} else if h, _ := e2ecrypto.ParseEnc(s.Enc); h.Epoch != 2 {
 		t.Fatalf("sent under epoch %d", h.Epoch)
+	}
+}
+
+// #197: a message queued under an epoch that boxed none of bob's devices
+// isn't sent as queued once sync brings bob's first device, even before
+// the e2e worker has verified it: the send rotates first, so bob can read
+// it. tc send hits this right after connecting.
+func TestEncQueuedRotatesForUnverifiedNewDevice(t *testing.T) {
+	fs, c := e2eClient(t)
+	c.timing.devWait = 5 * time.Second
+	run(t, c)
+	f := startE2E(t, fs, proto.Snapshot{Chans: []proto.Channel{dmChan(0)}}, proto.DevicesListRes{})
+	me := f.myKeys(c)
+	f.keyEpoch(dm, alice, mkBundle(t, me, dm, 1, nil, dmRoster, newK(t), nil, me))
+	waitFor(t, "epoch 1", status(c, dm, E2EOK))
+
+	f.fc.conn.Close()
+	waitFor(t, "offline", func() bool { return c.Status().State != Online })
+	if err := c.Send(dm, "for your first device", 0); err != nil {
+		t.Fatal(err)
+	}
+	var queued []byte
+	c.db.QueryRow(`SELECT enc FROM outbox`).Scan(&queued)
+	if h, err := e2ecrypto.ParseEnc(queued); err != nil || h.Epoch != 1 {
+		t.Fatalf("not encrypted while queued: %v", err)
+	}
+
+	// Holding e2eMu keeps the worker from verifying b1 until we let go.
+	b1 := newPeer(t, bob, nil)
+	c.e2eMu.Lock()
+	f2 := resumeE2E(t, fs, f, func(f *e2eFake) {
+		f.event(proto.KDeviceNew, 0, bob, proto.Device{Cert: b1.cert})
+	})
+	select {
+	case a := <-f2.sends:
+		c.e2eMu.Unlock()
+		h, _ := e2ecrypto.ParseEnc(a.Enc)
+		t.Fatalf("sent under epoch %d before bob's device was verified", h.Epoch)
+	case <-time.After(300 * time.Millisecond):
+	}
+	c.e2eMu.Unlock()
+
+	var r proto.KeyRotateArgs
+	select {
+	case r = <-f2.rotates:
+	case <-time.After(testWait):
+		t.Fatal("no rotation before sending")
+	}
+	eb, err := identity.PeekEpochBundle(identity.Signed(r.Bundle))
+	if err != nil || eb.Epoch != 2 {
+		t.Fatalf("rotation %+v %v", eb, err)
+	}
+	if !slices.ContainsFunc(eb.Boxes, func(bx identity.EpochBox) bool { return bx.Dev == b1.dev.ID }) {
+		t.Fatal("epoch 2 has no box for bob's new device")
+	}
+	if h, _ := e2ecrypto.ParseEnc(nextSend(t, f2).Enc); h.Epoch != 2 {
+		t.Fatalf("sent under epoch %d", h.Epoch)
+	}
+}
+
+// A forged cert for bob, who has no device, never verifies: once rejected
+// it no longer keeps new messages from being sealed while queued, and
+// nothing rotates for it.
+func TestEncForgedCertDoesntBlockOfflineSeal(t *testing.T) {
+	fs, c := e2eClient(t)
+	run(t, c)
+	f := startE2E(t, fs, proto.Snapshot{Chans: []proto.Channel{dmChan(0)}}, proto.DevicesListRes{})
+	me := f.myKeys(c)
+	f.keyEpoch(dm, alice, mkBundle(t, me, dm, 1, nil, dmRoster, newK(t), nil, me))
+	waitFor(t, "epoch 1", status(c, dm, E2EOK))
+
+	forged := newPeer(t, bob, nil)
+	var fw struct {
+		V        uint32 `msgpack:"v"`
+		ServerID []byte `msgpack:"server_id"`
+		User     uint64 `msgpack:"user"`
+		Dev      []byte `msgpack:"dev"`
+		X25519   []byte `msgpack:"x25519"`
+		Ed25519  []byte `msgpack:"ed25519"`
+		SSH      []byte `msgpack:"ssh"`
+		Created  int64  `msgpack:"created"`
+	}
+	proto.Unmarshal(forged.cert.B, &fw)
+	fw.SSH = newSSH(t).PublicKey().Marshal()
+	forged.cert.B = proto.MustRaw(fw)
+	f.event(proto.KDeviceNew, 0, bob, proto.Device{Cert: forged.cert})
+	raw := proto.MustRaw(forged.cert)
+	waitFor(t, "forged cert rejected", func() bool { return c.badCert(sha256.Sum256(raw)) })
+
+	e := outboxEntry{chan_: dm, body: "hi", time: time.Now().UnixMilli(), nonce: make([]byte, 16), encNonce: newEncNonce()}
+	if c.sealOffline(e) == nil {
+		t.Fatal("not sealed while queued")
+	}
+	if err := c.Send(dm, "hi", 0); err != nil {
+		t.Fatal(err)
+	}
+	if h, _ := e2ecrypto.ParseEnc(nextSend(t, f).Enc); h.Epoch != 1 {
+		t.Fatalf("sent under epoch %d", h.Epoch)
+	}
+	select {
+	case <-f.rotates:
+		t.Fatal("rotated for a forged cert")
+	default:
 	}
 }
 
