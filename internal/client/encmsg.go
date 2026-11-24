@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -835,10 +836,13 @@ func (c *Client) revokedStale(sid e2ecrypto.ServerID, ch uint64, ep trust.Epoch)
 
 // epochStale reports whether an entry should go through sealWith rather
 // than be sealed (or kept sealed) under ep: revokedStale, or a roster user
-// ep sealed nothing to has since gained a device this device verified
-// (#197; sealWith then tries one rotation, but seals under ep if it fails).
+// ep sealed nothing to has since gained a device (#197; sealWith then
+// tries one rotation, but seals under ep if it fails). The device may not
+// be verified yet: the e2e worker verifies a device.new some time after
+// sync stored it, and an entry sealed while queued would otherwise go out
+// under ep before then. sealWith verifies it first.
 func (c *Client) epochStale(sid e2ecrypto.ServerID, ch uint64, ep trust.Epoch) bool {
-	return c.revokedStale(sid, ch, ep) || c.boxlessGained(sid, ch, ep)
+	return c.revokedStale(sid, ch, ep) || c.boxlessGained(sid, ch, ep, true)
 }
 
 // boxlessGained reports whether a roster user other than us, none of
@@ -851,8 +855,9 @@ func (c *Client) epochStale(sid e2ecrypto.ServerID, ch uint64, ep trust.Epoch) b
 // backlink opens what was sealed under ep. Epochs recorded without Boxed
 // (before trust schema v11) don't say, so they never count. After a failed
 // try it stays quiet for timing.keyNeed, so a rotation that keeps failing
-// costs one attempt per interval, not one per message.
-func (c *Client) boxlessGained(sid e2ecrypto.ServerID, ch uint64, ep trust.Epoch) bool {
+// costs one attempt per interval, not one per message. With pending, a
+// cached cert of such a user that may still verify counts too.
+func (c *Client) boxlessGained(sid e2ecrypto.ServerID, ch uint64, ep trust.Epoch, pending bool) bool {
 	if ep.Boxed == nil {
 		return false
 	}
@@ -876,7 +881,35 @@ func (c *Client) boxlessGained(sid e2ecrypto.ServerID, ch uint64, ep trust.Epoch
 			active = active || !d.Revoked
 			boxed = boxed || slices.Contains(ep.Boxed, d.ID)
 		}
-		if active && !boxed {
+		if !boxed && (active || pending && c.pendingDevice(sid, u)) {
+			return true
+		}
+	}
+	return false
+}
+
+// pendingDevice reports whether the cache holds a cert for user that is
+// neither in the trust store nor one verifyDevices rejected: a forged cert
+// must not keep every send off the offline-seal path.
+func (c *Client) pendingDevice(sid e2ecrypto.ServerID, user uint64) bool {
+	rows, err := c.db.Query(`SELECT cert, dev FROM devices WHERE user = ?`, user)
+	if err != nil {
+		return false
+	}
+	type row struct{ cert, dev []byte }
+	var certs []row
+	for rows.Next() {
+		var r row
+		if rows.Scan(&r.cert, &r.dev) == nil && len(r.dev) == e2ecrypto.IDSize {
+			certs = append(certs, r)
+		}
+	}
+	rows.Close()
+	for _, r := range certs {
+		if c.badCert(sha256.Sum256(r.cert)) {
+			continue
+		}
+		if _, ok, err := c.trust.Device(sid, e2ecrypto.DevID(r.dev)); err == nil && !ok {
 			return true
 		}
 	}
@@ -997,7 +1030,7 @@ func (c *Client) sealWith(ctx context.Context, s *session, chID uint64, prev []b
 			cur, _, _ := c.trust.Epoch(sid, ch.ID, head.Epoch)
 			rotate = !slices.Equal(cur.Roster, c.rosterNow(ch)) || (prev != nil && head.Epoch == prevEpoch) ||
 				c.revokedStale(sid, ch.ID, cur)
-			if !rotate && !refreshed && c.boxlessGained(sid, ch.ID, cur) {
+			if !rotate && !refreshed && c.boxlessGained(sid, ch.ID, cur, false) {
 				// Best effort, once: cur is still safe to seal under (the
 				// new device just can't read it yet), so a failed rotation
 				// never holds the message back, nor uses up a pass.
