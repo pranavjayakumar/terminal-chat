@@ -637,8 +637,9 @@ depth, so a buggy or old server can never drive a terminal. Rendering drops cont
 controls and marks (U+200E/F, U+061C), private-use characters, format characters (Unicode
 Cf: zero-width space, word joiner, BOM, soft hyphen, tag characters…) except a zero-width
 joiner between emoji, a zero-width non-joiner between letters of a script that uses it
-(Arabic, Indic…) and tag characters in an emoji flag sequence, Hangul filler letters,
-variation selectors past one per character, and combining marks past 3 per character.
+(Arabic, Indic…) and the tag characters of the England, Scotland and Wales flags (any
+other tags spell text nobody sees), Hangul filler letters, variation selectors past one per
+character, and combining marks past 3 per character.
 
 ## 11. Versioning rules
 

@@ -19,7 +19,7 @@ const (
 	zwnj      = 0x200C
 	zwj       = 0x200D
 	blackFlag = 0x1F3F4 // starts an emoji tag sequence (🏴 + tags + cancel tag)
-	tagFirst  = 0xE0020
+	tagBase   = 0xE0000 // the tag character for ASCII c is tagBase + c
 	tagCancel = 0xE007F
 )
 
@@ -29,9 +29,9 @@ const (
 // characters (zero-width spaces, word joiners, BOM, tag characters...),
 // and combining marks past MaxMarks on one character. A zero-width joiner
 // stays inside an emoji sequence (👩‍💻), a non-joiner between letters of a
-// script that needs it (Persian, Indic), and tag characters in an emoji
-// flag sequence (🏴󠁧󠁢󠁳󠁣󠁴󠁿). Tabs become 4 spaces so width calculations stay
-// predictable.
+// script that needs it (Persian, Indic), and the tag characters of the
+// England, Scotland and Wales flags (🏴󠁧󠁢󠁳󠁣󠁴󠁿). Tabs become 4 spaces so width
+// calculations stay predictable.
 func Text(s string) string {
 	if isClean(s) {
 		return s
@@ -41,18 +41,9 @@ func Text(s string) string {
 	var prev rune // last rune written, 0 at the start or after a newline
 	marks := 0    // combining marks written on prev's character
 	vs := false   // a variation selector follows the current character
-	inTags := false
 	for i := 0; i < len(s); {
 		r, size := utf8.DecodeRuneInString(s[i:])
 		i += size
-		if inTags {
-			if r >= tagFirst && r <= tagCancel {
-				b.WriteRune(r)
-				inTags = r != tagCancel
-				continue
-			}
-			inTags = false
-		}
 		switch {
 		case r == utf8.RuneError && size <= 1:
 			r = '�'
@@ -97,7 +88,9 @@ func Text(s string) string {
 		b.WriteRune(r)
 		prev, marks, vs = r, 0, false
 		if r == blackFlag {
-			inTags = true
+			n := flagTags(s[i:])
+			b.WriteString(s[i : i+n])
+			i += n
 		}
 	}
 	return b.String()
@@ -183,6 +176,24 @@ func isMark(r rune) bool {
 		return false
 	}
 	return unicode.In(r, unicode.Mn, unicode.Me)
+}
+
+// flagTags is how many bytes at the start of s are the tags of one of the
+// three subdivision flags emoji has (England, Scotland, Wales), 0 if they
+// aren't. Any other run of tags spells invisible text: hidden from people,
+// read in full by the personal agent.
+func flagTags(s string) int {
+	for _, code := range []string{"gbeng", "gbsct", "gbwls"} {
+		var b strings.Builder
+		for _, c := range code {
+			b.WriteRune(tagBase + c)
+		}
+		b.WriteRune(tagCancel)
+		if strings.HasPrefix(s, b.String()) {
+			return b.Len()
+		}
+	}
+	return 0
 }
 
 // isEmoji approximates Extended_Pictographic (plus what may end an emoji
